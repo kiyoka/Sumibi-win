@@ -1,5 +1,8 @@
 # Windows版 初期設計
 
+現行コードに照合した全体説明は[全体設計](TECHNICAL_OVERVIEW.md)を参照。
+本書は2026-10-20の初期判断を保存する。以下の「未実装」「未確認」は当時の状態である。
+
 2026-10-20 / 状態: 提案・未実装 / [Issue #1](https://github.com/kiyoka/Sumibi-win/issues/1)
 言語はRustを採用（メモリ安全性・長期保守を優先）。Windows 11 x64＋Visual Studioが利用可能。
 言語の比較は[ADR 0001](adr/0001-language-and-ime.md)、参照範囲は[移植表](MAC_PARITY.md)。
