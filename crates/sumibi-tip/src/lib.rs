@@ -1,4 +1,4 @@
-//! Windows TSF activation spike. Keys pass through; no editing or registration yet.
+//! Windows TSF activation boundary and development-only guarded editing spike.
 #![cfg(windows)]
 #![deny(unsafe_op_in_unsafe_fn)]
 

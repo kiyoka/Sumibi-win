@@ -1,5 +1,8 @@
 # TSFスパイクの検証状況
 
+Issue #1の模擬遅延応答11ケースとIPC検証は[受入記録](ISSUE_1_ACCEPTANCE.md)・
+[ADR 0002](adr/0002-ipc-boundary-and-desktop-probe.md)を参照。
+
 2026-10-21 / Windows x64 / Rust 1.99.1 / windows-rs 0.62.2
 
 ## 今回の成果

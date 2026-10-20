@@ -122,6 +122,7 @@ enum Exercise {
     Key,
     Window,
     Input,
+    Delayed,
     Demo,
 }
 
@@ -144,6 +145,10 @@ fn checkpoint(point: FailAfter, requested: FailAfter) -> Result<(), Failure> {
 
 pub(super) fn run() -> Result<(), Failure> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.len() == 1 && args[0] == "ipc-test" {
+        crate::pipe_probe::run()?;
+        return Ok(());
+    }
     if args.len() != 3
         || args[1] != "--dll"
         || (args[0] != "plan"
@@ -153,10 +158,11 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "key-test"
             && args[0] != "window-test"
             && args[0] != "input-test"
+            && args[0] != "delayed-test"
             && args[0] != "demo")
     {
         return Err(
-            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|demo> --dll <sumibi_tip.dll>"
+            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|delayed-test|demo> --dll <sumibi_tip.dll>"
                 .into(),
         );
     }
@@ -209,6 +215,7 @@ pub(super) fn run() -> Result<(), Failure> {
                 Some("key-test") => Exercise::Key,
                 Some("window-test") => Exercise::Window,
                 Some("input-test") => Exercise::Input,
+                Some("delayed-test") => Exercise::Delayed,
                 Some("demo") => Exercise::Demo,
                 _ => Exercise::None,
             };
@@ -316,6 +323,7 @@ fn registered_probe(
             Exercise::Key => crate::edit_host::exercise_keys(&manager.0, app_client)?,
             Exercise::Window => crate::edit_host::exercise_window_keys(&manager.0, app_client)?,
             Exercise::Input => crate::edit_host::exercise_input(&manager.0, app_client)?,
+            Exercise::Delayed => crate::edit_host::exercise_delayed(&manager.0, app_client)?,
             Exercise::Demo => crate::edit_host::run_demo(&manager.0, app_client)?,
         }
         drop(keys);

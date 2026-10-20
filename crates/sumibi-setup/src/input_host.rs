@@ -417,9 +417,21 @@ fn run(
             test_input(&window, &editor, &live)?;
         }
         window.clear_input();
-        live.close()?;
-        editor.control.RevokeContext().ok()?;
-        association.close()?;
+        live.close()
+            .map_err(|error| format!("input render cleanup: {error}"))?;
+        // WM_CLOSE already revoked before destruction. A desktop TSF manager
+        // can deactivate the TIP during destruction, expiring this weak control.
+        // Only revoke here when exiting while the native view is still alive.
+        if window.is_open() {
+            editor
+                .control
+                .RevokeContext()
+                .ok()
+                .map_err(|error| format!("input grant cleanup: {error}"))?;
+        }
+        association
+            .close()
+            .map_err(|error| format!("input association cleanup: {error}"))?;
     }
     Ok(())
 }

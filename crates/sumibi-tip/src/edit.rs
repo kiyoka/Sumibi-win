@@ -1,4 +1,4 @@
-//! Selection editing spike; not connected to normal keystrokes yet.
+//! Guarded selection editing, used by the explicitly granted development host.
 //! Callers must classify input protection before granting a policy. Unknown
 //! input must remain denied. All objects stay on the owning TSF thread.
 #![allow(non_snake_case)]

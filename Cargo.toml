@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/sumibi-core", "crates/sumibi-tip", "crates/sumibi-setup"]
+members = ["crates/sumibi-core", "crates/sumibi-protocol", "crates/sumibi-tip", "crates/sumibi-setup"]
 resolver = "2"
 
 [workspace.package]

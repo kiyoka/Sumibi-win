@@ -16,6 +16,9 @@ use windows::Win32::UI::TextServices::*;
 #[path = "input_host.rs"]
 mod input_host;
 pub(super) use input_host::{exercise_input, run_demo};
+#[path = "delayed_host.rs"]
+mod delayed_host;
+pub(super) use delayed_host::exercise_delayed;
 
 type EditHistory = RefCell<Vec<(Vec<u16>, TS_SELECTION_ACP)>>;
 

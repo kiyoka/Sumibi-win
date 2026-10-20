@@ -1,5 +1,10 @@
 # 開発環境と現在の実装範囲
 
+Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCEPTANCE.md)を参照。
+まとめて検証する場合は通常ユーザーのPowerShellで `./tools/Test-Spike.ps1` を実行する。
+途中失敗で停止し、既定では専用ウィンドウとログオンSID限定pipeも検証する。
+画面を使用できない環境では `-SkipDesktop` を明示し、未実行の検査を成功扱いにしない。
+
 ## 環境確認（2026-10-20）
 
 - Windowsの作業フォルダーで開発。ブランチは `codex/issue-1-windows-design`。
@@ -24,6 +29,8 @@ cargo run -p sumibi-setup --locked -- plan --dll target/debug/sumibi_tip.dll
 cargo run -p sumibi-setup --locked -- self-test --dll target/debug/sumibi_tip.dll
 cargo run -p sumibi-setup --locked -- edit-test --dll target/debug/sumibi_tip.dll
 cargo run -p sumibi-setup --locked -- key-test --dll target/debug/sumibi_tip.dll
+cargo run -p sumibi-setup --locked -- delayed-test --dll target/debug/sumibi_tip.dll
+cargo run -p sumibi-setup --locked -- ipc-test
 ```
 
 ターゲットは `x86_64-pc-windows-msvc`。検証済みのRust 1.99.1を `rust-toolchain.toml` に固定し、
@@ -160,7 +167,9 @@ Coreは置換を実行しない。将来のTSFアダプターは、所有スレ�
 context・範囲の識別子と要求IDの一意性はアダプターの責務。再接続でも要求IDを再利用しない。
 フォーカス変更、入力変更、切断、Esc、同意取消時は `cancel` を呼ぶ。
 
-これはDESIGNの段階1完了を意味しない。Rust導入待ちの間に、段階2の一部を先行している。
-Coreの待機入力行列・候補・通信上限、Protocol、TIPの通常入力との統合、Host EXEは未実装。
-次は固定結果のみを用いたTSFスパイクでキー経路・入力スコープ判定・下線、
-Enter／Esc、Undo、別入力欄への非適用を確認する。実API通信はまだ導入しない。
+専用ホストで実APIなしの登録・表示・キー配送・期限付き遅延・Undoを検証した。
+一般アプリでの打鍵・composition・標準Undo・保護入力判定の完了を意味しない。
+Coreの待機入力行列・候補・通信上限、TIPの通常入力との統合、Host EXEは未実装。
+ProtocolはOS非依存の有限フレーム層を追加した。型付きJSON・認証・実パイプ接続は未実装。
+形式と異常系は[IPCフレーム層](IPC_PROTOCOL.md)を参照。
+次の製品用実装は[後続作業](NEXT_STEPS.md)に分割する。実API通信はまだ導入しない。

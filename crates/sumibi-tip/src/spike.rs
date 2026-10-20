@@ -9,6 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::rc::{Rc, Weak};
 use std::thread::{self, ThreadId};
+use std::time::{Duration, Instant};
 use sumibi_core::Revision;
 use windows::core::BSTR;
 use windows::core::{
@@ -18,6 +19,7 @@ use windows::Win32::Foundation::{E_ABORT, E_INVALIDARG, E_UNEXPECTED, RPC_E_WRON
 use windows::Win32::UI::TextServices::*;
 
 pub const FUNCTION_TEST_CONTROL: GUID = GUID::from_u128(0xe40f959f_2d8e_44aa_988c_ef07085044a5);
+pub const FUNCTION_TEST_DELAYED: GUID = GUID::from_u128(0x76389aca_c984_45ee_9f73_14bc869bbf04);
 pub const FUNCTION_TEST_KEY_SINK: GUID = GUID::from_u128(0x6ae7d02b_668a_4eac_a87f_313042d4eac5);
 pub const FUNCTION_TEST_MANAGER_SINK: GUID =
     GUID::from_u128(0xf0bb20a5_1805_4d16_911b_f8d24c0b3b19);
@@ -48,6 +50,19 @@ impl ITfFunctionProvider_Impl for Provider_Impl {
             }
             if function.is_null() || iid.is_null() {
                 return Err(E_INVALIDARG.into());
+            }
+            if unsafe { *function } == FUNCTION_TEST_DELAYED
+                && unsafe { *iid } == ISpikeDelayed::IID
+            {
+                let state = self.state.upgrade().ok_or(E_ABORT)?;
+                let delayed: ISpikeDelayed = Delayed {
+                    state: Rc::downgrade(&state),
+                    _lease: ObjectLease::new(),
+                }
+                .into();
+                // SAFETY: transfer this exact interface's owned reference.
+                result = Some(unsafe { IUnknown::from_raw(delayed.into_raw()) });
+                return Ok(());
             }
             if unsafe { *function } == FUNCTION_TEST_MANAGER_SINK
                 && unsafe { *iid } == ITfThreadMgrEventSink::IID
@@ -143,6 +158,74 @@ pub unsafe trait ISpikeControl: IUnknown {
     pub fn VerifyPreview(&self) -> HRESULT;
 }
 
+/// A separate development-only ABI; do not extend the existing control vtable.
+#[interface("46f9336d-f31d-475e-a248-25ac7e8dec8d")]
+pub unsafe trait ISpikeDelayed: IUnknown {
+    pub fn BeginRequest(&self, request: u64, timeout_ms: u32) -> HRESULT;
+    pub fn CompleteRequest(&self, request: u64) -> HRESULT;
+}
+
+#[implement(ISpikeDelayed)]
+struct Delayed {
+    state: Weak<Controller>,
+    _lease: ObjectLease,
+}
+impl ISpikeDelayed_Impl for Delayed_Impl {
+    unsafe fn BeginRequest(&self, request: u64, timeout_ms: u32) -> HRESULT {
+        boundary(|| {
+            let state = self.state.upgrade().ok_or(E_ABORT)?;
+            state.check_thread()?;
+            if !(1..=2000).contains(&timeout_ms)
+                || request == 0
+                || request <= state.last_request.get()
+                || state.pending_request.get().is_some()
+            {
+                return Err(E_ABORT.into());
+            }
+            state.last_request.set(request);
+            state.begin_preview()?;
+            state.request_deadline.set(Some(
+                Instant::now() + Duration::from_millis(timeout_ms.into()),
+            ));
+            state.pending_request.set(Some(request));
+            Ok(())
+        })
+        .into()
+    }
+    unsafe fn CompleteRequest(&self, request: u64) -> HRESULT {
+        boundary(|| {
+            let state = self.state.upgrade().ok_or(E_ABORT)?;
+            state.check_thread()?;
+            if state.busy.replace(true) {
+                return Err(E_UNEXPECTED.into());
+            }
+            let _busy = Busy(&state.busy);
+            if state.pending_request.get() != Some(request) || state.invalidated.get() {
+                return Err(E_ABORT.into());
+            }
+            state.pending_request.set(None);
+            if state
+                .request_deadline
+                .take()
+                .is_none_or(|deadline| Instant::now() >= deadline)
+            {
+                let _ = state.cancel_preview();
+                return Err(E_ABORT.into());
+            }
+            // Never recapture after a delayed response. A cancelled preview is
+            // not permission to replace whichever selection is current now.
+            let mut pending = state.preview.borrow_mut().take().ok_or(E_ABORT)?;
+            let result = pending.commit("日本語");
+            if result.is_err() {
+                *state.preview.borrow_mut() = Some(pending);
+                let _ = state.cancel_preview();
+            }
+            result
+        })
+        .into()
+    }
+}
+
 pub(crate) struct Controller {
     pub(crate) owner: ThreadId,
     manager: ITfThreadMgr,
@@ -156,6 +239,9 @@ pub(crate) struct Controller {
     generation: Cell<u64>,
     invalidated: Cell<bool>,
     cleanup_queued: Cell<Option<u64>>,
+    last_request: Cell<u64>,
+    pending_request: Cell<Option<u64>>,
+    request_deadline: Cell<Option<Instant>>,
 }
 
 struct Busy<'a>(&'a Cell<bool>);
@@ -187,6 +273,9 @@ impl Controller {
             generation: Cell::new(0),
             invalidated: Cell::new(false),
             cleanup_queued: Cell::new(None),
+            last_request: Cell::new(0),
+            pending_request: Cell::new(None),
+            request_deadline: Cell::new(None),
         })
     }
     pub(crate) fn check_thread(&self) -> Result<()> {
@@ -265,6 +354,8 @@ impl Controller {
     }
     fn cancel_preview(&self) -> Result<()> {
         self.check_thread()?;
+        self.pending_request.set(None);
+        self.request_deadline.set(None);
         let pending = self.preview.borrow_mut().take();
         if let Some(mut pending) = pending {
             if let Err(error) = pending.cancel() {
@@ -301,6 +392,8 @@ impl Controller {
             return Err(E_UNEXPECTED.into());
         }
         let _busy = Busy(&self.busy);
+        self.pending_request.set(None);
+        self.request_deadline.set(None);
         let granted = self.granted.borrow().clone().ok_or(E_ABORT)?;
         if granted.cast::<IUnknown>()? != context.cast::<IUnknown>()? || !self.policy.get().allowed
         {
@@ -381,6 +474,8 @@ impl Controller {
 
     pub(crate) fn invalidate(self: &Rc<Self>, revoke: bool) -> Result<()> {
         self.check_thread()?;
+        self.pending_request.set(None);
+        self.request_deadline.set(None);
         self.invalidated.set(true);
         if revoke {
             let mut policy = self.policy.get();

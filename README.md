@@ -22,6 +22,10 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [Mac版からの移植範囲](docs/MAC_PARITY.md)
 - [開発環境と現在の実装範囲](docs/DEVELOPMENT.md)
 - [TSFスパイクの検証状況](docs/TSF_SPIKE.md)
+- [IPCフレーム層](docs/IPC_PROTOCOL.md)
+- [IPC境界の調査と最小検証](docs/adr/0002-ipc-boundary-and-desktop-probe.md)
+- [Issue #1の受入記録](docs/ISSUE_1_ACCEPTANCE.md)
+- [後続の実装順序](docs/NEXT_STEPS.md)
 
 設計基準はSumibi-mac main `553c69021eda7a8a5944d8748357f3790cc2f45c`。
 Mac版とコードを自動同期せず、このリポジトリで独立して実装・保守する案です。
