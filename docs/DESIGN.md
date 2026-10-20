@@ -1,6 +1,7 @@
 # Windows版 初期設計
 
 2026-10-20 / 状態: 提案・未実装 / [Issue #1](https://github.com/kiyoka/Sumibi-win/issues/1)
+言語はRustを採用（メモリ安全性・長期保守を優先）。Windows 11 x64＋Visual Studioが利用可能。
 言語の比較は[ADR 0001](adr/0001-language-and-ime.md)、参照範囲は[移植表](MAC_PARITY.md)。
 
 ## 構成と責務
@@ -19,6 +20,8 @@
     設定ウィンドウ・トレイ・固定エラー・保留文字の明示コピー
 ```
 
+Cargo workspaceを用い、sumibi-core / sumibi-protocol / sumibi-tip / sumibi-hostへ分割する。
+CoreとProtocolはunsafeを禁止し、TSF/COM・OS APIをアダプターへ隔離する。
 CoreはOSオブジェクトを保持せず、意味上のText/Enter/Backspace/Convert/Cancelと効果で接続する。
 Macのプロセス共有Runtimeをコピーせず、TSF thread/contextごとに状態を持つ案。
 別入力欄・文書の状態を混ぜず、ホスト全体の終了でCore状態と候補を破棄する。
@@ -103,8 +106,8 @@ API認証情報を別ホストへ転送しない。プロンプトはMac固定�
 ## Unicode・安全な入力先
 
 送信文字数は拡張書記素クラスタで原文＋現在結果＋辞書を合算1,000文字の案。
-TSFの範囲・取得文字列とは別の尺度とする。C++標準文字列のsize()を文字数上限に使わない。
-分割ライブラリとUnicode版は後続ADRで固定する（候補ICU）。不正UTF-16は送信・置換を拒否。
+TSFの範囲・取得文字列とは別の尺度とする。RustのString::len()やUTF-16単位数を文字数上限に使わない。
+分割ライブラリとUnicode版は後続ADRで固定する（Rustで利用できる実装を後続選定）。不正UTF-16は送信・置換を拒否。
 対象照合はUTF-16コード単位の完全一致を初期案とし、大小文字や空白を変えず、正規化もしない。
 Swift比較の正準等価性と一致しない場合は安全に見送る差として記録する。
 
@@ -124,7 +127,8 @@ TSFの入力スコープ、状態通知と実アプリ検証で判断する。�
 | 5: 公開準備 | x86等の互換表、署名、登録／更新／解除、LICENSE、実機導入と回帰結果 |
 
 テストは偽キー・専用設定・模擬HTTP。CoreテストはMacでも実行可能な構成を目指すが、
-Windows SDK依存部はWindows CIと実機で検証する。Windows実機環境の所在・使い方は未確認。
+Windows SDK依存部はWindows CIと実機で検証する。Windows 11 x64とVisual Studioは利用者から利用可能と確認済み。
+必要なC++ワークロード／SDK、Rustツールチェーン、実機への操作方法は未確認。
 インストーラーの管理者権限、登録範囲、Broker起動方式、署名手段、更新時DLL解放はスパイクで決める。
 IMEの既定設定を利用者の代わりに強制変更しない。
 

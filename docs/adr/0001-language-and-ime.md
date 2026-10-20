@@ -1,60 +1,82 @@
-# ADR 0001: C++20とTSFを用いる初期構成
+# ADR 0001: RustとTSFを採用する
 
-日付: 2026-10-20 / 状態: 初期採用案（Windows実機スパイクで再評価） / 関連: [#1](https://github.com/kiyoka/Sumibi-win/issues/1)
+日付: 2026-10-20 / 状態: 採用（Windows実機での成立確認は未実施）
+関連: [Issue #1](https://github.com/kiyoka/Sumibi-win/issues/1)
 
-## 判断
+## 決定と利用者の条件
 
-C++20、Windows SDK、TSF（Text Services Framework）のネイティブCOM DLLを第一候補とする。
-入力状態機械とユーザー権限の通信・設定EXEも当初はC++20に揃える。
-CMake＋MSVCでビルドし、Windows CIで検証する案。SDKとコンパイラーの具体的バージョンは
-最初に実ビルドが成立した組合せを固定する。依存ライブラリは必要性・ライセンスを確認して追加する。
-この文書の段階では製品コード、依存導入、CI設定、Windowsでのビルド検証はない。
+メモリ安全性・長期保守を優先するという利用者の回答に基づき、Rustを採用する。
+確認できる実機はWindows 11 x64、Visual Studioあり。初期案のC++20優先をこの判断で置き換える。
+TSF DLL、OS非依存Core、通信・設定EXEをRustで実装する。
+Windows接続はMicrosoftの`windows`クレート（windows-rs）、ビルドはCargo、
+初期ターゲットは`x86_64-pc-windows-msvc`とする。Visual StudioのC++ビルドツールとWindows SDKを利用する。
+Visual Studioのインストールだけで必要ワークロードが揃っているとはみなさず、実機で確認する。
 
-## 比較
+Rustのstableツールチェーンと依存版は初回ビルド時に固定し、rust-toolchain.tomlとCargo.lockを管理する。
+Windows SDK版もその時点で記録する。未検証の版番号をこの文書で確定しない。
+CMakeは使わず、Rustのcdylibと通常のEXEを成果物にする。C++の併用は初期構成に含めない。
+製品コードとWindows上のビルド実績はまだない。採用判断と動作確認の成功を区別する。
 
-| 候補 | 本プロジェクトでの利点 | 負担と判断 |
+## 比較と選定理由
+
+| 候補 | 本プロジェクトでの評価 | 結論 |
 | --- | --- | --- |
-| C++20 | Windows SDKのCOM/TSFに直接対応でき、Microsoft SampleIMEの構成を参照しやすい。DLLとEXEを同じ道具で構築できる | メモリ・COM寿命管理の責任が大きい。RAII、スマートポインター、静的解析、境界テストを必須にして採用案とする |
-| Rust | 状態機械や通信のメモリ安全性、列挙型による状態表現に魅力がある | COM境界、TSFサンプルとの対応、FFIとWindows登録を含めて習得・検証する範囲が増える。実装不能という判断ではないが、初期試作では見送る |
-| C#/.NET | 設定UIと非同期通信を記述しやすい | ホスト内TSF DLLまで同一構成にするにはCOM公開・ランタイム配置を別途検証する必要がある。C++ DLL＋C# EXEも可能な候補だが、当初は言語・配布構成を増やさない |
-| Swift | Macの状態機械を読み替えやすい | InputMethodKit/AppKitはWindowsへ移植できず、TSF境界は別実装となる。Swift採用だけで移植量が減るとは判断しない |
+| Rust | 安全なCoreで所有権と状態遷移を表現でき、TSFもwindows-rs経由で実装可能。COM・FFI境界のunsafe監査は必要 | 利用者が重視する安全性・長期保守に合わせて採用 |
+| C++20 | Windows SDKと公式SampleIMEへ直接対応し、接続試作を進めやすい。一方、Coreと通信にもメモリ・寿命管理の規約が必要 | 初期案から変更。Rustに比べた本件の保守負担を理由に見送る |
+| C#/.NET | 設定UIや通信に適する。COM公開の仕組みもあるが、ホスト内DLLに用いるとランタイム・配置を別途検証する必要がある | DLLには採用しない。別EXEのUI候補としては将来再評価できる |
+| C++ DLL＋Rust Core/EXE | TSF公式サンプルを追いやすく、主要処理をRustにできる | 言語間ABIと二系統のビルドを初期から持つ負担があるため見送る |
+| Swift | Macの設計を参照しやすいが、InputMethodKit/AppKitはWindowsへ移せずTSFは別実装になる | 採用しない |
 
-選定理由はWindowsとの接続を最短で確かめること。処理速度の実測比較は行っていない。
-C++のリスクが実装上大きくなれば、CoreまたはEXEだけRustへ分けるADRを追加する。
-UIが複雑化した場合のC#採用も再評価対象で、現段階の決定で将来の選択を閉じない。
+これは本プロジェクトの優先順位による判断で、性能測定や全候補のTSF実機比較による順位ではない。
+Rustでも入力範囲・世代・同意の論理的な検査は必要で、メモリ安全性だけで誤置換は防げない。
+RustからCOMを実装するためにC++ラッパーが必須という前提は置かない。
 
-## TSFとプロセス
+## API上の根拠と推論
 
-MicrosoftはカスタムIMEの実装にTSFを案内している。ホストにロードされるDLLはホストの制約を受ける。
-このため入力・範囲編集だけをDLLに残し、通信・秘密キー・設定管理をユーザーセッションのEXEに置く案とする。
-ただし、別プロセス化すればAppContainerから利用可能になるとは限らない。
-IPCが許される範囲を実機で検証し、制約を迂回する実装は行わない。
+- Microsoftの[windows-rs](https://github.com/microsoft/windows-rs)はWindows APIとCOMのRustバインディングを提供する。
+- [windows-implement](https://github.com/microsoft/windows-rs/blob/master/docs/crates/windows-implement.md)はCOMインターフェースを実装する属性を提供する。
+- [ITfTextInputProcessorEx](https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/UI/TextServices/struct.ITfTextInputProcessorEx.html)のTSFバインディングを確認した。
+- [.NETのCOM公開](https://learn.microsoft.com/en-us/dotnet/core/native-interop/expose-components-to-com)も可能だが、標準COM hostingには配布上の条件がある。C#で不可能とは判断しない。
+- [MicrosoftのIME要件](https://learn.microsoft.com/en-us/windows/apps/develop/input/input-method-editor-requirements)に従いTSFを使う。
 
-- DLL: TSFイベント、composition、範囲照合、候補UI、状態機械。APIキーを持たず、通信を待ってUIを停止しない。
-- EXE: 通信・資格情報保存・設定UI・トレイ表示・回数制限。TSFの範囲やCOMオブジェクトを受け取らない。
-- EXEが停止・不通でも、DLLは原文と入力操作を保全し、変換だけを固定エラーにする。
-- キーボードフックやクリップボード貼付けを入力方式の基盤にしない。
+以上からRustでネイティブTSF DLLを試作する根拠はある。ただしDllGetClassObject、DllCanUnloadNow、
+クラスファクトリー、TSF登録・解除、各sink、スレッドと参照の寿命まで自前で成立させる必要がある。
+APIが存在することは、このIMEの実装が完成・検証済みという意味ではない。資料確認日: 2026-10-20。
 
-## 対応範囲の提案
+## クレート構成と安全性
 
-最初の試作はWindows 11 x64、通常権限のデスクトップアプリ、物理キーボード。
-製品の最低OSビルドは未確定。Windows 10、ARM64、AppContainer、昇格アプリ、タッチ、RDPは
-別検証とし、この段階で対応を約束しない。x64 OS上のx86アプリには対応するDLLの検証が必要で、
-x64 DLLだけで検証済みにはしない。x86ホスト対応は公開判断までの検証項目に置く。
+| クレート案 | 責務 | Windows依存 |
+| --- | --- | --- |
+| sumibi-core | 純粋な入力状態機械・要求世代・候補管理 | なし。`#![forbid(unsafe_code)]` |
+| sumibi-protocol | IPCメッセージ、形式版、長さ・値の検証 | なし。`#![forbid(unsafe_code)]` |
+| sumibi-tip | cdylib、TSF/COM、範囲照合、候補、IPC接続 | あり。unsafeを境界モジュールへ限定 |
+| sumibi-host | EXE、通信、辞書、設定、同意・キー、トレイ | OS API部分のみ境界へ隔離 |
 
-## 採用案を確かめる条件
+unsafeブロックにはポインターの妥当性、所有権、スレッド、呼出し期間の根拠を記す。
+COM・Win32の生参照をCoreや通信タスクへ渡さない。TSF操作は所有スレッドへ戻す。
+RustのpanicをCOMの外へ伝播させず、ABI入口で固定エラーへ変換する。
+回復不能な状態で編集を継続せず、参照とホスト原文の保護を優先する。
+DllMainでは通信・待機・UI初期化を行わない。循環参照とDLLアンロード条件を検査する。
 
-1. クリーンなWindows環境でビルド・登録・解除できる。
-2. 下線入力、Enterの一度だけの到達、Esc、選択変換、原文保持が成立する。
-3. 模擬遅延応答が別入力欄へ適用されず、ホストの1回のUndoで変換前へ戻る。
-4. EXE切断、32/64ビット、IPCのアクセス拒否とサイズ違反を確認する。
-5. AppContainer等の失敗は対応不可・保留として明示し、広い権限で回避しない。
+DLLとEXEはIPCで接続し、Rustの内部型をABIやプロセス境界で直接共有しない。
+EXEはAPIキーと通信を担当し、DLLにはAPIキーを配らない。
+別プロセス化だけでAppContainer互換が得られるとは扱わず、通常デスクトップから検証する。
 
-## 公式資料（2026-10-20参照）
+## UI・通信・依存の選定範囲
 
-- [IME requirements](https://learn.microsoft.com/en-us/windows/apps/develop/input/input-method-editor-requirements)
-- [Microsoft SampleIME](https://github.com/microsoft/Windows-classic-samples/tree/main/Samples/IME/cpp/SampleIME)
-- [TSF](https://learn.microsoft.com/en-us/windows/win32/tsf/text-services-framework)
+初回試作はWin32の最小UIと固定の模擬変換だけ。WinUI、WebView、C#のUIランタイムを追加しない。
+設定UIの本実装フレームワーク、非同期ランタイム、HTTP／JSON／Unicode用クレートは別の選定項目。
+WinHTTPはWindows通信アダプターの候補として維持するが、Rustでの使い勝手と取消を確認して決定する。
+依存を増やす際は更新状況・ライセンス・MSRV・unsafe境界・配布サイズを記録する。
 
-Microsoft資料はAPI上の根拠、言語比較・分割構成は本プロジェクトの設計判断である。
-SampleIMEのコードを取り込む場合は、その時点のライセンスと必要な表示を確認する。
+## 検証と判断の見直し条件
+
+1. Windows 11 x64でCargoビルド、COM/TSF登録・解除、DLLのロード／アンロードが成立する。
+2. 下線、Enterの一度だけの到達、Esc、選択変換、原文保持、1回のUndoを確認する。
+3. 模擬遅延・別入力欄・ホスト終了・EXE切断で古い結果が適用されない。
+4. x86ホストは別DLLが必要な検証範囲。ARM64、AppContainer、昇格、RDPは未確認として管理する。
+5. unsafe監査と所有スレッドへの復帰をレビューでき、CoreをOSなしでテストできる。
+
+COMバインディングの不足が見つかった場合は、まず局所的な宣言追加を評価する。
+C++ shimが不可避なら、該当API・再現例・ABI契約を示した別ADRで変更する。
+不具合の原因を特定せず言語全体を変更しない。Macの0.3秒判定やclient pokeは移植しない。
