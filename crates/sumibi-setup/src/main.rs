@@ -1,0 +1,24 @@
+#[cfg(windows)]
+mod edit_host;
+#[cfg(windows)]
+mod live_render;
+#[cfg(windows)]
+mod probe;
+#[cfg(windows)]
+mod render;
+#[cfg(windows)]
+mod window_host;
+
+#[cfg(windows)]
+fn main() {
+    if let Err(error) = probe::run() {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("sumibi-setup requires Windows x64");
+    std::process::exit(1);
+}
