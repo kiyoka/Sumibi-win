@@ -31,10 +31,13 @@ try {
     Invoke-Cargo -Arguments @('test', '--workspace', '--locked', '--offline')
     Invoke-Cargo -Arguments @('clippy', '--workspace', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings')
     Invoke-Cargo -Arguments @('clippy', '-p', 'sumibi-tip', '--no-default-features', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings')
+    Invoke-Cargo -Arguments @('clippy', '-p', 'sumibi-host', '--all-features', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings')
     Invoke-Cargo -Arguments @('build', '--workspace', '--locked', '--offline')
     Invoke-Cargo -Arguments @('run', '-p', 'sumibi-tip', '--features', 'spike', '--example', 'load_smoke', '--locked', '--offline', '--', 'target/debug/sumibi_tip.dll')
     foreach ($name in @('self-test', 'edit-test', 'key-test')) { Invoke-Spike -Name $name }
     if (!$SkipDesktop) {
+        Invoke-Cargo -Arguments @('build', '-p', 'sumibi-host', '--features', 'spike', '--locked', '--offline')
+        Invoke-Spike -Name 'broker-test'
         foreach ($name in @('window-test', 'input-test', 'close-test', 'delayed-test')) { Invoke-Spike -Name $name }
         & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') ipc-test
         if ($LASTEXITCODE -ne 0) { throw 'Desktop pipe check failed; use a normal user session.' }
@@ -42,7 +45,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Two-process pipe check failed; use a normal user session.' }
     }
     Write-Output 'All selected spike checks passed.'
-    if ($SkipDesktop) { Write-Output 'Desktop window/input/close/delayed/pipe/peer checks were explicitly skipped.' }
+    if ($SkipDesktop) { Write-Output 'Desktop window/input/close/delayed/broker/pipe/peer checks were explicitly skipped.' }
 }
 finally {
     $env:CARGO_INCREMENTAL = $previousIncremental

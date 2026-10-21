@@ -23,8 +23,8 @@ Mac技術解説自身の実装照合基準 `d2b96fc` と区別する。Macの機
 | TIPのCOM・キー・表示属性・編集 | 専用ホストで実装済み。通常アプリへの常設登録なし |
 | 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。実キーボードの手動確認は未実施 |
 | 追跡入力・composition・候補UI | 製品用の統合は未実装 |
-| Protocol / IPC | 有限フレーム・版付きJSON・client状態とCore模擬接続。起動ハンドルで固定した別プロセスの相互検査・overlapped pipeを追加。製品Broker/TSF接続は未実装 |
-| Host・HTTP・キー保存・設定UI | 未実装。本書で境界と受入条件を定義 |
+| Protocol / IPC | 有限フレーム・版付きJSON・client状態、固定process相互検査・overlapped pipe。単発BrokerからCore→所有TSFへの配送を専用ACP storeで検証。製品キー・一般アプリは未接続 |
+| Host・HTTP・キー保存・設定UI | 単発の診断Host EXEを実装。既定では変換拒否。常駐Host・HTTP・キー保存・設定UIは未実装 |
 | Decisions・辞書・署名付き配布 | 未実装。後続段階 |
 
 ## 2. 目的と不変条件
@@ -79,8 +79,10 @@ flowchart TB
     window -->|"未消費の文字・ホスト編集"| store
 ```
 
-Coreの `ManualConversion` は別に単体試験している適用判定器で、上図の固定変換経路には統合されていない。
-現在のDLLの安全検査は `edit` と `Preview` 自身が担う。Coreを通るネットワーク経路が完成した図ではない。
+Coreの `ManualConversion` は上図の従来demoの固定変換経路には統合されていない。
+別のbroker-testでは、setup所有STAにリンクしたManualEditがCoreを通し、別Hostからの固定結果を適用する。
+この単発経路と寿命図は[ADR 0004](adr/0004-one-shot-broker-and-owner-edit.md)に分ける。
+実DLLのキーからBrokerを起動した経路や、Coreを通るネットワーク経路が完成した図ではない。
 
 | モジュール | 現在の責務・コード |
 | --- | --- |
@@ -134,9 +136,9 @@ flowchart TB
 | --- | --- |
 | sumibi-core | OS非依存のイベントと効果、手動／自動の状態、候補、上限判定。将来もunsafe禁止 |
 | sumibi-protocol | 4バイト長＋最大256KiBのUTF-8フレーム、版付きの単一結果JSON、要求・接続世代・取消・期限・再接続。COM・HTTP・OS認証は含めない |
-| sumibi-ipc | Windowsの固定process handle・token照合、合計8 endpoint、overlapped pipe・停止・期限。setupの親子診断から使用。製品TIPとは未接続 |
+| sumibi-ipc | Windowsの固定process handle・token照合、合計8 endpoint、overlapped pipe・停止・期限。単発起動と容量4のworkerを追加。製品TIPのキーとは未接続 |
 | sumibi-tip | TSFキー、composition、範囲取得、保護判定、書込、候補表示、IPCの所有スレッドへの復帰 |
-| sumibi-host（未作成） | 接続認証、設定・同意・辞書の一貫した版、資格情報、HTTP、全体の自動要求制限 |
+| sumibi-host | 現在は明示起動の単発server、既定で変換拒否。製品では設定・同意・辞書の一貫した版、資格情報、HTTP、全体の自動要求制限を担当予定 |
 | sumibi-setup | 現在は開発検証のみ。製品の登録・更新ツールと共用するかは配布ADRで決める |
 
 入力先ごとのCOM参照をBrokerへ送らない。設定画面へ入力先本文を自動表示しない。
@@ -323,7 +325,9 @@ TSF UIElementのBegin/Update/Endと候補リストの契約を実装し、ホス
 実装済みの外側フレームは[IPC_PROTOCOL](IPC_PROTOCOL.md)、SID限定pipeの同一プロセス検証と
 AppContainerの初期非対応判断は[ADR 0002](adr/0002-ipc-boundary-and-desktop-probe.md)を参照。
 型付きメッセージとclient状態はIssue #4の最初の段階で追加した。固定した起動process間のOS相互検査と
-overlapped pipeも追加した（[ADR 0003](adr/0003-pinned-desktop-peers.md)）。製品Broker起動・TSF配送は未接続。
+overlapped pipeも追加した（[ADR 0003](adr/0003-pinned-desktop-peers.md)）。
+単発Hostと所有TSFへの配送は専用ACP storeで検証した（[ADR 0004](adr/0004-one-shot-broker-and-owner-edit.md)）。
+製品の常駐Broker・発見・実DLLキー接続・一般入力は未完了。
 現在の正確な版1の形式・上限は
 [IPC_PROTOCOL](IPC_PROTOCOL.md)を参照。以下の相互認証と製品接続は設計案で、pipe probeだけでは検証済みとしない。
 下表は候補等も含む製品案であり、実装した版1は単一の変換要求／結果に限定する。

@@ -15,7 +15,9 @@
 `input-test` で文字入力・カーソル移動・範囲選択・削除・Enter・Undo/Redoを自動検証し、`demo` では同じ入力経路を手動で試せます。
 デモはF6で下線プレビュー、F7で固定結果へ変換、Escで取消します。LLM通信はまだ行いません。
 Issue #4では版付きJSONとclient接続状態を追加し、取消・切断・再接続・期限切れをCoreと模擬通信で検証しています。
-`ipc-peer-test`では起動した別プロセスとの相互照合・非同期pipe・取消を検証できます。製品BrokerとTSFへの接続はまだありません。
+`ipc-peer-test`では起動した別プロセスとの相互照合・非同期pipe・取消を検証できます。
+`broker-test`では別Host EXE→版付きIPC→Core→実TSF編集を専用入力欄で検証します。通常ビルドは変換を許可せず、固定結果は開発用feature限定です。
+常駐Broker、実DLLのキーからのBroker起動、一般アプリの入力基盤はまだありません。
 Notepad等の実アプリでの表示と実打鍵は未確認です。
 
 - [実装着手 Issue #1](https://github.com/kiyoka/Sumibi-win/issues/1)
@@ -31,6 +33,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [IPCフレーム層](docs/IPC_PROTOCOL.md)
 - [IPC境界の調査と最小検証](docs/adr/0002-ipc-boundary-and-desktop-probe.md)
 - [別プロセスの固定ハンドル認証と非同期IPC](docs/adr/0003-pinned-desktop-peers.md)
+- [単発Brokerと所有TSFスレッドへの結果配送](docs/adr/0004-one-shot-broker-and-owner-edit.md)
 - [Issue #1の受入記録](docs/ISSUE_1_ACCEPTANCE.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 

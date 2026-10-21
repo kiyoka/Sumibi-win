@@ -1,0 +1,287 @@
+//! Owner-thread Core gate, immediately followed by one guarded TSF write.
+//! The caller must classify input scopes before supplying an allowed policy.
+//! This adapter is currently restricted to caller-owned ACP contexts. It uses
+//! ITfRangeACP coordinates and is not an arbitrary application integration.
+//! No communication, COM pointer, edit cookie or target coordinate leaves here.
+use super::*;
+use std::rc::Weak;
+use std::time::{Duration, Instant};
+use sumibi_core::{ManualConversion, RequestId, Target};
+use windows::core::{ComObject, Ref};
+
+struct Observation {
+    owner: ThreadId,
+    invalid: Cell<bool>,
+}
+#[implement(ITfTextEditSink, ITfThreadMgrEventSink)]
+struct Observer {
+    state: Weak<Observation>,
+    owner: ThreadId,
+    _lease: ObjectLease,
+}
+impl Observer_Impl {
+    fn invalidate(&self) -> Result<()> {
+        boundary(|| {
+            // Check before touching the apartment-local weak Rc.
+            if self.owner != thread::current().id() {
+                return Err(RPC_E_WRONG_THREAD.into());
+            }
+            if let Some(state) = self.state.upgrade() {
+                state.invalid.set(true);
+            }
+            Ok(())
+        })
+    }
+}
+impl ITfTextEditSink_Impl for Observer_Impl {
+    fn OnEndEdit(&self, _: Ref<ITfContext>, _: u32, _: Ref<ITfEditRecord>) -> Result<()> {
+        // Conservative: any write-session notification retires the captured
+        // request, including a change that later restores the original text.
+        self.invalidate()
+    }
+}
+impl ITfThreadMgrEventSink_Impl for Observer_Impl {
+    fn OnInitDocumentMgr(&self, _: Ref<ITfDocumentMgr>) -> Result<()> {
+        self.invalidate()
+    }
+    fn OnUninitDocumentMgr(&self, _: Ref<ITfDocumentMgr>) -> Result<()> {
+        self.invalidate()
+    }
+    fn OnSetFocus(&self, _: Ref<ITfDocumentMgr>, _: Ref<ITfDocumentMgr>) -> Result<()> {
+        self.invalidate()
+    }
+    fn OnPushContext(&self, _: Ref<ITfContext>) -> Result<()> {
+        self.invalidate()
+    }
+    fn OnPopContext(&self, _: Ref<ITfContext>) -> Result<()> {
+        self.invalidate()
+    }
+}
+struct Subscription {
+    source: ITfSource,
+    cookie: u32,
+}
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        // SAFETY: retained source/cookie on the owner thread. A failed unadvise
+        // leaves only a weak sink alive, with its own DLL lifetime lease.
+        let _ = boundary(|| unsafe { self.source.UnadviseSink(self.cookie) });
+    }
+}
+struct Guard {
+    state: Rc<Observation>,
+    _subscriptions: Vec<Subscription>,
+}
+impl Guard {
+    fn new(manager: &ITfThreadMgr, context: &ITfContext) -> Result<Self> {
+        let state = Rc::new(Observation {
+            owner: thread::current().id(),
+            invalid: Cell::new(false),
+        });
+        let sink = ComObject::new(Observer {
+            state: Rc::downgrade(&state),
+            owner: thread::current().id(),
+            _lease: ObjectLease::new(),
+        });
+        let mut subscriptions = Vec::new();
+        // SAFETY: subscriptions begin before snapshot capture; no state borrow
+        // is held across COM. Failed setup unwinds subscriptions on this thread.
+        unsafe {
+            let source: ITfSource = context.cast()?;
+            let cookie = source.AdviseSink(
+                &ITfTextEditSink::IID,
+                &sink.to_interface::<ITfTextEditSink>(),
+            )?;
+            subscriptions.push(Subscription { source, cookie });
+            let source: ITfSource = manager.cast()?;
+            let cookie = source.AdviseSink(
+                &ITfThreadMgrEventSink::IID,
+                &sink.to_interface::<ITfThreadMgrEventSink>(),
+            )?;
+            subscriptions.push(Subscription { source, cookie });
+        }
+        Ok(Self {
+            state,
+            _subscriptions: subscriptions,
+        })
+    }
+    fn check(&self) -> Result<()> {
+        if self.state.owner != thread::current().id() {
+            return Err(RPC_E_WRONG_THREAD.into());
+        }
+        if self.state.invalid.get() {
+            return Err(E_ABORT.into());
+        }
+        Ok(())
+    }
+}
+
+/// Single-use request, confined by Rc/COM to the capturing thread. Dropping it
+/// retires the Core request; responses cannot recapture a different selection.
+pub struct ManualEdit {
+    snapshot: SelectionSnapshot,
+    core: ManualConversion,
+    request: RequestId,
+    identity: u128,
+    guard: Guard,
+    deadline: Instant,
+}
+impl ManualEdit {
+    /// Call only for an ACP context whose text store the caller owns.
+    /// `identity` is a fresh opaque snapshot registration, never a COM address.
+    /// It must not be reused for another context/range or later request.
+    pub fn capture(
+        manager: &ITfThreadMgr,
+        context: &ITfContext,
+        client: u32,
+        policy: Rc<Cell<EditPolicy>>,
+        request: RequestId,
+        identity: u128,
+        deadline: Instant,
+    ) -> Result<Self> {
+        if request.0 == 0 || identity == 0 {
+            return Err(E_INVALIDARG.into());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() || remaining > Duration::from_secs(60) {
+            return Err(E_INVALIDARG.into());
+        }
+        if !policy.get().allowed {
+            return Err(E_ACCESSDENIED.into());
+        }
+        let guard = Guard::new(manager, context)?;
+        let snapshot = capture_selection(manager, context, client, policy)?;
+        let output = Rc::new(RefCell::new(None));
+        let result = output.clone();
+        let manager = manager.clone();
+        run(
+            context,
+            client,
+            false,
+            Box::new(move |cookie| {
+                guard.check()?;
+                let range = validate_snapshot(&manager, &snapshot, cookie)?;
+                let target = fresh_target(&snapshot, &range, cookie, identity)?;
+                validate_snapshot(&manager, &snapshot, cookie)?;
+                guard.check()?;
+                if Instant::now() >= deadline {
+                    return Err(E_ABORT.into());
+                }
+                let mut core = ManualConversion::default();
+                core.begin(request, target)
+                    .map_err(|_| windows::core::Error::from(E_ABORT))?;
+                *result.borrow_mut() = Some(Self {
+                    snapshot,
+                    core,
+                    request,
+                    identity,
+                    guard,
+                    deadline,
+                });
+                Ok(())
+            }),
+        )?;
+        let ticket = output.borrow_mut().take().ok_or(E_FAIL)?;
+        Ok(ticket)
+    }
+    pub fn source(&self) -> Result<String> {
+        self.guard.check()?;
+        if self.snapshot.policy.get() != self.snapshot.captured_policy
+            || Instant::now() >= self.deadline
+        {
+            return Err(E_ABORT.into());
+        }
+        String::from_utf16(&self.snapshot.original).map_err(|_| E_ABORT.into())
+    }
+    pub fn revision(&self) -> Revision {
+        self.snapshot.captured_policy.revision
+    }
+    pub fn deadline(&self) -> Instant {
+        self.deadline
+    }
+    pub fn request(&self) -> RequestId {
+        self.request
+    }
+    /// A reply is applied only in this fresh, synchronous write session. The
+    /// Core decision and SetText occur together, never in a later queued edit.
+    pub fn finish(
+        mut self,
+        manager: &ITfThreadMgr,
+        client: u32,
+        request: RequestId,
+        revision: Revision,
+        replacement: String,
+    ) -> Result<()> {
+        self.guard.check()?;
+        if request != self.request || revision != self.revision() || Instant::now() >= self.deadline
+        {
+            return Err(E_ABORT.into());
+        }
+        if replacement.is_empty()
+            || replacement
+                .encode_utf16()
+                .take(MAX_SELECTION_UNITS + 1)
+                .count()
+                > MAX_SELECTION_UNITS
+        {
+            return Err(E_INVALIDARG.into());
+        }
+        let context = self.snapshot.context.clone();
+        let manager = manager.clone();
+        run(
+            &context,
+            client,
+            true,
+            Box::new(move |cookie| {
+                self.guard.check()?;
+                let range = validate_snapshot(&manager, &self.snapshot, cookie)?;
+                let current = fresh_target(&self.snapshot, &range, cookie, self.identity)?;
+                // Fresh reads may call external COM. Check the retained observation
+                // and target again before the pure Core decision and immediate write.
+                let range = validate_snapshot(&manager, &self.snapshot, cookie)?;
+                self.guard.check()?;
+                if Instant::now() >= self.deadline {
+                    return Err(E_ABORT.into());
+                }
+                let text = self
+                    .core
+                    .finish(request, &current, &replacement)
+                    .map_err(|_| windows::core::Error::from(E_ABORT))?;
+                // SAFETY: unchanged original range, fresh write cookie, consumed Core
+                // request. Own OnEndEdit may invalidate only after this single write.
+                unsafe {
+                    range.SetText(cookie, 0, &text)?;
+                }
+                Ok(())
+            }),
+        )
+    }
+}
+
+fn fresh_target(
+    snapshot: &SelectionSnapshot,
+    range: &ITfRange,
+    cookie: u32,
+    identity: u128,
+) -> Result<Target> {
+    let range_acp: ITfRangeACP = range.cast()?;
+    let mut start = 0i32;
+    let mut length = 0i32;
+    // SAFETY: ACP extent is queried only in the currently owning edit session.
+    unsafe {
+        range_acp.GetExtent(&mut start, &mut length)?;
+    }
+    let end = start.checked_add(length).ok_or(E_ABORT)?;
+    if start < 0 || length < 0 {
+        return Err(E_ABORT.into());
+    }
+    let policy = snapshot.policy.get();
+    Ok(Target {
+        context: identity,
+        range: identity,
+        selection: (start, end),
+        text: read_all(range, cookie)?,
+        revision: policy.revision,
+        allowed: policy.allowed,
+    })
+}

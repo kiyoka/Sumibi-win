@@ -19,6 +19,9 @@ pub(super) use input_host::{exercise_close, exercise_input, run_demo};
 #[path = "delayed_host.rs"]
 mod delayed_host;
 pub(super) use delayed_host::exercise_delayed;
+#[path = "broker_host.rs"]
+mod broker_host;
+pub(super) use broker_host::exercise_broker;
 
 type EditHistory = RefCell<Vec<(Vec<u16>, TS_SELECTION_ACP)>>;
 

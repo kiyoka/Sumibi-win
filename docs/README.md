@@ -14,6 +14,7 @@
 - [初期設計](DESIGN.md)：Issue #1時点の構成・数値・未決事項。現行全体説明は全体設計を参照。
 - [ADR 0001](adr/0001-language-and-ime.md)：RustとTSFを採用した判断。
 - [IPCのワイヤーと状態](IPC_PROTOCOL.md)、[ADR 0002](adr/0002-ipc-boundary-and-desktop-probe.md)、[ADR 0003](adr/0003-pinned-desktop-peers.md)：フレームから起動processの認証・非同期I/Oまで。
+- [ADR 0004](adr/0004-one-shot-broker-and-owner-edit.md)：単発Host EXE、有限worker、Coreから所有TSFでの適用と失効。
 - [Mac版移植範囲](MAC_PARITY.md)：共通契約とOS固有の再設計。
 
 ## 更新の規則

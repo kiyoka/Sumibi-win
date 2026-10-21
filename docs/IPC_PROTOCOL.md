@@ -4,7 +4,8 @@
 Issue #1でOS非依存のフレーム化を実装し、Issue #4の最初の段階で版付きJSONと
 client側の要求状態管理を追加した。`sumibi-ipc`では、起動ハンドルで固定した別プロセス間の
 相互照合とoverlapped pipeを追加した（[ADR 0003](adr/0003-pinned-desktop-peers.md)）。
-製品Brokerの起動・発見、TSF所有スレッドへの製品配送はまだ実装していない。
+単発HostからCore→所有TSFへは専用ACP storeで接続した（[ADR 0004](adr/0004-one-shot-broker-and-owner-edit.md)）。
+製品Brokerの発見・常駐dispatch、実DLLキーからの起動・一般入力への製品配送はまだ実装していない。
 フレーム・JSON・Readyの成功だけで、本文の収集や変換を認可しない。
 
 ## ワイヤー形式
@@ -141,8 +142,10 @@ Protocolは22テスト（既存frame 6、session 8、JSON 4、Core模擬接続4�
 これは製品Core→実pipe→実TSF編集の縦断試験ではなく、既存DLLやdemoにもまだ接続していない。
 次段階のsumibi-ipcは、BCrypt乱数と起動ハンドルの明示継承、SID/PID/作成時刻の相互検査、
 プロセス合計8 endpoint、overlapped I/Oと停止伝播を実装し、2プロセスの合成Core接続で検証した。
-製品Brokerの起動・認証済み接続の取得、TSF所有スレッドへの配送、通常入力・composition・
-スコープ判定はIssue #4で引き続き実装する。Protocol自体がOS認証する責務には変更しない。
+次段階では単発Hostの起動、認証済み接続の取得、容量4のworkerと各1結果、所有TSFへの配送を
+専用ACP storeで接続し19ケースを確認した。既定Hostは変換を許可せず、固定結果はspike限定。
+製品の常駐Broker、実DLLキー・通常入力・composition・スコープ判定はIssue #4で引き続き実装する。
+Protocol自体がOS認証する責務には変更しない。
 
 型付き変換は純粋なRustの模擬通信だけで検証するため、前面ウィンドウや実API・資格情報を必要としない。
 既存のデスクトップ試験で前面化できない場合でも、その失敗をProtocol成功で置き換えない。

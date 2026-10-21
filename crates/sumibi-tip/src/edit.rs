@@ -17,6 +17,9 @@ use windows::Win32::UI::TextServices::*;
 
 pub const MAX_SELECTION_UNITS: usize = 1024;
 
+#[path = "manual_edit.rs"]
+pub mod manual;
+
 #[cfg(feature = "spike")]
 #[path = "preview.rs"]
 pub mod preview;

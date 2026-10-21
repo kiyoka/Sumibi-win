@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はProtocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界4件を含めworkspace合計34件。
+現時点はProtocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 6件を含めworkspace合計36件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -15,6 +15,33 @@ JSON構造・固定エラー・世代・取消・再接続・期限・対象照�
 固定ハンドルへ相手を結び付け、トークン・PID・作成時刻を相互検査した後で模擬結果をCoreへ返す。
 停止・期限・偽の相手・drop・容量・handle解放を確認する。起動方式と限界は[ADR 0003](adr/0003-pinned-desktop-peers.md)。
 通常のデスクトップmedium integrity限定で、サンドボックスや昇格環境で拒否されてもACLを拡張しない。
+
+## 別Host EXEから実TSFまでの検証
+
+通常ユーザーのPowerShellで実行する。既定のworkspaceビルドで作るHostは変換を許可しないため、
+固定結果を使う診断時だけ、続けてHostのspike featureを指定する。
+
+```powershell
+cargo build --workspace --locked --offline
+cargo build -p sumibi-host --features spike --locked --offline
+./target/debug/sumibi-setup.exe broker-test --dll ./target/debug/sumibi_tip.dll
+```
+
+broker-testは専用の合成ACP入力欄を作り、自動終了する。ユーザー文書・HTTP・資格情報は使用しない。
+2026-10-21、Windows 11 x64 / build 26300 / medium / Rust 1.99.1で19ケース、TSF/COM解除と
+DLLアンロード検査が成功。合成データのみのログは `target/issue-4-broker-verification.log`。
+正常部分置換とUndo、取消・終了・旧要求、変更後の原文／選択／フォーカス復元、設定・認可、
+ロック／読取拒否、期限・ID・版不一致、Readyによる送信前拒否を確認した。
+
+ジョブ予約はprocess内4件、結果channelは各1件。I/O・子processの回収はworkerで行い、
+TSFの所有loopがeventを受けて新しい同期write内でCore.finishとSetTextを行う。
+詳細な所有・失効・起動の限定条件は[ADR 0004](adr/0004-one-shot-broker-and-owner-edit.md)を参照。
+編集アダプターはsetupへRustライブラリとしてリンクする。実DLLのキーからBrokerを起動する経路や
+既存demoのF7は今回接続していない。一般アプリの入力・標準Undoの確認にも読み替えない。
+
+Hostのspike featureは開発診断用で、配布しない。`cargo build --workspace`はHostを既定の拒否構成へ戻す。
+`Test-Spike.ps1`は通常実行時だけこの診断Hostをビルドしてbroker-testを実行し、
+`-SkipDesktop`ではbroker-testも明示的に省略する。
 
 ## 環境確認（2026-10-20）
 
@@ -192,8 +219,8 @@ context・範囲の識別子と要求IDの一意性はアダプターの責務�
 
 専用ホストで実APIなしの登録・表示・キー配送・期限付き遅延・Undoを検証した。
 一般アプリでの打鍵・composition・標準Undo・保護入力判定の完了を意味しない。
-Coreの待機入力行列・候補・通信上限、TIPの通常入力との統合、Host EXEは未実装。
-ProtocolはOS非依存の有限フレーム層を追加した。型付きJSON・認証・実パイプ接続は未実装。
+Coreの待機入力行列・候補、TIPの通常入力との統合、製品用の常駐Host・発見は未実装。
+型付きJSON・固定process認証・overlapped pipeと単発Hostを追加し、専用ACP storeへの配送まで検証した。
 形式と異常系は[IPCフレーム層](IPC_PROTOCOL.md)を参照。
 次の製品用実装は[後続作業](NEXT_STEPS.md)に分割する。実API通信はまだ導入しない。
 現行構成と残る実装ゲートは[全体設計](TECHNICAL_OVERVIEW.md)、[実装照合表](IMPLEMENTATION_AUDIT.md)を参照。

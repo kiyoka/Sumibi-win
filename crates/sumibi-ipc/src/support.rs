@@ -20,6 +20,9 @@ pub enum Error {
     InvalidArgument,
     Closed,
     Retired,
+    InvalidMessage,
+    PolicyDenied,
+    WorkerFailed,
 }
 pub type Result<T> = std::result::Result<T, Error>;
 impl std::fmt::Display for Error {

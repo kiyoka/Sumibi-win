@@ -80,6 +80,13 @@ name = "sumibi-core"
 version = "0.1.0"
 
 [[package]]
+name = "sumibi-host"
+version = "0.1.0"
+dependencies = [
+ "sumibi-ipc",
+]
+
+[[package]]
 name = "sumibi-ipc"
 version = "0.1.0"
 dependencies = [

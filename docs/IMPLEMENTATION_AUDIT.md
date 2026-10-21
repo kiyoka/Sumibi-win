@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | OS非依存Core | core/lib.rsのManualConversion。単一要求の適用判定のみ | Tracking・待機・候補・手動／自動の状態と効果を追加 |
 | COMとDLL | tip/com.rs、build.rs。factory・独立lease・所有thread・解除再試行 | 一般アプリにロードされる常設登録と更新時の寿命 |
-| TSF編集 | tip/edit.rs。同期read/write、全文照合、one-shot | IPC完了後の許可された編集要求、期限・取消・再入 |
+| TSF編集 | tip/edit.rsとmanual_edit.rs。同期read/write、全文照合、Core gate、IPC結果の一度だけ適用。所有ACP context限定 | 製品キーとの統合、一般アプリの対象分類と編集 |
 | 保護入力 | EditPolicy.allowedによる開発用Grant。読取専用拒否 | 実スコープ・機密欄・不明時の拒否を実アプリで確認 |
 | 追跡composition | 未実装。専用ホストの本文はホスト自身が編集 | 通常入力・移動・他IMEとの競合・Enter・取消・原文維持 |
 | 表示属性 | display.rs / preview.rs。点線、原文保持、属性だけ遅延解除 | 通常アプリでの下線、アクセシビリティ、既存属性との共存 |
@@ -18,7 +18,7 @@
 | Undo/Redo | TextStoreに本文・選択・向きの履歴。固定変換含む | 一般アプリの標準履歴で変換が1回のUndoにまとまる |
 | 描画 | live_render / render / window_host。通知→WM_APP→Frame | 製品候補UIのUIElement、DPI、高コントラスト、読み上げ |
 | 手動待機と救済 | 未実装。初期設計に容量・保持期間の案 | 消費前容量確保・順序・超過・対象変更・期限と明示破棄の整合 |
-| Protocol / Broker | 有限フレーム・JSON・client状態に加え、sumibi-ipcで固定processの相互検査・8 endpoint・overlapped pipeと停止を実装。親子process→Coreで検証 | 製品Broker起動・発見・dispatch、TSF配送・worker/結果キューの容量。AppContainerは初期非対応 |
+| Protocol / Broker | 有限フレーム・JSON・client状態、固定process相互検査・8 endpoint・overlapped pipe。単発Host・容量4 worker・各1結果とCore→実TSFを専用ACP storeで検証 | 製品Broker発見・常駐dispatch、実DLLのキー・一般アプリとの統合。AppContainerは初期非対応 |
 | HTTP | 未実装。固定文字列で検証 | 模擬HTTPで認証・同意・転送拒否・上限・取消・エラー分類 |
 | 設定・資格情報 | 未実装。LocalAppData / Credential Manager案 | 形式版・原子的保存・秘密分離・認可取消・破損回復 |
 | 追加候補・辞書 | 未実装。Mac移植範囲に目的を記録 | 件数決定・現在候補・出所・索引ハッシュ・LICENSE |
@@ -51,6 +51,10 @@ Protocol 22件のうち16件が追加のJSON・session・Core模擬接続であ�
 さらにsumibi-ipcを追加した段階では、単体合計34件と、専用親子processの相互検査・停止等14確認が成功。
 固定ハンドルの相手だけへ接続する検証で、製品Brokerの起動・発見・TSF編集の完成ではない。
 詳細と別ユーザー・実PID再利用等の未実行範囲は[ADR 0003](adr/0003-pinned-desktop-peers.md)を参照。
+
+次に単発Host・有限worker・Core→所有TSFの実配送を追加。workspaceは36件、broker-testは
+専用ACP storeで19ケースと解除・DLLアンロードが成功した。元へ戻した変更による失効も検証した。
+一般アプリ、製品キー、HTTPへの接続の成功ではない。[ADR 0004](adr/0004-one-shot-broker-and-owner-edit.md)を参照。
 
 ## 3. アプリ互換表の記録形式
 

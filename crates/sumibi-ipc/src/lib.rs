@@ -4,7 +4,13 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 #[cfg(windows)]
+pub mod bootstrap;
+#[cfg(windows)]
+pub mod broker;
+#[cfg(windows)]
 mod identity;
+#[cfg(windows)]
+pub mod job;
 #[cfg(windows)]
 mod pipe;
 #[cfg(windows)]

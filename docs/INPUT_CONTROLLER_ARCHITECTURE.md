@@ -56,7 +56,9 @@ WndProcのuserdataはWindowが保持するViewを参照し、コールバック�
 ## 3. 所有スレッドと再入
 
 TSF/COMの操作は生成時のスレッドに限定し、別スレッドは固定HRESULTで拒否する。
-将来IPC受信はCOM参照を移動せず、要求IDと結果を所有スレッドへ通知してそこで編集要求を行う。
+単発Brokerの検証経路はCOM参照を移動せず、要求IDと結果をeventで所有スレッドへ通知してそこで編集要求を行う。
+この所有ACP context限定のManualEdit/workerは[ADR 0004](adr/0004-one-shot-broker-and-owner-edit.md)を参照。
+製品InputSessionと実DLLのキー経路への統合は未実装。
 Controllerのbusyガードにより操作中の再入を拒否し、自分の書込で生じる通知を外部編集と誤認しない。
 TSFを呼ぶ前にRefCellの借用を解放し、通知やウィンドウ破棄が再入しても借用違反を起こさないようにする。
 
@@ -100,5 +102,6 @@ IUnknownの同一性と接続世代を組み合わせ、ポインター値の再
 [live_render.rs](../crates/sumibi-setup/src/live_render.rs)。
 COM単体試験とload_smokeは独立sink/Info参照によるアンロード阻止、再入・解除失敗を確認する。
 window-testは旧属性解除、新描画Binding、破棄後予約、実フォーカス通知を確認する。
+専用ACP storeでは非同期IPC後の所有thread編集、取消・終了・変更後の復元と失効をbroker-testで確認した。
 一般アプリでのcomposition寿命、非同期IPCとの再入、終了直前の外部編集は未検証。
 これらを実装する際は専用ホストで異常系を追加し、対象アプリの手動結果を別に記録する。
