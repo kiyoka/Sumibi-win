@@ -24,7 +24,8 @@ Issue #4では版付きJSONとclient接続状態を追加し、取消・切断�
 `protection-test`で実DLL/TSFの39ケースを検証できます（[境界と制限](docs/adr/0006-input-protection-metadata.md)）。
 同じ入力欄に他サービスのcompositionがある場合も拒否します。`composition-test`で16ケースを検証でき、空compositionの履歴取消には専用ホストの通知を使います（[通知の境界](docs/adr/0007-foreign-composition-boundary.md)）。
 F6プレビューは選択範囲をSumibi自身のcompositionとして保持し、確定・取消時に終了します。`owned-composition-test`で18ケースを検証できます（[所有と制限](docs/adr/0008-owned-selection-composition.md)）。
-`tracking-demo`では実際に入力した範囲だけをF7で変換できます。移動・外部編集等で追跡が無効なら変換を見送り、全文を推測しません。`tracking-input-test`で25ケースを検証できます（[操作手順](docs/DEVELOPMENT.md#通常入力の範囲だけを変換する)、[条件と制限](docs/adr/0009-cooperating-host-input-run.md)）。通常打鍵のcomposition拡張・一般アプリへの統合は未実装です。
+`tracking-demo`では実際に入力した範囲だけをF7で変換できます。移動・外部編集等で追跡が無効なら変換を見送り、全文を推測しません。`tracking-input-test`で25ケースを検証できます（[操作手順](docs/DEVELOPMENT.md#通常入力の範囲だけを変換する)、[条件と制限](docs/adr/0009-cooperating-host-input-run.md)）。
+`composing-demo`では同じ入力を実DLLのcompositionと下線で追跡し、文字入力で広げ、Backspaceで縮めます。`composing-input-test`で29ケースを検証できます（[操作手順](docs/DEVELOPMENT.md#入力compositionの伸縮を試す)、[条件と制限](docs/adr/0010-cooperating-host-composition-growth.md)）。本文はホストで反映する診断経路で、一般アプリへの統合は未実装です。
 Notepad等の実アプリでの表示と実打鍵は未確認です。
 
 - [実装着手 Issue #1](https://github.com/kiyoka/Sumibi-win/issues/1)
@@ -46,6 +47,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [他サービスのcompositionへの非干渉](docs/adr/0007-foreign-composition-boundary.md)
 - [所有する選択compositionの寿命](docs/adr/0008-owned-selection-composition.md)
 - [所有ホストの入力範囲追跡](docs/adr/0009-cooperating-host-input-run.md)
+- [所有ホストの入力compositionの伸縮](docs/adr/0010-cooperating-host-composition-growth.md)
 - [Issue #1の受入記録](docs/ISSUE_1_ACCEPTANCE.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 

@@ -45,6 +45,11 @@ fn valid(point: InputPoint) -> bool {
         && point.selection.1 >= point.selection.0
 }
 impl InputSession {
+    /// Metadata for an exact live observation, without consuming private text.
+    pub fn range(&self, current: InputPoint) -> Option<(i32, i32)> {
+        let run = self.run.as_ref()?;
+        (valid(current) && current == run.point).then_some((run.start, run.point.selection.1))
+    }
     pub fn clear(&mut self) {
         self.run = None;
     }
@@ -85,6 +90,36 @@ impl InputSession {
         run.point = after;
         self.run = Some(run);
     }
+    /// A cooperating host already deleted a suffix. Never infer surrounding
+    /// text or cross the tracked start; a split surrogate retires the run.
+    pub fn backspaced(&mut self, before: InputPoint, after: InputPoint) {
+        let Some(mut run) = self.run.take() else {
+            return;
+        };
+        if !valid(before)
+            || !valid(after)
+            || before != run.point
+            || before.context != after.context
+            || after.generation <= before.generation
+            || before.composition_generation != after.composition_generation
+            || before.selection.0 != before.selection.1
+            || after.selection.0 != after.selection.1
+            || after.selection.0 < run.start
+            || after.selection.0 >= before.selection.0
+        {
+            return;
+        }
+        let remaining = (after.selection.0 - run.start) as usize;
+        if remaining == 0 || remaining >= run.text.len() {
+            return;
+        }
+        run.text.truncate(remaining);
+        if String::from_utf16(&run.text).is_err() {
+            return;
+        }
+        run.point = after;
+        self.run = Some(run);
+    }
     /// Consume before selection changes or transport calls. A failed match can
     /// never be retried against another field or guessed nearby text.
     pub fn take(&mut self, current: InputPoint) -> Option<TrackedInput> {
@@ -110,6 +145,43 @@ mod tests {
             composition_generation: 0,
             selection: (position, position),
             allowed: true,
+        }
+    }
+    #[test]
+    fn suffix_backspace_preserves_prefix_and_unicode_then_retires_empty_run() {
+        let mut session = InputSession::default();
+        session.inserted(point(7, 1), point(10, 2), &[b'a' as u16, 0xd83d, 0xde00]);
+        session.backspaced(point(10, 2), point(8, 3));
+        assert_eq!(session.range(point(8, 3)), Some((7, 8)));
+        assert!(session.range(point(8, 4)).is_none());
+        session.inserted(point(8, 3), point(9, 4), &[b'b' as u16]);
+        assert!(session
+            .take(point(9, 4))
+            .unwrap()
+            .matches(&[b'a' as u16, b'b' as u16]));
+        session.inserted(point(7, 5), point(8, 6), &[b'a' as u16]);
+        session.backspaced(point(8, 6), point(7, 7));
+        assert!(session.take(point(7, 7)).is_none());
+    }
+    #[test]
+    fn backspace_rejects_split_surrogates_boundaries_and_stale_observations() {
+        for change in 0..8 {
+            let mut session = InputSession::default();
+            session.inserted(point(7, 1), point(10, 2), &[b'a' as u16, 0xd83d, 0xde00]);
+            let mut before = point(10, 2);
+            let mut after = point(8, 3);
+            match change {
+                0 => after.selection = (9, 9), // split pair
+                1 => after.selection = (6, 6),
+                2 => after.selection = (10, 10),
+                3 => after.context += 1,
+                4 => after.generation = 2,
+                5 => before.generation += 1,
+                6 => after.composition_generation += 1,
+                _ => after.allowed = false,
+            }
+            session.backspaced(before, after);
+            assert!(session.take(point(10, 2)).is_none());
         }
     }
     #[test]

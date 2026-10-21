@@ -24,6 +24,7 @@
 | Core InputSession / TrackedInput | 所有ホストの実入力UTF-16、範囲、context識別、通知世代と選択 | 不一致・境界・上限超過で消去。takeで一度だけ消費。Debug・永続化なし |
 | setup Tracking / InputWatch | 所有STAのmanager/client、メタデータ通知購読、Core記録、自動選択の印 | 挿入前後とF7の検査。通知世代はラップしない。workerへ参照を渡さない |
 | bridge InputCheck | 次のStartに限定する原文・範囲・保護状態の検査closure | 同期呼出し中に消費・解放。失敗時は予約も失効。F7終了・shutdownでも解除 |
+| DLL Input Control / Tracker | 弱Controllerと独立lease、InputWatch、Core記録、自己所有composition、下線、1件の入力前状態とReady | 所有STAと再入ガード。Cancelで失効、cleanup拒否は最大1件保持。Readyはsource検査で一度だけ消費 |
 
 ## 2. 強参照と弱参照
 
@@ -78,6 +79,11 @@ scopeのStampと通知、MSCTF内部読取との境界は[ADR 0006](adr/0006-inp
 Startの同期検査で実DLLから渡された原文と照合してから全COM参照を手放す。
 専用EXEが入力を観測できる前提であり、一般アプリの入力取得ではない
 （[ADR 0009](adr/0009-cooperating-host-input-run.md)）。
+composing-demoでは実DLLの独立ISpikeInputが同じcompositionの伸縮を担当する。
+通常の本文取得はidleを必要とし、メタデータ照会だけが保持中の正確な1 objectを許容する。
+生の通知世代とCoreの入力世代を分け、外部通知による不一致で旧記録を破棄する。
+ホストの本文反映後にメタデータを更新する限定経路であり、原子的な本文入力取引は未完了
+（[ADR 0010](adr/0010-cooperating-host-composition-growth.md)）。
 Controllerのbusyガードにより操作中の再入を拒否し、自分の書込で生じる通知を外部編集と誤認しない。
 TSFを呼ぶ前にRefCellの借用を解放し、通知やウィンドウ破棄が再入しても借用違反を起こさないようにする。
 

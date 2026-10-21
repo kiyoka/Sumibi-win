@@ -74,3 +74,6 @@ F6は使わず、通常打鍵に下線やcompositionを付けない。従来のb
 未完了：打鍵ごとのcomposition取引と範囲拡張、製品キー配送、待機入力・救済、一般アプリの
 寿命・実打鍵・標準Undo、製品Brokerの発見・常駐dispatch、HTTP・同意・設定・資格情報。
 専用EXEの協力を一般ホストや他IMEへ仮定せず、Issue #4は引き続き未完了とする。
+
+後続の[ADR 0010](0010-cooperating-host-composition-growth.md)で、別のcomposing-demoへ
+実DLLによるcomposition伸縮を追加した。このADRのtracking-demo自体はメタデータ更新を行わない。

@@ -14,7 +14,7 @@ pub struct Preview {
     composition: Rc<crate::owned_composition::OwnedComposition>,
 }
 
-fn runs(
+pub(super) fn runs(
     property: &ITfProperty,
     target: &ITfRange,
     cookie: u32,
@@ -55,7 +55,7 @@ fn runs(
     }
 }
 
-fn is_atom(value: &VARIANT, atom: i32) -> bool {
+pub(super) fn is_atom(value: &VARIANT, atom: i32) -> bool {
     // SAFETY: the union field is read only after checking its discriminator.
     value.vt() == VT_I4 && unsafe { value.Anonymous.Anonymous.Anonymous.lVal == atom }
 }

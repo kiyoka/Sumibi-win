@@ -67,6 +67,27 @@ impl Drop for ScopeMemory {
     }
 }
 pub(crate) fn check(context: &ITfContext, range: &ITfRange, cookie: u32) -> Result<Stamp> {
+    check_with(context, range, cookie, || {
+        crate::composition::require_idle(context)
+    })
+}
+/// Only metadata inspection may admit the exact owned composition. All body
+/// capture/source/write gates still call check(), which requires idle.
+#[cfg(feature = "spike")]
+pub(crate) fn owned_metadata(
+    context: &ITfContext,
+    range: &ITfRange,
+    cookie: u32,
+    owned: &crate::owned_composition::OwnedComposition,
+) -> Result<Stamp> {
+    check_with(context, range, cookie, || owned.require_exclusive(context))
+}
+fn check_with(
+    context: &ITfContext,
+    range: &ITfRange,
+    cookie: u32,
+    composition_gate: impl Fn() -> Result<()>,
+) -> Result<Stamp> {
     // SAFETY: caller owns a current read/write cookie for this context/range.
     unsafe {
         let status = context.GetStatus()?;
@@ -113,7 +134,7 @@ pub(crate) fn check(context: &ITfContext, range: &ITfRange, cookie: u32) -> Resu
         }
         let scopes = std::slice::from_raw_parts(memory.0, count as usize);
         let stamp = classify(status, scopes)?;
-        crate::composition::require_idle(context)?;
+        composition_gate()?;
         // External metadata providers can reenter while returning their scope.
         let latest = context.GetStatus()?;
         if latest.dwDynamicFlags != status.dwDynamicFlags
@@ -130,7 +151,7 @@ pub(crate) fn check(context: &ITfContext, range: &ITfRange, cookie: u32) -> Resu
                 return denied();
             }
         }
-        crate::composition::require_idle(context)?;
+        composition_gate()?;
         Ok(stamp)
     }
 }

@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 12件（応答照合7・入力範囲追跡5）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 6件、TIP 5件を含めworkspace合計45件。
+現時点はCore 14件（応答照合7・入力範囲追跡7）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 6件、TIP 5件を含めworkspace合計47件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -113,7 +113,7 @@ workspaceビルドの後で実行する。2026-10-22、実DLLの16ケースと�
 F6プレビューは既存選択の下線とcompositionを保持し、F7・Esc・Enter等で自分のcompositionを終了する。
 ホスト開始拒否・強制終了・拒否後の再開始・別compositionとの競合・通常成功の1回Undoも確認する。
 専用ホストがEXE内の共有通知サービスを提供する構成であり、一般アプリへ同じ存在を仮定しない。
-このF6経路は選択の寿命管理まで。通常打鍵のcomposition拡張は未実装で、入力範囲の追跡は次節の専用経路で試す。
+このF6経路は選択の寿命管理まで。通常入力の追跡・composition更新は後続節の専用経路で試す。
 条件とWindowsのsink参照残留の扱いは[ADR 0008](adr/0008-owned-selection-composition.md)、ログは `target/issue-4-owned-*.log`。
 
 ## 通常入力の範囲だけを変換する
@@ -144,6 +144,36 @@ cargo build -p sumibi-host --features spike --locked --offline
 Coreの記録上限は1024 UTF-16単位。保護メタデータを入力前後と送信前に検査する。
 専用ホストの協力が前提で、打鍵ごとのcomposition拡張や一般アプリの製品InputSessionではない。
 詳細は[ADR 0009](adr/0009-cooperating-host-input-run.md)、ログは `target/issue-4-tracking-*.log`。
+
+## 入力compositionの伸縮を試す
+
+リポジトリのルートから、通常ユーザーのPowerShellで実行する。
+
+```powershell
+cargo build --workspace --locked --offline
+cargo build -p sumibi-host --features spike --locked --offline
+./target/debug/sumibi-setup.exe composing-demo --dll ./target/debug/sumibi_tip.dll
+```
+
+入力すると、その範囲に下線が付き、同じcompositionが入力に合わせて伸びる。
+Backspaceで範囲を縮め、末尾まで消すと下線とcompositionを終了する。
+F7でその範囲または明示選択を固定の「日本語」へ非同期変換し、Ctrl+Zで1回Undoする。
+Escは追跡/待機を取消し、Enterは原文確定をホストへ通す。移動・focus喪失・×終了でも後始末する。
+F6は使用しない。本文はホストで一度だけ反映し、composition操作失敗を理由に再送しない。
+
+自動検証は次のコマンド。専用ホスト29ケースで、実DLLの所有CLSIDと同一objectの伸縮、
+開始拒否、失効、別composition非干渉、取消、1回Undo、送信前検査、同期SC_CLOSEを確認する。
+2026-10-22 / Windows 11 x64 build 26300 / medium / Rust 1.99.1で、29ケースと
+Test-Spike.ps1の全検査が省略なしで成功。workspace 47件、解除とDLLアンロードも確認した。
+
+```powershell
+./target/debug/sumibi-setup.exe composing-input-test --dll ./target/debug/sumibi_tip.dll
+```
+
+ホストの本文反映と、その後のcompositionのメタデータ更新は別の同期処理である。
+一般アプリの原子的なTSF入力取引・標準Undoの完成とは扱わない。外部通知による失効は
+次の入力・F7・取消・終了で検出し、通知callback中には書かない。
+条件・寿命は[ADR 0010](adr/0010-cooperating-host-composition-growth.md)、ログは `target/issue-4-composing-*.log`。
 
 ## 初期環境の記録（2026-10-20）
 

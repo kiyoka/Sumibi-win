@@ -27,6 +27,9 @@ pub(crate) fn body_read_count() -> u64 {
 pub mod manual;
 
 #[cfg(feature = "spike")]
+#[path = "input_composition.rs"]
+pub(crate) mod input_composition;
+#[cfg(feature = "spike")]
 #[path = "preview.rs"]
 pub mod preview;
 

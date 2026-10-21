@@ -9,6 +9,7 @@ pub use crate::broker_spike::{
 use crate::com::{boundary, ObjectLease};
 use crate::edit::preview::Preview;
 use crate::edit::{capture_selection, replace_selection, EditPolicy};
+pub use crate::input_spike::{ISpikeInput, FUNCTION_TEST_INPUT};
 pub use crate::owned_composition::GUID_SPIKE_COMPOSITION_SINK;
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -61,6 +62,12 @@ impl ITfFunctionProvider_Impl for Provider_Impl {
             }
             if function.is_null() || iid.is_null() {
                 return Err(E_INVALIDARG.into());
+            }
+            if unsafe { *function } == FUNCTION_TEST_INPUT && unsafe { *iid } == ISpikeInput::IID {
+                result = Some(crate::input_spike::control(
+                    &self.state.upgrade().ok_or(E_ABORT)?,
+                ));
+                return Ok(());
             }
             if unsafe { *function } == FUNCTION_TEST_BROKER && unsafe { *iid } == ISpikeBroker::IID
             {
@@ -278,6 +285,10 @@ impl Drop for Busy<'_> {
 }
 
 impl Controller {
+    pub(crate) fn input_owner(&self) -> Result<(ITfThreadMgr, u32)> {
+        self.check_thread()?;
+        Ok((self.manager.clone(), self.client))
+    }
     pub(crate) fn new(manager: &ITfThreadMgr, client: u32) -> Rc<Self> {
         Rc::new(Self {
             owner: thread::current().id(),

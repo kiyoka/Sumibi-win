@@ -83,6 +83,73 @@ impl OwnedComposition {
     pub(crate) fn can_commit(&self) -> bool {
         self.phase.get() == Phase::Live
     }
+    /// Metadata-only exception: exactly one view and its COM identity must be
+    /// ours. Never inspect owner/range/body on a foreign view.
+    pub(crate) fn require_exclusive(&self, context: &ITfContext) -> Result<()> {
+        self.check_thread()?;
+        if !self.can_commit() {
+            return Err(E_ABORT.into());
+        }
+        let value = self.value.borrow().clone().ok_or(E_ABORT)?;
+        let expected = value.cast::<ITfCompositionView>()?.cast::<IUnknown>()?;
+        let service: ITfContextComposition = context.cast()?;
+        let mut raw = std::ptr::null_mut();
+        let status = unsafe { (service.vtable().EnumCompositions)(service.as_raw(), &mut raw) };
+        let enumerator = if raw.is_null() {
+            None
+        } else {
+            Some(unsafe { IEnumITfCompositionView::from_raw(raw) })
+        };
+        if status != S_OK {
+            return Err(E_ABORT.into());
+        }
+        let enumerator = enumerator.ok_or(E_ABORT)?;
+        for index in 0..2 {
+            let mut view: Option<ITfCompositionView> = None;
+            let mut count = 0;
+            let status = unsafe {
+                (enumerator.vtable().Next)(
+                    enumerator.as_raw(),
+                    1,
+                    (&mut view as *mut Option<ITfCompositionView>).cast(),
+                    &mut count,
+                )
+            };
+            if index == 0 {
+                if status != S_OK
+                    || count != 1
+                    || view.ok_or(E_ABORT)?.cast::<IUnknown>()? != expected
+                {
+                    return Err(E_ABORT.into());
+                }
+            } else if status != S_FALSE || count != 0 || view.is_some() {
+                return Err(E_ABORT.into());
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn range(&self, context: &ITfContext) -> Result<ITfRange> {
+        self.require_exclusive(context)?;
+        let value = self.value.borrow().clone().ok_or(E_ABORT)?;
+        unsafe { value.GetRange() }
+    }
+    pub(crate) fn shift_end(
+        &self,
+        context: &ITfContext,
+        cookie: u32,
+        range: &ITfRange,
+    ) -> Result<()> {
+        self.require_exclusive(context)?;
+        if unsafe { range.GetContext()? }.cast::<IUnknown>()? != context.cast::<IUnknown>()? {
+            return Err(E_ABORT.into());
+        }
+        let value = self.value.borrow().clone().ok_or(E_ABORT)?;
+        let status = unsafe { (value.vtable().ShiftEnd)(value.as_raw(), cookie, range.as_raw()) };
+        if status != S_OK {
+            return Err(E_ABORT.into());
+        }
+        self.require_exclusive(context)
+    }
 
     /// Match COM identity, never text. Absence requires the exact enumeration
     /// end; failure or capacity exhaustion must not masquerade as termination.

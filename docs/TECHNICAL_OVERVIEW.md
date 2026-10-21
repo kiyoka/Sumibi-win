@@ -23,7 +23,7 @@ Mac技術解説自身の実装照合基準 `d2b96fc` と区別する。Macの機
 | TIPのCOM・キー・表示属性・編集 | 専用ホストで実装済み。通常アプリへの常設登録なし |
 | 入力保護 | scope/status/compartmentと取得・送信前・適用時の検査を実装。専用ACPで39ケース。一般アプリの全機密欄の識別は未検証 |
 | 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。実キーボードの手動確認は未実施 |
-| 追跡入力・composition・候補UI | 所有ホストの入力範囲を25ケース、選択の自己所有compositionを18ケース、他サービスの拒否を16ケースで確認。打鍵ごとのcomposition拡張・製品統合・候補UIは未実装 |
+| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮29・選択composition 18・他サービス拒否16ケースを確認。原子的な本文入力取引・製品統合・候補UIは未実装 |
 | Protocol / IPC | 有限フレーム・版付きJSON・client状態、固定process相互検査・overlapped pipe。実DLLのキー・Core・所有TSFから診断用EXE bridge経由で単発Brokerへ接続。一般アプリは未接続 |
 | Host・HTTP・キー保存・設定UI | 単発の診断Host EXEを実装。既定では変換拒否。常駐Host・HTTP・キー保存・設定UIは未実装 |
 | Decisions・辞書・署名付き配布 | 未実装。後続段階 |
@@ -169,7 +169,12 @@ UTF-16上位サロゲートは下位が揃うまで保留し、不正な組合�
 移動・外部編集・保護変更等で無効になった範囲を復元せず、全文を推測しない。
 明示選択は従来の選択変換を使う。入力反映自体はホストが一度だけ行い、追跡失敗で再送しない。
 通知世代・composition counter・送信直前の原文完全一致を使う限定経路であり、
-打鍵ごとのcomposition拡張や一般アプリの統合ではない（[ADR 0009](adr/0009-cooperating-host-input-run.md)）。
+この経路自体はcompositionを更新しない（[ADR 0009](adr/0009-cooperating-host-input-run.md)）。
+別のcomposing-demoでは、入力の前後を実DLLへ通知し、同じcompositionを文字入力で広げ、
+Backspaceで縮める。本文はホストで一度だけ反映し、別の同期writeでメタデータだけを更新する。
+F7前に自分のcompositionを終了し、通常の保護検査と原文の完全照合を通す。
+このメタデータ専用の所有例外をGetTextの許可には使わない。
+原子的なTSF本文入力取引や一般アプリの統合ではない（[ADR 0010](adr/0010-cooperating-host-composition-growth.md)）。
 
 ### 5.2 製品の追跡入力（未実装）
 

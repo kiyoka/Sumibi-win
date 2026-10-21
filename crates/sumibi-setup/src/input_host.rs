@@ -11,6 +11,9 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 #[path = "tracking_host.rs"]
 mod tracking_host;
 pub(crate) use tracking_host::{exercise_tracking, run_tracking_demo};
+#[path = "composing_host.rs"]
+mod composing_host;
+pub(crate) use composing_host::{exercise_composing, run_composing_demo};
 
 impl TextStore {
     fn boundary(&self, position: usize) -> bool {
@@ -181,9 +184,13 @@ struct Editor {
     submits: Cell<usize>,
     broker: Option<(ISpikeBroker, ComObject<Bridge>)>,
     tracking: Option<tracking_host::Tracking>,
+    composing: Option<composing_host::Composing>,
 }
 impl Editor {
     fn clear_tracking(&self) {
+        if let Some(composing) = &self.composing {
+            composing.cancel(self, false);
+        }
         if let Some(tracking) = &self.tracking {
             tracking.clear();
         }
@@ -203,7 +210,14 @@ impl Editor {
             self.clear_tracking();
             return Ok(());
         }
+        let recorded = self
+            .composing
+            .as_ref()
+            .is_some_and(|composing| composing.before(self, false));
         let result = self.store.get().type_text(text);
+        if let Some(composing) = &self.composing {
+            composing.after(self, text, recorded && result.is_ok());
+        }
         if let Some(tracking) = &self.tracking {
             if result.is_ok() {
                 tracking.inserted(self, before, text);
@@ -282,6 +296,9 @@ impl Editor {
             }
             if matches!(key.0, 0x23..=0x25 | 0x27 | 0x2e) {
                 self.clear_tracking();
+                if let Some(composing) = &self.composing {
+                    composing.cancel(self, true);
+                }
                 if let Some(tracking) = &self.tracking {
                     tracking.user_boundary();
                 }
@@ -331,7 +348,11 @@ impl Editor {
                             return Ok(true);
                         }
                         let selected = self.store.get().selection.get();
-                        if selected.acpStart == selected.acpEnd {
+                        if let Some(composing) = &self.composing {
+                            if !composing.prepare(self, bridge)? {
+                                return Ok(true);
+                            }
+                        } else if selected.acpStart == selected.acpEnd {
                             if let Some(tracking) = &self.tracking {
                                 if !tracking.select(self, bridge)? {
                                     return Ok(true);
@@ -358,6 +379,9 @@ impl Editor {
                                 .ok();
                             if let Err(error) = attached {
                                 bridge.get().clear_input_check();
+                                if let Some(composing) = &self.composing {
+                                    composing.cancel(self, false);
+                                }
                                 return Err(error);
                             }
                         }
@@ -370,6 +394,9 @@ impl Editor {
                     };
                     if let Some((_, bridge)) = &self.broker {
                         bridge.get().clear_input_check();
+                    }
+                    if let Some(composing) = &self.composing {
+                        composing.cancel(self, false);
                     }
                     let _ = result?;
                     return Ok(true);
@@ -420,8 +447,11 @@ impl Editor {
             }
             return Ok(true);
         }
-        if unit < 0x20 || unit == 0x7f {
+        if (unit < 0x20 || unit == 0x7f) && !(unit == 0x08 && self.composing.is_some()) {
             self.clear_tracking();
+            if let Some(composing) = &self.composing {
+                composing.cancel(self, true);
+            }
             if let Some(tracking) = &self.tracking {
                 tracking.user_boundary();
             }
@@ -435,8 +465,15 @@ impl Editor {
                 self.store.get().host_selection(0, length)?;
             }
             0x08 => {
+                let recorded = self
+                    .composing
+                    .as_ref()
+                    .is_some_and(|composing| composing.before(self, true));
                 for _ in 0..repeats {
                     self.store.get().backspace()?;
+                }
+                if let Some(composing) = &self.composing {
+                    composing.after(self, &[], recorded);
                 }
             }
             0x0d => {
@@ -516,6 +553,8 @@ enum RunMode {
     CloseTest(&'static str),
     TrackingDemo,
     TrackingTest(&'static str),
+    ComposingDemo,
+    ComposingTest(&'static str),
 }
 
 fn run(
@@ -561,6 +600,8 @@ fn run(
                 | RunMode::BrokerInputTest(_)
                 | RunMode::TrackingDemo
                 | RunMode::TrackingTest(_)
+                | RunMode::ComposingDemo
+                | RunMode::ComposingTest(_)
         ) {
             window.set_title("Sumibi 非同期変換デモ（固定結果） | F7 変換 | Esc 取消 | Enter 原文確定 | Ctrl+Z Undo")?;
             let broker: ISpikeBroker = manager
@@ -585,6 +626,11 @@ fn run(
             submits: Cell::new(0),
             broker,
             tracking,
+            composing: if matches!(mode, RunMode::ComposingDemo | RunMode::ComposingTest(_)) {
+                Some(composing_host::Composing::new(manager)?)
+            } else {
+                None
+            },
         });
         let input = editor.clone();
         window.set_input(Rc::new(move |message, key, flags| {
@@ -594,13 +640,21 @@ fn run(
         let outcome = if matches!(mode, RunMode::Demo) {
             println!("Type in the single-line demo. F6 previews, F7 converts, Enter confirms the original. Close the window to exit.");
             message_loop(&window)
-        } else if matches!(mode, RunMode::BrokerDemo | RunMode::TrackingDemo) {
+        } else if matches!(
+            mode,
+            RunMode::BrokerDemo | RunMode::TrackingDemo | RunMode::ComposingDemo
+        ) {
             if matches!(mode, RunMode::TrackingDemo) {
                 window.set_title(
                     "Sumibi 入力範囲の変換デモ | F7 入力範囲を変換 | 範囲選択可 | Ctrl+Z Undo",
                 )?;
             }
-            if matches!(mode, RunMode::TrackingDemo) {
+            if matches!(mode, RunMode::ComposingDemo) {
+                window.set_title(
+                    "Sumibi 入力composition | F7 変換 | Backspace 範囲縮小 | Esc 取消",
+                )?;
+            }
+            if matches!(mode, RunMode::TrackingDemo | RunMode::ComposingDemo) {
                 println!("Tracked input demo: F7 converts the recent typed run or an explicit selection. Esc cancels; Enter confirms the original. Close to exit.");
             } else {
                 println!("Async fixed-result demo: F7 converts the selection (or all text), Esc cancels, Enter confirms the original. Close to exit.");
@@ -610,12 +664,15 @@ fn run(
             test_broker_input(&window, &editor, &live, client, case)
         } else if let RunMode::TrackingTest(case) = mode {
             tracking_host::test_tracking(&window, &editor, &live, client, case)
+        } else if let RunMode::ComposingTest(case) = mode {
+            composing_host::test_composing(&window, &editor, &live, client, case)
         } else if let RunMode::CloseTest(case) = mode {
             test_close(&window, &editor, case)
         } else {
             test_input(&window, &editor, &live)
         };
         window.clear_input();
+        editor.clear_tracking();
         store.get().composition_broker.borrow_mut().take();
         if let Some((broker, bridge)) = &editor.broker {
             let _ = broker.Cancel(0);

@@ -8,6 +8,8 @@ mod com;
 mod composition;
 pub mod display;
 pub mod edit;
+#[cfg(feature = "spike")]
+mod input_spike;
 mod keys;
 #[cfg(test)]
 mod mock;

@@ -17,8 +17,8 @@ use windows::Win32::UI::TextServices::*;
 #[path = "input_host.rs"]
 mod input_host;
 pub(super) use input_host::{
-    exercise_broker_input, exercise_close, exercise_input, exercise_tracking, run_broker_demo,
-    run_demo, run_tracking_demo,
+    exercise_broker_input, exercise_close, exercise_composing, exercise_input, exercise_tracking,
+    run_broker_demo, run_composing_demo, run_demo, run_tracking_demo,
 };
 #[path = "delayed_host.rs"]
 mod delayed_host;

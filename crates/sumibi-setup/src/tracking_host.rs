@@ -479,7 +479,7 @@ fn set_scope(editor: &Editor, scope: InputScope) -> Result<()> {
     unsafe { sink.OnAttrsChange(0, length, &[GUID_PROP_INPUTSCOPE]) }
 }
 
-fn wait_result(
+pub(super) fn wait_result(
     window: &crate::window_host::Window,
     broker: &ISpikeBroker,
     bridge: &ComObject<Bridge>,
