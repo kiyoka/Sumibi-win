@@ -18,6 +18,10 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 
 - [実装着手 Issue #1](https://github.com/kiyoka/Sumibi-win/issues/1)
 - [言語・方式の選定案](docs/adr/0001-language-and-ime.md)
+- [Windows版全体設計](docs/TECHNICAL_OVERVIEW.md)
+- [入力経路の責務と寿命](docs/INPUT_CONTROLLER_ARCHITECTURE.md)
+- [設計と実装の照合表](docs/IMPLEMENTATION_AUDIT.md)
+- [設計資料の入口](docs/README.md)
 - [Windows版初期設計](docs/DESIGN.md)
 - [Mac版からの移植範囲](docs/MAC_PARITY.md)
 - [開発環境と現在の実装範囲](docs/DEVELOPMENT.md)

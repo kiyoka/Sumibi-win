@@ -173,3 +173,4 @@ Coreの待機入力行列・候補・通信上限、TIPの通常入力との統�
 ProtocolはOS非依存の有限フレーム層を追加した。型付きJSON・認証・実パイプ接続は未実装。
 形式と異常系は[IPCフレーム層](IPC_PROTOCOL.md)を参照。
 次の製品用実装は[後続作業](NEXT_STEPS.md)に分割する。実API通信はまだ導入しない。
+現行構成と残る実装ゲートは[全体設計](TECHNICAL_OVERVIEW.md)、[実装照合表](IMPLEMENTATION_AUDIT.md)を参照。
