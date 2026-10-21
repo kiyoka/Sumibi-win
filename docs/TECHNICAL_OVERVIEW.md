@@ -22,7 +22,7 @@ Mac技術解説自身の実装照合基準 `d2b96fc` と区別する。Macの機
 | TIPのCOM・キー・表示属性・編集 | 専用ホストで実装済み。通常アプリへの常設登録なし |
 | 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。実キーボードの手動確認は未実施 |
 | 追跡入力・composition・候補UI | 製品用の統合は未実装 |
-| Protocol | 有限UTF-8フレーム層を実装。JSON・認証・製品接続は未実装 |
+| Protocol | 有限UTF-8フレーム、版付きJSON、client状態・Core模擬接続を実装。OS認証・製品TSF接続は未実装 |
 | Host・HTTP・キー保存・設定UI | 未実装。本書で境界と受入条件を定義 |
 | Decisions・辞書・署名付き配布 | 未実装。後続段階 |
 
@@ -132,7 +132,7 @@ flowchart TB
 | crate / 所有者 | 契約 |
 | --- | --- |
 | sumibi-core | OS非依存のイベントと効果、手動／自動の状態、候補、上限判定。将来もunsafe禁止 |
-| sumibi-protocol | 現在は4バイト長＋最大256KiBのUTF-8フレーム。版・要求／応答・JSON構造検査は後続。COMやHTTPを含めない |
+| sumibi-protocol | 4バイト長＋最大256KiBのUTF-8フレーム、版付きの単一結果JSON、要求・接続世代・取消・期限・再接続。COM・HTTP・OS認証は含めない |
 | sumibi-tip | TSFキー、composition、範囲取得、保護判定、書込、候補表示、IPCの所有スレッドへの復帰 |
 | sumibi-host（未作成） | 接続認証、設定・同意・辞書の一貫した版、資格情報、HTTP、全体の自動要求制限 |
 | sumibi-setup | 現在は開発検証のみ。製品の登録・更新ツールと共用するかは配布ADRで決める |
@@ -320,7 +320,9 @@ TSF UIElementのBegin/Update/Endと候補リストの契約を実装し、ホス
 
 実装済みの外側フレームは[IPC_PROTOCOL](IPC_PROTOCOL.md)、SID限定pipeの同一プロセス検証と
 AppContainerの初期非対応判断は[ADR 0002](adr/0002-ipc-boundary-and-desktop-probe.md)を参照。
-以下の相互認証と型付きメッセージは製品化の設計案で、pipe probeだけでは検証済みとしない。
+型付きメッセージとclient状態はIssue #4の最初の段階で追加した。現在の正確な版1の形式・上限は
+[IPC_PROTOCOL](IPC_PROTOCOL.md)を参照。以下の相互認証と製品接続は設計案で、pipe probeだけでは検証済みとしない。
+下表は候補等も含む製品案であり、実装した版1は単一の変換要求／結果に限定する。
 
 通常デスクトップの第一候補はローカルnamed pipe。対象ユーザーとログオンセッションの明示DACL、
 リモート拒否、サーバー／クライアントのトークン・セッション確認を組み合わせる。
@@ -337,7 +339,7 @@ AppContainerの初期非対応判断は[ADR 0002](adr/0002-ipc-boundary-and-desk
 | PolicyChanged | 設定・認可版と許可状態。旧版の未送信要求をBroker側でも拒否 |
 
 COM参照・cookie・TSF座標・APIキー・アプリ名はConvertへ含めない。
-原文はUTF-8へ厳密変換し、4バイトlittle endian長＋最大256KiB本文とする。外側フレームは実装済み、JSONは後続。
+原文はUTF-8へ厳密変換し、4バイトlittle endian長＋最大256KiB本文とする。外側フレームと単一結果のJSONは実装済み。
 整数の範囲・必須フィールド・候補件数・文字列長・総容量も検証し、未対応版は拒否する。
 切断・不正フレーム・過大要求は要求を終端化し、本文をログに出さない。
 受信数・未完了数・出力バッファは有限にし、具体値は負荷試験とともにProtocol仕様へ固定する。

@@ -18,7 +18,7 @@
 | Undo/Redo | TextStoreに本文・選択・向きの履歴。固定変換含む | 一般アプリの標準履歴で変換が1回のUndoにまとまる |
 | 描画 | live_render / render / window_host。通知→WM_APP→Frame | 製品候補UIのUIElement、DPI、高コントラスト、読み上げ |
 | 手動待機と救済 | 未実装。初期設計に容量・保持期間の案 | 消費前容量確保・順序・超過・対象変更・期限と明示破棄の整合 |
-| Protocol / Broker | protocolは有限UTF-8フレームを実装。Broker未作成。SID限定pipeは同一プロセスで検証 | 別プロセス認証・JSON版・切断・backpressure。AppContainerは初期非対応 |
+| Protocol / Broker | 有限フレーム・版1単一結果JSON・client状態・Core模擬接続。Broker未作成。SID限定pipeは同一プロセスで検証 | 別プロセス認証・総接続数・非同期I/O・backpressure・製品TSF配送。AppContainerは初期非対応 |
 | HTTP | 未実装。固定文字列で検証 | 模擬HTTPで認証・同意・転送拒否・上限・取消・エラー分類 |
 | 設定・資格情報 | 未実装。LocalAppData / Credential Manager案 | 形式版・原子的保存・秘密分離・認可取消・破損回復 |
 | 追加候補・辞書 | 未実装。Mac移植範囲に目的を記録 | 件数決定・現在候補・出所・索引ハッシュ・LICENSE |
@@ -43,6 +43,10 @@
 
 本書作成は文書作業であり、過去の実行記録を本日再実行したと読み替えない。
 実機手順と個別の条件は[DEVELOPMENT](DEVELOPMENT.md)、[TSF_SPIKE](TSF_SPIKE.md)を参照。
+
+Issue #4の追加分（2026-10-21）は[IPC_PROTOCOL](IPC_PROTOCOL.md)に記録する。
+Protocol 22件のうち16件が追加のJSON・session・Core模擬接続であり、基準コミット当時の14件と混同しない。
+製品TSF配送や別プロセス認証を新たに成功とする更新ではない。
 
 ## 3. アプリ互換表の記録形式
 

@@ -7,6 +7,10 @@
 
 登録済み: [Issue #4](https://github.com/kiyoka/Sumibi-win/issues/4)。
 
+最初の段階として、版1の単一結果JSON、1接続1保留のclient状態、世代・取消・期限・切断・
+再接続とCore模擬接続を実装した（[契約と検証範囲](IPC_PROTOCOL.md)）。
+総接続数・OS相互認証・非同期pipe・製品TSFへの配送は未完了で、下記の受入条件全体を満たした意味ではない。
+
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。
 - named pipeの非同期I/Oと停止伝播、偽server・PID再利用・容量超過・終了待機を試験。

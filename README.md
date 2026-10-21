@@ -14,6 +14,8 @@
 本文や表示属性の変更通知に合わせて表示を自動更新します。
 `input-test` で文字入力・カーソル移動・範囲選択・削除・Enter・Undo/Redoを自動検証し、`demo` では同じ入力経路を手動で試せます。
 デモはF6で下線プレビュー、F7で固定結果へ変換、Escで取消します。LLM通信はまだ行いません。
+Issue #4では版付きJSONとclient接続状態を追加し、取消・切断・再接続・期限切れをCoreと模擬通信で検証しています。
+製品のpipe相互認証とTSFへの接続はまだありません。
 Notepad等の実アプリでの表示と実打鍵は未確認です。
 
 - [実装着手 Issue #1](https://github.com/kiyoka/Sumibi-win/issues/1)

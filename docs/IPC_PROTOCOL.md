@@ -1,9 +1,10 @@
-# IPCフレーム層
+# IPCフレーム・型付きメッセージ・接続状態
 
 2026-10-21 / [Issue #1](https://github.com/kiyoka/Sumibi-win/issues/1)。
-`sumibi-protocol`の最初の実装はOS非依存のフレーム化だけを担当する。
-実際のnamed pipe、peer認証、JSON解釈、要求ID・設定版・認可の検査、Brokerはまだ実装していない。
-この層で成功した本文を変換要求として直接実行しない。
+Issue #1でOS非依存のフレーム化を実装し、Issue #4の最初の段階で版付きJSONと
+client側の要求状態管理を追加した。実named pipeの製品接続、OS peerの相互認証、
+Broker、TSF所有スレッドへの製品配送はまだ実装していない。
+フレーム・JSON・Readyの成功だけで、本文の収集や変換を認可しない。
 
 ## ワイヤー形式
 
@@ -13,8 +14,8 @@
 | 本文 | 非空の厳密なUTF-8。最大262144バイト（256KiB） |
 | フレーム全体 | 長さ4バイト＋本文。最大262148バイト |
 
-将来のJSONを格納するための外側の形式で、現状はJSONであることまで検査しない。
-版と種別は将来のメッセージ層で定義する。公開済みprotocolとの互換性を保証する段階ではない。
+Decoder単体はJSONであることまで検査しない。上位の`message::decode`が構造と値を検査する。
+開発中のprotocolであり、公開済み製品との互換性を保証する段階ではない。
 入力欄の1024 UTF-16単位や送信1000書記素の案とは別の上限である。
 
 ## デコーダーの契約
@@ -32,13 +33,13 @@
 
 ゼロ長・過大長・不正UTF-8で接続状態を終端化する。途中EOFも終端化し、固定のTruncatedを返す。
 不正フレームの後に正常フレームがあっても再同期しない。正常EOF後も同じDecoderを再利用しない。
-再接続は新しいDecoderと、将来の新しいハンドシェイク・要求世代を必要とする。
+再接続は新しいDecoder・ハンドシェイク・接続世代を必要とする。ClientSessionがこれを管理する。
 
 本文を含むDecoderとDecodedにDebugを実装せず、エラーは本文を含まない固定enumとする。
 エラー・EOFでは内部バッファを解放する。通常処理時も不要になった本文は保持対象から外すが、
 アロケーターやOSメモリーからの完全消去を保証するものではない。呼出し側も本文をログへ出さない。
 
-## 検証と次段階
+## フレーム検証
 
 `cargo test -p sumibi-protocol --locked --offline`で次を検証する。
 
@@ -49,6 +50,108 @@
 - 全途中切断位置、正常EOF、不正後の後続フレーム非受理。
 - 大きな不均等チャンクでも1フレーム分の容量を超えないこと。
 
-次は版付きの型付きメッセージ、文字列・件数・整数・重複の検査を追加する。
-その後、模擬トランスポートと要求の取消・切断・再接続を統合し、実named pipeは
-認証・DACL・接続数・相互peer検査の契約を決めてから実装する。実API通信は導入しない。
+## 版1のJSON契約
+
+`message.rs`はSerde 1.0.229 / serde_json 1.0.154へ版を固定する。Cargo.lockで推移依存も固定する。
+独自JSONパーサーを作らず、Serdeの型付きdeserializeと追加の値検査を使用する。
+解析エラーの説明文・不明フィールド名・サーバー本文を外へ返さず、固定MessageErrorへ変換する。
+本文や識別子を含む構造にはDebugを実装しない。codecを迂回してSerdeのエラーをログへ出さない。
+
+すべてのメッセージは、以下の外包と1個だけの種別キーを持つ。
+
+```json
+{
+  "version": 1,
+  "session": "00000000000000000000000000000001",
+  "generation": 1,
+  "message": {
+    "convert": {
+      "request": 1,
+      "revision": { "input": 1, "settings": 1, "authorization": 1 },
+      "timeout_ms": 1000,
+      "text": "nihongo"
+    }
+  }
+}
+```
+
+| 項目 | 検査・意味 |
+| --- | --- |
+| version | 整数1だけ。互換性推測・自動降格をしない |
+| session / broker | 非ゼロ128bit、32桁の小文字16進文字列。製品の生成・安全な起動時受渡しは後続 |
+| session | client寿命の識別子。別clientで再利用しない。PID・COMアドレス・TSF文書IDを送らない |
+| generation | 非ゼロu64。再接続ごとに増加。sessionと合わせて接続を識別 |
+| request | 非ゼロu64。client寿命中単調増加し、再接続・Broker再起動でもリセットしない |
+| revision | input / settings / authorization。非ゼロu64の厳密な整数。浮動小数・文字列・桁あふれを拒否 |
+| text | 原文と単一結果とも非空、最大1024 UTF-16単位。client.beginはコピー前にも検査。1000書記素という製品案とは別 |
+| timeout_ms | 整数1〜60000。現段階のclient期限上限。HTTPの実装や製品期限の実証ではない |
+
+必須フィールド欠損、不明フィールド、重複キー（入れ子も含む）、複数種別、未知種別、
+不正なJSON／サロゲート、後続の別JSON、整数の型違いを拒否する。外側の256KiB上限は解析前に確認する。
+送信側も同じ値検査を行い、文字列のエスケープ後のフレームサイズを再検査する。
+型付きメッセージは単一結果だけを扱い、任意件数の候補配列を受け付けない。
+
+| 種別 | payload |
+| --- | --- |
+| hello | 想定するBroker起動識別子broker |
+| ready | brokerとpolicy（settings / authorization / allowed） |
+| convert | request、revision、timeout_ms、text |
+| cancel | request。同じsession・generationの要求に限定 |
+| result | request、revision、text |
+| error | request、revision、固定code（cancelled / timeout / unavailable / rejected） |
+| policy_changed | settings / authorization / allowed |
+
+Hello/Readyの識別子は照合値であり、秘密や相手プロセスの証明ではない。
+製品transportはHelloを含む一切の送信より前にOS peerを相互検証する必要がある。
+Ready.allowedも、利用者の送信同意・機密欄判定を代替しない。製品の本文収集はまだ有効化しない。
+
+## ClientSessionの寿命・上限
+
+`session.rs`はI/OもCOM参照も持たない。Connecting→Ready→Closedを扱い、
+明示reconnectだけが世代を増やしてConnectingへ戻す。閉じた接続のDecoderを再利用しない。
+同じBroker起動識別子では設定・認可版の下限を再接続後も保持する。
+allowedの変更は認可版の増加を必須とし、版の巻き戻りは接続を閉じる。
+別の、OS検証済みBroker起動へ接続する場合だけpolicy版の新しいepochを許す。
+世代や要求番号が上限へ達したらラップせず拒否する。
+
+接続ごとに未完了手動要求は最大1件、受信Decoderは最大1フレーム。
+beginは値検査・frame生成後にだけ保留状態と番号を更新する。第2要求はBusyで既存要求を維持する。
+送受信キューはこの型内に設けず、receiveは1イベントまでと消費バイト数を返す。
+transportの総接続数・送信容量・受信容量の上限、消費前の予約は後続の実装条件である。
+このclient型だけでBroker全体の容量やbackpressureが完成したとは扱わない。
+
+取消は直ちにローカル要求を失効させ、cancelの送信成功を待たない。取消済み要求は復元しない。
+送信キューへcancelを置けないときはtransportを閉じる。期限切れはexpireと受信の両方で確認し、
+期限ちょうども非適用とする。呼出し側は最新の単調時刻を渡す。
+古いsession・接続世代・要求番号、完了済み重複はIgnoredとなり、現在の要求を消費しない。
+対応する要求の版不一致、受信方向違い、不正フレーム／JSON／版、途中EOFは終端化する。
+有効な対応応答は一度だけ取り出すが、これだけでTSF編集を許可しない。
+
+## Coreとの接続と検証範囲
+
+`tests/core_session.rs`では容量1のchannel上で所有バイト列だけをfake peerへ渡す。
+Hello/Ready、分割された要求／応答を通し、受け手の模擬編集スコープで新しいTargetを取得して
+ManualConversion.finishを呼ぶ。対象・範囲・選択・同長別本文・入力／設定／認可版・許可の変化を拒否する。
+cancel、EOF、通信エラー、期限切れ、policy変更では所有側がCore.cancelも呼ぶ契約を検証する。
+送信キュー満杯も再送せず、接続とCore要求を失効させる。
+
+Protocolは22テスト（既存frame 6、session 8、JSON 4、Core模擬接続4）。
+偽の固定ID・合成本文だけを使い、解析エラーに元の本文を含めない。
+これは製品Core→実pipe→実TSF編集の縦断試験ではなく、既存DLLやdemoにもまだ接続していない。
+SID/PID/起動世代のOS照合、認証用乱数の生成と受渡し、接続全体の有限化、非同期I/O、
+TSF所有スレッドへの配送、通常入力・composition・スコープ判定はIssue #4で引き続き実装する。
+
+型付き変換は純粋なRustの模擬通信だけで検証するため、前面ウィンドウや実API・資格情報を必要としない。
+既存のデスクトップ試験で前面化できない場合でも、その失敗をProtocol成功で置き換えない。
+
+2026-10-21、`tools/Test-Spike.ps1 -SkipDesktop`が成功。workspace合計30テスト、
+fmt、両構成Clippy、ビルド、load_smoke、self-test、edit-test、key-testを確認した。
+この実行ではwindow/input/close/delayed/pipeのデスクトップ試験を省略している。
+合成データのみの検証ログは `target/issue-4-protocol-verification.log`。
+
+新規依存のmetadata上のlicenseはSerde/serde_json/itoa/synがMIT OR Apache-2.0、
+memchrがUnlicense OR MIT、zmijがMIT。Cargo.lockの固定版の宣言MSRVは最大1.71で、
+本リポジトリの実ビルドは固定済みRust 1.99.1を使用した。古いRustでの動作は今回検証していない。
+
+根拠：[Serdeの型付き変換](https://docs.rs/serde/1.0.229/serde/)、
+[serde_json](https://docs.rs/serde_json/1.0.154/serde_json/)。

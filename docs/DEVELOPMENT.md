@@ -5,6 +5,12 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 途中失敗で停止し、既定では専用ウィンドウとログオンSID限定pipeも検証する。
 画面を使用できない環境では `-SkipDesktop` を明示し、未実行の検査を成功扱いにしない。
 
+Issue #4の型付きIPCとclient状態の純粋Rust検証は
+`cargo test -p sumibi-protocol --locked --offline`で実行できる。
+現時点はProtocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、workspace合計30件。
+JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
+形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
+
 ## 環境確認（2026-10-20）
 
 - Windowsの作業フォルダーで開発。ブランチは `codex/issue-1-windows-design`。
