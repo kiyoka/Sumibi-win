@@ -381,11 +381,35 @@ WM_CLOSEは終了要求を記録し、専用のposted wakeを用意する。通�
 `Test-Spike.ps1 -SkipDesktop`とclose-testが成功。単体14件、実編集34ケース、DLL寿命・キー診断、両構成Clippyを確認。
 全デスクトップ検証のwindow-testは、専用画面が前面にならず通常TSFキーを受けられないため今回は失敗した。
 直接コールバック・対象context・前面TSFサービス・修飾キー状態は正常で、ウィンドウが非アクティブだった。
-この実行を全デスクトップ合格として扱わず、修正版の物理的な閉じる操作は利用者の再確認を待つ。
+この実行を全デスクトップ合格として扱わない。
 ログは `target/close-fix-core.log` と `target/close-fix-verification.log`（合成データのみ）。
+
+### クリック判定の修正と手動再確認
+
+上記の終了処理修正だけでは、利用者の「×を押しても何も起こらない」報告が続いた。
+診断ウィンドウをSTATICクラスで作成し、未処理メッセージを元のSTATIC手続きへ渡していた。
+このクラスはWM_NCHITTESTへHTTRANSPARENTを返し、WM_NCLBUTTONDOWNも独自処理するため、
+タイトルバーを表示していても通常のトップレベルウィンドウとしてクリックを扱わなかった。
+
+close-testにWM_GETTITLEBARINFOEXで得た×の中央座標をWM_NCHITTESTへ渡す検証を追加した。
+修正前は実測値-1（HTTRANSPARENT）で失敗し、期待する20（HTCLOSE）にならないことを再現した。
+専用のSumibiDiagnosticWindowクラスを実行ファイル内へ一度登録し、未処理メッセージは
+DefWindowProcへ渡す。STATICのサブクラス化と元の手続きの保持は廃止した。
+通常のアプリウィンドウとしてタスクバーとAlt+Tabに表示し、試用時にも選びやすくした。
+修正後は座標判定と終了処理の4ケース、TSF/COM解除・DLL解放が成功した。
+
+2026-10-21、利用者が修正版の×を押して閉じられたと報告。同じdemo実行は終了コード0で、
+COM/TSF unregister and DLL unload checkも成功した。これは閉じる操作の手動確認記録であり、
+他のキー操作や他アプリでのIME互換性を検証済みとは扱わない。
+自動UI操作によるクリック検証はツールのアプリ承認タイムアウトで未実施。
+単体14件・両構成Clippy・DLL診断は成功。全デスクトップ検証は今回も前面化できないwindow-testで
+停止した（active=false）。ログは `target/caption-fix-verification.log`（合成データのみ）。
 
 ## APIの根拠
 
+- [About Static Controls](https://learn.microsoft.com/en-us/windows/win32/controls/about-static-controls)
+- [WM_NCHITTEST](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-nchittest)
+- [TITLEBARINFOEX](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-titlebarinfoex)
 - [GetMessageW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getmessagew)
 - [WM_CLOSE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-close)
 - [PostQuitMessage](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postquitmessage)

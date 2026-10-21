@@ -4,20 +4,22 @@ use std::cell::{Cell, RefCell};
 use std::ptr;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use std::thread::{self, ThreadId};
 use windows::core::{Interface, Result, HRESULT};
 use windows::Win32::Foundation::{
     E_ABORT, E_FAIL, E_UNEXPECTED, HWND, LPARAM, LRESULT, RPC_E_WRONG_THREAD, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
 use windows::Win32::UI::TextServices::{ITfDocumentMgr, ITfThreadMgr};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallWindowProcW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetForegroundWindow, GetWindowLongPtrW, PostMessageW, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowTextW, TranslateMessage, GWLP_USERDATA, GWLP_WNDPROC, MSG, WM_APP, WM_CHAR, WM_CLOSE,
-    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_NCDESTROY, WM_PAINT, WNDPROC, WS_EX_TOOLWINDOW,
-    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
+    GetWindowLongPtrW, LoadCursorW, PostMessageW, RegisterClassW, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowTextW, TranslateMessage, GWLP_USERDATA, IDC_ARROW, MSG, WM_APP,
+    WM_CHAR, WM_CLOSE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_NCDESTROY, WM_PAINT, WNDCLASSW,
+    WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
 pub(crate) struct Window {
@@ -32,7 +34,6 @@ struct View {
     frame: RefCell<Option<Frame>>,
     painted: Cell<usize>,
     failed: Cell<bool>,
-    previous: Cell<WNDPROC>,
     active: Cell<bool>,
     close_requested: Cell<bool>,
     token: Cell<usize>,
@@ -48,6 +49,8 @@ pub(crate) type Input = Rc<dyn Fn(u32, WPARAM, LPARAM) -> Result<bool>>;
 const WM_REFRESH: u32 = WM_APP + 17;
 const WM_CLOSE_READY: u32 = WM_APP + 18;
 static NEXT_RENDER_TOKEN: AtomicUsize = AtomicUsize::new(1);
+const WINDOW_CLASS_NAME: windows::core::PCWSTR = windows::core::w!("SumibiDiagnosticWindow");
+static WINDOW_CLASS: OnceLock<std::result::Result<(), HRESULT>> = OnceLock::new();
 
 #[derive(Clone)]
 pub(crate) struct RefreshHandle {
@@ -132,7 +135,7 @@ unsafe extern "system" fn window_proc(
                 view.active.set(false);
                 view.queued.set(false);
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-                return CallWindowProcW(view.previous.get(), hwnd, message, wparam, lparam);
+                return DefWindowProcW(hwnd, message, wparam, lparam);
             }
             if message == WM_CLOSE && view.active.get() && view.input.borrow().is_some() {
                 if !view.close_requested.replace(true) {
@@ -241,22 +244,40 @@ unsafe extern "system" fn window_proc(
                 view.painted.set(view.painted.get().saturating_add(1));
                 return LRESULT(0);
             }
-            CallWindowProcW(view.previous.get(), hwnd, message, wparam, lparam)
+            DefWindowProcW(hwnd, message, wparam, lparam)
         }
     }))
     .unwrap_or(LRESULT(0))
 }
 impl Window {
     pub(crate) fn new() -> Result<Self> {
-        // SAFETY: create a built-in STATIC, then subclass its paint handling
-        // while Window owns the callback's stable boxed state.
-        // Creates a short-lived diagnostic view; no injected keyboard events.
+        // SAFETY: register a process-lifetime class in this executable. The
+        // procedure uses DefWindowProc until Window installs its stable Rc state.
+        // STATIC must not be used: its hit testing returns HTTRANSPARENT and
+        // its nonclient mouse handling consumes clicks on the caption buttons.
         unsafe {
+            let instance = GetModuleHandleW(None)?;
+            (*WINDOW_CLASS.get_or_init(|| {
+                let class = WNDCLASSW {
+                    lpfnWndProc: Some(window_proc),
+                    hInstance: instance.into(),
+                    hCursor: LoadCursorW(None, IDC_ARROW).map_err(|error| error.code())?,
+                    hbrBackground: HBRUSH(GetStockObject(WHITE_BRUSH).0),
+                    lpszClassName: WINDOW_CLASS_NAME,
+                    ..Default::default()
+                };
+                if RegisterClassW(&class) == 0 {
+                    Err(windows::core::Error::from_thread().code())
+                } else {
+                    Ok(())
+                }
+            }))
+            .map_err(windows::core::Error::from)?;
             let previous_focus = GetFocus();
             let previous_foreground = GetForegroundWindow();
             let hwnd = CreateWindowExW(
-                WS_EX_TOOLWINDOW,
-                windows::core::w!("STATIC"),
+                WS_EX_APPWINDOW,
+                WINDOW_CLASS_NAME,
                 windows::core::w!("Sumibi TSF diagnostic (automatic test)"),
                 WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                 80,
@@ -265,7 +286,7 @@ impl Window {
                 240,
                 None,
                 None,
-                None,
+                Some(instance.into()),
                 None,
             )?;
             let window = Self {
@@ -282,15 +303,6 @@ impl Window {
             if GetWindowLongPtrW(hwnd, GWLP_USERDATA) != pointer {
                 return Err(E_FAIL.into());
             }
-            let previous = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, window_proc as *const () as isize);
-            if previous == 0 {
-                return Err(E_FAIL.into());
-            }
-            // SAFETY: non-null previous procedure returned by the subclass API.
-            window
-                .view
-                .previous
-                .set(std::mem::transmute::<isize, WNDPROC>(previous));
             Ok(window)
         }
     }

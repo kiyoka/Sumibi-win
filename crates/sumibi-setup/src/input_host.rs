@@ -489,6 +489,30 @@ fn test_close(window: &crate::window_host::Window, editor: &Rc<Editor>, case: &s
         }))?;
     }
     pump(window)?;
+    // A system command alone bypasses mouse hit testing. Check the native
+    // caption button first so a click-through window cannot pass this test.
+    unsafe {
+        let mut title = TITLEBARINFOEX {
+            cbSize: std::mem::size_of::<TITLEBARINFOEX>() as u32,
+            ..Default::default()
+        };
+        SendMessageW(
+            window.hwnd(),
+            WM_GETTITLEBARINFOEX,
+            None,
+            Some(LPARAM((&mut title as *mut TITLEBARINFOEX) as isize)),
+        );
+        let close = title.rgrect[5];
+        assert!(close.right > close.left && close.bottom > close.top);
+        let x = (close.left + close.right) / 2;
+        let y = (close.top + close.bottom) / 2;
+        let point = LPARAM(((x as u16 as u32) | ((y as u16 as u32) << 16)) as isize);
+        let hit = SendMessageW(window.hwnd(), WM_NCHITTEST, None, Some(point));
+        assert_eq!(
+            hit.0, HTCLOSE as isize,
+            "caption close must accept mouse input"
+        );
+    }
     let hwnd = window.hwnd().0 as usize;
     let thread = unsafe { GetCurrentThreadId() };
     let loop_result = std::thread::scope(|scope| {
@@ -530,7 +554,7 @@ fn test_close(window: &crate::window_host::Window, editor: &Rc<Editor>, case: &s
     } else {
         loop_result?;
     }
-    println!("Sent SC_CLOSE / GetMessage shutdown / {case}: OK");
+    println!("Caption HTCLOSE / sent SC_CLOSE / GetMessage shutdown / {case}: OK");
     Ok(())
 }
 
