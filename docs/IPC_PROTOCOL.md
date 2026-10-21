@@ -153,7 +153,10 @@ scope/status/compartmentの保護検査を追加し、実DLLで39ケースを確
 選択プレビューの自己所有compositionを18ケースで検証した
 （[ADR 0008](adr/0008-owned-selection-composition.md)）。所有objectや診断sinkをIPCへ渡さず、
 Brokerの本文取得では引き続きcompositionのない入力先だけを扱う。
-製品の常駐Broker、通常入力・composition・一般アプリでの判定はIssue #4で引き続き実装する。
+所有ホストの実入力範囲もCoreで記録し、tracking-demoから実DLLへ一度だけ選択を渡す経路を追加した
+（[ADR 0009](adr/0009-cooperating-host-input-run.md)）。Startの直前に記録原文・範囲・保護状態・通知世代を
+照合し、失敗した予約は再利用しない。追跡のCOM参照やclosureをworker/IPCへ渡さず、wire形式も変更しない。
+製品の常駐Broker、打鍵ごとのcomposition拡張・一般アプリでの判定はIssue #4で引き続き実装する。
 Protocol自体がOS認証する責務には変更しない。
 
 型付き変換は純粋なRustの模擬通信だけで検証するため、前面ウィンドウや実API・資格情報を必要としない。

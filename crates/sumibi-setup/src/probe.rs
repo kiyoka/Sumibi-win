@@ -131,6 +131,8 @@ enum Exercise {
     Composition,
     OwnedComposition,
     BrokerDemo,
+    TrackingDemo,
+    Tracking,
     Demo,
 }
 
@@ -183,10 +185,12 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "composition-test"
             && args[0] != "owned-composition-test"
             && args[0] != "broker-demo"
+            && args[0] != "tracking-demo"
+            && args[0] != "tracking-input-test"
             && args[0] != "demo")
     {
         return Err(
-            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|close-test|delayed-test|broker-test|broker-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|broker-demo|demo> --dll <sumibi_tip.dll>"
+            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|close-test|delayed-test|broker-test|broker-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
                 .into(),
         );
     }
@@ -248,6 +252,8 @@ pub(super) fn run() -> Result<(), Failure> {
                 Some("composition-test") => Exercise::Composition,
                 Some("owned-composition-test") => Exercise::OwnedComposition,
                 Some("broker-demo") => Exercise::BrokerDemo,
+                Some("tracking-demo") => Exercise::TrackingDemo,
+                Some("tracking-input-test") => Exercise::Tracking,
                 Some("demo") => Exercise::Demo,
                 _ => Exercise::None,
             };
@@ -363,6 +369,8 @@ fn registered_probe(
                 crate::edit_host::exercise_broker_input(&manager.0, app_client)?
             }
             Exercise::BrokerDemo => crate::edit_host::run_broker_demo(&manager.0, app_client)?,
+            Exercise::TrackingDemo => crate::edit_host::run_tracking_demo(&manager.0, app_client)?,
+            Exercise::Tracking => crate::edit_host::exercise_tracking(&manager.0, app_client)?,
             Exercise::Protection => crate::edit_host::exercise_protection(&manager.0, app_client)?,
             Exercise::Composition => {
                 crate::edit_host::exercise_composition(&manager.0, app_client)?

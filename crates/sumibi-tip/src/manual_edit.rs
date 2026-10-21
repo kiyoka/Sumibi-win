@@ -12,6 +12,7 @@ use windows::core::{ComObject, Ref};
 struct Observation {
     owner: ThreadId,
     invalid: Cell<bool>,
+    generation: Cell<Option<u64>>,
 }
 #[implement(ITfTextEditSink, ITfThreadMgrEventSink, ITfCompartmentEventSink)]
 struct Observer {
@@ -28,6 +29,12 @@ impl Observer_Impl {
             }
             if let Some(state) = self.state.upgrade() {
                 state.invalid.set(true);
+                state.generation.set(
+                    state
+                        .generation
+                        .get()
+                        .and_then(|value| value.checked_add(1)),
+                );
             }
             Ok(())
         })
@@ -82,6 +89,7 @@ impl Guard {
         let state = Rc::new(Observation {
             owner: thread::current().id(),
             invalid: Cell::new(false),
+            generation: Cell::new(Some(0)),
         });
         let sink = ComObject::new(Observer {
             state: Rc::downgrade(&state),
@@ -130,6 +138,29 @@ impl Guard {
             return Err(E_ABORT.into());
         }
         Ok(())
+    }
+}
+
+/// Metadata-only observation generation for a cooperating host's input run.
+/// This never authorizes an edit or reads text. Exhaustion remains denied.
+pub struct InputWatch {
+    guard: Guard,
+}
+impl InputWatch {
+    pub fn attach(manager: &ITfThreadMgr, context: &ITfContext) -> Result<Self> {
+        Ok(Self {
+            guard: Guard::new(manager, context)?,
+        })
+    }
+    pub fn generation(&self) -> Result<u64> {
+        if self.guard.state.owner != thread::current().id() {
+            return Err(RPC_E_WRONG_THREAD.into());
+        }
+        self.guard
+            .state
+            .generation
+            .get()
+            .ok_or_else(|| E_ABORT.into())
     }
 }
 

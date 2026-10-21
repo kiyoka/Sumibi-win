@@ -19,11 +19,11 @@ Mac技術解説自身の実装照合基準 `d2b96fc` と区別する。Macの機
 
 | 領域 | 現在の記録範囲での状態 |
 | --- | --- |
-| Coreの応答適用判定 | 実装済み。単一要求の照合のみ。通常入力全体の状態機械ではない |
+| Coreの応答適用判定・入力追跡 | 単一要求の照合と、所有ホストの実入力範囲の記録を実装。製品の通常入力全体の状態機械ではない |
 | TIPのCOM・キー・表示属性・編集 | 専用ホストで実装済み。通常アプリへの常設登録なし |
 | 入力保護 | scope/status/compartmentと取得・送信前・適用時の検査を実装。専用ACPで39ケース。一般アプリの全機密欄の識別は未検証 |
 | 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。実キーボードの手動確認は未実施 |
-| 追跡入力・composition・候補UI | 選択範囲の自己所有compositionと終了を18ケースで確認。通常打鍵の追跡・範囲拡張・製品統合は未実装。他サービスの拒否も16ケースで確認 |
+| 追跡入力・composition・候補UI | 所有ホストの入力範囲を25ケース、選択の自己所有compositionを18ケース、他サービスの拒否を16ケースで確認。打鍵ごとのcomposition拡張・製品統合・候補UIは未実装 |
 | Protocol / IPC | 有限フレーム・版付きJSON・client状態、固定process相互検査・overlapped pipe。実DLLのキー・Core・所有TSFから診断用EXE bridge経由で単発Brokerへ接続。一般アプリは未接続 |
 | Host・HTTP・キー保存・設定UI | 単発の診断Host EXEを実装。既定では変換拒否。常駐Host・HTTP・キー保存・設定UIは未実装 |
 | Decisions・辞書・署名付き配布 | 未実装。後続段階 |
@@ -88,7 +88,7 @@ Coreの `ManualConversion` は上図の従来demoの固定変換経路には統�
 
 | モジュール | 現在の責務・コード |
 | --- | --- |
-| sumibi-core | [lib.rs](../crates/sumibi-core/src/lib.rs)：要求ID、対象、世代の完全照合。unsafe禁止 |
+| sumibi-core | [lib.rs](../crates/sumibi-core/src/lib.rs)：要求ID、対象、世代の完全照合。[input.rs](../crates/sumibi-core/src/input.rs)：実入力範囲の有限追跡。unsafe禁止 |
 | sumibi-tip COM | [com.rs](../crates/sumibi-tip/src/com.rs)：factory、Activate/Deactivate、寿命計数、所有スレッド |
 | キー・検証制御 | [keys.rs](../crates/sumibi-tip/src/keys.rs)、[spike.rs](../crates/sumibi-tip/src/spike.rs)：明示許可context限定、固定変換 |
 | 編集・下線 | [edit.rs](../crates/sumibi-tip/src/edit.rs)、[preview.rs](../crates/sumibi-tip/src/preview.rs)、[display.rs](../crates/sumibi-tip/src/display.rs) |
@@ -164,6 +164,13 @@ F7または許可された予約キーは固定の「日本語」へ変換する
 UTF-16上位サロゲートは下位が揃うまで保留し、不正な組合せは挿入しない。
 1行・1024 UTF-16単位・固定サイズの表示に限定し、書記素クラスタ削除・マウス選択・スクロールは未対応。
 
+追加のtracking-demoは所有ホストが実際に挿入した文字だけをCoreで記録する。
+カーソルが有効な入力範囲の末尾にある場合だけ、F7でその範囲を選択して既存の非同期変換へ渡す。
+移動・外部編集・保護変更等で無効になった範囲を復元せず、全文を推測しない。
+明示選択は従来の選択変換を使う。入力反映自体はホストが一度だけ行い、追跡失敗で再送しない。
+通知世代・composition counter・送信直前の原文完全一致を使う限定経路であり、
+打鍵ごとのcomposition拡張や一般アプリの統合ではない（[ADR 0009](adr/0009-cooperating-host-input-run.md)）。
+
 ### 5.2 製品の追跡入力（未実装）
 
 TSF compositionの開始／終了、通常文字の反映、下線属性、追跡範囲の更新を一つの入力取引として扱う。
@@ -191,7 +198,9 @@ APIの同期／非同期指定は[Microsoftの契約](https://learn.microsoft.co
 現在の1024 UTF-16単位はアダプターの技術上限で、後述する送信1000書記素の上限と別である。
 Coreの`Target`はcontext/rangeの不透明ID、選択、UTF-16全文、入力・設定・認可の版、allowedを持つ。
 同じ要求の応答は照合失敗でも消費するが、別要求の古い応答で現在の要求を消さない。
-現在のCoreには容量制限や追跡入力全体の処理はなく、呼出し側が追加の上限を担う。
+ManualConversionのTargetには独立の容量制限を設けず、呼出し側が上限を担う。
+追加のCore InputSessionは所有ホストの入力範囲を1024 UTF-16単位に制限する。
+製品の追跡入力全体や待機・救済の処理ではない。
 
 ## 7. 下線・通知・描画（実装済み）
 

@@ -1,7 +1,7 @@
 //! EXE-owned worker bridge for the DLL's diagnostic ABI. No DLL reference,
 //! COM target, callback pointer or Rust allocation is retained by a worker.
 #![allow(non_snake_case)]
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::os::windows::io::AsRawHandle;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,7 +21,10 @@ pub(crate) struct Bridge {
     mode: Mode,
     reserved: RefCell<Option<(u64, Reservation)>>,
     job: RefCell<Option<(u64, BrokerJob)>>,
+    input_check: RefCell<Option<InputCheck>>,
+    checking_input: Cell<bool>,
 }
+pub(crate) type InputCheck = Box<dyn FnOnce(&[u16]) -> Result<()>>;
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(0);
 impl Bridge {
     pub(crate) fn new(
@@ -40,6 +43,8 @@ impl Bridge {
             mode,
             reserved: RefCell::new(None),
             job: RefCell::new(None),
+            input_check: RefCell::new(None),
+            checking_input: Cell::new(false),
         }))
     }
     fn check(&self) -> Result<()> {
@@ -58,6 +63,19 @@ impl Bridge {
     }
     pub(crate) fn active(&self) -> bool {
         self.job.borrow().is_some() || self.reserved.borrow().is_some()
+    }
+    /// Owner-only, one synchronous attempt. Drop all captured targets before a
+    /// worker can start; no checker or COM reference enters Request/BrokerJob.
+    pub(crate) fn check_next_input(&self, check: InputCheck) -> Result<()> {
+        self.check()?;
+        if self.active() || self.checking_input.get() || self.input_check.borrow().is_some() {
+            return Err(E_ABORT.into());
+        }
+        *self.input_check.borrow_mut() = Some(check);
+        Ok(())
+    }
+    pub(crate) fn clear_input_check(&self) {
+        self.input_check.borrow_mut().take();
     }
     /// Owner-loop only, outside WndProc. A completed worker has already reaped
     /// its child; drop never waits or schedules a DLL callback.
@@ -108,6 +126,7 @@ impl Bridge {
     /// the EXE, so even a failing teardown cannot execute unloaded DLL code.
     pub(crate) fn shutdown(&self) -> Result<()> {
         self.check()?;
+        self.clear_input_check();
         self.reserved.borrow_mut().take();
         let job = self.job.borrow_mut().take();
         if let Some((_, mut job)) = job {
@@ -138,7 +157,7 @@ impl ISpikeBrokerTransport_Impl for Bridge_Impl {
             unsafe {
                 output.write(0);
             }
-            if self.active() {
+            if self.active() || self.checking_input.get() {
                 return Err(E_ABORT.into());
             }
             let reservation =
@@ -169,6 +188,7 @@ impl ISpikeBrokerTransport_Impl for Bridge_Impl {
         boundary(|| {
             self.check()?;
             if request == 0
+                || self.checking_input.get()
                 || self.reserved.borrow().as_ref().map(|(id, _)| *id) != Some(request)
                 || self.job.borrow().is_some()
             {
@@ -178,9 +198,23 @@ impl ISpikeBrokerTransport_Impl for Bridge_Impl {
                 return Err(E_INVALIDARG.into());
             }
             // SAFETY: diagnostic caller borrows readable UTF-16 for this call.
+            let units = unsafe { std::slice::from_raw_parts(text, length as usize) };
             let text =
-                String::from_utf16(unsafe { std::slice::from_raw_parts(text, length as usize) })
-                    .map_err(|_| windows::core::Error::from(E_INVALIDARG))?;
+                String::from_utf16(units).map_err(|_| windows::core::Error::from(E_INVALIDARG))?;
+            let check = self.input_check.borrow_mut().take();
+            if let Some(check) = check {
+                // Metadata inspection calls COM and can reenter the bridge.
+                // A consumed checker must not expose an unchecked Start.
+                self.checking_input.set(true);
+                let checked = boundary(|| check(units)).ok();
+                self.checking_input.set(false);
+                if let Err(error) = checked {
+                    // A failed one-shot check also retires its reservation;
+                    // retrying Start cannot bypass a consumed check.
+                    self.reserved.borrow_mut().take();
+                    return Err(error);
+                }
+            }
             let (_, reservation) = self.reserved.borrow_mut().take().ok_or(E_ABORT)?;
             let job = reservation
                 .start(
@@ -212,6 +246,7 @@ impl ISpikeBrokerTransport_Impl for Bridge_Impl {
                 .is_some_and(|(id, _)| *id == request)
             {
                 self.reserved.borrow_mut().take();
+                self.clear_input_check();
             }
             if let Some((id, job)) = self.job.borrow().as_ref() {
                 if *id == request {

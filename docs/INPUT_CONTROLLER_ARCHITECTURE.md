@@ -21,6 +21,9 @@
 | Window / View | HWND、Frame、入力callback、refresh識別子、旧WndProc | WM_NCDESTROYでactiveを落とし、旧予約を無効化 |
 | Binding | context、client、購読cookie、Scene、弱Viewへのrefresh handle | closeでactiveを落とし、表示を消し、購読解除 |
 | Association | manager、文書、旧関連付け、弱View | 生存中のHWNDだけ関連付けを戻す。破棄後の同じHWND値へ触れない |
+| Core InputSession / TrackedInput | 所有ホストの実入力UTF-16、範囲、context識別、通知世代と選択 | 不一致・境界・上限超過で消去。takeで一度だけ消費。Debug・永続化なし |
+| setup Tracking / InputWatch | 所有STAのmanager/client、メタデータ通知購読、Core記録、自動選択の印 | 挿入前後とF7の検査。通知世代はラップしない。workerへ参照を渡さない |
+| bridge InputCheck | 次のStartに限定する原文・範囲・保護状態の検査closure | 同期呼出し中に消費・解放。失敗時は予約も失効。F7終了・shutdownでも解除 |
 
 ## 2. 強参照と弱参照
 
@@ -70,6 +73,11 @@ scopeのStampと通知、MSCTF内部読取との境界は[ADR 0006](adr/0006-inp
 選択プレビューは自分のcompositionを開始し、終了後に従来の本文検査を行う。
 診断ホストの共有EXE sinkにはDLL参照を持たせず、開始拒否でOS側に参照が残ってもDLLをpinしない。
 強制終了のidentity検査と契約・制限は[ADR 0008](adr/0008-owned-selection-composition.md)を参照。
+所有ホストの入力範囲を追跡するTrackingも追加した。通常入力はホストが一度だけ反映し、
+挿入前後のメタデータ・通知世代をCoreへ渡す。F7の自動選択は一度だけ使い、
+Startの同期検査で実DLLから渡された原文と照合してから全COM参照を手放す。
+専用EXEが入力を観測できる前提であり、一般アプリの入力取得ではない
+（[ADR 0009](adr/0009-cooperating-host-input-run.md)）。
 Controllerのbusyガードにより操作中の再入を拒否し、自分の書込で生じる通知を外部編集と誤認しない。
 TSFを呼ぶ前にRefCellの借用を解放し、通知やウィンドウ破棄が再入しても借用違反を起こさないようにする。
 

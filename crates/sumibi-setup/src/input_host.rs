@@ -8,6 +8,10 @@ use windows::Win32::Foundation::{E_ACCESSDENIED, LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+#[path = "tracking_host.rs"]
+mod tracking_host;
+pub(crate) use tracking_host::{exercise_tracking, run_tracking_demo};
+
 impl TextStore {
     fn boundary(&self, position: usize) -> bool {
         let text = self.text.borrow();
@@ -176,9 +180,19 @@ struct Editor {
     high: Cell<Option<(u16, usize)>>,
     submits: Cell<usize>,
     broker: Option<(ISpikeBroker, ComObject<Bridge>)>,
+    tracking: Option<tracking_host::Tracking>,
 }
 impl Editor {
+    fn clear_tracking(&self) {
+        if let Some(tracking) = &self.tracking {
+            tracking.clear();
+        }
+    }
     fn insert(&self, text: &[u16]) -> Result<()> {
+        let before = self
+            .tracking
+            .as_ref()
+            .and_then(|tracking| tracking.observe(self));
         let selection = self.store.get().selection.get();
         let (start, end) = self
             .store
@@ -186,12 +200,22 @@ impl Editor {
             .bounds(selection.acpStart, selection.acpEnd)?;
         let length = self.store.get().text.borrow().len();
         if length - (end - start) + text.len() > MAX_SELECTION_UNITS {
+            self.clear_tracking();
             return Ok(());
         }
-        self.store.get().type_text(text)
+        let result = self.store.get().type_text(text);
+        if let Some(tracking) = &self.tracking {
+            if result.is_ok() {
+                tracking.inserted(self, before, text);
+            } else {
+                tracking.clear();
+            }
+        }
+        result
     }
     fn input(&self, message: u32, key: WPARAM, flags: LPARAM) -> Result<bool> {
         if message == WM_CLOSE {
+            self.clear_tracking();
             self.high.set(None);
             // SAFETY: revoke this editor's owner-thread grant before its view
             // is destroyed, so cleanup still has a live native input target.
@@ -201,6 +225,7 @@ impl Editor {
             return Ok(false);
         }
         if message == WM_KILLFOCUS {
+            self.clear_tracking();
             self.high.set(None);
             if self.broker.is_some() {
                 unsafe {
@@ -224,7 +249,9 @@ impl Editor {
             .unwrap_or(false));
         }
         if message == WM_KEYDOWN {
-            self.high.set(None);
+            if self.high.take().is_some() {
+                self.clear_tracking();
+            }
             // SAFETY: test first; only invoke KeyDown when TSF requests it.
             let consumed = unsafe {
                 self.keys.TestKeyDown(key, flags).and_then(|test| {
@@ -242,6 +269,7 @@ impl Editor {
             }
             if let Some((broker, _)) = &self.broker {
                 if matches!(key.0, 0x1b | 0x0d) {
+                    self.clear_tracking();
                     let mut pending = 0;
                     unsafe {
                         let _ = broker.Pending(&mut pending);
@@ -253,6 +281,10 @@ impl Editor {
                 }
             }
             if matches!(key.0, 0x23..=0x25 | 0x27 | 0x2e) {
+                self.clear_tracking();
+                if let Some(tracking) = &self.tracking {
+                    tracking.user_boundary();
+                }
                 // SAFETY: read the calling thread's keyboard state; never modify it.
                 let (shift, modified) = unsafe {
                     (
@@ -300,24 +332,46 @@ impl Editor {
                         }
                         let selected = self.store.get().selection.get();
                         if selected.acpStart == selected.acpEnd {
-                            let length = self.store.get().text.borrow().len();
-                            self.store.get().host_selection(0, length)?;
+                            if let Some(tracking) = &self.tracking {
+                                if !tracking.select(self, bridge)? {
+                                    return Ok(true);
+                                }
+                            } else {
+                                let length = self.store.get().text.borrow().len();
+                                self.store.get().host_selection(0, length)?;
+                            }
+                        } else {
+                            if self
+                                .tracking
+                                .as_ref()
+                                .is_some_and(|tracking| tracking.blocks_selection())
+                            {
+                                return Ok(true);
+                            }
+                            self.clear_tracking();
                         }
                         let transport = bridge.to_interface::<ISpikeBrokerTransport>();
                         // Explicit F7 opt-in for this owned ACP context only.
                         unsafe {
-                            broker
+                            let attached = broker
                                 .Attach(self.context.as_raw(), transport.as_raw())
-                                .ok()?;
+                                .ok();
+                            if let Err(error) = attached {
+                                bridge.get().clear_input_check();
+                                return Err(error);
+                            }
                         }
                     }
                     // SAFETY: same-thread command for this editor's context;
                     // no keyboard event is sent to the desktop or other apps.
-                    unsafe {
-                        let _ = self
-                            .keys
-                            .SimulatePreservedKey(&self.context, &COMMAND_CONVERT)?;
+                    let result = unsafe {
+                        self.keys
+                            .SimulatePreservedKey(&self.context, &COMMAND_CONVERT)
+                    };
+                    if let Some((_, bridge)) = &self.broker {
+                        bridge.get().clear_input_check();
                     }
+                    let _ = result?;
                     return Ok(true);
                 }
                 _ => return Ok(false),
@@ -332,29 +386,48 @@ impl Editor {
             }
         }
         let Ok(unit) = u16::try_from(key.0) else {
+            self.clear_tracking();
             self.high.set(None);
             return Ok(true);
         };
         let repeats = (flags.0 as usize & 0xffff).max(1);
         if repeats > MAX_SELECTION_UNITS {
+            self.clear_tracking();
             self.high.set(None);
             return Ok(true);
         }
         if (0xd800..=0xdbff).contains(&unit) {
+            if self.high.get().is_some() {
+                self.clear_tracking();
+            }
             self.high.set(Some((unit, repeats)));
             return Ok(true);
         }
         let previous = self.high.take();
         if self.store.get().readonly.get() {
+            self.clear_tracking();
             return Ok(true);
         }
         if (0xdc00..=0xdfff).contains(&unit) {
             if let Some((high, count)) = previous {
                 if count == repeats && count <= MAX_SELECTION_UNITS / 2 {
                     self.insert(&[high, unit].repeat(count))?;
+                } else {
+                    self.clear_tracking();
                 }
+            } else {
+                self.clear_tracking();
             }
             return Ok(true);
+        }
+        if unit < 0x20 || unit == 0x7f {
+            self.clear_tracking();
+            if let Some(tracking) = &self.tracking {
+                tracking.user_boundary();
+            }
+        }
+        if previous.is_some() {
+            self.clear_tracking();
         }
         match unit {
             0x01 => {
@@ -441,6 +514,8 @@ enum RunMode {
     BrokerDemo,
     BrokerInputTest(&'static str),
     CloseTest(&'static str),
+    TrackingDemo,
+    TrackingTest(&'static str),
 }
 
 fn run(
@@ -475,7 +550,18 @@ fn run(
             .GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)?
             .GetFunction(&FUNCTION_TEST_CONTROL, &ISpikeControl::IID)?
             .cast()?;
-        let broker = if matches!(mode, RunMode::BrokerDemo | RunMode::BrokerInputTest(_)) {
+        let tracking = if matches!(mode, RunMode::TrackingDemo | RunMode::TrackingTest(_)) {
+            Some(tracking_host::Tracking::new(manager, &context, client)?)
+        } else {
+            None
+        };
+        let broker = if matches!(
+            mode,
+            RunMode::BrokerDemo
+                | RunMode::BrokerInputTest(_)
+                | RunMode::TrackingDemo
+                | RunMode::TrackingTest(_)
+        ) {
             window.set_title("Sumibi 非同期変換デモ（固定結果） | F7 変換 | Esc 取消 | Enter 原文確定 | Ctrl+Z Undo")?;
             let broker: ISpikeBroker = manager
                 .GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)?
@@ -498,6 +584,7 @@ fn run(
             high: Cell::new(None),
             submits: Cell::new(0),
             broker,
+            tracking,
         });
         let input = editor.clone();
         window.set_input(Rc::new(move |message, key, flags| {
@@ -507,11 +594,22 @@ fn run(
         let outcome = if matches!(mode, RunMode::Demo) {
             println!("Type in the single-line demo. F6 previews, F7 converts, Enter confirms the original. Close the window to exit.");
             message_loop(&window)
-        } else if matches!(mode, RunMode::BrokerDemo) {
-            println!("Async fixed-result demo: F7 converts the selection (or all text), Esc cancels, Enter confirms the original. Close to exit.");
+        } else if matches!(mode, RunMode::BrokerDemo | RunMode::TrackingDemo) {
+            if matches!(mode, RunMode::TrackingDemo) {
+                window.set_title(
+                    "Sumibi 入力範囲の変換デモ | F7 入力範囲を変換 | 範囲選択可 | Ctrl+Z Undo",
+                )?;
+            }
+            if matches!(mode, RunMode::TrackingDemo) {
+                println!("Tracked input demo: F7 converts the recent typed run or an explicit selection. Esc cancels; Enter confirms the original. Close to exit.");
+            } else {
+                println!("Async fixed-result demo: F7 converts the selection (or all text), Esc cancels, Enter confirms the original. Close to exit.");
+            }
             broker_message_loop(&window, &editor)
         } else if let RunMode::BrokerInputTest(case) = mode {
             test_broker_input(&window, &editor, &live, client, case)
+        } else if let RunMode::TrackingTest(case) = mode {
+            tracking_host::test_tracking(&window, &editor, &live, client, case)
         } else if let RunMode::CloseTest(case) = mode {
             test_close(&window, &editor, case)
         } else {

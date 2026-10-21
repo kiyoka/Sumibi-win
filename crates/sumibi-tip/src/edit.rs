@@ -48,6 +48,60 @@ pub struct SelectionSnapshot {
     protection: crate::protection::Stamp,
     owner: ThreadId,
 }
+/// Current selection/protection only. A collapsed caret is valid here; no
+/// ITfRange.GetText call or inferred word/range search is performed.
+#[derive(Clone, Copy)]
+pub struct InputMetadata {
+    pub selection: (i32, i32),
+    protection: crate::protection::Stamp,
+}
+impl InputMetadata {
+    pub fn same_protection(&self, other: &Self) -> bool {
+        self.protection == other.protection
+    }
+}
+pub fn inspect_input(
+    manager: &ITfThreadMgr,
+    context: &ITfContext,
+    client: u32,
+) -> Result<InputMetadata> {
+    let manager = manager.clone();
+    let target = context.clone();
+    let output = Rc::new(RefCell::new(None));
+    let result = output.clone();
+    run(
+        context,
+        client,
+        false,
+        Box::new(move |cookie| {
+            ensure_target(&manager, &target)?;
+            let (range, _) = selection(&target, cookie)?;
+            if !same_context(&unsafe { range.GetContext()? }, &target)? {
+                return Err(E_ABORT.into());
+            }
+            let protection = crate::protection::check(&target, &range, cookie)?;
+            let acp: ITfRangeACP = range.cast()?;
+            let mut start = 0i32;
+            let mut length = 0i32;
+            unsafe {
+                acp.GetExtent(&mut start, &mut length)?;
+            }
+            let end = start.checked_add(length).ok_or(E_ABORT)?;
+            if start < 0 || length < 0 {
+                return Err(E_ABORT.into());
+            }
+            crate::protection::validate(&target, &range, cookie, protection)?;
+            ensure_target(&manager, &target)?;
+            *result.borrow_mut() = Some(InputMetadata {
+                selection: (start, end),
+                protection,
+            });
+            Ok(())
+        }),
+    )?;
+    let metadata = output.borrow_mut().take().ok_or(E_FAIL)?;
+    Ok(metadata)
+}
 
 type EditAction = Box<dyn FnOnce(u32) -> Result<()>>;
 

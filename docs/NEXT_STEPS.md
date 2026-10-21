@@ -22,11 +22,15 @@
 次に他サービスのcompositionを同じcontextで検出して拒否し、通知による取消を追加した。
 実DLL/TSFで16ケースと専用デモの空composition回帰を確認した
 （[ADR 0007](adr/0007-foreign-composition-boundary.md)）。空compositionの履歴取消には所有ホストの協力が必要。
-自分の追跡compositionと一般アプリへの統合は引き続き未実装。
+打鍵ごとの追跡compositionと一般アプリへの統合は引き続き未実装。
 続いてF6プレビューの選択範囲を自己所有のcompositionとして保持する基盤を追加し、
 開始拒否・確定・取消・強制終了・別compositionへの非適用を18ケースで確認した
 （[ADR 0008](adr/0008-owned-selection-composition.md)）。これは既存選択の寿命管理であり、
 通常打鍵の追跡・範囲拡張や製品InputSessionの完了ではない。
+さらにCoreに所有ホストの実入力範囲を記録する基盤を追加し、tracking-demoから実DLL・非同期Brokerへ接続した。
+移動・編集・保護状態変更等による失効、入力範囲だけの変換・1回Undo・取消・送信前再照合を25ケースで確認した
+（[ADR 0009](adr/0009-cooperating-host-input-run.md)）。通常入力はホストで一度だけ反映する。
+次の入力基盤の課題は、打鍵ごとのcomposition取引と範囲拡張、一般アプリ内での同じ失効・寿命保証である。
 
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。

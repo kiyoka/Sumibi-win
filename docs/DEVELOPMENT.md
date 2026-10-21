@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はProtocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 6件、保護判定3件、composition列挙1件を含めworkspace合計40件。
+現時点はCore 12件（応答照合7・入力範囲追跡5）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 6件、TIP 5件を含めworkspace合計45件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -113,8 +113,37 @@ workspaceビルドの後で実行する。2026-10-22、実DLLの16ケースと�
 F6プレビューは既存選択の下線とcompositionを保持し、F7・Esc・Enter等で自分のcompositionを終了する。
 ホスト開始拒否・強制終了・拒否後の再開始・別compositionとの競合・通常成功の1回Undoも確認する。
 専用ホストがEXE内の共有通知サービスを提供する構成であり、一般アプリへ同じ存在を仮定しない。
-選択の寿命管理までで、通常打鍵の追跡やcompositionの範囲拡張は未実装。
+このF6経路は選択の寿命管理まで。通常打鍵のcomposition拡張は未実装で、入力範囲の追跡は次節の専用経路で試す。
 条件とWindowsのsink参照残留の扱いは[ADR 0008](adr/0008-owned-selection-composition.md)、ログは `target/issue-4-owned-*.log`。
+
+## 通常入力の範囲だけを変換する
+
+リポジトリのルート（README.mdやCargo.tomlがあるフォルダー）で実行する。
+
+```powershell
+cargo build --workspace --locked --offline
+cargo build -p sumibi-host --features spike --locked --offline
+./target/debug/sumibi-setup.exe tracking-demo --dll ./target/debug/sumibi_tip.dll
+```
+
+文字を入力し、そのままF7を押すと直前の連続入力を固定の「日本語」へ変換する。
+カーソル移動・削除・外部編集・focus喪失等で追跡を終えたら、未選択のF7は何も変換しない。
+新しく入力した分は新しい追跡対象になり、既存prefix/suffixを含めない。
+明示的なShift選択やCtrl+Aの範囲も変換できる。F6は使用しない。
+待機中Escで取消、Enterで原文確定、Ctrl+Zで変換前へ1回Undo、×で終了する。
+従来のbroker-demoは未選択時に全文変換するので、入力範囲の動作確認にはtracking-demoを使う。
+
+自動検証は次のコマンド。2026-10-22のWindows 11 x64 build 26300 / medium / Rust 1.99.1で
+25ケースと解除・DLLアンロードが成功した。同日にTest-Spike.ps1の全検査も省略なしで成功している。
+
+```powershell
+./target/debug/sumibi-setup.exe tracking-input-test --dll ./target/debug/sumibi_tip.dll
+```
+
+通常入力はホストで一度だけ反映し、追跡できないときも再送・取消しない。
+Coreの記録上限は1024 UTF-16単位。保護メタデータを入力前後と送信前に検査する。
+専用ホストの協力が前提で、打鍵ごとのcomposition拡張や一般アプリの製品InputSessionではない。
+詳細は[ADR 0009](adr/0009-cooperating-host-input-run.md)、ログは `target/issue-4-tracking-*.log`。
 
 ## 初期環境の記録（2026-10-20）
 

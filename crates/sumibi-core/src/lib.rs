@@ -5,6 +5,8 @@
 //! that session. Context/range identifiers must never be reused within a session.
 #![forbid(unsafe_code)]
 
+pub mod input;
+
 /// Opaque, globally unique request identity supplied by the future adapter.
 /// Never reuse an identity, including after cancellation or reconnection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
