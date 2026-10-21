@@ -122,6 +122,7 @@ enum Exercise {
     Key,
     Window,
     Input,
+    Close,
     Delayed,
     Demo,
 }
@@ -158,11 +159,12 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "key-test"
             && args[0] != "window-test"
             && args[0] != "input-test"
+            && args[0] != "close-test"
             && args[0] != "delayed-test"
             && args[0] != "demo")
     {
         return Err(
-            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|delayed-test|demo> --dll <sumibi_tip.dll>"
+            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|close-test|delayed-test|demo> --dll <sumibi_tip.dll>"
                 .into(),
         );
     }
@@ -215,6 +217,7 @@ pub(super) fn run() -> Result<(), Failure> {
                 Some("key-test") => Exercise::Key,
                 Some("window-test") => Exercise::Window,
                 Some("input-test") => Exercise::Input,
+                Some("close-test") => Exercise::Close,
                 Some("delayed-test") => Exercise::Delayed,
                 Some("demo") => Exercise::Demo,
                 _ => Exercise::None,
@@ -323,6 +326,7 @@ fn registered_probe(
             Exercise::Key => crate::edit_host::exercise_keys(&manager.0, app_client)?,
             Exercise::Window => crate::edit_host::exercise_window_keys(&manager.0, app_client)?,
             Exercise::Input => crate::edit_host::exercise_input(&manager.0, app_client)?,
+            Exercise::Close => crate::edit_host::exercise_close(&manager.0, app_client)?,
             Exercise::Delayed => crate::edit_host::exercise_delayed(&manager.0, app_client)?,
             Exercise::Demo => crate::edit_host::run_demo(&manager.0, app_client)?,
         }

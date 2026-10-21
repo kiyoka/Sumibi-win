@@ -364,7 +364,31 @@ Shift選択は同じ選択処理へ明示的に修飾状態を渡して検証す
 `demo` のGetMessageループはウィンドウが閉じられるまで動作する。
 自動検証には `input-test`、手動試験には `demo` を使用する。操作はDEVELOPMENT.mdを参照。
 
+## 閉じるボタンの停止修正（2026-10-21）
+
+利用者の手動試用で、閉じるボタンを押しても終了しない報告があった。
+旧経路はWndProc内の取消失敗時にWM_CLOSEを消費して破棄しない。
+またGetMessageは同期送信を内部配送できるため、破棄だけでは待機解除を保証できなかった。
+
+WM_CLOSEは終了要求を記録し、専用のposted wakeを用意する。通常の後始末とDestroyWindowは
+外側のroute_messageへ移し、取消失敗でも破棄する。既にTIPがDeactivate済みで弱Controllerが
+消えている場合、RevokeContextは安全な再取消として成功し、新たなPreviewは引き続き拒否する。
+
+`close-test`は別threadから同期WM_SYSCOMMAND/SC_CLOSEを送り、実GetMessageループが終了することを検証する。
+待機・送信は期限を設け、退行時にも検証自体が永久停止しない。通常、下線中、取消済み、意図的解除エラーの4件が成功。
+自動試験で従来使ったposted WM_CLOSEだけでは実際の閉じる通知の経路を十分に覆っていなかった。
+
+`Test-Spike.ps1 -SkipDesktop`とclose-testが成功。単体14件、実編集34ケース、DLL寿命・キー診断、両構成Clippyを確認。
+全デスクトップ検証のwindow-testは、専用画面が前面にならず通常TSFキーを受けられないため今回は失敗した。
+直接コールバック・対象context・前面TSFサービス・修飾キー状態は正常で、ウィンドウが非アクティブだった。
+この実行を全デスクトップ合格として扱わず、修正版の物理的な閉じる操作は利用者の再確認を待つ。
+ログは `target/close-fix-core.log` と `target/close-fix-verification.log`（合成データのみ）。
+
 ## APIの根拠
+
+- [GetMessageW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getmessagew)
+- [WM_CLOSE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-close)
+- [PostQuitMessage](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postquitmessage)
 
 - [AdviseKeyEventSink](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfkeystrokemgr-advisekeyeventsink)
 - [UnadviseKeyEventSink](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfkeystrokemgr-unadvisekeyeventsink)

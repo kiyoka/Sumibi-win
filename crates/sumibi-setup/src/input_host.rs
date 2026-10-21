@@ -347,19 +347,35 @@ pub(crate) fn exercise_input(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    run(manager, client, false)
+    run(manager, client, RunMode::InputTest)
 }
 pub(crate) fn run_demo(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    run(manager, client, true)
+    run(manager, client, RunMode::Demo)
+}
+
+pub(crate) fn exercise_close(
+    manager: &ITfThreadMgr,
+    client: u32,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    for case in ["idle", "preview", "revoked", "cleanup-error"] {
+        run(manager, client, RunMode::CloseTest(case))?;
+    }
+    Ok(())
+}
+
+enum RunMode {
+    InputTest,
+    Demo,
+    CloseTest(&'static str),
 }
 
 fn run(
     manager: &ITfThreadMgr,
     client: u32,
-    interactive: bool,
+    mode: RunMode,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     // SAFETY: this process owns the view, text store, apartment and all interfaces.
     unsafe {
@@ -400,19 +416,11 @@ fn run(
             input.input(message, key, flags)
         }))?;
         let mut live = crate::live_render::Binding::attach(&window, &context, client)?;
-        if interactive {
+        if matches!(mode, RunMode::Demo) {
             println!("Type in the single-line demo. F6 previews, F7 converts, Enter confirms the original. Close the window to exit.");
-            let mut message = MSG::default();
-            while window.is_open() {
-                let result = GetMessageW(&mut message, None, 0, 0).0;
-                if result < 0 {
-                    return Err(windows::core::Error::from_thread().into());
-                }
-                if result == 0 {
-                    break;
-                }
-                window.route_message(&message)?;
-            }
+            message_loop(&window)?;
+        } else if let RunMode::CloseTest(case) = mode {
+            test_close(&window, &editor, case)?;
         } else {
             test_input(&window, &editor, &live)?;
         }
@@ -433,6 +441,96 @@ fn run(
             .close()
             .map_err(|error| format!("input association cleanup: {error}"))?;
     }
+    Ok(())
+}
+
+fn message_loop(window: &crate::window_host::Window) -> Result<()> {
+    // SAFETY: retrieve and route only the calling STA's messages.
+    unsafe {
+        let mut message = MSG::default();
+        while window.is_open() {
+            let result = GetMessageW(&mut message, None, 0, 0).0;
+            if result < 0 {
+                return Err(windows::core::Error::from_thread());
+            }
+            if result == 0 {
+                break;
+            }
+            window.route_message(&message)?;
+        }
+    }
+    window.input_status()
+}
+
+fn test_close(window: &crate::window_host::Window, editor: &Rc<Editor>, case: &str) -> Result<()> {
+    use std::sync::mpsc::sync_channel;
+    use std::time::Duration;
+    use windows::Win32::Foundation::{E_ABORT, HWND};
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    editor.insert(&"nihongo".encode_utf16().collect::<Vec<_>>())?;
+    if matches!(case, "preview" | "revoked") {
+        editor.input(WM_KEYDOWN, WPARAM(0x75), LPARAM(1))?;
+        if case == "revoked" {
+            unsafe {
+                editor.control.RevokeContext().ok()?;
+            }
+        }
+    }
+    if case == "cleanup-error" {
+        window.clear_input();
+        let input = editor.clone();
+        window.set_input(Rc::new(move |message, key, flags| {
+            input.input(message, key, flags)?;
+            if message == WM_CLOSE {
+                Err(E_ABORT.into())
+            } else {
+                Ok(false)
+            }
+        }))?;
+    }
+    pump(window)?;
+    let hwnd = window.hwnd().0 as usize;
+    let thread = unsafe { GetCurrentThreadId() };
+    let loop_result = std::thread::scope(|scope| {
+        let (finished, wait) = sync_channel(1);
+        let worker = scope.spawn(move || {
+            // SAFETY: only the synthetic view, kept alive until join. Simulate
+            // the close button's synchronous system command, not posted WM_CLOSE.
+            unsafe {
+                let sent = SendMessageTimeoutW(
+                    HWND(hwnd as *mut _),
+                    WM_SYSCOMMAND,
+                    WPARAM(SC_CLOSE as usize),
+                    LPARAM(0),
+                    SMTO_ABORTIFHUNG,
+                    1000,
+                    None,
+                );
+                let timed_out = wait.recv_timeout(Duration::from_secs(2)).is_err();
+                if timed_out {
+                    // Bound regressions: wake the loop rather than hang CI.
+                    let _ = PostThreadMessageW(thread, WM_QUIT, WPARAM(1), LPARAM(0));
+                }
+                (sent.0 != 0, timed_out)
+            }
+        });
+        let result = message_loop(window);
+        let _ = finished.send(());
+        let (sent, timed_out) = worker.join().expect("close fixture worker");
+        assert!(sent, "close command was not dispatched");
+        assert!(!timed_out, "close did not release GetMessage");
+        result
+    });
+    assert!(
+        !window.is_open(),
+        "close must destroy the view even if cleanup fails"
+    );
+    if case == "cleanup-error" {
+        assert_eq!(loop_result.unwrap_err().code(), E_ABORT);
+    } else {
+        loop_result?;
+    }
+    println!("Sent SC_CLOSE / GetMessage shutdown / {case}: OK");
     Ok(())
 }
 

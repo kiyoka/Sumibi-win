@@ -30,6 +30,7 @@ cargo run -p sumibi-setup --locked -- self-test --dll target/debug/sumibi_tip.dl
 cargo run -p sumibi-setup --locked -- edit-test --dll target/debug/sumibi_tip.dll
 cargo run -p sumibi-setup --locked -- key-test --dll target/debug/sumibi_tip.dll
 cargo run -p sumibi-setup --locked -- delayed-test --dll target/debug/sumibi_tip.dll
+cargo run -p sumibi-setup --locked -- close-test --dll target/debug/sumibi_tip.dll
 cargo run -p sumibi-setup --locked -- ipc-test
 ```
 
@@ -135,6 +136,12 @@ Undo/Redoは本文と選択範囲・選択の向きを一緒に復元する。Un
 カーソルと選択範囲も描画する。1024 UTF-16単位を上限とする固定幅の1行デモであり、
 マウス選択・スクロール・クリップボード・書記素クラスタ単位の削除はまだ扱わない。
 自動検証では所有ウィンドウへテスト用メッセージを送る。実キーボード操作の手動確認はまだ行っていない。
+
+2026-10-21、利用者のデモ試用で閉じるボタンによる停止が報告された。
+修正後はWM_CLOSEで終了要求とwakeメッセージを記録し、外側のメッセージループでTSFを解除してから破棄する。
+後始末が失敗してもウィンドウを残さず、失敗自体は記録する。`close-test`は通常・下線中・許可取消後・
+後始末エラーの4ケースを、別threadからの同期SC_CLOSEと実GetMessageループで検証する。
+修正版での利用者による再確認は未実施。試用報告だけを個別キー操作の合格記録にしない。
 
 ## 検証用ビルドと依存
 

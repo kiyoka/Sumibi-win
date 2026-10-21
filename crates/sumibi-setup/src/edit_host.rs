@@ -15,7 +15,7 @@ use windows::Win32::UI::TextServices::*;
 
 #[path = "input_host.rs"]
 mod input_host;
-pub(super) use input_host::{exercise_input, run_demo};
+pub(super) use input_host::{exercise_close, exercise_input, run_demo};
 #[path = "delayed_host.rs"]
 mod delayed_host;
 pub(super) use delayed_host::exercise_delayed;
@@ -1173,7 +1173,23 @@ fn exercise_key_host(
             } else {
                 callback.OnTestKeyDown(&context, WPARAM(key), LPARAM(0))?
             };
-            assert!(tested.as_bool(), "preview key must reach the TSF key sink");
+            if !tested.as_bool() {
+                use windows::Win32::UI::Input::KeyboardAndMouse::{
+                    GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT,
+                };
+                let modified =
+                    [VK_CONTROL, VK_MENU, VK_SHIFT].map(|key| GetKeyState(key.0 as i32) < 0);
+                let direct = callback
+                    .OnTestKeyDown(&context, WPARAM(key), LPARAM(0))?
+                    .as_bool();
+                let service = keys.GetForeground()? == sumibi_tip::CLSID_SUMIBI_TIP;
+                let focused = manager.GetFocus()?.GetTop()?.cast::<IUnknown>()?
+                    == context.cast::<IUnknown>()?;
+                let active = window.as_ref().is_some_and(|window| {
+                    windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() == window.hwnd()
+                });
+                return Err(format!("preview key routing failed: direct={direct}, modifiers={modified:?}, service={service}, context={focused}, active={active}").into());
+            }
             control.VerifyPreview().ok()?;
             let handled = if windowed {
                 keys.KeyDown(WPARAM(key), LPARAM(0))?

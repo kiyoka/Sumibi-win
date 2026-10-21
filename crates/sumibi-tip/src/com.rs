@@ -300,6 +300,21 @@ mod tests {
         // registration or external host is involved. COM references stay local.
         unsafe {
             assert_eq!(DllCanUnloadNow(), S_OK);
+            #[cfg(feature = "spike")]
+            {
+                let manager = crate::mock::new_manager();
+                let interface = manager.to_interface::<ITfThreadMgr>();
+                let state = crate::spike::Controller::new(&interface, 7);
+                let control = crate::spike::control(&state)
+                    .cast::<crate::spike::ISpikeControl>()
+                    .unwrap();
+                drop(state);
+                // Expired weak controller: repeated revoke is safe, new work
+                // still fails. The outer unsafe scope supplies the COM contract.
+                control.RevokeContext().ok().unwrap();
+                control.RevokeContext().ok().unwrap();
+                assert!(control.BeginPreview().is_err());
+            }
             let sink = crate::keys::KeySink::create();
             assert_eq!(DllCanUnloadNow(), S_FALSE);
             for key in [0x08, 0x0d, 0x1b, 0x41, 0x4a, 0xff] {

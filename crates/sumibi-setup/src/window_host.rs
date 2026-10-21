@@ -34,6 +34,7 @@ struct View {
     failed: Cell<bool>,
     previous: Cell<WNDPROC>,
     active: Cell<bool>,
+    close_requested: Cell<bool>,
     token: Cell<usize>,
     queued: Cell<bool>,
     refresh: RefCell<Option<Refresh>>,
@@ -45,6 +46,7 @@ type Refresh = Rc<dyn Fn() -> Result<Frame>>;
 pub(crate) type Input = Rc<dyn Fn(u32, WPARAM, LPARAM) -> Result<bool>>;
 
 const WM_REFRESH: u32 = WM_APP + 17;
+const WM_CLOSE_READY: u32 = WM_APP + 18;
 static NEXT_RENDER_TOKEN: AtomicUsize = AtomicUsize::new(1);
 
 #[derive(Clone)]
@@ -132,7 +134,24 @@ unsafe extern "system" fn window_proc(
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 return CallWindowProcW(view.previous.get(), hwnd, message, wparam, lparam);
             }
-            if matches!(message, WM_CHAR | WM_KILLFOCUS | WM_CLOSE) && view.active.get() {
+            if message == WM_CLOSE && view.active.get() && view.input.borrow().is_some() {
+                if !view.close_requested.replace(true) {
+                    // The close button can deliver WM_CLOSE synchronously while
+                    // GetMessage or a system menu is dispatching sent messages.
+                    // Wake the outer loop; perform COM cleanup outside WndProc.
+                    if let Err(error) =
+                        PostMessageW(Some(hwnd), WM_CLOSE_READY, WPARAM(0), LPARAM(0))
+                    {
+                        view.input_error.set(Some(error.code()));
+                        windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(1);
+                    }
+                }
+                return LRESULT(0);
+            }
+            if message == WM_CLOSE_READY {
+                return LRESULT(0);
+            }
+            if matches!(message, WM_CHAR | WM_KILLFOCUS) && view.active.get() {
                 let input = view.input.borrow().clone();
                 if let Some(input) = input {
                     match input(message, wparam, lparam) {
@@ -328,6 +347,22 @@ impl Window {
             let _ = TranslateMessage(message);
             DispatchMessageW(message);
         }
+        if self.view.close_requested.replace(false) && self.view.active.get() {
+            // Take the callback out before COM can reenter. An editing cleanup
+            // failure must be reported without trapping the user in this view.
+            let input = self.view.input.borrow_mut().take();
+            if let Some(input) = input {
+                if let Err(error) = input(WM_CLOSE, WPARAM(0), LPARAM(0)) {
+                    self.view.input_error.set(Some(error.code()));
+                }
+            }
+            // SAFETY: destroy the live window on its owning message thread.
+            if self.view.active.get() {
+                unsafe {
+                    DestroyWindow(self.hwnd)?;
+                }
+            }
+        }
         self.input_status()
     }
     pub(crate) fn focus(&self) -> Result<()> {
@@ -337,6 +372,9 @@ impl Window {
         // SAFETY: owned live window on this thread. SetFocus returns the old
         // focus, which can legitimately be null; verify the new focus directly.
         unsafe {
+            // Thread focus alone does not activate this process's TSF key
+            // routing when another desktop app is foreground.
+            let _ = SetForegroundWindow(self.hwnd);
             let _ = SetFocus(Some(self.hwnd));
             if GetFocus() != self.hwnd {
                 return Err(E_FAIL.into());

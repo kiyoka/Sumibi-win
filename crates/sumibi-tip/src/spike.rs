@@ -638,7 +638,12 @@ impl ISpikeControl_Impl for Control_Impl {
             if self.owner != thread::current().id() {
                 return Err(RPC_E_WRONG_THREAD.into());
             }
-            self.state.upgrade().ok_or(E_ABORT)?.revoke()
+            // Deactivate can drop the controller before the host receives its
+            // close request. With no controller, the grant is already gone.
+            match self.state.upgrade() {
+                Some(state) => state.revoke(),
+                None => Ok(()),
+            }
         })
         .into()
     }

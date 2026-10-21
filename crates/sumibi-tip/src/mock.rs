@@ -7,7 +7,7 @@ use windows::Win32::Foundation::{E_FAIL, E_NOTIMPL, E_UNEXPECTED, HWND, LPARAM, 
 use windows::Win32::UI::TextServices::*;
 
 #[implement(ITfThreadMgr, ITfKeystrokeMgr)]
-struct Manager {
+pub(super) struct Manager {
     sink: RefCell<Option<ITfKeyEventSink>>,
     fail_advise: Cell<bool>,
     fail_unadvise: Cell<bool>,
@@ -131,17 +131,21 @@ impl ITfThreadMgr_Impl for Manager_Impl {
     }
 }
 
-pub(super) fn exercise(
-    tip: &ITfTextInputProcessorEx,
-    factory: &windows::Win32::System::Com::IClassFactory,
-) {
-    let manager = ComObject::new(Manager {
+pub(super) fn new_manager() -> ComObject<Manager> {
+    ComObject::new(Manager {
         sink: RefCell::new(None),
         fail_advise: Cell::new(true),
         fail_unadvise: Cell::new(false),
         reenter: RefCell::new(None),
         advised: Cell::new(0),
-    });
+    })
+}
+
+pub(super) fn exercise(
+    tip: &ITfTextInputProcessorEx,
+    factory: &windows::Win32::System::Com::IClassFactory,
+) {
+    let manager = new_manager();
     let interface = manager.to_interface::<ITfThreadMgr>();
     let state = manager.get();
     // SAFETY: local apartment-bound interfaces and valid IDs in this mock.

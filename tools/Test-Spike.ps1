@@ -35,7 +35,7 @@ try {
     Invoke-Cargo -Arguments @('run', '-p', 'sumibi-tip', '--features', 'spike', '--example', 'load_smoke', '--locked', '--offline', '--', 'target/debug/sumibi_tip.dll')
     foreach ($name in @('self-test', 'edit-test', 'key-test')) { Invoke-Spike -Name $name }
     if (!$SkipDesktop) {
-        foreach ($name in @('window-test', 'input-test', 'delayed-test')) { Invoke-Spike -Name $name }
+        foreach ($name in @('window-test', 'input-test', 'close-test', 'delayed-test')) { Invoke-Spike -Name $name }
         & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') ipc-test
         if ($LASTEXITCODE -ne 0) { throw 'Desktop pipe check failed; use a normal user session.' }
     }
