@@ -14,7 +14,8 @@
 | キーsink・Provider・Control | Controllerへの弱参照と独立のObjectLease | Controllerが消えたら操作しない。外部COM参照が残ればDLLの寿命は維持 |
 | Observer / Subscription | 弱Controller、Sourceと購読cookie | closeでUnadvise。旧通知でも失効した対象へ書かない |
 | SelectionSnapshot | context・range・選択style・原文・取得時policy・所有thread | 操作中に再検査。本文を持つためDebugを実装しない |
-| Preview | snapshot、atom、activeフラグ、manager/client | cancel/commit。解除拒否時は再試行情報を維持 |
+| Preview | snapshot、atom、activeフラグ、manager/client、OwnedComposition | cancel/commitで自分のcompositionを終了。解除拒否時は再試行情報を維持 |
+| OwnedComposition | 自分で作成したCOM object、所有thread、寿命phase | identityの消失で強制終了を検出。別objectへ付替えず、workerへ渡さない |
 | Session | one-shot処理、実行結果、所有thread、ObjectLease | コールバック一度。同期要求終了後の遅延本文操作は拒否 |
 | TextStore | 合成本文、選択、sink、lock、Undo/Redo、検証用HWND | 専用文書終了。一般アプリの本文所有者ではない |
 | Window / View | HWND、Frame、入力callback、refresh識別子、旧WndProc | WM_NCDESTROYでactiveを落とし、旧予約を無効化 |
@@ -66,6 +67,9 @@ scopeのStampと通知、MSCTF内部読取との境界は[ADR 0006](adr/0006-inp
 同一contextのcompositionも拒否する。GUID_PROP_COMPOSINGで失効させ、空compositionの通知は
 所有するTextStoreから既存Cancelへ転送する。一般ホストにこの協力を仮定しない
 （[ADR 0007](adr/0007-foreign-composition-boundary.md)）。所有者callbackのCOM参照は終了時に解除し、workerには渡さない。
+選択プレビューは自分のcompositionを開始し、終了後に従来の本文検査を行う。
+診断ホストの共有EXE sinkにはDLL参照を持たせず、開始拒否でOS側に参照が残ってもDLLをpinしない。
+強制終了のidentity検査と契約・制限は[ADR 0008](adr/0008-owned-selection-composition.md)を参照。
 Controllerのbusyガードにより操作中の再入を拒否し、自分の書込で生じる通知を外部編集と誤認しない。
 TSFを呼ぶ前にRefCellの借用を解放し、通知やウィンドウ破棄が再入しても借用違反を起こさないようにする。
 

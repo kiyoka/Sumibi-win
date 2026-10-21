@@ -9,6 +9,7 @@ pub use crate::broker_spike::{
 use crate::com::{boundary, ObjectLease};
 use crate::edit::preview::Preview;
 use crate::edit::{capture_selection, replace_selection, EditPolicy};
+pub use crate::owned_composition::GUID_SPIKE_COMPOSITION_SINK;
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::rc::{Rc, Weak};

@@ -1,4 +1,4 @@
-//! Development-only underline retained between edit sessions.
+//! Development-only selection composition and underline between edit sessions.
 use super::*;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::Variant::{VARIANT, VT_I4};
@@ -11,6 +11,7 @@ pub struct Preview {
     snapshot: Rc<SelectionSnapshot>,
     atom: i32,
     active: Rc<Cell<bool>>,
+    composition: Rc<crate::owned_composition::OwnedComposition>,
 }
 
 fn runs(
@@ -75,9 +76,11 @@ impl Preview {
             snapshot: Rc::new(snapshot),
             atom,
             active: Rc::new(Cell::new(false)),
+            composition: crate::owned_composition::OwnedComposition::new(),
         };
         let target = preview.snapshot.clone();
         let active = preview.active.clone();
+        let composition = preview.composition.clone();
         let manager = manager.clone();
         run(
             &preview.snapshot.context,
@@ -97,6 +100,7 @@ impl Preview {
                     let range = validate_snapshot(&manager, &target, cookie)?;
                     property.SetValue(cookie, &range, &VARIANT::from(atom))?;
                     active.set(true);
+                    composition.start(&target.context, &range, cookie)?;
                 }
                 Ok(())
             }),
@@ -120,11 +124,13 @@ impl Preview {
         }
         let target = self.snapshot.clone();
         let atom = self.atom;
+        let composition = self.composition.clone();
         run(
             &target.context.clone(),
             self.client,
             true,
             Box::new(move |cookie| {
+                composition.end(&target.context, cookie)?;
                 // SAFETY: explicit original range, never a null/whole-context clear.
                 unsafe {
                     let property = target.context.GetProperty(&GUID_PROP_ATTRIBUTE)?;
@@ -151,6 +157,7 @@ impl Preview {
         if !self.active.get() {
             return Ok(());
         }
+        self.composition.end(&self.snapshot.context, cookie)?;
         // SAFETY: caller acquired a write cookie for context() on this thread.
         unsafe {
             let property = self.snapshot.context.GetProperty(&GUID_PROP_ATTRIBUTE)?;
@@ -170,6 +177,9 @@ impl Preview {
         if !self.active.get() {
             return Err(E_ABORT.into());
         }
+        if !self.composition.can_commit() {
+            return Err(E_ABORT.into());
+        }
         let replacement: Vec<_> = replacement
             .encode_utf16()
             .take(MAX_SELECTION_UNITS + 1)
@@ -181,11 +191,21 @@ impl Preview {
         let manager = self.manager.clone();
         let atom = self.atom;
         let active = self.active.clone();
+        let composition = self.composition.clone();
         run(
             &target.context.clone(),
             self.client,
             true,
             Box::new(move |cookie| {
+                if !composition.can_commit() {
+                    return Err(E_ABORT.into());
+                }
+                // Finish our metadata before using the ordinary idle-context
+                // gate. No exception permits reading a foreign composition.
+                composition.end(&target.context, cookie)?;
+                if composition.was_terminated() {
+                    return Err(E_ABORT.into());
+                }
                 let range = validate_snapshot(&manager, &target, cookie)?;
                 // SAFETY: validated write session and owned attribute value.
                 unsafe {

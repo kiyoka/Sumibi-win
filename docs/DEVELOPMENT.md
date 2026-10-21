@@ -103,6 +103,19 @@ workspaceとspike Hostをビルドした後で実行する。
 fixtureの不正scopeを返す時期、実OS内の読取、手動未検証範囲は[ADR 0007](adr/0007-foreign-composition-boundary.md)を参照。
 ログは `target/issue-4-composition-*.log`。
 
+## 自分の選択compositionの検証
+
+```powershell
+./target/debug/sumibi-setup.exe owned-composition-test --dll ./target/debug/sumibi_tip.dll
+```
+
+workspaceビルドの後で実行する。2026-10-22、実DLLの16ケースと直接アダプター2ケースが成功。
+F6プレビューは既存選択の下線とcompositionを保持し、F7・Esc・Enter等で自分のcompositionを終了する。
+ホスト開始拒否・強制終了・拒否後の再開始・別compositionとの競合・通常成功の1回Undoも確認する。
+専用ホストがEXE内の共有通知サービスを提供する構成であり、一般アプリへ同じ存在を仮定しない。
+選択の寿命管理までで、通常打鍵の追跡やcompositionの範囲拡張は未実装。
+条件とWindowsのsink参照残留の扱いは[ADR 0008](adr/0008-owned-selection-composition.md)、ログは `target/issue-4-owned-*.log`。
+
 ## 初期環境の記録（2026-10-20）
 
 - Windowsの作業フォルダーで開発。ブランチは `codex/issue-1-windows-design`。
@@ -222,7 +235,7 @@ cargo run -p sumibi-setup --locked --offline -- demo --dll target/debug/sumibi_t
 | ← / → | Unicodeスカラー単位で移動。選択中は選択の左端 / 右端へ移動 |
 | Shift + ← / → / Home / End | 選択の始点を保持して範囲を伸縮 |
 | Delete | 選択部分、または直後のUnicodeスカラーを削除 |
-| F6 | この入力欄を明示許可し、選択範囲を下線プレビュー。未選択なら全文を選択 |
+| F6 | この入力欄を明示許可し、選択範囲を下線と自己所有compositionで保持。未選択なら全文を選択 |
 | F7 | 固定文字列「日本語」へ変換 |
 | Esc | 下線プレビューを取消 |
 | Enter | 固定変換せず原文を保持して確認、カーソルを選択末尾へ移動 |

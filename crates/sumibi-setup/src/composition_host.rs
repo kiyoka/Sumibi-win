@@ -56,13 +56,18 @@ impl ITfCompositionSink_Impl for Sink_Impl {
         Ok(())
     }
 }
-struct Composition {
+pub(super) struct Composition {
     context: ITfContext,
     client: u32,
     value: Option<ITfComposition>,
 }
 impl Composition {
-    fn start(context: &ITfContext, client: u32, start: i32, length: i32) -> Result<Self> {
+    pub(super) fn start(
+        context: &ITfContext,
+        client: u32,
+        start: i32,
+        length: i32,
+    ) -> Result<Self> {
         let target = context.clone();
         let output = Rc::new(RefCell::new(None));
         let result = output.clone();
@@ -87,7 +92,7 @@ impl Composition {
             value: Some(value),
         })
     }
-    fn end(&mut self) -> Result<()> {
+    pub(super) fn end(&mut self) -> Result<()> {
         if let Some(value) = self.value.as_ref() {
             let value = value.clone();
             write(

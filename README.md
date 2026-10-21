@@ -23,6 +23,7 @@ Issue #4では版付きJSONとclient接続状態を追加し、取消・切断�
 入力保護の検査を追加し、通常テキストと確認できないscope・状態ではDLLの本文取得と要求送信を拒否します。
 `protection-test`で実DLL/TSFの39ケースを検証できます（[境界と制限](docs/adr/0006-input-protection-metadata.md)）。
 同じ入力欄に他サービスのcompositionがある場合も拒否します。`composition-test`で16ケースを検証でき、空compositionの履歴取消には専用ホストの通知を使います（[通知の境界](docs/adr/0007-foreign-composition-boundary.md)）。
+F6プレビューは選択範囲をSumibi自身のcompositionとして保持し、確定・取消時に終了します。`owned-composition-test`で18ケースを検証できます（[所有と制限](docs/adr/0008-owned-selection-composition.md)）。通常打鍵による追跡・範囲拡張は未実装です。
 Notepad等の実アプリでの表示と実打鍵は未確認です。
 
 - [実装着手 Issue #1](https://github.com/kiyoka/Sumibi-win/issues/1)
@@ -42,6 +43,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [実DLLのキーと診断用非同期bridge](docs/adr/0005-dll-key-broker-bridge.md)
 - [入力保護メタデータの検査](docs/adr/0006-input-protection-metadata.md)
 - [他サービスのcompositionへの非干渉](docs/adr/0007-foreign-composition-boundary.md)
+- [所有する選択compositionの寿命](docs/adr/0008-owned-selection-composition.md)
 - [Issue #1の受入記録](docs/ISSUE_1_ACCEPTANCE.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 

@@ -4,6 +4,20 @@ use super::*;
 use windows::Win32::System::Com::CoTaskMemAlloc;
 use windows::Win32::System::Variant::VARIANT;
 
+// One object per diagnostic STA, reused even if Windows retains references on
+// rejected StartComposition calls. EXE code lives until process exit. This sink
+// never captures a DLL interface, edit target, text, or callback.
+#[implement(ITfCompositionSink)]
+struct CompositionSink;
+impl ITfCompositionSink_Impl for CompositionSink_Impl {
+    fn OnCompositionTerminated(&self, _: u32, _: Ref<ITfComposition>) -> Result<()> {
+        Ok(())
+    }
+}
+thread_local! {
+    static COMPOSITION_SINK: ITfCompositionSink = CompositionSink.into();
+}
+
 #[derive(Clone)]
 pub(super) enum ScopeSpec {
     List(Vec<InputScope>),
@@ -122,6 +136,11 @@ impl TextStore {
 /// client to make an unknown application appear eligible for conversion.
 pub(super) fn initialise_context(context: &ITfContext, client: u32) -> Result<()> {
     let compartments: ITfCompartmentMgr = context.cast()?;
+    COMPOSITION_SINK.with(|sink| unsafe {
+        compartments
+            .GetCompartment(&sumibi_tip::spike::GUID_SPIKE_COMPOSITION_SINK)?
+            .SetValue(client, &VARIANT::from(sink.cast::<IUnknown>()?))
+    })?;
     for guid in [
         GUID_COMPARTMENT_KEYBOARD_DISABLED,
         GUID_COMPARTMENT_EMPTYCONTEXT,

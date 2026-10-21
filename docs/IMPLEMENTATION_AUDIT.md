@@ -11,7 +11,7 @@
 | COMとDLL | tip/com.rs、build.rs。factory・独立lease・所有thread・解除再試行 | 一般アプリにロードされる常設登録と更新時の寿命 |
 | TSF編集 | tip/edit.rsとmanual_edit.rs。同期read/write、全文照合、Core gate、IPC結果の一度だけ適用。所有ACP context限定 | 製品キーとの統合、一般アプリの対象分類と編集 |
 | 保護入力 | protection.rs。scope/status/compartmentの肯定検査、取得・source・適用時の再検査。実DLLで39ケース | 一般アプリの実スコープ・独自機密欄・判定不能時の動作確認 |
-| 追跡composition | 自分の追跡は未実装。同一contextの他compositionを拒否。property通知と所有ホスト通知の取消を16ケースで確認 | 通常入力・自分のcomposition・一般アプリでの他IMEとの競合・Enter・取消・原文維持 |
+| 追跡composition | 選択範囲の自己所有compositionの開始・終了を18ケースで確認。通常入力の追跡は未実装。他サービスの拒否も16ケース | 通常入力・範囲拡張・製品InputSession・一般アプリの他IMEとの競合と寿命 |
 | 表示属性 | display.rs / preview.rs。点線、原文保持、属性だけ遅延解除 | 通常アプリでの下線、アクセシビリティ、既存属性との共存 |
 | 変更通知 | notifications.rs。本文・選択・scope・compartment・composition属性・フォーカスで失効。空compositionは所有ホストから取消を転送 | 製品追跡・IPC・候補との統合、一般アプリの未通知履歴 |
 | キー配送 | keys.rs / input_host.rs。専用windowで実TSF経路 | US/JIS配列・変換キー・Terminal・実打鍵 |
@@ -72,6 +72,11 @@ broker-input-testは空compositionの所有者通知を含む8ケース。保護
 非空のproperty通知と、空compositionを所有ホストが転送する取消を区別し、一般アプリの履歴保証とはしない。
 不正scope fixtureはDLLの同期probeだけで返し、壊した値をWindows初期化へ渡さないよう修正した。
 詳細と残る統合は[ADR 0007](adr/0007-foreign-composition-boundary.md)を参照。
+
+同日、選択プレビューに自己所有compositionを追加。owned-composition-testは実DLL 16件と
+直接アダプター2件の計18件。開始拒否32回、強制終了、同じ範囲の別object、新旧要求、Undo、DLL解放を確認した。
+通常入力追跡の完了ではなく、EXEが提供する診断sinkを必要とする。scope/保護/Brokerに加え、
+既存input・delayed・close・windowのUI検証も成功した。[ADR 0008](adr/0008-owned-selection-composition.md)を参照。
 
 ## 3. アプリ互換表の記録形式
 

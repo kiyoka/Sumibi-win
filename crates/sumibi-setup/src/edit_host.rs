@@ -37,6 +37,9 @@ pub(super) use protection_host::exercise_protection;
 #[path = "composition_host.rs"]
 mod composition_host;
 pub(super) use composition_host::exercise_composition;
+#[path = "owned_composition_host.rs"]
+mod owned_composition_host;
+pub(super) use owned_composition_host::exercise_owned_composition;
 
 type EditHistory = RefCell<Vec<(Vec<u16>, TS_SELECTION_ACP)>>;
 
@@ -64,6 +67,7 @@ struct TextStore {
     protect_on_read: Cell<bool>,
     composition_broker: RefCell<Option<ISpikeBroker>>,
     composition_events: Cell<u32>,
+    reject_composition: Cell<bool>,
 }
 
 struct Lock<'a>(&'a Cell<u32>);
@@ -92,7 +96,7 @@ impl TextStore_Impl {
 impl ITfContextOwnerCompositionSink_Impl for TextStore_Impl {
     fn OnStartComposition(&self, _: Ref<ITfCompositionView>) -> Result<BOOL> {
         self.composition_changed();
-        Ok(true.into())
+        Ok((!self.reject_composition.get()).into())
     }
     fn OnUpdateComposition(&self, _: Ref<ITfCompositionView>, _: Ref<ITfRange>) -> Result<()> {
         self.composition_changed();
@@ -138,6 +142,7 @@ impl TextStore {
             protect_on_read: Cell::new(false),
             composition_broker: RefCell::new(None),
             composition_events: Cell::new(0),
+            reject_composition: Cell::new(false),
         }
     }
     fn readable(&self) -> Result<()> {
