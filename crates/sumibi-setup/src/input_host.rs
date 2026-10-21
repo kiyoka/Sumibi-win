@@ -13,6 +13,7 @@ mod tracking_host;
 pub(crate) use tracking_host::{exercise_tracking, run_tracking_demo};
 #[path = "composing_host.rs"]
 mod composing_host;
+pub(crate) use composing_host::exercise_notifications;
 pub(crate) use composing_host::{exercise_composing, run_composing_demo};
 
 impl TextStore {
@@ -555,6 +556,7 @@ enum RunMode {
     TrackingTest(&'static str),
     ComposingDemo,
     ComposingTest(&'static str),
+    NotificationTest(&'static str),
 }
 
 fn run(
@@ -602,6 +604,7 @@ fn run(
                 | RunMode::TrackingTest(_)
                 | RunMode::ComposingDemo
                 | RunMode::ComposingTest(_)
+                | RunMode::NotificationTest(_)
         ) {
             window.set_title("Sumibi 非同期変換デモ（固定結果） | F7 変換 | Esc 取消 | Enter 原文確定 | Ctrl+Z Undo")?;
             let broker: ISpikeBroker = manager
@@ -626,13 +629,19 @@ fn run(
             submits: Cell::new(0),
             broker,
             tracking,
-            composing: if matches!(mode, RunMode::ComposingDemo | RunMode::ComposingTest(_)) {
+            composing: if matches!(
+                mode,
+                RunMode::ComposingDemo | RunMode::ComposingTest(_) | RunMode::NotificationTest(_)
+            ) {
                 Some(composing_host::Composing::new(manager)?)
             } else {
                 None
             },
         });
         let input = editor.clone();
+        if let Some(composing) = &editor.composing {
+            composing.connect(&editor);
+        }
         window.set_input(Rc::new(move |message, key, flags| {
             input.input(message, key, flags)
         }))?;
@@ -666,6 +675,8 @@ fn run(
             tracking_host::test_tracking(&window, &editor, &live, client, case)
         } else if let RunMode::ComposingTest(case) = mode {
             composing_host::test_composing(&window, &editor, &live, client, case)
+        } else if let RunMode::NotificationTest(case) = mode {
+            composing_host::test_notifications(&window, &editor, &live, client, case)
         } else if let RunMode::CloseTest(case) = mode {
             test_close(&window, &editor, case)
         } else {
@@ -673,6 +684,9 @@ fn run(
         };
         window.clear_input();
         editor.clear_tracking();
+        if let Some(composing) = &editor.composing {
+            composing.close(&editor)?;
+        }
         store.get().composition_broker.borrow_mut().take();
         if let Some((broker, bridge)) = &editor.broker {
             let _ = broker.Cancel(0);
@@ -706,6 +720,9 @@ fn broker_message_loop(window: &crate::window_host::Window, editor: &Editor) -> 
         if !window.is_open() {
             break;
         }
+        if let Some(composing) = &editor.composing {
+            composing.poll(editor)?;
+        }
         if let Some(delivery) = bridge.get().drain(control)? {
             window.set_title(if delivery == crate::broker_bridge::Delivery::Applied {
                 "Sumibi 変換完了（固定結果） | F7 変換 | Ctrl+Z Undo"
@@ -719,7 +736,17 @@ fn broker_message_loop(window: &crate::window_host::Window, editor: &Editor) -> 
             window.set_title("Sumibi 変換中（固定結果） | Esc 取消 | Enter 原文確定")?;
         }
         pending = active;
-        let handles: Vec<_> = bridge.get().wait_handle().into_iter().collect();
+        let handles: Vec<_> = bridge
+            .get()
+            .wait_handle()
+            .into_iter()
+            .chain(
+                editor
+                    .composing
+                    .as_ref()
+                    .and_then(|composing| composing.wait_handle()),
+            )
+            .collect();
         // No IPC wait or result callback inside WndProc. Sent close/focus
         // messages are handled by the owner and wake the ordinary message path.
         let wait = unsafe {

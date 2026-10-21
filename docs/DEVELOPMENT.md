@@ -172,8 +172,29 @@ Test-Spike.ps1の全検査が省略なしで成功。workspace 47件、解除と
 
 ホストの本文反映と、その後のcompositionのメタデータ更新は別の同期処理である。
 一般アプリの原子的なTSF入力取引・標準Undoの完成とは扱わない。外部通知による失効は
-次の入力・F7・取消・終了で検出し、通知callback中には書かない。
+所有ループで次の打鍵を待たず検出・後始末する。通知callback中には書かない。
 条件・寿命は[ADR 0010](adr/0010-cooperating-host-composition-growth.md)、ログは `target/issue-4-composing-*.log`。
+
+## 入力追跡の外部通知を検証する
+
+上記のworkspaceとspike Hostをビルドした後、通常ユーザーのPowerShellで実行する。
+
+```powershell
+./target/debug/sumibi-setup.exe input-notify-test --dll ./target/debug/sumibi_tip.dll
+```
+
+専用ホスト20ケース。composing-demoの所有ループはメタデータのeventも待ち、外部の本文・選択・
+scope・compartment・status・focusやcompositionの変更で古い追跡を解除する。
+通知自体では編集せず、本文を読まず、次の打鍵やF7も必要としない。
+変更後に元へ戻しても旧追跡を復活させない。変換待ちのreadonly復元も適用を拒否する。
+
+readonly/lockによるcleanup拒否は最大1件を保持する。同じ世代の連続wakeではwriteを再試行せず、
+状態回復の通知や明示操作で再試行する。一般アプリで同期writeが拒否された場合の即時表示解除は未保証。
+eventの切断/再接続、終了後通知、signal失敗でも通常入力を失わないことも確認する。
+2026-10-22 / Windows 11 x64 build 26300 / medium / Rust 1.99.1で20ケースが成功。
+Test-Spike.ps1も省略なしで成功し、workspace 47件、全構成Clippy、既存TSF・Broker・IPC検査、
+TSF/COM解除・DLLアンロードを再確認した。
+詳細は[ADR 0011](adr/0011-owner-loop-input-invalidation.md)、ログは `target/issue-4-input-notify*.log`。
 
 ## 初期環境の記録（2026-10-20）
 

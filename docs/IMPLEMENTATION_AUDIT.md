@@ -92,6 +92,13 @@ composing-input-testの29ケースと全回帰検査が成功。Coreの末尾削
 ホストの本文反映とcompositionメタデータ更新は別処理で、製品の原子的なTSF入力取引ではない。
 詳細は[ADR 0010](adr/0010-cooperating-host-composition-growth.md)を参照。
 
+続いて通知から所有ループを起こす仕組みとstatus購読を追加。input-notify-testの20ケースでは
+次の入力なしの追跡解除、変更/復元後の非復活、cleanup拒否からの回復、wake集約と終了後の非作用、
+変換待ちのreadonly復元拒否を確認した。実DLLのcounterでcleanup時の本文取得が増えないことも確認した。
+workspaceは47件のままで、Test-Spike.ps1の全検査も省略なしで成功した。
+一般アプリの同期write成功や全ての未通知履歴を保証する変更ではない。
+詳細は[ADR 0011](adr/0011-owner-loop-input-invalidation.md)を参照。
+
 ## 3. アプリ互換表の記録形式
 
 | 入力先 | 現在の状態 | 最初の確認範囲 |

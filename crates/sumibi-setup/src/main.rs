@@ -3,6 +3,8 @@ mod broker_bridge;
 #[cfg(windows)]
 mod edit_host;
 #[cfg(windows)]
+mod input_signal;
+#[cfg(windows)]
 mod live_render;
 #[cfg(windows)]
 mod pipe_peer;

@@ -16,6 +16,9 @@ struct Ready {
     metadata: InputMetadata,
     notification: u64,
 }
+struct CleanupRetry {
+    notification: Option<u64>,
+}
 pub(crate) struct Tracker {
     manager: ITfThreadMgr,
     pub(crate) context: ITfContext,
@@ -33,8 +36,38 @@ pub(crate) struct Tracker {
     extent: Option<(i32, i32)>,
     atom: i32,
     cleanup_pending: bool,
+    cleanup_retry: Option<CleanupRetry>,
 }
 impl Tracker {
+    pub(crate) fn set_wake(&self, wake: Option<Rc<dyn Fn()>>) -> Result<()> {
+        self.watch.set_wake(wake)
+    }
+    /// Called outside notifications by the owner loop. Metadata-only cleanup
+    /// is retried only for a new notification, never by spinning or replaying text.
+    pub(crate) fn poll(&mut self, retired: bool) -> Result<()> {
+        if self.cleanup_pending {
+            if self
+                .cleanup_retry
+                .as_ref()
+                .is_some_and(|old| old.notification == self.watch.generation().ok())
+            {
+                return Ok(());
+            }
+            return self.cancel(false);
+        }
+        if retired {
+            return self.cancel(false);
+        }
+        if let Some(ready) = &self.ready {
+            if self.watch.generation().ok() != Some(ready.notification) {
+                return self.cancel(false);
+            }
+        }
+        if self.extent.is_some() && self.observe().is_err() {
+            return self.cancel(false);
+        }
+        Ok(())
+    }
     pub(crate) fn new(manager: &ITfThreadMgr, context: &ITfContext, client: u32) -> Result<Self> {
         let categories: ITfCategoryMgr =
             unsafe { CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER)? };
@@ -55,6 +88,7 @@ impl Tracker {
             extent: None,
             atom: unsafe { categories.RegisterGUID(&crate::display::GUID_INPUT_ATTRIBUTE)? } as i32,
             cleanup_pending: false,
+            cleanup_retry: None,
         })
     }
     fn inspect(&self, exact: bool) -> Result<InputMetadata> {
@@ -253,6 +287,7 @@ impl Tracker {
     }
     pub(crate) fn cancel(&mut self, user_boundary: bool) -> Result<()> {
         self.cleanup_pending = true;
+        self.cleanup_retry = None;
         self.session.clear();
         self.before = None;
         self.settled = None;
@@ -266,7 +301,7 @@ impl Tracker {
         let marked = self.marked.clone();
         let atom = self.atom;
         if owned.can_commit() || marked.borrow().is_some() {
-            run(
+            let cleanup = run(
                 &self.context,
                 self.client,
                 true,
@@ -274,11 +309,20 @@ impl Tracker {
                     owned.end(&context, cookie)?;
                     clear_mark(&context, cookie, &marked, atom)
                 }),
-            )?;
+            );
+            if let Err(error) = cleanup {
+                // Failed metadata writes may themselves emit OnEndEdit. Their
+                // wake cannot trigger the same failed write in a tight loop.
+                self.cleanup_retry = Some(CleanupRetry {
+                    notification: self.watch.generation().ok(),
+                });
+                return Err(error);
+            }
         }
         self.owned = OwnedComposition::new();
         self.extent = None;
         self.cleanup_pending = false;
+        self.cleanup_retry = None;
         Ok(())
     }
     pub(crate) fn prepare(&mut self) -> Result<()> {

@@ -159,6 +159,9 @@ Brokerの本文取得では引き続きcompositionのない入力先だけを扱
 さらに所有ホストの実入力を実DLLのcompositionへ接続し、伸縮・取消・変換を29ケースで確認した
 （[ADR 0010](adr/0010-cooperating-host-composition-growth.md)）。F7前に自分のcompositionを終了し、
 Start前の一度だけのCheckSourceで記録原文・範囲・保護状態・通知世代を確認する。wire形式は変えない。
+外部通知からEXEのeventで所有ループを起こす仕組みも追加した
+（[ADR 0011](adr/0011-owner-loop-input-invalidation.md)）。callbackは本文やworkerを持たず、
+所有ループがmetadataだけを後始末する。status変更後の復元もManualEditのGuardで拒否する。
 製品の常駐Broker、原子的な本文入力取引・一般アプリでの判定はIssue #4で引き続き実装する。
 Protocol自体がOS認証する責務には変更しない。
 

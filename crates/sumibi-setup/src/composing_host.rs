@@ -1,23 +1,70 @@
 //! Owner-host boundary around the actual DLL input-composition ABI.
 use super::*;
-use sumibi_tip::spike::{ISpikeInput, FUNCTION_TEST_INPUT};
+use sumibi_tip::spike::{ISpikeInput, ISpikeInputMonitor, ISpikeInputSignal, FUNCTION_TEST_INPUT};
+use windows::Win32::Foundation::HANDLE;
+#[path = "input_notify_host.rs"]
+mod input_notify_host;
+pub(crate) use input_notify_host::exercise_notifications;
+pub(super) use input_notify_host::test_notifications;
 
 pub(super) struct Composing {
     control: ISpikeInput,
     settled_composition: Cell<u32>,
+    monitor: ISpikeInputMonitor,
+    signal: ComObject<crate::input_signal::Signal>,
 }
 impl Composing {
     pub(super) fn new(manager: &ITfThreadMgr) -> Result<Self> {
-        let control = unsafe {
+        let control: ISpikeInput = unsafe {
             manager
                 .GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)?
                 .GetFunction(&FUNCTION_TEST_INPUT, &ISpikeInput::IID)?
                 .cast()?
         };
+        let monitor: ISpikeInputMonitor = control.cast()?;
+        let signal = crate::input_signal::Signal::new()?;
+        unsafe {
+            monitor
+                .SetSignal(signal.to_interface::<ISpikeInputSignal>().as_raw())
+                .ok()?;
+        }
         Ok(Self {
             control,
             settled_composition: Cell::new(0),
+            monitor,
+            signal,
         })
+    }
+    pub(super) fn connect(&self, editor: &Editor) {
+        *editor.store.get().input_signal.borrow_mut() = Some(self.signal.clone());
+    }
+    pub(super) fn wait_handle(&self) -> Option<HANDLE> {
+        self.signal.get().handle()
+    }
+    pub(super) fn poll(&self, editor: &Editor) -> Result<bool> {
+        if !self.signal.get().drain()? {
+            return Ok(false);
+        }
+        let composition = editor.store.get().composition_events.get();
+        let result = if composition == u32::MAX || composition != self.settled_composition.get() {
+            unsafe { self.control.Cancel(0).ok() }
+        } else {
+            unsafe { self.monitor.Poll().ok() }
+        };
+        self.settled_composition
+            .set(editor.store.get().composition_events.get());
+        // A denied cleanup stays logically cancelled. Wait for another status
+        // notification/user action rather than spinning on a failing lock.
+        let _ = result;
+        Ok(true)
+    }
+    pub(super) fn close(&self, editor: &Editor) -> Result<()> {
+        self.signal.get().close()?;
+        editor.store.get().input_signal.borrow_mut().take();
+        unsafe {
+            self.monitor.SetSignal(std::ptr::null_mut()).ok()?;
+            self.control.Cancel(0).ok()
+        }
     }
     pub(super) fn before(&self, editor: &Editor, backspace: bool) -> bool {
         if self.settled_composition.get() != editor.store.get().composition_events.get() {

@@ -101,3 +101,6 @@ Windows 11 x64 build 26300 / 通常ユーザーmedium / Rust 1.99.1 / 2026-10-22
 
 根拠：[ITfComposition::ShiftEnd](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcomposition-shiftend)、
 [ShiftStart](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcomposition-shiftstart)。
+
+後続の[ADR 0011](0011-owner-loop-input-invalidation.md)で、次の入力を待たず外部通知から
+所有ループを起こして失効・cleanupする仕組みを追加した。このADR時点の遅延検出の制限を拡張する。

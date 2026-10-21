@@ -23,12 +23,23 @@ pub unsafe trait ISpikeInput: IUnknown {
     pub fn CheckSource(&self, text: *const u16, length: u32) -> HRESULT;
     pub fn Cancel(&self, user_boundary: u32) -> HRESULT;
 }
-#[implement(ISpikeInput)]
+/// Separate diagnostic vtables; never extend the existing input ABI.
+#[interface("a384ee66-e5cb-4fdc-a34b-0f1528710d21")]
+pub unsafe trait ISpikeInputSignal: IUnknown {
+    pub fn Changed(&self) -> HRESULT;
+}
+#[interface("df652427-d618-466f-8221-57ee4189277a")]
+pub unsafe trait ISpikeInputMonitor: IUnknown {
+    pub fn SetSignal(&self, signal: *mut c_void) -> HRESULT;
+    pub fn Poll(&self) -> HRESULT;
+}
+#[implement(ISpikeInput, ISpikeInputMonitor)]
 struct Control {
     state: Weak<Controller>,
     owner: ThreadId,
     busy: Cell<bool>,
     tracker: RefCell<Option<Tracker>>,
+    wake: RefCell<Option<Rc<dyn Fn()>>>,
     _lease: ObjectLease,
 }
 struct Busy<'a>(&'a Cell<bool>);
@@ -83,6 +94,10 @@ impl ISpikeInput_Impl for Control_Impl {
                 }
                 if tracker.is_none() {
                     tracker = Some(Tracker::new(&manager, context, client)?);
+                    tracker
+                        .as_ref()
+                        .ok_or(E_ABORT)?
+                        .set_wake(self.wake.borrow().clone())?;
                 }
                 tracker.as_mut().ok_or(E_ABORT)?.before(backspace != 0)
             })();
@@ -143,12 +158,58 @@ impl ISpikeInput_Impl for Control_Impl {
         .into()
     }
 }
+impl ISpikeInputMonitor_Impl for Control_Impl {
+    unsafe fn SetSignal(&self, signal: *mut c_void) -> HRESULT {
+        boundary(|| {
+            let _busy = self.enter()?;
+            let wake: Option<Rc<dyn Fn()>> = if signal.is_null() {
+                None
+            } else {
+                let unknown =
+                    unsafe { IUnknown::from_raw_borrowed(&signal) }.ok_or(E_INVALIDARG)?;
+                let signal: ISpikeInputSignal = unknown.cast()?;
+                Some(Rc::new(move || unsafe {
+                    let _ = signal.Changed();
+                }))
+            };
+            let old = self.wake.replace(wake.clone());
+            let tracker = self.tracker.borrow_mut().take();
+            let result = tracker
+                .as_ref()
+                .map_or(Ok(()), |tracker| tracker.set_wake(wake.clone()));
+            *self.tracker.borrow_mut() = tracker;
+            // Release an old external sink only after restoring local state.
+            drop(old);
+            // Reattachment must check changes missed while detached, even if
+            // no later notification arrives. Only the EXE event is signalled.
+            if let Some(wake) = wake {
+                wake();
+            }
+            result
+        })
+        .into()
+    }
+    unsafe fn Poll(&self) -> HRESULT {
+        boundary(|| {
+            let _busy = self.enter()?;
+            let mut tracker = self.tracker.borrow_mut().take();
+            let retired = self.state.upgrade().is_none();
+            let result = tracker
+                .as_mut()
+                .map_or(Ok(()), |tracker| tracker.poll(retired));
+            *self.tracker.borrow_mut() = tracker;
+            result
+        })
+        .into()
+    }
+}
 pub(crate) fn control(state: &Rc<Controller>) -> IUnknown {
     let control: ISpikeInput = Control {
         state: Rc::downgrade(state),
         owner: thread::current().id(),
         busy: Cell::new(false),
         tracker: RefCell::new(None),
+        wake: RefCell::new(None),
         _lease: ObjectLease::new(),
     }
     .into();

@@ -175,6 +175,9 @@ Backspaceで縮める。本文はホストで一度だけ反映し、別の同�
 F7前に自分のcompositionを終了し、通常の保護検査と原文の完全照合を通す。
 このメタデータ専用の所有例外をGetTextの許可には使わない。
 原子的なTSF本文入力取引や一般アプリの統合ではない（[ADR 0010](adr/0010-cooperating-host-composition-growth.md)）。
+外部メタデータ通知はEXEのeventへ集約し、所有ループが次の打鍵を待たず古いcompositionを解除する。
+statusの変更・復元もGuardで失効させ、同じ世代のwakeだけで拒否されたcleanupを繰り返さない。
+通知callbackは編集・本文取得を行わない（[ADR 0011](adr/0011-owner-loop-input-invalidation.md)）。
 
 ### 5.2 製品の追跡入力（未実装）
 

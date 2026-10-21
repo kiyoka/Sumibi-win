@@ -26,6 +26,7 @@ Issue #4では版付きJSONとclient接続状態を追加し、取消・切断�
 F6プレビューは選択範囲をSumibi自身のcompositionとして保持し、確定・取消時に終了します。`owned-composition-test`で18ケースを検証できます（[所有と制限](docs/adr/0008-owned-selection-composition.md)）。
 `tracking-demo`では実際に入力した範囲だけをF7で変換できます。移動・外部編集等で追跡が無効なら変換を見送り、全文を推測しません。`tracking-input-test`で25ケースを検証できます（[操作手順](docs/DEVELOPMENT.md#通常入力の範囲だけを変換する)、[条件と制限](docs/adr/0009-cooperating-host-input-run.md)）。
 `composing-demo`では同じ入力を実DLLのcompositionと下線で追跡し、文字入力で広げ、Backspaceで縮めます。`composing-input-test`で29ケースを検証できます（[操作手順](docs/DEVELOPMENT.md#入力compositionの伸縮を試す)、[条件と制限](docs/adr/0010-cooperating-host-composition-growth.md)）。本文はホストで反映する診断経路で、一般アプリへの統合は未実装です。
+外部編集や保護状態の通知では、次の打鍵を待たず所有ループで古い追跡を解除します。`input-notify-test`で通知20ケースを検証できます（[条件と制限](docs/adr/0011-owner-loop-input-invalidation.md)）。
 Notepad等の実アプリでの表示と実打鍵は未確認です。
 
 - [実装着手 Issue #1](https://github.com/kiyoka/Sumibi-win/issues/1)
@@ -48,6 +49,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [所有する選択compositionの寿命](docs/adr/0008-owned-selection-composition.md)
 - [所有ホストの入力範囲追跡](docs/adr/0009-cooperating-host-input-run.md)
 - [所有ホストの入力compositionの伸縮](docs/adr/0010-cooperating-host-composition-growth.md)
+- [所有ループによる入力追跡の失効処理](docs/adr/0011-owner-loop-input-invalidation.md)
 - [Issue #1の受入記録](docs/ISSUE_1_ACCEPTANCE.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 

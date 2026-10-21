@@ -17,8 +17,9 @@ use windows::Win32::UI::TextServices::*;
 #[path = "input_host.rs"]
 mod input_host;
 pub(super) use input_host::{
-    exercise_broker_input, exercise_close, exercise_composing, exercise_input, exercise_tracking,
-    run_broker_demo, run_composing_demo, run_demo, run_tracking_demo,
+    exercise_broker_input, exercise_close, exercise_composing, exercise_input,
+    exercise_notifications, exercise_tracking, run_broker_demo, run_composing_demo, run_demo,
+    run_tracking_demo,
 };
 #[path = "delayed_host.rs"]
 mod delayed_host;
@@ -50,6 +51,7 @@ struct TextStore {
     selection: Cell<TS_SELECTION_ACP>,
     sink: RefCell<Option<ITextStoreACPSink>>,
     lock: Cell<u32>,
+    lock_requests: Cell<u64>,
     readonly: Cell<bool>,
     deny_lock: Cell<bool>,
     skip_callback: Cell<bool>,
@@ -68,6 +70,7 @@ struct TextStore {
     protect_on_read: Cell<bool>,
     composition_broker: RefCell<Option<ISpikeBroker>>,
     composition_events: Cell<u32>,
+    input_signal: RefCell<Option<ComObject<crate::input_signal::Signal>>>,
     reject_composition: Cell<bool>,
 }
 
@@ -82,6 +85,10 @@ impl TextStore_Impl {
     fn composition_changed(&self) {
         self.composition_events
             .set(self.composition_events.get().saturating_add(1));
+        let signal = self.input_signal.borrow().clone();
+        if let Some(signal) = signal {
+            let _ = signal.get().notify();
+        }
         let broker = self.composition_broker.borrow().clone();
         if let Some(broker) = broker {
             // The owning host forwards metadata-only invalidation, including
@@ -125,6 +132,7 @@ impl TextStore {
             selection: Cell::new(selection),
             sink: RefCell::new(None),
             lock: Cell::new(0),
+            lock_requests: Cell::new(0),
             readonly: Cell::new(false),
             deny_lock: Cell::new(false),
             skip_callback: Cell::new(false),
@@ -143,6 +151,7 @@ impl TextStore {
             protect_on_read: Cell::new(false),
             composition_broker: RefCell::new(None),
             composition_events: Cell::new(0),
+            input_signal: RefCell::new(None),
             reject_composition: Cell::new(false),
         }
     }
@@ -263,6 +272,8 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         Ok(())
     }
     fn RequestLock(&self, flags: u32) -> Result<HRESULT> {
+        self.lock_requests
+            .set(self.lock_requests.get().saturating_add(1));
         if self.skip_callback.get() {
             return Ok(windows::Win32::Foundation::S_OK);
         }

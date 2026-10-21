@@ -13,8 +13,15 @@ struct Observation {
     owner: ThreadId,
     invalid: Cell<bool>,
     generation: Cell<Option<u64>>,
+    #[cfg(feature = "spike")]
+    wake: RefCell<Option<Rc<dyn Fn()>>>,
 }
-#[implement(ITfTextEditSink, ITfThreadMgrEventSink, ITfCompartmentEventSink)]
+#[implement(
+    ITfTextEditSink,
+    ITfThreadMgrEventSink,
+    ITfCompartmentEventSink,
+    ITfStatusSink
+)]
 struct Observer {
     state: Weak<Observation>,
     owner: ThreadId,
@@ -35,6 +42,15 @@ impl Observer_Impl {
                         .get()
                         .and_then(|value| value.checked_add(1)),
                 );
+                // Notification callbacks only signal the owner. Never edit,
+                // read text, or retain a borrowed state across external code.
+                #[cfg(feature = "spike")]
+                {
+                    let wake = state.wake.borrow().clone();
+                    if let Some(wake) = wake {
+                        wake();
+                    }
+                }
             }
             Ok(())
         })
@@ -69,6 +85,11 @@ impl ITfCompartmentEventSink_Impl for Observer_Impl {
         self.invalidate()
     }
 }
+impl ITfStatusSink_Impl for Observer_Impl {
+    fn OnStatusChange(&self, _: Ref<ITfContext>, _: u32) -> Result<()> {
+        self.invalidate()
+    }
+}
 struct Subscription {
     source: ITfSource,
     cookie: u32,
@@ -90,6 +111,8 @@ impl Guard {
             owner: thread::current().id(),
             invalid: Cell::new(false),
             generation: Cell::new(Some(0)),
+            #[cfg(feature = "spike")]
+            wake: RefCell::new(None),
         });
         let sink = ComObject::new(Observer {
             state: Rc::downgrade(&state),
@@ -105,6 +128,10 @@ impl Guard {
                 &ITfTextEditSink::IID,
                 &sink.to_interface::<ITfTextEditSink>(),
             )?;
+            subscriptions.push(Subscription { source, cookie });
+            let source: ITfSource = context.cast()?;
+            let cookie =
+                source.AdviseSink(&ITfStatusSink::IID, &sink.to_interface::<ITfStatusSink>())?;
             subscriptions.push(Subscription { source, cookie });
             let compartments: ITfCompartmentMgr = context.cast()?;
             for guid in [
@@ -151,6 +178,14 @@ impl InputWatch {
         Ok(Self {
             guard: Guard::new(manager, context)?,
         })
+    }
+    #[cfg(feature = "spike")]
+    pub(crate) fn set_wake(&self, wake: Option<Rc<dyn Fn()>>) -> Result<()> {
+        if self.guard.state.owner != thread::current().id() {
+            return Err(RPC_E_WRONG_THREAD.into());
+        }
+        *self.guard.state.wake.borrow_mut() = wake;
+        Ok(())
     }
     pub fn generation(&self) -> Result<u64> {
         if self.guard.state.owner != thread::current().id() {
