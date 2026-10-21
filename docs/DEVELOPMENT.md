@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はProtocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 6件を含めworkspace合計36件。
+現時点はProtocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 6件、保護判定3件を含めworkspace合計39件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -60,7 +60,7 @@ broker-demoは手動操作用。文字を入力し、F7で選択部分（未選�
 本文は専用入力欄と別Hostのメモリーだけで扱い、外部APIへ送信・保存しない。
 
 broker-key-testは実DLLの予約キーから17ケース、broker-input-testは描画・Undo・Enter・編集・
-同期SC_CLOSEを含む6ケースが成功。いずれも自動終了する。前者のcapacity/Esc/Enterは
+同期SC_CLOSEとWM_KILLFOCUSを含む7ケースが成功。いずれも自動終了する。前者のcapacity/Esc/Enterは
 前面化に依存しない同じDLL callbackで確認し、物理キーボード操作の手動確認は含めない。
 同日の通常ユーザー/Windows 11 x64 build 26300/Rust 1.99.1で解除とDLLアンロードも確認した。
 ログは `target/issue-4-dll-broker-key-checks.log`、`target/issue-4-dll-broker-input-checks.log`。
@@ -69,7 +69,25 @@ broker-key-testは実DLLの予約キーから17ケース、broker-input-testは�
 一般アプリへの同じbridgeの存在は仮定しない。責務・再入・IDの寿命は
 [ADR 0005](adr/0005-dll-key-broker-bridge.md)を参照。従来のdemoは従来の固定変換経路のまま。
 
-## 環境確認（2026-10-20）
+## 入力保護の検証
+
+workspaceとspike Hostを上記手順でビルドした後、通常ユーザーのPowerShellで実行する。
+
+```powershell
+./target/debug/sumibi-setup.exe protection-test --dll ./target/debug/sumibi_tip.dll
+```
+
+通常scope、password/PIN/private、未設定・不正・上限超過、status、compartment、変更後の復元、
+通知なしでの送信前再検査を合成文書で扱う。実DLL/TSFの39ケースが成功した。
+初めから保護／不明な27ケースではDLLの本文取得呼出しとBroker job開始が0であることを確認する。
+MSCTF内部の本文照会は別に計測し、OSを含む一切の読取を防止したとは扱わない。
+条件・制限・診断counterと正式な状態通知の扱いは[ADR 0006](adr/0006-input-protection-metadata.md)を参照。
+一般アプリの保護欄を全て検出できるという保証はまだない。
+
+2026-10-21、前段階cd1dc2fの手動デモについて利用者から概ね動作したとの報告を得た。
+個別キー・保護入力の手動合格記録ではなく、上記の自動検証とは分けて扱う。
+
+## 初期環境の記録（2026-10-20）
 
 - Windowsの作業フォルダーで開発。ブランチは `codex/issue-1-windows-design`。
 - Visual Studio 2022 Community、MSVCディレクトリ `14.44.35207`、Windows SDK Includeディレクトリ `10.0.26100.0` を確認。

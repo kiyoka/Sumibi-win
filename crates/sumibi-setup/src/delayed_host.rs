@@ -49,6 +49,7 @@ pub(crate) fn exercise_delayed(
             )?;
             let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
             document.0.Push(&context)?;
+            scope_fixture::initialise_context(&context, client)?;
             let mut association =
                 crate::window_host::Association::new(manager, &window, &document.0)?;
             window.focus()?;

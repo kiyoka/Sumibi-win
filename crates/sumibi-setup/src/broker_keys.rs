@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use sumibi_ipc::bootstrap::Mode;
 use sumibi_tip::spike::{
     ISpikeBroker, ISpikeBrokerTransport, ISpikeControl, COMMAND_CONVERT, FUNCTION_TEST_BROKER,
-    FUNCTION_TEST_CONTROL, FUNCTION_TEST_KEY_SINK,
+    FUNCTION_TEST_CONTROL, FUNCTION_TEST_KEY_SINK, FUNCTION_TEST_MANAGER_SINK,
 };
 use windows::Win32::Foundation::{LPARAM, WAIT_OBJECT_0, WAIT_TIMEOUT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -56,10 +56,17 @@ pub(crate) fn exercise_broker_keys(
             )?;
             let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
             document.0.Push(&context)?;
+            scope_fixture::initialise_context(&context, client)?;
             let mut association =
                 crate::window_host::Association::new(manager, &window, &document.0)?;
             manager.SetFocus(&document.0)?;
             pump_tsf_messages()?;
+            let other = if case == "focus-restored" {
+                Some(scope_fixture::other_document(manager, client)?)
+            } else {
+                None
+            };
+            manager.SetFocus(&document.0)?;
             let provider = manager.GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)?;
             let control: ISpikeControl = provider
                 .GetFunction(&FUNCTION_TEST_CONTROL, &ISpikeControl::IID)?
@@ -110,7 +117,6 @@ pub(crate) fn exercise_broker_keys(
             broker.Pending(&mut id).ok()?;
             assert_ne!(id, 0);
             assert!(bridge.get().active());
-            let mut other = None;
             let mut replacement = None;
             match case {
                 "double-key" => {
@@ -164,10 +170,19 @@ pub(crate) fn exercise_broker_keys(
                     pump_tsf_messages()?;
                 }
                 "focus-restored" => {
-                    let next = Document(manager.CreateDocumentMgr()?);
+                    let next = other.as_ref().ok_or("missing second input field")?;
                     manager.SetFocus(&next.0)?;
+                    assert!(manager.GetFocus()? == next.0);
+                    // Headless logical SetFocus does not reliably deliver a
+                    // desktop focus notification. Exercise the same real DLL
+                    // callback explicitly, as in key-test's focus fixture.
+                    let focus_sink: ITfThreadMgrEventSink = provider
+                        .GetFunction(&FUNCTION_TEST_MANAGER_SINK, &ITfThreadMgrEventSink::IID)?
+                        .cast()?;
+                    focus_sink.OnSetFocus(&next.0, &document.0)?;
+                    pump_tsf_messages()?;
                     manager.SetFocus(&document.0)?;
-                    other = Some(next);
+                    pump_tsf_messages()?;
                 }
                 "readonly" => store.get().readonly.set(true),
                 "write-denied" => store.get().deny_lock.set(true),

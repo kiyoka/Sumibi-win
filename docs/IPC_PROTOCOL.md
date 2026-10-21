@@ -146,7 +146,9 @@ Protocolは22テスト（既存frame 6、session 8、JSON 4、Core模擬接続4�
 次段階では単発Hostの起動、認証済み接続の取得、容量4のworkerと各1結果、所有TSFへの配送を
 専用ACP storeで接続し19ケースを確認した。既定Hostは変換を許可せず、固定結果はspike限定。
 実DLLキー・Core・TSFからも診断用bridgeへ接続し17ケースと非同期入力・終了6ケースを確認した。
-製品の常駐Broker、通常入力・composition・スコープ判定はIssue #4で引き続き実装する。
+scope/status/compartmentの保護検査を追加し、実DLLで39ケースを確認した
+（[ADR 0006](adr/0006-input-protection-metadata.md)）。
+製品の常駐Broker、通常入力・composition・一般アプリでの判定はIssue #4で引き続き実装する。
 Protocol自体がOS認証する責務には変更しない。
 
 型付き変換は純粋なRustの模擬通信だけで検証するため、前面ウィンドウや実API・資格情報を必要としない。

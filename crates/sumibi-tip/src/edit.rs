@@ -16,6 +16,12 @@ use windows::Win32::Foundation::{
 use windows::Win32::UI::TextServices::*;
 
 pub const MAX_SELECTION_UNITS: usize = 1024;
+#[cfg(feature = "spike")]
+static BODY_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "spike")]
+pub(crate) fn body_read_count() -> u64 {
+    BODY_READS.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 #[path = "manual_edit.rs"]
 pub mod manual;
@@ -39,6 +45,7 @@ pub struct SelectionSnapshot {
     original: Vec<u16>,
     policy: Rc<Cell<EditPolicy>>,
     captured_policy: EditPolicy,
+    protection: crate::protection::Stamp,
     owner: ThreadId,
 }
 
@@ -170,12 +177,18 @@ fn selection(context: &ITfContext, cookie: u32) -> Result<(ITfRange, TF_SELECTIO
 fn read_all(range: &ITfRange, cookie: u32) -> Result<Vec<u16>> {
     // SAFETY: cloned range and edit cookie are confined to this edit session.
     unsafe {
+        let context = range.GetContext()?;
+        let protection = crate::protection::check(&context, range, cookie)?;
         let cursor = range.Clone()?;
         let mut text = Vec::new();
         while !cursor.IsEmpty(cookie)?.as_bool() {
+            crate::protection::validate(&context, range, cookie, protection)?;
             let mut chunk = [0u16; 256];
             let mut count = 0;
+            #[cfg(feature = "spike")]
+            BODY_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             cursor.GetText(cookie, 0, &mut chunk, &mut count)?;
+            crate::protection::validate(&context, range, cookie, protection)?;
             let count = count as usize;
             if count == 0 || count > chunk.len() || text.len() + count > MAX_SELECTION_UNITS {
                 return Err(E_ABORT.into());
@@ -222,7 +235,9 @@ pub fn capture_selection(
             if !same_context(&unsafe { range.GetContext()? }, &target)? {
                 return Err(E_ABORT.into());
             }
+            let protection = crate::protection::check(&target, &range, cookie)?;
             let original = read_all(&range, cookie)?;
+            crate::protection::validate(&target, &range, cookie, protection)?;
             if policy.get() != captured_policy {
                 return Err(E_ABORT.into());
             }
@@ -233,6 +248,7 @@ pub fn capture_selection(
                 original,
                 policy,
                 captured_policy,
+                protection,
                 owner: thread::current().id(),
             });
             Ok(())
@@ -285,6 +301,7 @@ fn validate_snapshot(
     }
     ensure_target(manager, &snapshot.context)?;
     let (range, style) = selection(&snapshot.context, cookie)?;
+    crate::protection::validate(&snapshot.context, &range, cookie, snapshot.protection)?;
     // SAFETY: endpoint comparisons and reads use this fresh edit cookie.
     unsafe {
         if style != snapshot.style

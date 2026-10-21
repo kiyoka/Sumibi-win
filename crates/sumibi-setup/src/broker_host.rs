@@ -70,10 +70,17 @@ pub(crate) fn exercise_broker(
             )?;
             let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
             document.0.Push(&context)?;
+            scope_fixture::initialise_context(&context, client)?;
             let mut association =
                 crate::window_host::Association::new(manager, &window, &document.0)?;
             manager.SetFocus(&document.0)?;
             pump_tsf_messages()?;
+            let other = if case == "focus-restored" {
+                Some(scope_fixture::other_document(manager, client)?)
+            } else {
+                None
+            };
+            manager.SetFocus(&document.0)?;
             let policy = Rc::new(Cell::new(EditPolicy {
                 revision: Revision {
                     input: 1,
@@ -116,7 +123,6 @@ pub(crate) fn exercise_broker(
                     },
                 },
             )?;
-            let mut other = None;
             match case {
                 "cancel" | "close" => {
                     drop(ticket.take());
@@ -169,10 +175,16 @@ pub(crate) fn exercise_broker(
                     }
                 }
                 "focus-restored" => {
-                    let next = Document(manager.CreateDocumentMgr()?);
+                    let next = other.as_ref().ok_or("missing second input field")?;
+                    // This direct-adapter harness owns the focus transition;
+                    // retire before leaving, independently of sink delivery.
+                    drop(ticket.take());
+                    job.cancel()?;
                     manager.SetFocus(&next.0)?;
+                    assert!(manager.GetFocus()? == next.0);
+                    pump_tsf_messages()?;
                     manager.SetFocus(&document.0)?;
-                    other = Some(next);
+                    pump_tsf_messages()?;
                 }
                 "revoke" => {
                     let mut changed = policy.get();
@@ -187,7 +199,20 @@ pub(crate) fn exercise_broker(
                 }
                 "readonly" => store.get().readonly.set(true),
                 "write-denied" => store.get().deny_lock.set(true),
-                "read-denied" => store.get().read_limit.set(0),
+                "read-denied" => {
+                    // TSF may retain text in its own cache. The host must report
+                    // loss of availability; an unannounced GetText limit alone
+                    // does not revoke already cached data or an edit cookie.
+                    store.get().read_limit.set(0);
+                    store.get().dynamic_status.set(TS_SD_LOADING);
+                    let sink = store
+                        .get()
+                        .sink
+                        .borrow()
+                        .clone()
+                        .ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
+                    sink.OnStatusChange(TS_SD_LOADING)?;
+                }
                 _ => {}
             }
             let before = store.get().text.borrow().clone();
@@ -225,7 +250,7 @@ pub(crate) fn exercise_broker(
                 Err(error) => {
                     if case == "disabled" || case == "ready-policy" {
                         assert_eq!(error, sumibi_ipc::Error::PolicyDenied);
-                    } else if case == "cancel" || case == "close" {
+                    } else if matches!(case, "cancel" | "close" | "focus-restored") {
                         assert_eq!(error, sumibi_ipc::Error::Cancelled);
                     } else if case == "timeout" {
                         assert_eq!(error, sumibi_ipc::Error::Timeout);
@@ -268,6 +293,7 @@ pub(crate) fn exercise_broker(
             store.get().readonly.set(false);
             store.get().deny_lock.set(false);
             store.get().read_limit.set(usize::MAX);
+            store.get().dynamic_status.set(0);
             association.close()?;
             manager.SetFocus(None)?;
             drop(other);

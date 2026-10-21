@@ -10,7 +10,7 @@
 | OS非依存Core | core/lib.rsのManualConversion。単一要求の適用判定のみ | Tracking・待機・候補・手動／自動の状態と効果を追加 |
 | COMとDLL | tip/com.rs、build.rs。factory・独立lease・所有thread・解除再試行 | 一般アプリにロードされる常設登録と更新時の寿命 |
 | TSF編集 | tip/edit.rsとmanual_edit.rs。同期read/write、全文照合、Core gate、IPC結果の一度だけ適用。所有ACP context限定 | 製品キーとの統合、一般アプリの対象分類と編集 |
-| 保護入力 | EditPolicy.allowedによる開発用Grant。読取専用拒否 | 実スコープ・機密欄・不明時の拒否を実アプリで確認 |
+| 保護入力 | protection.rs。scope/status/compartmentの肯定検査、取得・source・適用時の再検査。実DLLで39ケース | 一般アプリの実スコープ・独自機密欄・判定不能時の動作確認 |
 | 追跡composition | 未実装。専用ホストの本文はホスト自身が編集 | 通常入力・移動・他IMEとの競合・Enter・取消・原文維持 |
 | 表示属性 | display.rs / preview.rs。点線、原文保持、属性だけ遅延解除 | 通常アプリでの下線、アクセシビリティ、既存属性との共存 |
 | 変更通知 | notifications.rs。本文・選択・フォーカスで失効 | 製品追跡・IPC・候補との統合 |
@@ -61,6 +61,11 @@ Protocol 22件のうち16件が追加のJSON・session・Core模擬接続であ�
 所有threadの拒否を追加し、workspace合計は36件のまま。
 専用ACP storeと診断用EXE bridgeの範囲であり、一般アプリや常駐Brokerは未接続。
 詳細は[ADR 0005](adr/0005-dll-key-broker-bridge.md)を参照。
+
+続いて入力保護を追加。workspaceは39件、protection-testは39ケース、broker-input-testは
+WM_KILLFOCUSを含む7ケースへ増えた。初期保護／不明の27ケースでDLL読取・Broker job開始0を確認する。
+MSCTF内部の本文照会は別に計測し、OSを含む完全な非読取とは扱わない。
+フォーカスの画面なし検査とホストstatus通知の前提も明記した。[ADR 0006](adr/0006-input-protection-metadata.md)を参照。
 
 ## 3. アプリ互換表の記録形式
 

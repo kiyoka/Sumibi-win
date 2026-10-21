@@ -12,6 +12,7 @@ mod keys;
 mod mock;
 #[cfg(feature = "spike")]
 mod notifications;
+mod protection;
 #[cfg(feature = "spike")]
 pub mod spike;
 

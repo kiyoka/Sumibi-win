@@ -61,6 +61,8 @@ TSF/COMの操作は生成時のスレッドに限定し、別スレッドは固�
 実DLLのキー・Core・編集から診断用EXE bridgeを通す非同期経路も追加した
 （[ADR 0005](adr/0005-dll-key-broker-bridge.md)）。workerはDLLへの参照やcallbackを保持しない。
 製品InputSessionと一般アプリ内でのBrokerClientの配置は未実装。
+さらにsourceを返す前と編集時に保護メタデータを再検査し、scope/compartmentの変更で要求を失効させる。
+scopeのStampと通知、MSCTF内部読取との境界は[ADR 0006](adr/0006-input-protection-metadata.md)を参照。
 Controllerのbusyガードにより操作中の再入を拒否し、自分の書込で生じる通知を外部編集と誤認しない。
 TSFを呼ぶ前にRefCellの借用を解放し、通知やウィンドウ破棄が再入しても借用違反を起こさないようにする。
 

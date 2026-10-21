@@ -13,7 +13,7 @@ struct Observation {
     owner: ThreadId,
     invalid: Cell<bool>,
 }
-#[implement(ITfTextEditSink, ITfThreadMgrEventSink)]
+#[implement(ITfTextEditSink, ITfThreadMgrEventSink, ITfCompartmentEventSink)]
 struct Observer {
     state: Weak<Observation>,
     owner: ThreadId,
@@ -57,6 +57,11 @@ impl ITfThreadMgrEventSink_Impl for Observer_Impl {
         self.invalidate()
     }
 }
+impl ITfCompartmentEventSink_Impl for Observer_Impl {
+    fn OnChange(&self, _: *const windows::core::GUID) -> Result<()> {
+        self.invalidate()
+    }
+}
 struct Subscription {
     source: ITfSource,
     cookie: u32,
@@ -93,6 +98,18 @@ impl Guard {
                 &sink.to_interface::<ITfTextEditSink>(),
             )?;
             subscriptions.push(Subscription { source, cookie });
+            let compartments: ITfCompartmentMgr = context.cast()?;
+            for guid in [
+                GUID_COMPARTMENT_KEYBOARD_DISABLED,
+                GUID_COMPARTMENT_EMPTYCONTEXT,
+            ] {
+                let source: ITfSource = compartments.GetCompartment(&guid)?.cast()?;
+                let cookie = source.AdviseSink(
+                    &ITfCompartmentEventSink::IID,
+                    &sink.to_interface::<ITfCompartmentEventSink>(),
+                )?;
+                subscriptions.push(Subscription { source, cookie });
+            }
             let source: ITfSource = manager.cast()?;
             let cookie = source.AdviseSink(
                 &ITfThreadMgrEventSink::IID,
@@ -119,6 +136,8 @@ impl Guard {
 /// Single-use request, confined by Rc/COM to the capturing thread. Dropping it
 /// retires the Core request; responses cannot recapture a different selection.
 pub struct ManualEdit {
+    manager: ITfThreadMgr,
+    client: u32,
     snapshot: SelectionSnapshot,
     core: ManualConversion,
     request: RequestId,
@@ -171,6 +190,8 @@ impl ManualEdit {
                 core.begin(request, target)
                     .map_err(|_| windows::core::Error::from(E_ABORT))?;
                 *result.borrow_mut() = Some(Self {
+                    manager,
+                    client,
                     snapshot,
                     core,
                     request,
@@ -185,6 +206,29 @@ impl ManualEdit {
         Ok(ticket)
     }
     pub fn source(&self) -> Result<String> {
+        self.guard.check()?;
+        // A ticket can be held before transport submission. Recheck metadata
+        // without rereading the body, even when a host omitted change notices.
+        let manager = self.manager.clone();
+        let context = self.snapshot.context.clone();
+        let target = context.clone();
+        let range = self.snapshot.range.clone();
+        let expected = self.snapshot.protection;
+        let observation = self.guard.state.clone();
+        run(
+            &context,
+            self.client,
+            false,
+            Box::new(move |cookie| {
+                ensure_target(&manager, &target)?;
+                crate::protection::validate(&target, &range, cookie, expected)?;
+                ensure_target(&manager, &target)?;
+                if observation.invalid.get() {
+                    return Err(E_ABORT.into());
+                }
+                Ok(())
+            }),
+        )?;
         self.guard.check()?;
         if self.snapshot.policy.get() != self.snapshot.captured_policy
             || Instant::now() >= self.deadline

@@ -32,6 +32,12 @@ const CONVERT_KEY: TF_PRESERVEDKEY = TF_PRESERVEDKEY {
     uVKey: 0x4a,
     uModifiers: TF_MOD_CONTROL,
 };
+/// Diagnostic counter only, absent from non-spike builds. No text or reset API.
+/// The caller must retain the loaded module throughout this synchronous call.
+#[no_mangle]
+pub extern "system" fn SumibiSpikeBodyReadCount() -> u64 {
+    crate::edit::body_read_count()
+}
 
 #[implement(ITfFunctionProvider)]
 struct Provider {

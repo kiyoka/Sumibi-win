@@ -16,6 +16,9 @@
 実DLLのキー・Core・TSF編集から診断用EXE bridgeへ接続し、17ケースと非同期デモの6ケースも検証した
 （[ADR 0005](adr/0005-dll-key-broker-bridge.md)）。
 製品Brokerの発見・常駐dispatch、一般アプリの入力基盤は未完了で、受入条件全体を満たした意味ではない。
+続いてscope/status/compartmentの保護検査を実装し、本文取得・source送信前・結果適用時に検査する。
+状態を変更して戻した場合も拒否し、実DLL/TSFで39ケースを確認した
+（[ADR 0006](adr/0006-input-protection-metadata.md)）。一般アプリでの判定は引き続き未検証。
 
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。

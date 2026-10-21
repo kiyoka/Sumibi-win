@@ -27,6 +27,12 @@ pub(super) use broker_host::exercise_broker;
 #[path = "broker_keys.rs"]
 mod broker_keys;
 pub(super) use broker_keys::exercise_broker_keys;
+#[path = "scope_fixture.rs"]
+mod scope_fixture;
+use scope_fixture::{scope_value, ScopeSpec};
+#[path = "protection_host.rs"]
+mod protection_host;
+pub(super) use protection_host::exercise_protection;
 
 type EditHistory = RefCell<Vec<(Vec<u16>, TS_SELECTION_ACP)>>;
 
@@ -41,9 +47,16 @@ struct TextStore {
     skip_callback: Cell<bool>,
     read_limit: Cell<usize>,
     reads: Cell<usize>,
+    body_reads: Cell<usize>,
     undo: EditHistory,
     redo: EditHistory,
     window: Cell<HWND>,
+    scopes: Rc<RefCell<ScopeSpec>>,
+    scope_requested: Cell<bool>,
+    static_status: Cell<u32>,
+    dynamic_status: Cell<u32>,
+    status_failure: Cell<bool>,
+    protect_on_read: Cell<bool>,
 }
 
 struct Lock<'a>(&'a Cell<u32>);
@@ -74,9 +87,16 @@ impl TextStore {
             skip_callback: Cell::new(false),
             read_limit: Cell::new(usize::MAX),
             reads: Cell::new(0),
+            body_reads: Cell::new(0),
             undo: RefCell::new(Vec::new()),
             redo: RefCell::new(Vec::new()),
             window: Cell::new(HWND::default()),
+            scopes: Rc::new(RefCell::new(ScopeSpec::List(vec![IS_TEXT]))),
+            scope_requested: Cell::new(false),
+            static_status: Cell::new(TS_SS_NOHIDDENTEXT),
+            dynamic_status: Cell::new(0),
+            status_failure: Cell::new(false),
+            protect_on_read: Cell::new(false),
         }
     }
     fn readable(&self) -> Result<()> {
@@ -213,13 +233,17 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         Ok(unsafe { (sink.vtable().OnLockGranted)(sink.as_raw(), TEXT_STORE_LOCK_FLAGS(flags)) })
     }
     fn GetStatus(&self) -> Result<TS_STATUS> {
+        if self.status_failure.get() {
+            return Err(E_FAIL.into());
+        }
         Ok(TS_STATUS {
-            dwDynamicFlags: if self.readonly.get() {
-                TS_SD_READONLY
-            } else {
-                0
-            },
-            dwStaticFlags: TS_SS_NOHIDDENTEXT,
+            dwDynamicFlags: self.dynamic_status.get()
+                | if self.readonly.get() {
+                    TS_SD_READONLY
+                } else {
+                    0
+                },
+            dwStaticFlags: self.static_status.get(),
         })
     }
     fn QueryInsert(
@@ -305,6 +329,14 @@ impl ITextStoreACP_Impl for TextStore_Impl {
             0
         };
         let count = (end - start).min(requested).min(self.read_limit.get());
+        // TSF can call GetText only for run metadata (capacity == 0). Count
+        // actual UTF-16 body copies separately for the privacy boundary tests.
+        if capacity > 0 && count > 0 {
+            self.body_reads.set(self.body_reads.get() + 1);
+            if self.protect_on_read.replace(false) {
+                *self.scopes.borrow_mut() = ScopeSpec::List(vec![IS_PRIVATE]);
+            }
+        }
         let text = self.text.borrow();
         // SAFETY: bounded caller-owned buffers; text is borrowed only for copy.
         unsafe {
@@ -393,11 +425,11 @@ impl ITextStoreACP_Impl for TextStore_Impl {
     ) -> Result<()> {
         Err(E_NOTIMPL.into())
     }
-    fn RequestSupportedAttrs(&self, _: u32, _: u32, _: *const GUID) -> Result<()> {
-        Ok(())
+    fn RequestSupportedAttrs(&self, _: u32, count: u32, attrs: *const GUID) -> Result<()> {
+        self.request_scope(count, attrs)
     }
-    fn RequestAttrsAtPosition(&self, _: i32, _: u32, _: *const GUID, _: u32) -> Result<()> {
-        Ok(())
+    fn RequestAttrsAtPosition(&self, _: i32, count: u32, attrs: *const GUID, _: u32) -> Result<()> {
+        self.request_scope(count, attrs)
     }
     fn RequestAttrsTransitioningAtPosition(
         &self,
@@ -430,13 +462,31 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         }
         Ok(())
     }
-    fn RetrieveRequestedAttrs(&self, _: u32, _: *mut TS_ATTRVAL, fetched: *mut u32) -> Result<()> {
+    fn RetrieveRequestedAttrs(
+        &self,
+        count: u32,
+        output: *mut TS_ATTRVAL,
+        fetched: *mut u32,
+    ) -> Result<()> {
         if fetched.is_null() {
             return Err(E_INVALIDARG.into());
         }
-        // SAFETY: writable output slot, no attributes were requested.
+        // SAFETY: TSF owns the returned variant and releases its interface.
         unsafe {
             fetched.write(0);
+            if self.scope_requested.replace(false) && count > 0 {
+                if output.is_null() {
+                    return Err(E_INVALIDARG.into());
+                }
+                if let Some(value) = scope_value(&self.scopes)? {
+                    output.write(TS_ATTRVAL {
+                        idAttr: GUID_PROP_INPUTSCOPE,
+                        dwOverlapId: 0,
+                        varValue: value,
+                    });
+                    fetched.write(1);
+                }
+            }
         }
         Ok(())
     }
@@ -552,6 +602,7 @@ pub(super) fn exercise(
             )?;
             let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
             document.0.Push(&context)?;
+            scope_fixture::initialise_context(&context, client)?;
             manager.SetFocus(&document.0)?;
             let policy = Rc::new(Cell::new(EditPolicy {
                 revision: Revision {
@@ -703,6 +754,7 @@ fn exercise_previews(
             )?;
             let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
             document.0.Push(&context)?;
+            scope_fixture::initialise_context(&context, client)?;
             manager.SetFocus(&document.0)?;
             let policy = Rc::new(Cell::new(EditPolicy {
                 revision: Revision {
@@ -836,6 +888,7 @@ fn exercise_attributes(
             )?;
             let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
             document.0.Push(&context)?;
+            scope_fixture::initialise_context(&context, client)?;
             manager.SetFocus(&document.0)?;
             let policy = Rc::new(Cell::new(EditPolicy {
                 revision: Revision {
@@ -913,6 +966,7 @@ fn exercise_rendering(
         )?;
         let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
         document.0.Push(&context)?;
+        scope_fixture::initialise_context(&context, client)?;
         let mut association = crate::window_host::Association::new(manager, &window, &document.0)?;
         window.focus()?;
         pump_tsf_messages()?;
@@ -1079,6 +1133,7 @@ fn exercise_key_host(
         )?;
         let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
         document.0.Push(&context)?;
+        scope_fixture::initialise_context(&context, client)?;
         let mut association = if let Some(window) = &window {
             let association = crate::window_host::Association::new(manager, window, &document.0)?;
             window.focus()?;

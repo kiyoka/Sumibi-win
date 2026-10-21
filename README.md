@@ -20,6 +20,8 @@ Issue #4では版付きJSONとclient接続状態を追加し、取消・切断�
 `broker-key-test`は実DLLのキーから、`broker-input-test`は非同期デモの入力と終了まで検証します。
 `broker-demo`では同じ非同期の固定変換を手動で試せます（[起動と操作](docs/DEVELOPMENT.md#実dllのキーから非同期変換を試す)）。
 常駐Broker、一般アプリの入力基盤、HTTP通信はまだありません。
+入力保護の検査を追加し、通常テキストと確認できないscope・状態ではDLLの本文取得と要求送信を拒否します。
+`protection-test`で実DLL/TSFの39ケースを検証できます（[境界と制限](docs/adr/0006-input-protection-metadata.md)）。
 Notepad等の実アプリでの表示と実打鍵は未確認です。
 
 - [実装着手 Issue #1](https://github.com/kiyoka/Sumibi-win/issues/1)
@@ -37,6 +39,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [別プロセスの固定ハンドル認証と非同期IPC](docs/adr/0003-pinned-desktop-peers.md)
 - [単発Brokerと所有TSFスレッドへの結果配送](docs/adr/0004-one-shot-broker-and-owner-edit.md)
 - [実DLLのキーと診断用非同期bridge](docs/adr/0005-dll-key-broker-bridge.md)
+- [入力保護メタデータの検査](docs/adr/0006-input-protection-metadata.md)
 - [Issue #1の受入記録](docs/ISSUE_1_ACCEPTANCE.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 

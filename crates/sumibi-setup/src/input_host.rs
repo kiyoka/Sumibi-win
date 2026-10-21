@@ -410,7 +410,15 @@ pub(crate) fn exercise_broker_input(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    for case in ["apply", "escape", "enter", "edit", "close", "sent-close"] {
+    for case in [
+        "apply",
+        "escape",
+        "enter",
+        "edit",
+        "focus",
+        "close",
+        "sent-close",
+    ] {
         run(manager, client, RunMode::BrokerInputTest(case))?;
     }
     Ok(())
@@ -458,6 +466,7 @@ fn run(
         )?;
         let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
         document.0.Push(&context)?;
+        scope_fixture::initialise_context(&context, client)?;
         let mut association = crate::window_host::Association::new(manager, &window, &document.0)?;
         window.focus()?;
         manager.SetFocus(&document.0)?;
@@ -594,6 +603,7 @@ fn test_broker_input(
         "escape" => post(WM_KEYDOWN, 0x1b)?,
         "enter" => post(WM_KEYDOWN, 0x0d)?,
         "edit" => post(WM_CHAR, 'x' as usize)?,
+        "focus" => post(WM_KILLFOCUS, 0)?,
         "close" => post(WM_CLOSE, 0)?,
         _ => {}
     }
