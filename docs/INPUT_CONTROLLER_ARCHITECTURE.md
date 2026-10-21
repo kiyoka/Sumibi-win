@@ -1,0 +1,104 @@
+# Windows入力経路の責務と状態の寿命
+
+2026-10-21。実装基準 `91552b0`。[全体設計](TECHNICAL_OVERVIEW.md)の所有関係を詳述する。
+現行の検証用Controllerと、未実装の製品InputSessionを区別する。
+
+## 1. 所有者と終了条件（現在の実装）
+
+| 所有者・型 | 保持するもの | 終了・失効 |
+| --- | --- | --- |
+| setupのApartment・Library | COM STA、ロード済みDLL | 全COM参照解放とアンロード可能判定後にDLL解放、最後にSTA終了 |
+| Tip / Active | 所有ThreadId、manager、clientId、キー登録、Controller、Provider登録 | Deactivateで許可失効と登録解除。失敗時は状態を残して再試行 |
+| Controller | manager、許可context、EditPolicy、Preview、通知購読、解除世代、再入ガード | revoke・フォーカス喪失で書込権限を先に失効 |
+| Delayed / Controllerの検証要求 | 弱Controller、単調時計期限、単調増加ID、保留ID | 取消・無効化で失効。旧応答で新要求を消費せず、取消後の選択再取得を禁止 |
+| キーsink・Provider・Control | Controllerへの弱参照と独立のObjectLease | Controllerが消えたら操作しない。外部COM参照が残ればDLLの寿命は維持 |
+| Observer / Subscription | 弱Controller、Sourceと購読cookie | closeでUnadvise。旧通知でも失効した対象へ書かない |
+| SelectionSnapshot | context・range・選択style・原文・取得時policy・所有thread | 操作中に再検査。本文を持つためDebugを実装しない |
+| Preview | snapshot、atom、activeフラグ、manager/client | cancel/commit。解除拒否時は再試行情報を維持 |
+| Session | one-shot処理、実行結果、所有thread、ObjectLease | コールバック一度。同期要求終了後の遅延本文操作は拒否 |
+| TextStore | 合成本文、選択、sink、lock、Undo/Redo、検証用HWND | 専用文書終了。一般アプリの本文所有者ではない |
+| Window / View | HWND、Frame、入力callback、refresh識別子、旧WndProc | WM_NCDESTROYでactiveを落とし、旧予約を無効化 |
+| Binding | context、client、購読cookie、Scene、弱Viewへのrefresh handle | closeでactiveを落とし、表示を消し、購読解除 |
+| Association | manager、文書、旧関連付け、弱View | 生存中のHWNDだけ関連付けを戻す。破棄後の同じHWND値へ触れない |
+
+## 2. 強参照と弱参照
+
+実線は保持、破線は弱参照またはコールバック接続を示す。呼出し順の図ではない。
+
+```mermaid
+flowchart LR
+    tip["Tip"] --> active["Active"]
+    active --> ctl["Rc Controller"]
+    active --> provider["Provider登録"]
+    ctl --> preview["Preview・SelectionSnapshot"]
+    ctl --> sub["通知購読・cookie"]
+    preview --> context["ITfContext・ITfRange"]
+    ctl --> manager["ITfThreadMgr"]
+    keys["TSFが保持するキーsink"] -.-> ctl
+    provider -.-> ctl
+    control["外部が保持するControl"] -.-> ctl
+    observer["TSFが保持するObserver"] -.-> ctl
+    cleanup["非同期の属性解除Session"] -.-> ctl
+    window["Window"] --> view["Rc View"]
+    view --> callback["入力callback"]
+    callback --> editor["Rc Editor・TextStore"]
+    binding["Binding"] --> state["描画State・context"]
+    view -.-> state
+    state -.-> view
+```
+
+キーsink、通知sink、独立表示属性Info・Enumerator、編集SessionはそれぞれDLLのObjectLeaseを保持する。
+Tipの参照が0でも、他のCOMオブジェクトやserver lockが残ればDllCanUnloadNowはS_FALSEになる。
+Controllerへの弱参照とDLLロード寿命の計数は別の責務である。
+図のViewとStateは互いを強参照しない。キューのメッセージにRcの生ポインターを積まない。
+WndProcのuserdataはWindowが保持するViewを参照し、コールバック中の再入破棄に備えて一時的な強参照を確保する。
+
+## 3. 所有スレッドと再入
+
+TSF/COMの操作は生成時のスレッドに限定し、別スレッドは固定HRESULTで拒否する。
+将来IPC受信はCOM参照を移動せず、要求IDと結果を所有スレッドへ通知してそこで編集要求を行う。
+Controllerのbusyガードにより操作中の再入を拒否し、自分の書込で生じる通知を外部編集と誤認しない。
+TSFを呼ぶ前にRefCellの借用を解放し、通知やウィンドウ破棄が再入しても借用違反を起こさないようにする。
+
+本文置換と属性解除の延期は区別する。属性解除は弱参照・世代一致を検査した上で非同期化できる。
+本文置換は同期スパイクの完了条件を満たす場合だけ実行する。製品の非同期編集は別の期限付き要求として設計する。
+同じ処理の再試行と、単なる読取確認も分ける。確認失敗を理由にSetTextを再実行しない。
+
+## 4. 失効と後始末の順序
+
+1. 許可・要求・プレビューを論理的に失効させ、本文書込を禁止する。
+2. 候補などの表示を非表示にし、可能なら自分の属性だけ解除する。
+3. ロック拒否なら解除だけを世代付きで予約し、古い予約が新対象に作用しないようにする。
+4. 通知・Provider・予約キー・キーsinkを解除する。必要なcookieと参照は失敗時に保持する。
+5. 文書とプロファイル・factoryを逆順に解除し、独立COM参照の解放を確認する。
+6. DLLのアンロード可能判定が成立してからFreeLibraryを行う。
+
+解除が失敗したときに権限を復活させない。Dropによる最善努力の後始末だけで、成功を保証したと記録しない。
+setupは明示解除の結果を検査し、DLLを保持すべき場合は強制解放を避ける。
+表示側もcloseで先にactiveを落とし、予約済みWM_APPの後着を無害にする。
+HWNDが同じ整数でも別Viewなら別対象と扱う。
+
+## 5. 製品InputSessionとBrokerの寿命（設計案）
+
+| スコープ | 所有する状態 | 他スコープへ渡さないもの |
+| --- | --- | --- |
+| TSFスレッド | adapter、manager、client、入力先識別、所有スレッドへの結果配送 | 生COM参照・cookieをIPCやworkerへ渡さない |
+| contextの接続世代 | 追跡、選択、原文アンカー、候補、保留要求、入力世代 | 別contextへ旧候補や救済文字を自動移行しない |
+| 要求 | 一意ID、設定・認可版、取得原文、期限、結果の消費状態 | 接続し直したBrokerへ未完了要求を再利用しない |
+| Broker接続 | nonce、起動世代、認証済みpeer、有限の未完了集合 | peerの本文を別接続の要求へ対応付けない |
+| Broker全体 | 設定、資格情報、辞書、累積判定回数、自動処理の排他 | 資格情報をDLLや候補UIへ配布しない |
+
+MacのInputRuntime.sharedは短命コントローラー再生成への対策だが、Windowsでプロセス共有の
+単一入力状態を採用する根拠にしない。TSFスレッドとcontextの寿命を実測して管理する。
+IUnknownの同一性と接続世代を組み合わせ、ポインター値の再利用や同じ原文の別欄を区別する。
+対象変更・無効化・設定取消・IPC切断で要求を取消し、結果の配送先を検索して別欄へ適用しない。
+
+## 6. 検証と残る確認
+
+実装根拠は[com.rs](../crates/sumibi-tip/src/com.rs)、[spike.rs](../crates/sumibi-tip/src/spike.rs)、
+[notifications.rs](../crates/sumibi-tip/src/notifications.rs)、[window_host.rs](../crates/sumibi-setup/src/window_host.rs)、
+[live_render.rs](../crates/sumibi-setup/src/live_render.rs)。
+COM単体試験とload_smokeは独立sink/Info参照によるアンロード阻止、再入・解除失敗を確認する。
+window-testは旧属性解除、新描画Binding、破棄後予約、実フォーカス通知を確認する。
+一般アプリでのcomposition寿命、非同期IPCとの再入、終了直前の外部編集は未検証。
+これらを実装する際は専用ホストで異常系を追加し、対象アプリの手動結果を別に記録する。
