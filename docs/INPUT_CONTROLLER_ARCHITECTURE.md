@@ -58,7 +58,9 @@ WndProcのuserdataはWindowが保持するViewを参照し、コールバック�
 TSF/COMの操作は生成時のスレッドに限定し、別スレッドは固定HRESULTで拒否する。
 単発Brokerの検証経路はCOM参照を移動せず、要求IDと結果をeventで所有スレッドへ通知してそこで編集要求を行う。
 この所有ACP context限定のManualEdit/workerは[ADR 0004](adr/0004-one-shot-broker-and-owner-edit.md)を参照。
-製品InputSessionと実DLLのキー経路への統合は未実装。
+実DLLのキー・Core・編集から診断用EXE bridgeを通す非同期経路も追加した
+（[ADR 0005](adr/0005-dll-key-broker-bridge.md)）。workerはDLLへの参照やcallbackを保持しない。
+製品InputSessionと一般アプリ内でのBrokerClientの配置は未実装。
 Controllerのbusyガードにより操作中の再入を拒否し、自分の書込で生じる通知を外部編集と誤認しない。
 TSFを呼ぶ前にRefCellの借用を解放し、通知やウィンドウ破棄が再入しても借用違反を起こさないようにする。
 

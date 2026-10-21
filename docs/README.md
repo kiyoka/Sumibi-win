@@ -15,6 +15,7 @@
 - [ADR 0001](adr/0001-language-and-ime.md)：RustとTSFを採用した判断。
 - [IPCのワイヤーと状態](IPC_PROTOCOL.md)、[ADR 0002](adr/0002-ipc-boundary-and-desktop-probe.md)、[ADR 0003](adr/0003-pinned-desktop-peers.md)：フレームから起動processの認証・非同期I/Oまで。
 - [ADR 0004](adr/0004-one-shot-broker-and-owner-edit.md)：単発Host EXE、有限worker、Coreから所有TSFでの適用と失効。
+- [ADR 0005](adr/0005-dll-key-broker-bridge.md)：実DLLキー・Core・TSFからEXE所有workerを通る非同期デモ。
 - [Mac版移植範囲](MAC_PARITY.md)：共通契約とOS固有の再設計。
 
 ## 更新の規則

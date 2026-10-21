@@ -1,6 +1,8 @@
 //! Keyboard-only, single-line synthetic editor. Never attached to user documents.
 use super::*;
+use crate::broker_bridge::Bridge;
 use std::ops::Range;
+use sumibi_tip::spike::{ISpikeBroker, ISpikeBrokerTransport, FUNCTION_TEST_BROKER};
 use sumibi_tip::spike::{ISpikeControl, COMMAND_CONVERT, FUNCTION_TEST_CONTROL};
 use windows::Win32::Foundation::{E_ACCESSDENIED, LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
@@ -173,6 +175,7 @@ struct Editor {
     control: ISpikeControl,
     high: Cell<Option<(u16, usize)>>,
     submits: Cell<usize>,
+    broker: Option<(ISpikeBroker, ComObject<Bridge>)>,
 }
 impl Editor {
     fn insert(&self, text: &[u16]) -> Result<()> {
@@ -199,6 +202,11 @@ impl Editor {
         }
         if message == WM_KILLFOCUS {
             self.high.set(None);
+            if self.broker.is_some() {
+                unsafe {
+                    self.control.RevokeContext().ok()?;
+                }
+            }
             return Ok(false);
         }
         if message == WM_KEYUP {
@@ -232,6 +240,18 @@ impl Editor {
             if consumed {
                 return Ok(true);
             }
+            if let Some((broker, _)) = &self.broker {
+                if matches!(key.0, 0x1b | 0x0d) {
+                    let mut pending = 0;
+                    unsafe {
+                        let _ = broker.Pending(&mut pending);
+                        let _ = broker.Cancel(0);
+                    }
+                    if key.0 == 0x1b && pending != 0 {
+                        return Ok(true);
+                    }
+                }
+            }
             if matches!(key.0, 0x23..=0x25 | 0x27 | 0x2e) {
                 // SAFETY: read the calling thread's keyboard state; never modify it.
                 let (shift, modified) = unsafe {
@@ -255,6 +275,9 @@ impl Editor {
             }
             match key.0 {
                 0x75 => {
+                    if self.broker.is_some() {
+                        return Ok(true);
+                    }
                     // F6: explicitly grant only this editor's own context.
                     if self.store.get().text.borrow().is_empty() {
                         return Ok(true);
@@ -271,6 +294,23 @@ impl Editor {
                     return Ok(true);
                 }
                 0x76 => {
+                    if let Some((broker, bridge)) = &self.broker {
+                        if bridge.get().active() || self.store.get().text.borrow().is_empty() {
+                            return Ok(true);
+                        }
+                        let selected = self.store.get().selection.get();
+                        if selected.acpStart == selected.acpEnd {
+                            let length = self.store.get().text.borrow().len();
+                            self.store.get().host_selection(0, length)?;
+                        }
+                        let transport = bridge.to_interface::<ISpikeBrokerTransport>();
+                        // Explicit F7 opt-in for this owned ACP context only.
+                        unsafe {
+                            broker
+                                .Attach(self.context.as_raw(), transport.as_raw())
+                                .ok()?;
+                        }
+                    }
                     // SAFETY: same-thread command for this editor's context;
                     // no keyboard event is sent to the desktop or other apps.
                     unsafe {
@@ -285,6 +325,11 @@ impl Editor {
         }
         if message != WM_CHAR {
             return Ok(false);
+        }
+        if let Some((broker, _)) = &self.broker {
+            unsafe {
+                let _ = broker.Cancel(0);
+            }
         }
         let Ok(unit) = u16::try_from(key.0) else {
             self.high.set(None);
@@ -355,6 +400,21 @@ pub(crate) fn run_demo(
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     run(manager, client, RunMode::Demo)
 }
+pub(crate) fn run_broker_demo(
+    manager: &ITfThreadMgr,
+    client: u32,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    run(manager, client, RunMode::BrokerDemo)
+}
+pub(crate) fn exercise_broker_input(
+    manager: &ITfThreadMgr,
+    client: u32,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    for case in ["apply", "escape", "enter", "edit", "close", "sent-close"] {
+        run(manager, client, RunMode::BrokerInputTest(case))?;
+    }
+    Ok(())
+}
 
 pub(crate) fn exercise_close(
     manager: &ITfThreadMgr,
@@ -369,6 +429,8 @@ pub(crate) fn exercise_close(
 enum RunMode {
     InputTest,
     Demo,
+    BrokerDemo,
+    BrokerInputTest(&'static str),
     CloseTest(&'static str),
 }
 
@@ -403,6 +465,19 @@ fn run(
             .GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)?
             .GetFunction(&FUNCTION_TEST_CONTROL, &ISpikeControl::IID)?
             .cast()?;
+        let broker = if matches!(mode, RunMode::BrokerDemo | RunMode::BrokerInputTest(_)) {
+            window.set_title("Sumibi 非同期変換デモ（固定結果） | F7 変換 | Esc 取消 | Enter 原文確定 | Ctrl+Z Undo")?;
+            let broker: ISpikeBroker = manager
+                .GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)?
+                .GetFunction(&FUNCTION_TEST_BROKER, &ISpikeBroker::IID)?
+                .cast()?;
+            Some((
+                broker,
+                Bridge::new(sumibi_ipc::bootstrap::Mode::DiagnosticFixed { delay_ms: 400 })?,
+            ))
+        } else {
+            None
+        };
         let editor = Rc::new(Editor {
             store: store.clone(),
             context: context.clone(),
@@ -410,21 +485,31 @@ fn run(
             control,
             high: Cell::new(None),
             submits: Cell::new(0),
+            broker,
         });
         let input = editor.clone();
         window.set_input(Rc::new(move |message, key, flags| {
             input.input(message, key, flags)
         }))?;
         let mut live = crate::live_render::Binding::attach(&window, &context, client)?;
-        if matches!(mode, RunMode::Demo) {
+        let outcome = if matches!(mode, RunMode::Demo) {
             println!("Type in the single-line demo. F6 previews, F7 converts, Enter confirms the original. Close the window to exit.");
-            message_loop(&window)?;
+            message_loop(&window)
+        } else if matches!(mode, RunMode::BrokerDemo) {
+            println!("Async fixed-result demo: F7 converts the selection (or all text), Esc cancels, Enter confirms the original. Close to exit.");
+            broker_message_loop(&window, &editor)
+        } else if let RunMode::BrokerInputTest(case) = mode {
+            test_broker_input(&window, &editor, &live, case)
         } else if let RunMode::CloseTest(case) = mode {
-            test_close(&window, &editor, case)?;
+            test_close(&window, &editor, case)
         } else {
-            test_input(&window, &editor, &live)?;
-        }
+            test_input(&window, &editor, &live)
+        };
         window.clear_input();
+        if let Some((broker, bridge)) = &editor.broker {
+            let _ = broker.Cancel(0);
+            bridge.get().shutdown()?;
+        }
         live.close()
             .map_err(|error| format!("input render cleanup: {error}"))?;
         // WM_CLOSE already revoked before destruction. A desktop TSF manager
@@ -440,7 +525,144 @@ fn run(
         association
             .close()
             .map_err(|error| format!("input association cleanup: {error}"))?;
+        outcome?;
     }
+    Ok(())
+}
+
+fn broker_message_loop(window: &crate::window_host::Window, editor: &Editor) -> Result<()> {
+    let (control, bridge) = editor.broker.as_ref().ok_or(E_FAIL)?;
+    let mut pending = false;
+    while window.is_open() {
+        pump(window)?;
+        if !window.is_open() {
+            break;
+        }
+        if let Some(delivery) = bridge.get().drain(control)? {
+            window.set_title(if delivery == crate::broker_bridge::Delivery::Applied {
+                "Sumibi 変換完了（固定結果） | F7 変換 | Ctrl+Z Undo"
+            } else {
+                "Sumibi 原文を保持しました | F7 変換 | Esc 取消"
+            })?;
+            pending = false;
+        }
+        let active = bridge.get().active();
+        if active && !pending {
+            window.set_title("Sumibi 変換中（固定結果） | Esc 取消 | Enter 原文確定")?;
+        }
+        pending = active;
+        let handles: Vec<_> = bridge.get().wait_handle().into_iter().collect();
+        // No IPC wait or result callback inside WndProc. Sent close/focus
+        // messages are handled by the owner and wake the ordinary message path.
+        let wait = unsafe {
+            MsgWaitForMultipleObjectsEx(Some(&handles), u32::MAX, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+        };
+        if wait == windows::Win32::Foundation::WAIT_FAILED {
+            return Err(windows::core::Error::from_thread());
+        }
+    }
+    window.input_status()
+}
+
+fn test_broker_input(
+    window: &crate::window_host::Window,
+    editor: &Editor,
+    live: &crate::live_render::Binding,
+    case: &str,
+) -> Result<()> {
+    use std::time::{Duration, Instant};
+    let (control, bridge) = editor.broker.as_ref().ok_or(E_FAIL)?;
+    editor.insert(&"nihongo".encode_utf16().collect::<Vec<_>>())?;
+    editor.store.get().undo.borrow_mut().clear();
+    pump(window)?;
+    editor.input(WM_KEYDOWN, WPARAM(0x76), LPARAM(1))?;
+    assert!(bridge.get().active());
+    if case == "sent-close" {
+        test_broker_sent_close(window, editor)?;
+        assert_eq!(
+            *editor.store.get().text.borrow(),
+            "nihongo".encode_utf16().collect::<Vec<_>>()
+        );
+        assert!(editor.store.get().undo.borrow().is_empty());
+        println!("Async input loop / pending F7 / sent SC_CLOSE: OK");
+        return Ok(());
+    }
+    let post = |message, key| unsafe {
+        PostMessageW(Some(window.hwnd()), message, WPARAM(key), LPARAM(1))
+    };
+    match case {
+        "escape" => post(WM_KEYDOWN, 0x1b)?,
+        "enter" => post(WM_KEYDOWN, 0x0d)?,
+        "edit" => post(WM_CHAR, 'x' as usize)?,
+        "close" => post(WM_CLOSE, 0)?,
+        _ => {}
+    }
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        pump(window)?;
+        if !window.is_open() {
+            bridge.get().shutdown()?;
+            break;
+        }
+        if let Some(delivery) = bridge.get().drain(control)? {
+            assert_eq!(
+                delivery == crate::broker_bridge::Delivery::Applied,
+                case == "apply",
+                "{case}"
+            );
+            break;
+        }
+        let handle = bridge.get().wait_handle().ok_or(E_FAIL)?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(E_FAIL.into());
+        }
+        let wait = unsafe {
+            MsgWaitForMultipleObjectsEx(
+                Some(&[handle]),
+                remaining.as_millis() as u32,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            )
+        };
+        if wait == windows::Win32::Foundation::WAIT_TIMEOUT
+            || wait == windows::Win32::Foundation::WAIT_FAILED
+        {
+            return Err(E_FAIL.into());
+        }
+    }
+    pump(window)?;
+    let expected = match case {
+        "apply" => "日本語",
+        "edit" => "x",
+        _ => "nihongo",
+    };
+    assert_eq!(
+        *editor.store.get().text.borrow(),
+        expected.encode_utf16().collect::<Vec<_>>(),
+        "{case}"
+    );
+    assert_eq!(
+        editor.submits.get(),
+        usize::from(case == "enter"),
+        "Enter must reach host exactly once"
+    );
+    if case == "apply" {
+        assert_eq!(editor.store.get().undo.borrow().len(), 1);
+        assert_eq!(
+            live.scene()?.text,
+            "日本語".encode_utf16().collect::<Vec<_>>()
+        );
+        editor.input(WM_CHAR, WPARAM(0x1a), LPARAM(1))?;
+        pump(window)?;
+        assert_eq!(
+            *editor.store.get().text.borrow(),
+            "nihongo".encode_utf16().collect::<Vec<_>>()
+        );
+    } else if case != "edit" {
+        assert!(editor.store.get().undo.borrow().is_empty());
+    }
+    println!("Async input loop / F7 / {case}: OK");
     Ok(())
 }
 
@@ -460,6 +682,45 @@ fn message_loop(window: &crate::window_host::Window) -> Result<()> {
         }
     }
     window.input_status()
+}
+
+fn test_broker_sent_close(window: &crate::window_host::Window, editor: &Editor) -> Result<()> {
+    use std::sync::mpsc::sync_channel;
+    use std::time::Duration;
+    use windows::Win32::Foundation::{E_ABORT, HWND};
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    let hwnd = window.hwnd().0 as usize;
+    let thread = unsafe { GetCurrentThreadId() };
+    std::thread::scope(|scope| {
+        let (finished, wait) = sync_channel(1);
+        let worker = scope.spawn(move || unsafe {
+            let sent = SendMessageTimeoutW(
+                HWND(hwnd as *mut _),
+                WM_SYSCOMMAND,
+                WPARAM(SC_CLOSE as usize),
+                LPARAM(0),
+                SMTO_ABORTIFHUNG,
+                1000,
+                None,
+            );
+            let timed_out = wait.recv_timeout(Duration::from_secs(2)).is_err();
+            if timed_out {
+                let _ = PostThreadMessageW(thread, WM_QUIT, WPARAM(1), LPARAM(0));
+            }
+            (sent.0 != 0, timed_out)
+        });
+        let result = broker_message_loop(window, editor);
+        let _ = finished.send(());
+        let (sent, timed_out) = worker
+            .join()
+            .map_err(|_| windows::core::Error::from(E_ABORT))?;
+        assert!(
+            sent && !timed_out,
+            "sent close must release the async demo wait"
+        );
+        assert!(!window.is_open());
+        result
+    })
 }
 
 fn test_close(window: &crate::window_host::Window, editor: &Rc<Editor>, case: &str) -> Result<()> {
@@ -565,6 +826,9 @@ fn pump(window: &crate::window_host::Window) -> Result<()> {
         for _ in 0..512 {
             if !PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
                 return window.input_status();
+            }
+            if message.message == WM_QUIT {
+                return Err(windows::Win32::Foundation::E_ABORT.into());
             }
             window.route_message(&message)?;
         }

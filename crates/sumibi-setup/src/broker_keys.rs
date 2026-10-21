@@ -1,0 +1,296 @@
+//! Real DLL preserved key -> EXE worker -> separate Host -> DLL Core/TSF write.
+use super::*;
+use crate::broker_bridge::{Bridge, Delivery};
+use std::time::{Duration, Instant};
+use sumibi_ipc::bootstrap::Mode;
+use sumibi_tip::spike::{
+    ISpikeBroker, ISpikeBrokerTransport, ISpikeControl, COMMAND_CONVERT, FUNCTION_TEST_BROKER,
+    FUNCTION_TEST_CONTROL, FUNCTION_TEST_KEY_SINK,
+};
+use windows::Win32::Foundation::{LPARAM, WAIT_OBJECT_0, WAIT_TIMEOUT, WPARAM};
+use windows::Win32::UI::WindowsAndMessaging::{
+    DestroyWindow, MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT,
+};
+
+type Failure = Box<dyn std::error::Error>;
+pub(crate) fn exercise_broker_keys(
+    manager: &ITfThreadMgr,
+    client: u32,
+) -> std::result::Result<(), Failure> {
+    unsafe {
+        for case in [
+            "apply",
+            "double-key",
+            "capacity",
+            "escape",
+            "enter",
+            "text-restored",
+            "selection-restored",
+            "focus-restored",
+            "readonly",
+            "write-denied",
+            "revoke",
+            "stale-reply",
+            "replace-transport",
+            "wrong-revision",
+            "invalid-result",
+            "disabled",
+            "close",
+        ] {
+            let window = crate::window_host::Window::new()?;
+            let store = ComObject::new(TextStore::new("prefix nihongo suffix"));
+            let mut selected = store.get().selection.get();
+            selected.acpStart = 7;
+            selected.acpEnd = 14;
+            store.get().selection.set(selected);
+            store.get().window.set(window.hwnd());
+            let document = Document(manager.CreateDocumentMgr()?);
+            let mut context = None;
+            let mut cookie = 0;
+            document.0.CreateContext(
+                client,
+                0,
+                &store.to_interface::<IUnknown>(),
+                &mut context,
+                &mut cookie,
+            )?;
+            let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
+            document.0.Push(&context)?;
+            let mut association =
+                crate::window_host::Association::new(manager, &window, &document.0)?;
+            manager.SetFocus(&document.0)?;
+            pump_tsf_messages()?;
+            let provider = manager.GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)?;
+            let control: ISpikeControl = provider
+                .GetFunction(&FUNCTION_TEST_CONTROL, &ISpikeControl::IID)?
+                .cast()?;
+            let broker: ISpikeBroker = provider
+                .GetFunction(&FUNCTION_TEST_BROKER, &ISpikeBroker::IID)?
+                .cast()?;
+            let sink: ITfKeyEventSink = provider
+                .GetFunction(&FUNCTION_TEST_KEY_SINK, &ITfKeyEventSink::IID)?
+                .cast()?;
+            let bridge = Bridge::new(if case == "disabled" {
+                Mode::Disabled
+            } else {
+                Mode::DiagnosticFixed { delay_ms: 200 }
+            })?;
+            let transport = bridge.to_interface::<ISpikeBrokerTransport>();
+            broker.Attach(context.as_raw(), transport.as_raw()).ok()?;
+            let keys: ITfKeystrokeMgr = manager.cast()?;
+            let capacity = if case == "capacity" {
+                (0..sumibi_ipc::job::MAX_JOBS)
+                    .map(|_| sumibi_ipc::job::Reservation::acquire())
+                    .collect::<std::result::Result<Vec<_>, _>>()?
+            } else {
+                Vec::new()
+            };
+            let before_reads = store.get().reads.get();
+            // SimulatePreservedKey itself may ask the store for TSF metadata.
+            // Isolate the DLL callback when measuring its pre-capture reads.
+            let eaten = if case == "capacity" {
+                sink.OnPreservedKey(&context, &COMMAND_CONVERT)?.as_bool()
+            } else {
+                keys.SimulatePreservedKey(&context, &COMMAND_CONVERT)?
+                    .as_bool()
+            };
+            if case == "capacity" {
+                assert!(!eaten);
+                assert_eq!(store.get().reads.get(), before_reads);
+                assert!(!bridge.get().active());
+                drop(capacity);
+                control.RevokeContext().ok()?;
+                association.close()?;
+                manager.SetFocus(None)?;
+                println!("DLL key / broker / capacity before capture: OK");
+                continue;
+            }
+            assert!(eaten, "{case}");
+            let mut id = 0;
+            broker.Pending(&mut id).ok()?;
+            assert_ne!(id, 0);
+            assert!(bridge.get().active());
+            let mut other = None;
+            let mut replacement = None;
+            match case {
+                "double-key" => {
+                    let reads = store.get().reads.get();
+                    assert!(!keys
+                        .SimulatePreservedKey(&context, &COMMAND_CONVERT)?
+                        .as_bool());
+                    let mut pending = 0;
+                    broker.Pending(&mut pending).ok()?;
+                    assert_eq!(pending, id);
+                    assert_eq!(store.get().reads.get(), reads);
+                }
+                "escape" | "enter" => {
+                    let key = WPARAM(if case == "escape" { 0x1b } else { 0x0d });
+                    // Same DLL callback as normal routing; explicit diagnostic
+                    // interface avoids depending on OS foreground permission.
+                    assert!(sink.OnTestKeyDown(&context, key, LPARAM(1))?.as_bool());
+                    assert_eq!(
+                        sink.OnKeyDown(&context, key, LPARAM(1))?.as_bool(),
+                        case == "escape"
+                    );
+                    let mut pending = u64::MAX;
+                    broker.Pending(&mut pending).ok()?;
+                    assert_eq!(pending, 0);
+                }
+                "text-restored" => {
+                    store
+                        .get()
+                        .external_text("prefix NIHONGO suffix".encode_utf16().collect())?;
+                    pump_tsf_messages()?;
+                    store
+                        .get()
+                        .external_text("prefix nihongo suffix".encode_utf16().collect())?;
+                    pump_tsf_messages()?;
+                }
+                "selection-restored" => {
+                    let original = store.get().selection.get();
+                    let mut changed = original;
+                    changed.acpEnd = 10;
+                    let sink = store
+                        .get()
+                        .sink
+                        .borrow()
+                        .clone()
+                        .ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
+                    store.get().selection.set(changed);
+                    sink.OnSelectionChange()?;
+                    pump_tsf_messages()?;
+                    store.get().selection.set(original);
+                    sink.OnSelectionChange()?;
+                    pump_tsf_messages()?;
+                }
+                "focus-restored" => {
+                    let next = Document(manager.CreateDocumentMgr()?);
+                    manager.SetFocus(&next.0)?;
+                    manager.SetFocus(&document.0)?;
+                    other = Some(next);
+                }
+                "readonly" => store.get().readonly.set(true),
+                "write-denied" => store.get().deny_lock.set(true),
+                "revoke" | "close" => {
+                    control.RevokeContext().ok()?;
+                    if case == "close" {
+                        DestroyWindow(window.hwnd())?;
+                    }
+                }
+                "stale-reply" => {
+                    assert!(broker
+                        .Complete(id + 100, 1, 1, 1, std::ptr::null(), 0)
+                        .is_err());
+                    let mut pending = 0;
+                    broker.Pending(&mut pending).ok()?;
+                    assert_eq!(pending, id);
+                }
+                "replace-transport" => {
+                    control.RevokeContext().ok()?;
+                    let next = Bridge::new(Mode::DiagnosticFixed { delay_ms: 200 })?;
+                    let next_transport = next.to_interface::<ISpikeBrokerTransport>();
+                    broker
+                        .Attach(context.as_raw(), next_transport.as_raw())
+                        .ok()?;
+                    assert!(keys
+                        .SimulatePreservedKey(&context, &COMMAND_CONVERT)?
+                        .as_bool());
+                    let mut current = 0;
+                    broker.Pending(&mut current).ok()?;
+                    assert!(current > id, "reattach must not reuse a request ID");
+                    assert!(broker.Complete(id, 1, 1, 1, std::ptr::null(), 0).is_err());
+                    assert_eq!(wait_bridge(&bridge, &broker)?, Delivery::Discarded);
+                    let mut still_current = 0;
+                    broker.Pending(&mut still_current).ok()?;
+                    assert_eq!(
+                        still_current, current,
+                        "old completion must preserve the new ticket"
+                    );
+                    replacement = Some(next);
+                }
+                "wrong-revision" => {
+                    let text = [0x65e5, 0x672c, 0x8a9e];
+                    assert!(broker.Complete(id, 2, 1, 1, text.as_ptr(), 3).is_err());
+                }
+                "invalid-result" => {
+                    let text = [0xd800];
+                    assert!(broker.Complete(id, 1, 1, 1, text.as_ptr(), 1).is_err());
+                    let mut pending = 1;
+                    broker.Pending(&mut pending).ok()?;
+                    assert_eq!(pending, 0);
+                }
+                _ => {}
+            }
+            let delivery = wait_bridge(replacement.as_ref().unwrap_or(&bridge), &broker)?;
+            let apply = matches!(
+                case,
+                "apply" | "double-key" | "stale-reply" | "replace-transport"
+            );
+            assert_eq!(
+                delivery,
+                if apply {
+                    Delivery::Applied
+                } else {
+                    Delivery::Discarded
+                },
+                "{case}"
+            );
+            if apply {
+                assert_eq!(
+                    *store.get().text.borrow(),
+                    "prefix 日本語 suffix".encode_utf16().collect::<Vec<_>>()
+                );
+                assert_eq!(store.get().undo.borrow().len(), 1);
+                assert!(broker.Complete(id, 1, 1, 1, std::ptr::null(), 0).is_err());
+                store.get().undo_once()?;
+            } else {
+                assert!(store.get().undo.borrow().is_empty(), "{case}");
+            }
+            assert_eq!(
+                *store.get().text.borrow(),
+                "prefix nihongo suffix".encode_utf16().collect::<Vec<_>>(),
+                "{case}"
+            );
+            store.get().readonly.set(false);
+            store.get().deny_lock.set(false);
+            bridge.get().shutdown()?;
+            if let Some(bridge) = &replacement {
+                bridge.get().shutdown()?;
+            }
+            control.RevokeContext().ok()?;
+            association.close()?;
+            manager.SetFocus(None)?;
+            drop(other);
+            println!("DLL key / broker / Core / TSF / {case}: OK");
+        }
+    }
+    Ok(())
+}
+fn wait_bridge(
+    bridge: &ComObject<Bridge>,
+    control: &ISpikeBroker,
+) -> std::result::Result<Delivery, Failure> {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        pump_tsf_messages()?;
+        if let Some(delivery) = bridge.get().drain(control)? {
+            return Ok(delivery);
+        }
+        let handle = bridge.get().wait_handle().ok_or("missing broker job")?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("DLL broker completion timed out".into());
+        }
+        let wait = unsafe {
+            MsgWaitForMultipleObjectsEx(
+                Some(&[handle]),
+                remaining.as_millis() as u32,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            )
+        };
+        if wait == WAIT_TIMEOUT || (wait.0 != WAIT_OBJECT_0.0 && wait.0 != WAIT_OBJECT_0.0 + 1) {
+            return Err("DLL broker wait failed".into());
+        }
+    }
+}

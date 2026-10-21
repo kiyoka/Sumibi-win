@@ -1,4 +1,6 @@
 #[cfg(windows)]
+mod broker_bridge;
+#[cfg(windows)]
 mod edit_host;
 #[cfg(windows)]
 mod live_render;

@@ -308,12 +308,37 @@ mod tests {
                 let control = crate::spike::control(&state)
                     .cast::<crate::spike::ISpikeControl>()
                     .unwrap();
+                let broker = crate::broker_spike::control(&state)
+                    .cast::<crate::spike::ISpikeBroker>()
+                    .unwrap();
+                let raw_broker = broker.as_raw() as usize;
+                // Deliberate raw diagnostic call, kept alive until join. The
+                // callback must reject before touching its apartment-local Rc.
+                let wrong_thread = std::thread::spawn(move || {
+                    let pointer = raw_broker as *mut c_void;
+                    let borrowed = crate::spike::ISpikeBroker::from_raw_borrowed(&pointer).unwrap();
+                    let mut id = 0;
+                    borrowed.Pending(&mut id)
+                })
+                .join()
+                .unwrap();
+                assert_eq!(wrong_thread, RPC_E_WRONG_THREAD);
                 drop(state);
-                // Expired weak controller: repeated revoke is safe, new work
-                // still fails. The outer unsafe scope supplies the COM contract.
+                // Expired weak controller: revoke remains idempotent, while
+                // new work fails. Both control ABIs independently retain code.
                 control.RevokeContext().ok().unwrap();
                 control.RevokeContext().ok().unwrap();
                 assert!(control.BeginPreview().is_err());
+                assert_eq!(DllCanUnloadNow(), S_FALSE);
+                let mut request = 0;
+                assert_eq!(
+                    broker.Pending(&mut request),
+                    windows::Win32::Foundation::E_ABORT
+                );
+                drop(control);
+                assert_eq!(DllCanUnloadNow(), S_FALSE); // Independent broker ABI lease.
+                drop(broker);
+                assert_eq!(DllCanUnloadNow(), S_OK);
             }
             let sink = crate::keys::KeySink::create();
             assert_eq!(DllCanUnloadNow(), S_FALSE);

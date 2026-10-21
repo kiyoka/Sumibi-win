@@ -3,6 +3,8 @@
 2026-10-21 / Issue #4 / PR #10。専用ホストで実装・検証済み。
 製品用の常駐Broker、一般アプリ入力、実API通信の採用完了を意味しない。
 前提は[ADR 0003](0003-pinned-desktop-peers.md)の固定process handle・token照合と非同期pipe。
+本ADRはsetupにリンクした編集アダプターの段階を記録する。後続の実DLLキー接続と非同期デモは
+[ADR 0005](0005-dll-key-broker-bridge.md)を参照。
 
 ## 背景と今回の判断
 

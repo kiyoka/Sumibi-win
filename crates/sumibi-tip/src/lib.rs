@@ -2,6 +2,8 @@
 #![cfg(windows)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+#[cfg(feature = "spike")]
+mod broker_spike;
 mod com;
 pub mod display;
 pub mod edit;

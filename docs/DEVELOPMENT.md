@@ -36,12 +36,38 @@ DLLアンロード検査が成功。合成データのみのログは `target/is
 ジョブ予約はprocess内4件、結果channelは各1件。I/O・子processの回収はworkerで行い、
 TSFの所有loopがeventを受けて新しい同期write内でCore.finishとSetTextを行う。
 詳細な所有・失効・起動の限定条件は[ADR 0004](adr/0004-one-shot-broker-and-owner-edit.md)を参照。
-編集アダプターはsetupへRustライブラリとしてリンクする。実DLLのキーからBrokerを起動する経路や
-既存demoのF7は今回接続していない。一般アプリの入力・標準Undoの確認にも読み替えない。
+このbroker-testの編集アダプターはsetupへRustライブラリとしてリンクする。
+次節のbroker-key-test/broker-demoは実DLLのキーとCore・編集を通す別検証である。
+どちらも一般アプリの入力・標準Undoの確認には読み替えない。
 
 Hostのspike featureは開発診断用で、配布しない。`cargo build --workspace`はHostを既定の拒否構成へ戻す。
 `Test-Spike.ps1`は通常実行時だけこの診断Hostをビルドしてbroker-testを実行し、
 `-SkipDesktop`ではbroker-testも明示的に省略する。
+
+## 実DLLのキーから非同期変換を試す
+
+上記のworkspaceビルドとHostのspikeビルドを行った後で実行する。
+
+```powershell
+./target/debug/sumibi-setup.exe broker-key-test --dll ./target/debug/sumibi_tip.dll
+./target/debug/sumibi-setup.exe broker-input-test --dll ./target/debug/sumibi_tip.dll
+./target/debug/sumibi-setup.exe broker-demo --dll ./target/debug/sumibi_tip.dll
+```
+
+broker-demoは手動操作用。文字を入力し、F7で選択部分（未選択なら全文）を固定の「日本語」に変換する。
+約400msの待機中も操作でき、Escで取消、Enterで原文を1回だけ確定、Ctrl+ZでUndoする。
+×で閉じると許可取消・worker停止・TSF/COM解除を行う。このデモでF6の下線プレビューは使用しない。
+本文は専用入力欄と別Hostのメモリーだけで扱い、外部APIへ送信・保存しない。
+
+broker-key-testは実DLLの予約キーから17ケース、broker-input-testは描画・Undo・Enter・編集・
+同期SC_CLOSEを含む6ケースが成功。いずれも自動終了する。前者のcapacity/Esc/Enterは
+前面化に依存しない同じDLL callbackで確認し、物理キーボード操作の手動確認は含めない。
+同日の通常ユーザー/Windows 11 x64 build 26300/Rust 1.99.1で解除とDLLアンロードも確認した。
+ログは `target/issue-4-dll-broker-key-checks.log`、`target/issue-4-dll-broker-input-checks.log`。
+
+通信workerは診断用COM bridgeを提供するsetup EXEに置き、DLLは対象の保持と適用を担当する。
+一般アプリへの同じbridgeの存在は仮定しない。責務・再入・IDの寿命は
+[ADR 0005](adr/0005-dll-key-broker-bridge.md)を参照。従来のdemoは従来の固定変換経路のまま。
 
 ## 環境確認（2026-10-20）
 
