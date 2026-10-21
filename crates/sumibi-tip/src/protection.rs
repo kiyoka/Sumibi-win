@@ -113,6 +113,7 @@ pub(crate) fn check(context: &ITfContext, range: &ITfRange, cookie: u32) -> Resu
         }
         let scopes = std::slice::from_raw_parts(memory.0, count as usize);
         let stamp = classify(status, scopes)?;
+        crate::composition::require_idle(context)?;
         // External metadata providers can reenter while returning their scope.
         let latest = context.GetStatus()?;
         if latest.dwDynamicFlags != status.dwDynamicFlags
@@ -129,6 +130,7 @@ pub(crate) fn check(context: &ITfContext, range: &ITfRange, cookie: u32) -> Resu
                 return denied();
             }
         }
+        crate::composition::require_idle(context)?;
         Ok(stamp)
     }
 }

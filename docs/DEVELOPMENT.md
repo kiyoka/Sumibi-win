@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はProtocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 6件、保護判定3件を含めworkspace合計39件。
+現時点はProtocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 6件、保護判定3件、composition列挙1件を含めworkspace合計40件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -60,7 +60,7 @@ broker-demoは手動操作用。文字を入力し、F7で選択部分（未選�
 本文は専用入力欄と別Hostのメモリーだけで扱い、外部APIへ送信・保存しない。
 
 broker-key-testは実DLLの予約キーから17ケース、broker-input-testは描画・Undo・Enter・編集・
-同期SC_CLOSEとWM_KILLFOCUSを含む7ケースが成功。いずれも自動終了する。前者のcapacity/Esc/Enterは
+同期SC_CLOSE・WM_KILLFOCUS・空composition開始終了を含む8ケースが成功。いずれも自動終了する。前者のcapacity/Esc/Enterは
 前面化に依存しない同じDLL callbackで確認し、物理キーボード操作の手動確認は含めない。
 同日の通常ユーザー/Windows 11 x64 build 26300/Rust 1.99.1で解除とDLLアンロードも確認した。
 ログは `target/issue-4-dll-broker-key-checks.log`、`target/issue-4-dll-broker-input-checks.log`。
@@ -86,6 +86,22 @@ MSCTF内部の本文照会は別に計測し、OSを含む一切の読取を防�
 
 2026-10-21、前段階cd1dc2fの手動デモについて利用者から概ね動作したとの報告を得た。
 個別キー・保護入力の手動合格記録ではなく、上記の自動検証とは分けて扱う。
+
+## 他サービスのcompositionの検証
+
+workspaceとspike Hostをビルドした後で実行する。
+
+```powershell
+./target/debug/sumibi-setup.exe composition-test --dll ./target/debug/sumibi_tip.dll
+```
+
+2026-10-22、実DLL/TSFの16ケースが成功。同じcontextの空・別範囲・複数compositionも拒否し、
+取得・source・適用時に再確認する。他サービスのcompositionの本文を取得・終了・引継ぎしない。
+非空の開始／終了はproperty通知で取消し、空compositionの履歴は所有ホストの通知で補う。
+ホストの協力がない一般アプリで、通知されない空compositionの履歴を検出する保証は未成立。
+専用デモのEditorでも同じ所有者通知を接続し、broker-input-testに回帰ケースを追加した。
+fixtureの不正scopeを返す時期、実OS内の読取、手動未検証範囲は[ADR 0007](adr/0007-foreign-composition-boundary.md)を参照。
+ログは `target/issue-4-composition-*.log`。
 
 ## 初期環境の記録（2026-10-20）
 

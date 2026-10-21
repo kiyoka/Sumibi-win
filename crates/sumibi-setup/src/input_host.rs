@@ -416,6 +416,7 @@ pub(crate) fn exercise_broker_input(
         "enter",
         "edit",
         "focus",
+        "composition",
         "close",
         "sent-close",
     ] {
@@ -487,6 +488,8 @@ fn run(
         } else {
             None
         };
+        *store.get().composition_broker.borrow_mut() =
+            broker.as_ref().map(|(broker, _)| broker.clone());
         let editor = Rc::new(Editor {
             store: store.clone(),
             context: context.clone(),
@@ -508,13 +511,14 @@ fn run(
             println!("Async fixed-result demo: F7 converts the selection (or all text), Esc cancels, Enter confirms the original. Close to exit.");
             broker_message_loop(&window, &editor)
         } else if let RunMode::BrokerInputTest(case) = mode {
-            test_broker_input(&window, &editor, &live, case)
+            test_broker_input(&window, &editor, &live, client, case)
         } else if let RunMode::CloseTest(case) = mode {
             test_close(&window, &editor, case)
         } else {
             test_input(&window, &editor, &live)
         };
         window.clear_input();
+        store.get().composition_broker.borrow_mut().take();
         if let Some((broker, bridge)) = &editor.broker {
             let _ = broker.Cancel(0);
             bridge.get().shutdown()?;
@@ -577,6 +581,7 @@ fn test_broker_input(
     window: &crate::window_host::Window,
     editor: &Editor,
     live: &crate::live_render::Binding,
+    client: u32,
     case: &str,
 ) -> Result<()> {
     use std::time::{Duration, Instant};
@@ -586,6 +591,18 @@ fn test_broker_input(
     pump(window)?;
     editor.input(WM_KEYDOWN, WPARAM(0x76), LPARAM(1))?;
     assert!(bridge.get().active());
+    if case == "composition" {
+        super::composition_host::empty_cycle(&editor.context, client)?;
+        assert!(editor.store.get().composition_events.get() >= 2);
+        let mut pending = 1;
+        unsafe {
+            control.Pending(&mut pending).ok()?;
+        }
+        assert_eq!(
+            pending, 0,
+            "owner callback must retire even an empty composition cycle"
+        );
+    }
     if case == "sent-close" {
         test_broker_sent_close(window, editor)?;
         assert_eq!(

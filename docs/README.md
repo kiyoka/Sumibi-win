@@ -17,6 +17,7 @@
 - [ADR 0004](adr/0004-one-shot-broker-and-owner-edit.md)：単発Host EXE、有限worker、Coreから所有TSFでの適用と失効。
 - [ADR 0005](adr/0005-dll-key-broker-bridge.md)：実DLLキー・Core・TSFからEXE所有workerを通る非同期デモ。
 - [ADR 0006](adr/0006-input-protection-metadata.md)：scope/status/compartmentの検査とTSF内部読取との境界。
+- [ADR 0007](adr/0007-foreign-composition-boundary.md)：他サービスのcomposition拒否、通知と所有ホストの協力が必要な境界。
 - [Mac版移植範囲](MAC_PARITY.md)：共通契約とOS固有の再設計。
 
 ## 更新の規則

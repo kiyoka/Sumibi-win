@@ -23,7 +23,7 @@ Mac技術解説自身の実装照合基準 `d2b96fc` と区別する。Macの機
 | TIPのCOM・キー・表示属性・編集 | 専用ホストで実装済み。通常アプリへの常設登録なし |
 | 入力保護 | scope/status/compartmentと取得・送信前・適用時の検査を実装。専用ACPで39ケース。一般アプリの全機密欄の識別は未検証 |
 | 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。実キーボードの手動確認は未実施 |
-| 追跡入力・composition・候補UI | 製品用の統合は未実装 |
+| 追跡入力・composition・候補UI | 自分のcomposition・製品統合は未実装。他サービスのcomposition拒否と専用ホストの通知を16ケースで確認 |
 | Protocol / IPC | 有限フレーム・版付きJSON・client状態、固定process相互検査・overlapped pipe。実DLLのキー・Core・所有TSFから診断用EXE bridge経由で単発Brokerへ接続。一般アプリは未接続 |
 | Host・HTTP・キー保存・設定UI | 単発の診断Host EXEを実装。既定では変換拒否。常駐Host・HTTP・キー保存・設定UIは未実装 |
 | Decisions・辞書・署名付き配布 | 未実装。後続段階 |
@@ -427,6 +427,10 @@ TSFアダプターの1024単位制限が先に効く場合がある。長文対�
 機密性の判定にはTSF入力スコープ・状態通知・対象外ポリシーを組み合わせる。
 現在は通常テキストのscopeと状態を肯定確認し、未知・欠損・private/password/PIN等を拒否する
 （[ADR 0006](adr/0006-input-protection-metadata.md)）。MSCTF自身の内部読取とDLLの本文取得は分けて計測する。
+2026-10-22、同一contextのcompositionを本文取得・source・適用時に拒否する検査も追加した。
+非空の変更はproperty通知で取消し、空compositionの履歴は専用ホストのowner通知から取消を伝える。
+一般アプリのowner sinkを変更せず、未通知の空composition履歴の保証は一般アプリでは未成立とする
+（[ADR 0007](adr/0007-foreign-composition-boundary.md)）。
 専用contextのGrantは開発用の許可で、一般アプリのパスワード検出の代替ではない。
 独自の機密欄を全検出できるとは保証せず、保護条件を判定できない場合は追跡と送信を見送る。
 設定UIのURL・モデル・APIキー欄は変換対象外にする。辞書欄を例外とするかは別のUI受入条件で決める。

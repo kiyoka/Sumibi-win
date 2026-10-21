@@ -11,9 +11,9 @@
 | COMとDLL | tip/com.rs、build.rs。factory・独立lease・所有thread・解除再試行 | 一般アプリにロードされる常設登録と更新時の寿命 |
 | TSF編集 | tip/edit.rsとmanual_edit.rs。同期read/write、全文照合、Core gate、IPC結果の一度だけ適用。所有ACP context限定 | 製品キーとの統合、一般アプリの対象分類と編集 |
 | 保護入力 | protection.rs。scope/status/compartmentの肯定検査、取得・source・適用時の再検査。実DLLで39ケース | 一般アプリの実スコープ・独自機密欄・判定不能時の動作確認 |
-| 追跡composition | 未実装。専用ホストの本文はホスト自身が編集 | 通常入力・移動・他IMEとの競合・Enter・取消・原文維持 |
+| 追跡composition | 自分の追跡は未実装。同一contextの他compositionを拒否。property通知と所有ホスト通知の取消を16ケースで確認 | 通常入力・自分のcomposition・一般アプリでの他IMEとの競合・Enter・取消・原文維持 |
 | 表示属性 | display.rs / preview.rs。点線、原文保持、属性だけ遅延解除 | 通常アプリでの下線、アクセシビリティ、既存属性との共存 |
-| 変更通知 | notifications.rs。本文・選択・フォーカスで失効 | 製品追跡・IPC・候補との統合 |
+| 変更通知 | notifications.rs。本文・選択・scope・compartment・composition属性・フォーカスで失効。空compositionは所有ホストから取消を転送 | 製品追跡・IPC・候補との統合、一般アプリの未通知履歴 |
 | キー配送 | keys.rs / input_host.rs。専用windowで実TSF経路 | US/JIS配列・変換キー・Terminal・実打鍵 |
 | Undo/Redo | TextStoreに本文・選択・向きの履歴。固定変換含む | 一般アプリの標準履歴で変換が1回のUndoにまとまる |
 | 描画 | live_render / render / window_host。通知→WM_APP→Frame | 製品候補UIのUIElement、DPI、高コントラスト、読み上げ |
@@ -66,6 +66,12 @@ Protocol 22件のうち16件が追加のJSON・session・Core模擬接続であ�
 WM_KILLFOCUSを含む7ケースへ増えた。初期保護／不明の27ケースでDLL読取・Broker job開始0を確認する。
 MSCTF内部の本文照会は別に計測し、OSを含む完全な非読取とは扱わない。
 フォーカスの画面なし検査とホストstatus通知の前提も明記した。[ADR 0006](adr/0006-input-protection-metadata.md)を参照。
+
+2026-10-22、同一contextのcompositionの非干渉検査を追加。workspaceは40件、composition-testは16ケース、
+broker-input-testは空compositionの所有者通知を含む8ケース。保護39・キー17・Broker19・close4も再確認した。
+非空のproperty通知と、空compositionを所有ホストが転送する取消を区別し、一般アプリの履歴保証とはしない。
+不正scope fixtureはDLLの同期probeだけで返し、壊した値をWindows初期化へ渡さないよう修正した。
+詳細と残る統合は[ADR 0007](adr/0007-foreign-composition-boundary.md)を参照。
 
 ## 3. アプリ互換表の記録形式
 

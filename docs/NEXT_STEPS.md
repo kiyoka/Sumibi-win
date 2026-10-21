@@ -1,6 +1,6 @@
 # Issue #1後の実装順序
 
-2026-10-21。最小試作の根拠は[受入記録](ISSUE_1_ACCEPTANCE.md)。
+2026-10-22更新。最小試作の根拠は[受入記録](ISSUE_1_ACCEPTANCE.md)。
 各段階は直前の安全条件を満たしてから進める。未実装を本Issueの既存機能として扱わない。
 
 ## 1. Core・認証付きIPC・製品用入力基盤
@@ -19,6 +19,10 @@
 続いてscope/status/compartmentの保護検査を実装し、本文取得・source送信前・結果適用時に検査する。
 状態を変更して戻した場合も拒否し、実DLL/TSFで39ケースを確認した
 （[ADR 0006](adr/0006-input-protection-metadata.md)）。一般アプリでの判定は引き続き未検証。
+次に他サービスのcompositionを同じcontextで検出して拒否し、通知による取消を追加した。
+実DLL/TSFで16ケースと専用デモの空composition回帰を確認した
+（[ADR 0007](adr/0007-foreign-composition-boundary.md)）。空compositionの履歴取消には所有ホストの協力が必要。
+自分の追跡compositionと一般アプリへの統合は引き続き未実装。
 
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。

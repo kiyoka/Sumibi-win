@@ -6,6 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use sumibi_core::Revision;
 use sumibi_tip::edit::{capture_selection, replace_selection, EditPolicy, MAX_SELECTION_UNITS};
+use sumibi_tip::spike::ISpikeBroker;
 use windows::core::{
     implement, ComObject, IUnknown, Interface, Ref, Result, BOOL, GUID, HRESULT, PCWSTR, PWSTR,
 };
@@ -33,10 +34,13 @@ use scope_fixture::{scope_value, ScopeSpec};
 #[path = "protection_host.rs"]
 mod protection_host;
 pub(super) use protection_host::exercise_protection;
+#[path = "composition_host.rs"]
+mod composition_host;
+pub(super) use composition_host::exercise_composition;
 
 type EditHistory = RefCell<Vec<(Vec<u16>, TS_SELECTION_ACP)>>;
 
-#[implement(ITextStoreACP)]
+#[implement(ITextStoreACP, ITfContextOwnerCompositionSink)]
 struct TextStore {
     text: RefCell<Vec<u16>>,
     selection: Cell<TS_SELECTION_ACP>,
@@ -52,17 +56,51 @@ struct TextStore {
     redo: EditHistory,
     window: Cell<HWND>,
     scopes: Rc<RefCell<ScopeSpec>>,
+    scope_queries: Rc<Cell<usize>>,
     scope_requested: Cell<bool>,
     static_status: Cell<u32>,
     dynamic_status: Cell<u32>,
     status_failure: Cell<bool>,
     protect_on_read: Cell<bool>,
+    composition_broker: RefCell<Option<ISpikeBroker>>,
+    composition_events: Cell<u32>,
 }
 
 struct Lock<'a>(&'a Cell<u32>);
 impl Drop for Lock<'_> {
     fn drop(&mut self) {
         self.0.set(0);
+    }
+}
+
+impl TextStore_Impl {
+    fn composition_changed(&self) {
+        self.composition_events
+            .set(self.composition_events.get().saturating_add(1));
+        let broker = self.composition_broker.borrow().clone();
+        if let Some(broker) = broker {
+            // The owning host forwards metadata-only invalidation, including
+            // empty compositions that do not emit OnEndEdit. Cancel retires the
+            // DLL ticket before signaling EXE work; it never waits or edits.
+            // Never reject/terminate another composition if cancellation fails.
+            unsafe {
+                let _ = broker.Cancel(0);
+            }
+        }
+    }
+}
+impl ITfContextOwnerCompositionSink_Impl for TextStore_Impl {
+    fn OnStartComposition(&self, _: Ref<ITfCompositionView>) -> Result<BOOL> {
+        self.composition_changed();
+        Ok(true.into())
+    }
+    fn OnUpdateComposition(&self, _: Ref<ITfCompositionView>, _: Ref<ITfRange>) -> Result<()> {
+        self.composition_changed();
+        Ok(())
+    }
+    fn OnEndComposition(&self, _: Ref<ITfCompositionView>) -> Result<()> {
+        self.composition_changed();
+        Ok(())
     }
 }
 
@@ -92,11 +130,14 @@ impl TextStore {
             redo: RefCell::new(Vec::new()),
             window: Cell::new(HWND::default()),
             scopes: Rc::new(RefCell::new(ScopeSpec::List(vec![IS_TEXT]))),
+            scope_queries: Rc::new(Cell::new(0)),
             scope_requested: Cell::new(false),
             static_status: Cell::new(TS_SS_NOHIDDENTEXT),
             dynamic_status: Cell::new(0),
             status_failure: Cell::new(false),
             protect_on_read: Cell::new(false),
+            composition_broker: RefCell::new(None),
+            composition_events: Cell::new(0),
         }
     }
     fn readable(&self) -> Result<()> {
@@ -478,7 +519,7 @@ impl ITextStoreACP_Impl for TextStore_Impl {
                 if output.is_null() {
                     return Err(E_INVALIDARG.into());
                 }
-                if let Some(value) = scope_value(&self.scopes)? {
+                if let Some(value) = scope_value(&self.scopes, &self.scope_queries)? {
                     output.write(TS_ATTRVAL {
                         idAttr: GUID_PROP_INPUTSCOPE,
                         dwOverlapId: 0,

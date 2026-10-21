@@ -115,8 +115,10 @@ impl ITfTextEditSink_Impl for Observer_Impl {
                 if record.GetSelectionStatus()?.as_bool() {
                     true
                 } else {
-                    let ranges = record
-                        .GetTextAndPropertyUpdates(TF_GTP_INCL_TEXT, &[&GUID_PROP_INPUTSCOPE])?;
+                    let ranges = record.GetTextAndPropertyUpdates(
+                        TF_GTP_INCL_TEXT,
+                        &[&GUID_PROP_INPUTSCOPE, &GUID_PROP_COMPOSING],
+                    )?;
                     let mut slot = [None];
                     let mut fetched = 0;
                     ranges.Next(&mut slot, &mut fetched)?;

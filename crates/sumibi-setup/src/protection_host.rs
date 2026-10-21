@@ -98,7 +98,6 @@ pub(crate) fn exercise_protection(
         for (index, (case, spec)) in cases.into_iter().enumerate() {
             let window = crate::window_host::Window::new()?;
             let store = ComObject::new(TextStore::new("nihongo"));
-            *store.get().scopes.borrow_mut() = spec;
             match case {
                 "readonly" => store.get().readonly.set(true),
                 "loading" => store.get().dynamic_status.set(TS_SD_LOADING),
@@ -197,13 +196,35 @@ pub(crate) fn exercise_protection(
             let bridge = Bridge::new(Mode::DiagnosticFixed { delay_ms: 100 })?;
             let transport = bridge.to_interface::<ISpikeBrokerTransport>();
             broker.Attach(context.as_raw(), transport.as_raw()).ok()?;
+            // Install adversarial metadata only for the synchronous DLL probe.
+            // Windows' input framework also queries a focused host's scope and
+            // does not tolerate deliberately malformed null/count providers.
+            *store.get().scopes.borrow_mut() = spec;
             let reads = store.get().body_reads.get();
             let dll_reads = counter();
+            let scope_queries = store.get().scope_queries.get();
             if case == "scope-during-read" {
                 store.get().protect_on_read.set(true);
+                // Do not assume TSF discards text cached during focus setup.
+                // Formally invalidate the full synthetic body before probing.
+                store
+                    .get()
+                    .external_text("nihongo".encode_utf16().collect())?;
             }
             // Isolate DLL reads from Windows' own key simulation reads.
             let eaten = keys.OnPreservedKey(&context, &COMMAND_CONVERT)?.as_bool();
+            if case == "scope-during-read" {
+                assert!(
+                    !store.get().protect_on_read.get(),
+                    "body-query race hook must actually run"
+                );
+            }
+            if matches!(case, "null" | "empty" | "over-limit" | "allocated-error") {
+                assert!(
+                    store.get().scope_queries.get() > scope_queries,
+                    "{case}: malformed provider must actually be queried"
+                );
+            }
             let allowed = matches!(case, "text" | "chat" | "chat-no-emoji" | "mixed-allowed");
             let changing = matches!(
                 case,
@@ -281,6 +302,7 @@ pub(crate) fn exercise_protection(
             );
             bridge.get().shutdown()?;
             control.RevokeContext().ok()?;
+            *store.get().scopes.borrow_mut() = ScopeSpec::List(vec![IS_TEXT]);
             association.close()?;
             manager.SetFocus(None)?;
             println!("Input protection / {case}: OK");

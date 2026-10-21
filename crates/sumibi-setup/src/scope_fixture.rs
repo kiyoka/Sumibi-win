@@ -18,12 +18,14 @@ pub(super) enum ScopeSpec {
 #[implement(ITfInputScope)]
 struct Scope {
     state: Rc<RefCell<ScopeSpec>>,
+    queries: Rc<Cell<usize>>,
 }
 impl ITfInputScope_Impl for Scope_Impl {
     fn GetInputScopes(&self, output: *mut *mut InputScope, count: *mut u32) -> Result<()> {
         if output.is_null() || count.is_null() {
             return Err(E_INVALIDARG.into());
         }
+        self.queries.set(self.queries.get().saturating_add(1));
         unsafe {
             output.write(std::ptr::null_mut());
             count.write(0);
@@ -79,7 +81,10 @@ impl ITfInputScope_Impl for Scope_Impl {
         Err(E_NOTIMPL.into())
     }
 }
-pub(super) fn scope_value(state: &Rc<RefCell<ScopeSpec>>) -> Result<Option<VARIANT>> {
+pub(super) fn scope_value(
+    state: &Rc<RefCell<ScopeSpec>>,
+    queries: &Rc<Cell<usize>>,
+) -> Result<Option<VARIANT>> {
     let mode = state.borrow().clone();
     match mode {
         ScopeSpec::Absent => Ok(None),
@@ -88,6 +93,7 @@ pub(super) fn scope_value(state: &Rc<RefCell<ScopeSpec>>) -> Result<Option<VARIA
         _ => {
             let scope: ITfInputScope = Scope {
                 state: state.clone(),
+                queries: queries.clone(),
             }
             .into();
             Ok(Some(VARIANT::from(scope.cast::<IUnknown>()?)))

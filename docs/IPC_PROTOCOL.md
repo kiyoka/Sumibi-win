@@ -148,6 +148,8 @@ Protocolは22テスト（既存frame 6、session 8、JSON 4、Core模擬接続4�
 実DLLキー・Core・TSFからも診断用bridgeへ接続し17ケースと非同期入力・終了6ケースを確認した。
 scope/status/compartmentの保護検査を追加し、実DLLで39ケースを確認した
 （[ADR 0006](adr/0006-input-protection-metadata.md)）。
+同一contextのcompositionを拒否し、実DLL/TSFで16ケースを確認した
+（[ADR 0007](adr/0007-foreign-composition-boundary.md)）。空compositionの履歴取消には所有ホストの通知を使う。
 製品の常駐Broker、通常入力・composition・一般アプリでの判定はIssue #4で引き続き実装する。
 Protocol自体がOS認証する責務には変更しない。
 
