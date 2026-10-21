@@ -7,9 +7,14 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はProtocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、workspace合計30件。
+現時点はProtocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界4件を含めworkspace合計34件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
+
+通常ユーザーの別プロセス・非同期I/O検証は `target/debug/sumibi-setup.exe ipc-peer-test`。
+固定ハンドルへ相手を結び付け、トークン・PID・作成時刻を相互検査した後で模擬結果をCoreへ返す。
+停止・期限・偽の相手・drop・容量・handle解放を確認する。起動方式と限界は[ADR 0003](adr/0003-pinned-desktop-peers.md)。
+通常のデスクトップmedium integrity限定で、サンドボックスや昇格環境で拒否されてもACLを拡張しない。
 
 ## 環境確認（2026-10-20）
 
@@ -38,6 +43,7 @@ cargo run -p sumibi-setup --locked -- key-test --dll target/debug/sumibi_tip.dll
 cargo run -p sumibi-setup --locked -- delayed-test --dll target/debug/sumibi_tip.dll
 cargo run -p sumibi-setup --locked -- close-test --dll target/debug/sumibi_tip.dll
 cargo run -p sumibi-setup --locked -- ipc-test
+cargo run -p sumibi-setup --locked -- ipc-peer-test
 ```
 
 ターゲットは `x86_64-pc-windows-msvc`。検証済みのRust 1.99.1を `rust-toolchain.toml` に固定し、

@@ -146,6 +146,14 @@ fn checkpoint(point: FailAfter, requested: FailAfter) -> Result<(), Failure> {
 
 pub(super) fn run() -> Result<(), Failure> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.len() == 1 && args[0] == "ipc-peer-test" {
+        crate::pipe_peer::run()?;
+        return Ok(());
+    }
+    if args.first().is_some_and(|arg| arg == "ipc-peer-child") {
+        crate::pipe_peer::child(&args[1..])?;
+        return Ok(());
+    }
     if args.len() == 1 && args[0] == "ipc-test" {
         crate::pipe_probe::run()?;
         return Ok(());

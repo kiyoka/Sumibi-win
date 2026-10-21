@@ -80,6 +80,14 @@ name = "sumibi-core"
 version = "0.1.0"
 
 [[package]]
+name = "sumibi-ipc"
+version = "0.1.0"
+dependencies = [
+ "sumibi-protocol",
+ "windows",
+]
+
+[[package]]
 name = "sumibi-protocol"
 version = "0.1.0"
 dependencies = [
@@ -93,6 +101,7 @@ name = "sumibi-setup"
 version = "0.1.0"
 dependencies = [
  "sumibi-core",
+ "sumibi-ipc",
  "sumibi-protocol",
  "sumibi-tip",
  "windows",

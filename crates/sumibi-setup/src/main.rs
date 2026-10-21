@@ -3,6 +3,8 @@ mod edit_host;
 #[cfg(windows)]
 mod live_render;
 #[cfg(windows)]
+mod pipe_peer;
+#[cfg(windows)]
 mod pipe_probe;
 #[cfg(windows)]
 mod probe;
