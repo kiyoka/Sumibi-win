@@ -13,16 +13,17 @@ use windows::Win32::Foundation::{
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
-use windows::Win32::UI::TextServices::{ITfDocumentMgr, ITfThreadMgr};
+use windows::Win32::UI::TextServices::{ITfDocumentMgr, ITfMessagePump, ITfThreadMgr};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
     GetWindowLongPtrW, LoadCursorW, PostMessageW, RegisterClassW, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowTextW, TranslateMessage, GWLP_USERDATA, IDC_ARROW, MSG, WM_APP,
-    WM_CHAR, WM_CLOSE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_NCDESTROY, WM_PAINT, WNDCLASSW,
-    WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    SetWindowLongPtrW, SetWindowTextW, TranslateMessage, GWLP_USERDATA, IDC_ARROW, MSG, PM_REMOVE,
+    WM_APP, WM_CHAR, WM_CLOSE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_NCDESTROY, WM_PAINT,
+    WNDCLASSW, WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
 pub(crate) struct Window {
+    messages: ITfMessagePump,
     hwnd: HWND,
     previous_focus: HWND,
     previous_foreground: HWND,
@@ -250,7 +251,8 @@ unsafe extern "system" fn window_proc(
     .unwrap_or(LRESULT(0))
 }
 impl Window {
-    pub(crate) fn new() -> Result<Self> {
+    pub(crate) fn new(manager: &ITfThreadMgr) -> Result<Self> {
+        let messages: ITfMessagePump = manager.cast()?;
         // SAFETY: register a process-lifetime class in this executable. The
         // procedure uses DefWindowProc until Window installs its stable Rc state.
         // STATIC must not be used: its hit testing returns HTTRANSPARENT and
@@ -290,6 +292,7 @@ impl Window {
                 None,
             )?;
             let window = Self {
+                messages,
                 hwnd,
                 previous_focus,
                 previous_foreground,
@@ -308,6 +311,31 @@ impl Window {
     }
     pub(crate) fn hwnd(&self) -> HWND {
         self.hwnd
+    }
+    /// The TSF wrapper performs pre/post processing even when no ordinary
+    /// message is returned. Raw user32 PeekMessage can leave focus notices pending.
+    pub(crate) fn peek_message(&self, message: &mut MSG) -> Result<bool> {
+        let mut found = windows::core::BOOL(0);
+        // SAFETY: this window and manager belong to the calling STA; output is
+        // live, and the wrapper processes only this thread's message queue.
+        unsafe {
+            self.messages
+                .PeekMessageW(message, HWND::default(), 0, 0, PM_REMOVE.0, &mut found)?;
+        }
+        Ok(found.as_bool())
+    }
+    pub(crate) fn get_message(&self, message: &mut MSG) -> Result<bool> {
+        let mut found = windows::core::BOOL(0);
+        // SAFETY: same ownership/output contract as peek_message. Used only by
+        // the blocking demo loop, never by TSF/notification callbacks.
+        unsafe {
+            self.messages
+                .GetMessageW(message, HWND::default(), 0, 0, &mut found)?;
+        }
+        if found.0 < 0 {
+            return Err(windows::core::Error::from_thread());
+        }
+        Ok(found.as_bool())
     }
     pub(crate) fn set_title(&self, title: &str) -> Result<()> {
         let text: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();

@@ -22,6 +22,7 @@ Brokerの予約は未受取・受取済み結果も含め合計4件に制限し�
 `broker-demo`では同じ非同期の固定変換を手動で試せます（[起動と操作](docs/DEVELOPMENT.md#実dllのキーから非同期変換を試す)）。
 起動したBrokerを連続要求で再利用するworker専用APIも追加しています。`broker-channel-test`で同じ子process・取消・期限・容量・終了を検証できます（[起動手順](docs/DEVELOPMENT.md#broker接続の再利用を検証する)、[契約](docs/adr/0016-authenticated-reusable-broker-channel.md)）。既存デモもEXE workerを通して同じBrokerを再利用し、取消・失敗後は次の明示操作で新しい接続を使います。`broker-worker-test`でworkerの容量・配送・終了を検証できます（[所有と寿命](docs/adr/0017-reusable-worker-and-owner-delivery.md)）。
 常駐Broker、一般アプリの入力基盤、HTTP通信はまだありません。
+`native-edit-test`で標準RichEditの実TSF contextと拒否理由を検証できます。現在のRichEditは保護条件を満たさず、変換は未対応です（[手順と実測](docs/adr/0019-native-richedit-status-diagnostics.md)）。
 入力保護の検査を追加し、通常テキストと確認できないscope・状態ではDLLの本文取得と要求送信を拒否します。
 `protection-test`で実DLL/TSFの39ケースを検証できます（[境界と制限](docs/adr/0006-input-protection-metadata.md)）。
 同じ入力欄に他サービスのcompositionがある場合も拒否します。`composition-test`で16ケースを検証でき、空compositionの履歴取消には専用ホストの通知を使います（[通知の境界](docs/adr/0007-foreign-composition-boundary.md)）。
@@ -63,6 +64,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [再利用Broker workerと所有STAへの結果配送](docs/adr/0017-reusable-worker-and-owner-delivery.md)
 - [選択変換の保持rangeと送信前の失効検査](docs/adr/0018-retained-manual-range-and-source-validation.md)
 - [Issue #1の受入記録](docs/ISSUE_1_ACCEPTANCE.md)
+- [標準RichEditでの拒否検証と状態診断](docs/adr/0019-native-richedit-status-diagnostics.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 
 設計基準はSumibi-mac main `553c69021eda7a8a5944d8748357f3790cc2f45c`。

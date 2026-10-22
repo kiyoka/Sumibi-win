@@ -644,7 +644,7 @@ fn run(
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     // SAFETY: this process owns the view, text store, apartment and all interfaces.
     unsafe {
-        let window = crate::window_host::Window::new()?;
+        let window = crate::window_host::Window::new(manager)?;
         window
             .set_title("Sumibi input demo | F6 preview | F7 convert | Ctrl+Z undo | Ctrl+Y redo")?;
         let store = ComObject::new(TextStore::new(""));
@@ -663,7 +663,9 @@ fn run(
         document.0.Push(&context)?;
         scope_fixture::initialise_context(&context, client)?;
         let mut association = crate::window_host::Association::new(manager, &window, &document.0)?;
-        window.focus()?;
+        window
+            .focus()
+            .map_err(|error| format!("input window focus: {error}"))?;
         manager.SetFocus(&document.0)?;
         let control: ISpikeControl = manager
             .GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)?
@@ -995,19 +997,12 @@ fn test_broker_input(
 }
 
 fn message_loop(window: &crate::window_host::Window) -> Result<()> {
-    // SAFETY: retrieve and route only the calling STA's messages.
-    unsafe {
-        let mut message = MSG::default();
-        while window.is_open() {
-            let result = GetMessageW(&mut message, None, 0, 0).0;
-            if result < 0 {
-                return Err(windows::core::Error::from_thread());
-            }
-            if result == 0 {
-                break;
-            }
-            window.route_message(&message)?;
+    let mut message = MSG::default();
+    while window.is_open() {
+        if !window.get_message(&mut message)? {
+            break;
         }
+        window.route_message(&message)?;
     }
     window.input_status()
 }
@@ -1148,18 +1143,16 @@ fn test_close(window: &crate::window_host::Window, editor: &Rc<Editor>, case: &s
 }
 
 fn pump(window: &crate::window_host::Window) -> Result<()> {
-    // SAFETY: process only this STA's queued messages, with a finite test bound.
-    unsafe {
-        let mut message = MSG::default();
-        for _ in 0..512 {
-            if !PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
-                return window.input_status();
-            }
-            if message.message == WM_QUIT {
-                return Err(windows::Win32::Foundation::E_ABORT.into());
-            }
-            window.route_message(&message)?;
+    // Process only this STA's messages through TSF, with a finite test bound.
+    let mut message = MSG::default();
+    for _ in 0..512 {
+        if !window.peek_message(&mut message)? {
+            return window.input_status();
         }
+        if message.message == WM_QUIT {
+            return Err(windows::Win32::Foundation::E_ABORT.into());
+        }
+        window.route_message(&message)?;
     }
     Err(E_FAIL.into())
 }

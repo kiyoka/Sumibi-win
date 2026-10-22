@@ -68,6 +68,14 @@ worker 11項目・実DLLキー25ケースと全回帰を確認しworkspaceは63�
 次は非ACP入力先を含む一般アプリの検証と、診断sinkに頼らない所有compositionの寿命、標準Undo、
 製品の配置/認証・非同期実行を進める。今回の変更で一般アプリを対応済みとはしない。
 
+次に標準RichEdit自身のTSF contextを使う拒否検証7構成と、本文を持たないstatus診断を追加した。
+RichEditはTS_SS_REGIONSを報告し、TS_SS_NOHIDDENTEXTを報告しないため現在は変換を拒否する。
+保護条件を維持し、診断と実際のstatus gateを共用した。workspaceは66件
+（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)）。
+入力デモのmessage pumpもITfMessagePumpへ接続し、再現したfocus通知待機の失敗を修正した。
+一般アプリの範囲・隠し文字・領域境界と欠損metadataをどう肯定的に検証するかが次の課題である。
+標準Undoの成立、所有compositionの寿命、配置/認証・非同期配送も残る。
+
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。
 - named pipeの非同期I/Oと停止伝播、偽server・PID再利用・容量超過・終了待機を試験。

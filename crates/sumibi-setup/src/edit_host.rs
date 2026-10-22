@@ -31,6 +31,9 @@ pub(super) use broker_host::exercise_broker;
 #[path = "range_host.rs"]
 mod range_host;
 pub(super) use range_host::exercise_ranges;
+#[path = "native_edit_host.rs"]
+mod native_edit_host;
+pub(super) use native_edit_host::exercise_native_edit;
 #[path = "broker_keys.rs"]
 mod broker_keys;
 pub(super) use broker_keys::exercise_broker_keys;
@@ -1087,7 +1090,7 @@ fn exercise_rendering(
     std::fs::create_dir_all(&directory)?;
     // SAFETY: dedicated owned text store and native view in the active STA.
     unsafe {
-        let window = crate::window_host::Window::new()?;
+        let window = crate::window_host::Window::new(manager)?;
         let store = ComObject::new(TextStore::new("prefix nihongo suffix"));
         store.get().window.set(window.hwnd());
         let mut selected = store.get().selection.get();
@@ -1218,10 +1221,10 @@ fn exercise_rendering(
         assert!(window.frame().is_err());
         assert!(window.is_blank());
         println!("Rebinding and detach discard stale queued render requests: OK");
-        let doomed = crate::window_host::Window::new()?;
+        let doomed = crate::window_host::Window::new(manager)?;
         let mut doomed_binding = crate::live_render::Binding::attach(&doomed, &context, client)?;
         drop(doomed);
-        let successor = crate::window_host::Window::new()?;
+        let successor = crate::window_host::Window::new(manager)?;
         let mut successor_binding =
             crate::live_render::Binding::attach(&successor, &context, client)?;
         pump_tsf_messages()?;
@@ -1253,7 +1256,7 @@ fn exercise_key_host(
     // dispatches a TSF command, without injecting physical desktop key events.
     unsafe {
         let window = if windowed {
-            Some(crate::window_host::Window::new()?)
+            Some(crate::window_host::Window::new(manager)?)
         } else {
             None
         };
@@ -1515,7 +1518,7 @@ fn exercise_key_host(
         drop(sink);
         println!("Read-only input is not converted or consumed: OK");
         let other_window = if windowed {
-            Some(crate::window_host::Window::new()?)
+            Some(crate::window_host::Window::new(manager)?)
         } else {
             None
         };

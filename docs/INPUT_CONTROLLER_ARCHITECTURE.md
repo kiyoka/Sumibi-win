@@ -163,4 +163,9 @@ COM単体試験とload_smokeは独立sink/Info参照によるアンロード阻�
 window-testは旧属性解除、新描画Binding、破棄後予約、実フォーカス通知を確認する。
 専用ACP storeでは非同期IPC後の所有thread編集、取消・終了・変更後の復元と失効をbroker-testで確認した。
 一般アプリでのcomposition寿命、非同期IPCとの再入、終了直前の外部編集は未検証。
+標準RichEdit自身のcontextでも拒否7構成を検証したが、隠し文字なしの保証がないため変換は未対応。
+status診断は本文やCOMを保持せず、scope等の許可を代替しない
+（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)）。
+入力デモのWindowは所有managerのITfMessagePumpを保持する。
+有限pump・blocking loopはこのwrapperを通してTSF通知を処理し、callbackではなく所有loopでcleanupする。
 これらを実装する際は専用ホストで異常系を追加し、対象アプリの手動結果を別に記録する。

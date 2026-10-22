@@ -4,6 +4,7 @@
 #![allow(non_snake_case)]
 
 use crate::com::{boundary, ObjectLease};
+pub use crate::protection::{input_status_denial, InputStatusDenial};
 use std::cell::{Cell, RefCell};
 use std::mem::ManuallyDrop;
 use std::rc::Rc;

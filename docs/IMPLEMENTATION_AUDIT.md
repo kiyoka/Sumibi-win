@@ -10,7 +10,7 @@
 | OS非依存Core | core/lib.rsのManualConversionとinput.rsの有限InputSession。所有ホストの実入力を1024 UTF-16単位まで記録。recovery.rsに有限救済 | 製品追跡・待機・候補・手動／自動の状態と効果を追加 |
 | COMとDLL | tip/com.rs、build.rs。factory・独立lease・所有thread・解除再試行 | 一般アプリにロードされる常設登録と更新時の寿命 |
 | TSF編集 | tip/edit.rsとmanual_edit.rs。generic保持range、同期read/write、全文照合、Core gate、IPC結果の一度だけ適用。専用所有contextで検証。[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md) | 非ACP入力先の実検証、製品キーとの統合、一般アプリの対象分類と編集 |
-| 保護入力 | protection.rs。scope/status/compartmentの肯定検査、取得・source・適用時の再検査。実DLLで39ケース | 一般アプリの実スコープ・独自機密欄・判定不能時の動作確認 |
+| 保護入力 | protection.rs。scope/status/compartmentの肯定検査、取得・source・適用時の再検査。実DLLで39ケース。statusの固定診断コードと標準RichEditの拒否7構成を追加（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)） | 一般アプリの実スコープ・独自機密欄・判定不能時の動作確認 |
 | 追跡composition | 選択composition 18・所有ホストの入力範囲25・実DLLのcomposition伸縮29・同期入力取引22・Backspace 27・他サービス拒否16ケースを確認 | 前方Delete・待機・製品全体の救済・製品InputSession・一般アプリの他IMEとの競合と寿命 |
 | 表示属性 | display.rs / preview.rs。点線、原文保持、属性だけ遅延解除 | 通常アプリでの下線、アクセシビリティ、既存属性との共存 |
 | 変更通知 | notifications.rs。本文・選択・scope・compartment・composition属性・フォーカスで失効。空compositionは所有ホストから取消を転送 | 製品追跡・IPC・候補との統合、一般アプリの未通知履歴 |
@@ -131,9 +131,16 @@ fixtureは依然ACP方式で、非ACPアプリの互換性や未通知本文変�
 
 ## 3. アプリ互換表の記録形式
 
+2026-10-22、標準RichEditのnative contextで拒否7構成と本文を持たないstatus診断を追加した。
+初回全回帰で既存focus通知待機が再現性をもって失敗し、入力デモの有限/待機loopをITfMessagePumpへ変更。
+別文書への実切替を検査するfocus試験と通知20ケース、workspace 66件を含む全回帰が省略なしで成功した。
+最終ログはtarget/issue-4-native-edit-regression.log。初回失敗と切り分けは
+[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)へ記録した。RichEditの変換/標準Undoは依然未対応。
+
 | 入力先 | 現在の状態 | 最初の確認範囲 |
 | --- | --- | --- |
 | 専用sumibi-setup | 自動試験成功、物理キーボードは未確認 | 実打鍵・Shift・IME切替 |
+| 専用window内の標準RichEdit | native TSFの拒否7構成を自動確認。隠し文字なしの保証がなく変換は未対応 | 肯定的な保護情報・領域境界の扱いを決定してから変換/標準Undo |
 | Notepad | 未検証 | 通常入力・選択・Enter/Esc・1回Undo・読取専用 |
 | VS Code | 未検証 | editorと検索欄、複数文書、キー競合 |
 | Chromium系 | 未検証 | input / textarea / contenteditable、長文、パスワード |

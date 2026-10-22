@@ -96,7 +96,7 @@ pub(crate) fn exercise_protection(
     let mut framework_copies = 0;
     unsafe {
         for (index, (case, spec)) in cases.into_iter().enumerate() {
-            let window = crate::window_host::Window::new()?;
+            let window = crate::window_host::Window::new(manager)?;
             let store = ComObject::new(TextStore::new("nihongo"));
             match case {
                 "readonly" => store.get().readonly.set(true),

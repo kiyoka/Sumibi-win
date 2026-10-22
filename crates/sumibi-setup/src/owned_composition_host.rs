@@ -50,7 +50,7 @@ pub(crate) fn exercise_owned_composition(
     // SAFETY: this STA owns every synthetic document and composition below.
     unsafe {
         for (index, case) in cases.into_iter().enumerate() {
-            let window = crate::window_host::Window::new()?;
+            let window = crate::window_host::Window::new(manager)?;
             let store = ComObject::new(TextStore::new("prefix nihongo suffix"));
             let mut selection = store.get().selection.get();
             selection.acpStart = 7;

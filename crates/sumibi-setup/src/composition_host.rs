@@ -180,7 +180,7 @@ pub(crate) fn exercise_composition(
     };
     unsafe {
         for (index, case) in cases.into_iter().enumerate() {
-            let window = crate::window_host::Window::new()?;
+            let window = crate::window_host::Window::new(manager)?;
             let store = ComObject::new(TextStore::new("nihongo"));
             store.get().window.set(window.hwnd());
             if case == "active-outside" {

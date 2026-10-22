@@ -45,7 +45,7 @@ pub(crate) fn exercise_broker_keys(
             "disabled",
             "close",
         ] {
-            let window = crate::window_host::Window::new()?;
+            let window = crate::window_host::Window::new(manager)?;
             let store = ComObject::new(TextStore::new("prefix nihongo suffix"));
             let mut selected = store.get().selection.get();
             selected.acpStart = 7;

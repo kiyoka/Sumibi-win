@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 26件（応答照合9・入力範囲追跡/削除計画10・救済7）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 5件を含めworkspace合計65件。
+現時点はCore 26件（応答照合9・入力範囲追跡/削除計画10・救済7）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計66件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -15,6 +15,27 @@ JSON構造・固定エラー・世代・取消・再接続・期限・対象照�
 固定ハンドルへ相手を結び付け、トークン・PID・作成時刻を相互検査した後で模擬結果をCoreへ返す。
 停止・期限・偽の相手・drop・容量・handle解放を確認する。起動方式と限界は[ADR 0003](adr/0003-pinned-desktop-peers.md)。
 通常のデスクトップmedium integrity限定で、サンドボックスや昇格環境で拒否されてもACLを拡張しない。
+
+## Windows標準RichEditの拒否条件を検証する
+
+```powershell
+cargo build --workspace --locked --offline
+./target/debug/sumibi-setup.exe native-edit-test --dll ./target/debug/sumibi_tip.dll
+```
+
+専用のRichEdit子windowを作り、実際のnative TSF contextで7構成の拒否を確認する。
+通常/リッチテキスト・private/既定scope・password・readonly/復元を扱う。
+現在のRichEditはTS_SS_NOHIDDENTEXTを報告せず、変換は未対応。
+診断input_status_denialは本文を受け取らず、statusの最初の拒否理由だけを返す。
+Noneでもscope等の許可は意味しない。保護条件・JSONは維持する。
+adapter本文取得0・元本文不変・native Undoなしを確認し、変換/Undoの成功試験とは区別する。
+観測したOS・各HRESULT・寿命と制限は[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)を参照。
+ログはtarget/issue-4-native-edit.log、全回帰はtarget/issue-4-native-edit-regression.log。
+入力デモの有限pumpとblocking loopはITfMessagePumpを通す。
+従来のuser32だけのpumpではfocus通知待機が再現性をもって失敗し、TSF wrapperへの変更後は20件成功した。
+focus試験は事前に用意した別文書への実切替を確認し、待機時間や失効の検査を緩和していない。
+2026-10-22、通常ユーザーのWindows 11 x64 build 26300 / Rust 1.99.1でworkspace 66件を含む
+Test-Spike.ps1全回帰が省略なしで成功。TSF/COM解除・DLLアンロード、診断process残留なしも確認した。
 
 ## 選択変換の保持rangeを検証する
 

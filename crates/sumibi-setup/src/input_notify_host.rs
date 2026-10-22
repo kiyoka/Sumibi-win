@@ -30,7 +30,8 @@ pub(crate) fn exercise_notifications(
         "failed-signal",
         "pending-status-restored",
     ] {
-        run(manager, client, RunMode::NotificationTest(case))?;
+        run(manager, client, RunMode::NotificationTest(case))
+            .map_err(|error| format!("input-notify-test / {case}: {error}"))?;
     }
     Ok(())
 }
@@ -44,6 +45,14 @@ pub(in crate::edit_host::input_host) fn test_notifications(
     let store = editor.store.get();
     let composing = editor.composing.as_ref().ok_or(E_FAIL)?;
     let (broker, bridge) = editor.broker.as_ref().ok_or(E_FAIL)?;
+    // Create the alternate document before settling the tracked input, so its
+    // OnInitDocumentMgr cannot masquerade as the later focus-change wake.
+    let focus_target = if case == "focus" {
+        let manager: ITfThreadMgr = editor.keys.cast()?;
+        Some(scope_fixture::other_document(&manager, client)?)
+    } else {
+        None
+    };
     store.external_text("prefix  suffix".encode_utf16().collect())?;
     store.host_selection(7, 7)?;
     pump(window)?;
@@ -212,9 +221,20 @@ pub(in crate::edit_host::input_host) fn test_notifications(
         "focus" => {
             let manager: ITfThreadMgr = editor.keys.cast()?;
             let document = unsafe { editor.context.GetDocumentMgr()? };
+            assert!(
+                unsafe { manager.GetFocus()? }.cast::<IUnknown>()?
+                    == document.cast::<IUnknown>()?
+            );
+            let alternate = &focus_target.as_ref().ok_or(E_FAIL)?.0;
             unsafe {
-                manager.SetFocus(None)?;
+                // SetFocus requires a nonnull document. S_OK on a null input
+                // did not guarantee an actual focus change on this Windows.
+                manager.SetFocus(alternate)?;
             }
+            assert!(
+                unsafe { manager.GetFocus()? }.cast::<IUnknown>()?
+                    == alternate.cast::<IUnknown>()?
+            );
             previous_document = Some((manager, document));
         }
         "burst" => {
@@ -257,7 +277,9 @@ pub(in crate::edit_host::input_host) fn test_notifications(
     }
     pump(window)?;
     let handle = composing.wait_handle().ok_or(E_FAIL)?;
-    wait_signal(window, handle)?;
+    wait_signal(window, handle).inspect_err(|error| {
+        eprintln!("Input owner wake / {case}: notification event wait failed: {error}");
+    })?;
     // Merely receiving a notification must not synchronously edit the document.
     if !matches!(case, "forced" | "focus") {
         assert!(

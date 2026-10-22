@@ -45,6 +45,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Reusable broker worker check failed.' }
         Invoke-Spike -Name 'broker-test'
         Invoke-Spike -Name 'range-target-test'
+        Invoke-Spike -Name 'native-edit-test'
         Invoke-Spike -Name 'broker-key-test'
         Invoke-Spike -Name 'broker-input-test'
         Invoke-Spike -Name 'protection-test'
@@ -63,7 +64,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Two-process pipe check failed; use a normal user session.' }
     }
     Write-Output 'All selected spike checks passed.'
-    if ($SkipDesktop) { Write-Output 'Desktop window/input/close/delayed/broker/range-target/broker-channel/broker-worker/protection/composition/owned-composition/tracking/composing/input-notify/transaction/backspace/recovery/pipe/peer checks were explicitly skipped.' }
+    if ($SkipDesktop) { Write-Output 'Desktop window/input/close/delayed/broker/range-target/native-edit/broker-channel/broker-worker/protection/composition/owned-composition/tracking/composing/input-notify/transaction/backspace/recovery/pipe/peer checks were explicitly skipped.' }
 }
 finally {
     $env:CARGO_INCREMENTAL = $previousIncremental

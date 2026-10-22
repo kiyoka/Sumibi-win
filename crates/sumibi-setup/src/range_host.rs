@@ -37,7 +37,7 @@ pub(crate) fn exercise_ranges(
                 "nihongo"
             };
             let original = format!("{prefix}{source} suffix");
-            let window = crate::window_host::Window::new()?;
+            let window = crate::window_host::Window::new(manager)?;
             let store = ComObject::new(TextStore::new(&original));
             let mut selected = store.get().selection.get();
             selected.acpStart = prefix.encode_utf16().count() as i32;

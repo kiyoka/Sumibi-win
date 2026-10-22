@@ -8,6 +8,60 @@ use windows::Win32::System::Variant::VT_I4;
 use windows::Win32::UI::TextServices::*;
 
 const MAX_SCOPES: usize = 16;
+
+/// Fixed metadata-only diagnostic codes. These carry no document text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputStatusDenial {
+    ReadOnly,
+    Loading,
+    ReservedDynamicFlags,
+    UnknownDynamicFlags,
+    HiddenTextPossible,
+    MultipleSelections,
+    MultipleRegions,
+    TransitoryContext,
+    UnknownStaticFlags,
+}
+
+/// Explain the first unsupported document-status condition. `None` means only
+/// that status passed; scopes, compartments, focus, selection and composition
+/// still require the ordinary gate. This never grants permission to read/edit.
+pub fn input_status_denial(status: TS_STATUS) -> Option<InputStatusDenial> {
+    use InputStatusDenial::*;
+    let known_dynamic = TS_SD_READONLY
+        | TS_SD_LOADING
+        | TS_SD_RESERVED
+        | TS_SD_TKBAUTOCORRECTENABLE
+        | TS_SD_TKBPREDICTIONENABLE
+        | TS_SD_UIINTEGRATIONENABLE
+        | TS_SD_INPUTPANEMANUALDISPLAYENABLE
+        | TS_SD_EMBEDDEDHANDWRITINGVIEW_ENABLED
+        | TS_SD_EMBEDDEDHANDWRITINGVIEW_VISIBLE;
+    let supported_static =
+        TS_SS_NOHIDDENTEXT | TS_SS_TKBAUTOCORRECTENABLE | TS_SS_TKBPREDICTIONENABLE;
+    if status.dwDynamicFlags & TS_SD_READONLY != 0 {
+        Some(ReadOnly)
+    } else if status.dwDynamicFlags & TS_SD_LOADING != 0 {
+        Some(Loading)
+    } else if status.dwDynamicFlags & TS_SD_RESERVED != 0 {
+        Some(ReservedDynamicFlags)
+    } else if status.dwDynamicFlags & !known_dynamic != 0 {
+        Some(UnknownDynamicFlags)
+    } else if status.dwStaticFlags & TS_SS_NOHIDDENTEXT == 0 {
+        Some(HiddenTextPossible)
+    } else if status.dwStaticFlags & TS_SS_DISJOINTSEL != 0 {
+        Some(MultipleSelections)
+    } else if status.dwStaticFlags & TS_SS_REGIONS != 0 {
+        Some(MultipleRegions)
+    } else if status.dwStaticFlags & TS_SS_TRANSITORY != 0 {
+        Some(TransitoryContext)
+    } else if status.dwStaticFlags & !supported_static != 0 {
+        Some(UnknownStaticFlags)
+    } else {
+        None
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Stamp {
     dynamic: u32,
@@ -20,23 +74,7 @@ fn denied<T>() -> Result<T> {
 }
 
 fn classify(status: TS_STATUS, scopes: &[InputScope]) -> Result<Stamp> {
-    let dynamic = TS_SD_READONLY | TS_SD_LOADING | TS_SD_RESERVED;
-    let known_dynamic = dynamic
-        | TS_SD_TKBAUTOCORRECTENABLE
-        | TS_SD_TKBPREDICTIONENABLE
-        | TS_SD_UIINTEGRATIONENABLE
-        | TS_SD_INPUTPANEMANUALDISPLAYENABLE
-        | TS_SD_EMBEDDEDHANDWRITINGVIEW_ENABLED
-        | TS_SD_EMBEDDEDHANDWRITINGVIEW_VISIBLE;
-    let supported_static =
-        TS_SS_NOHIDDENTEXT | TS_SS_TKBAUTOCORRECTENABLE | TS_SS_TKBPREDICTIONENABLE;
-    if status.dwDynamicFlags & dynamic != 0
-        || status.dwDynamicFlags & !known_dynamic != 0
-        || status.dwStaticFlags & TS_SS_NOHIDDENTEXT == 0
-        || status.dwStaticFlags & !supported_static != 0
-        || scopes.is_empty()
-        || scopes.len() > MAX_SCOPES
-    {
+    if input_status_denial(status).is_some() || scopes.is_empty() || scopes.len() > MAX_SCOPES {
         return denied();
     }
     let mut stamp = Stamp {
@@ -221,5 +259,36 @@ mod tests {
         let mut changed = status();
         changed.dwDynamicFlags |= TS_SD_UIINTEGRATIONENABLE;
         assert!(first != classify(changed, &[IS_TEXT, IS_CHAT]).unwrap());
+    }
+
+    #[test]
+    fn status_diagnostics_name_blockers_without_authorizing_protected_scopes() {
+        use InputStatusDenial::*;
+        for (dynamic, statics, expected) in [
+            (TS_SD_READONLY, TS_SS_NOHIDDENTEXT, ReadOnly),
+            (TS_SD_LOADING, TS_SS_NOHIDDENTEXT, Loading),
+            (TS_SD_RESERVED, TS_SS_NOHIDDENTEXT, ReservedDynamicFlags),
+            (1 << 31, TS_SS_NOHIDDENTEXT, UnknownDynamicFlags),
+            (0, TS_SS_REGIONS, HiddenTextPossible),
+            (
+                0,
+                TS_SS_NOHIDDENTEXT | TS_SS_DISJOINTSEL,
+                MultipleSelections,
+            ),
+            (0, TS_SS_NOHIDDENTEXT | TS_SS_REGIONS, MultipleRegions),
+            (0, TS_SS_NOHIDDENTEXT | TS_SS_TRANSITORY, TransitoryContext),
+            (0, TS_SS_NOHIDDENTEXT | (1 << 31), UnknownStaticFlags),
+        ] {
+            let status = TS_STATUS {
+                dwDynamicFlags: dynamic,
+                dwStaticFlags: statics,
+            };
+            assert_eq!(input_status_denial(status), Some(expected));
+            assert!(classify(status, &[IS_TEXT]).is_err());
+        }
+        assert_eq!(input_status_denial(status()), None);
+        for scope in [IS_PASSWORD, IS_PRIVATE, IS_DEFAULT] {
+            assert!(classify(status(), &[scope]).is_err());
+        }
     }
 }
