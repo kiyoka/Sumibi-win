@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 24件（応答照合7・入力範囲追跡/削除計画10・救済7）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 10件、TIP 5件を含めworkspace合計61件。
+現時点はCore 24件（応答照合7・入力範囲追跡/削除計画10・救済7）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 5件を含めworkspace合計63件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -116,14 +116,17 @@ cargo build --workspace --locked --offline
 ./target/debug/sumibi-setup.exe broker-channel-denied-test
 cargo build -p sumibi-host --features spike --locked --offline
 ./target/debug/sumibi-setup.exe broker-channel-test
+./target/debug/sumibi-setup.exe broker-worker-test
 ```
 
-前者は通常Hostの拒否2項目、後者は実子processで14項目を自動検証する。専用workerで同じ
+denied-testは通常Hostの拒否2項目、channel-testは実子processで14項目を自動検証する。専用workerで同じ
 起動processへ連続変換し、Reply保持中の拒否、取消、期限、64要求上限、共通4枠、子と親handleの解放を確認する。
-原文は合成文字列だけで、ユーザー文書・HTTP・既定IMEを使用しない。既存デモは単発Brokerのまま。
+原文は合成文字列だけで、ユーザー文書・HTTP・既定IMEを使用しない。
+worker-testは11項目を確認する。既存の入力デモも同じEXE workerからBrokerを再利用する。
 Channelはblockingのworker専用APIで、TSF/window callbackから直接呼ばない。
-所有STAへの結果配送と製品の常駐探索は次段階（[ADR 0016](adr/0016-authenticated-reusable-broker-channel.md)）。
-2026-10-22のTest-Spike.ps1全回帰はworkspace 61件を含め成功。ログはtarget/issue-4-broker-channel-regression.log。
+所有STAからは非blockingのWorker facadeを使い、起動・通信・子回収はworkerへ限定する
+（[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)）。製品の常駐共有探索・一般アプリ統合は未完了。
+Channel単独導入時のTest-Spike.ps1全回帰はworkspace 61件を含め成功。ログはtarget/issue-4-broker-channel-regression.log。
 
 ## 実DLLのキーから非同期変換を試す
 
@@ -140,11 +143,13 @@ broker-demoは手動操作用。文字を入力し、F7で選択部分（未選�
 ×で閉じると許可取消・worker停止・TSF/COM解除を行う。このデモでF6の下線プレビューは使用しない。
 本文は専用入力欄と別Hostのメモリーだけで扱い、外部APIへ送信・保存しない。
 
-broker-key-testは実DLLの予約キーから19ケース、broker-input-testは描画・Undo・Enter・編集・
+broker-key-testは実DLLの予約キーから25ケース、broker-input-testは描画・Undo・Enter・編集・
 同期SC_CLOSE・WM_KILLFOCUS・空composition開始終了を含む8ケースが成功。いずれも自動終了する。前者のcapacity/Esc/Enterは
 前面化に依存しない同じDLL callbackで確認し、物理キーボード操作の手動確認は含めない。
 容量検査には未起動予約に加え、完了済みjob・受取済み結果を保持した満杯と、解放後の同じ入力欄での再利用を含む。
-2026-10-22の全回帰はworkspace 59件を含め成功。ログはtarget/issue-4-job-admission-regression.log。
+さらに同じ子での連続変換・古いCancel・配送中の再入拒否・2回目の取消/本文復元・取消後の明示再開も確認する。
+今回の最終全回帰はworkspace 63件と再利用worker 11項目を含め成功。ログはtarget/issue-4-reusable-worker-regression.log。
+容量予約補強時の全回帰はworkspace 59件を含め成功。ログはtarget/issue-4-job-admission-regression.log。
 同日の通常ユーザー/Windows 11 x64 build 26300/Rust 1.99.1で解除とDLLアンロードも確認した。
 ログは `target/issue-4-dll-broker-key-checks.log`、`target/issue-4-dll-broker-input-checks.log`。
 

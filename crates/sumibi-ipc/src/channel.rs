@@ -50,6 +50,21 @@ impl Channel {
     /// Use a fresh Stop per channel. Shares the process's four admissions with
     /// one-shot jobs, including idle channels and replies retained after close.
     pub fn connect(path: &Path, mode: Mode, stop: &Stop, deadline: Instant) -> Result<Self> {
+        Self::connect_reserved(
+            path,
+            mode,
+            stop,
+            deadline,
+            Arc::new(Reservation::acquire()?),
+        )
+    }
+    pub(crate) fn connect_reserved(
+        path: &Path,
+        mode: Mode,
+        stop: &Stop,
+        deadline: Instant,
+        reservation: Arc<Reservation>,
+    ) -> Result<Self> {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(Error::Timeout);
@@ -58,7 +73,6 @@ impl Channel {
             return Err(Error::InvalidArgument);
         }
         let deadline = deadline.min(Instant::now() + Duration::from_secs(10));
-        let reservation = Arc::new(Reservation::acquire()?);
         let expires = Instant::now() + MAX_LIFETIME;
         let (child, mut pipe, boot) = Launched::connect_channel(path, mode, stop, deadline)?;
         let mut client = ClientSession::new(Nonce::random()?.id(), boot.id());

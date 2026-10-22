@@ -45,6 +45,7 @@ mod owned_composition_host;
 pub(super) use owned_composition_host::exercise_owned_composition;
 
 type EditHistory = RefCell<Vec<(Vec<u16>, TS_SELECTION_ACP)>>;
+type WriteHook = Box<dyn FnOnce() -> Result<()>>;
 
 #[implement(ITextStoreACP, ITfContextOwnerCompositionSink)]
 struct TextStore {
@@ -75,6 +76,7 @@ struct TextStore {
     reject_composition: Cell<bool>,
     input_problem: Cell<bool>,
     set_text_calls: Cell<usize>,
+    write_hook: RefCell<Option<WriteHook>>,
     fail_text_before: Cell<bool>,
     fail_text_after: Cell<bool>,
     fail_selection: Cell<bool>,
@@ -168,6 +170,7 @@ impl TextStore {
             reject_composition: Cell::new(false),
             input_problem: Cell::new(false),
             set_text_calls: Cell::new(0),
+            write_hook: RefCell::new(None),
             fail_text_before: Cell::new(false),
             fail_text_after: Cell::new(false),
             fail_selection: Cell::new(false),
@@ -454,6 +457,10 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         self.writable()?;
         self.set_text_calls.set(self.set_text_calls.get() + 1);
         self.last_text_lock.set(self.write_locks.get());
+        let hook = self.write_hook.borrow_mut().take();
+        if let Some(hook) = hook {
+            hook()?;
+        }
         if self.fail_text_before.replace(false) {
             return Err(E_FAIL.into());
         }

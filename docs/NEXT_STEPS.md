@@ -57,6 +57,10 @@ status変更後の復元、cleanup拒否からの回復、有限event、終了�
 既定Host拒否2項目、serverの順序/policy検査を確認しworkspaceは61件
 （[ADR 0016](adr/0016-authenticated-reusable-broker-channel.md)）。次はEXE workerのdispatchと所有STAへの
 結果配送をこの経路へ接続し、キー消費前の容量・取消・対象失効を維持する。常駐共有探索と一般アプリへの統合も残る。
+続いてEXE再利用workerと取得前Permitを実装し、既存Bridgeと入力デモへ接続した。
+worker 11項目・実DLLキー25ケースと全回帰を確認しworkspaceは63件
+（[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)）。次は一般アプリの入力adapter・所有compositionの
+寿命・保護情報・標準Undo、常駐共有探索と製品の配置/認証を進める。
 
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。

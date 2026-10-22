@@ -2,7 +2,7 @@
 
 2026-10-22 / Issue #4 / PR #10。前提は[固定process認証](0003-pinned-desktop-peers.md)と
 [結果解放までの容量予約](0015-broker-admission-through-delivery.md)。worker向け通信APIと専用の自動検証を追加する。
-既存の入力デモは単発Brokerを使う。今回のChannelは、製品用の常駐Broker探索・一般アプリへの配送とは別の実装段階。
+本ADR時点の入力デモは単発Brokerを使う。後続の[ADR 0017](0017-reusable-worker-and-owner-delivery.md)でEXE workerと所有STA配送を接続した。今回のChannelは、製品用の常駐Broker探索・一般アプリへの配送とは別の実装段階。
 
 ## 起動と認証
 

@@ -150,8 +150,10 @@ Protocolは22テスト（既存frame 6、session 8、JSON 4、Core模擬接続4�
 （[ADR 0015](adr/0015-broker-admission-through-delivery.md)）。満杯時は本文取得前にキーを通過させる。
 同じ認証済み子processとpipeの再利用もworker専用Channelとして追加した。wire版1は維持し、
 最大64要求・1要求/結果・共通4枠・有限期限を設ける。取消・通信失敗で永久に接続を閉じる
-（[ADR 0016](adr/0016-authenticated-reusable-broker-channel.md)）。既存デモの単発経路は維持し、
-再利用ChannelへのEXE dispatchと所有STA配送は次段階。
+（[ADR 0016](adr/0016-authenticated-reusable-broker-channel.md)）。直接アダプターの単発検証も維持する。
+再利用ChannelへのEXE worker dispatchと所有STA配送を接続した。既存デモは同じ認証済み子を再利用し、
+取消・失敗後は次の明示操作で新しい接続を作る。取得前Permitは結果配送の最後まで保持する
+（[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)）。
 scope/status/compartmentの保護検査を追加し、実DLLで39ケースを確認した
 （[ADR 0006](adr/0006-input-protection-metadata.md)）。
 同一contextのcompositionを拒否し、実DLL/TSFで16ケースを確認した

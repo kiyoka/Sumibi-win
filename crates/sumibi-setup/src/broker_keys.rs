@@ -20,6 +20,12 @@ pub(crate) fn exercise_broker_keys(
     unsafe {
         for case in [
             "apply",
+            "reuse",
+            "reuse-late-cancel",
+            "reuse-delivery-reentry",
+            "reuse-escape",
+            "reuse-text-restored",
+            "restart-after-cancel",
             "double-key",
             "capacity",
             "capacity-completed",
@@ -85,6 +91,27 @@ pub(crate) fn exercise_broker_keys(
                 Mode::DiagnosticFixed { delay_ms: 200 }
             })?;
             let transport = bridge.to_interface::<ISpikeBrokerTransport>();
+            let reentry = Rc::new(Cell::new(false));
+            if case == "reuse-delivery-reentry" {
+                let nested = bridge.clone();
+                let nested_broker = broker.clone();
+                let checked = reentry.clone();
+                *store.get().write_hook.borrow_mut() = Some(Box::new(move || {
+                    let transport = nested.to_interface::<ISpikeBrokerTransport>();
+                    let mut id = u64::MAX;
+                    let reserved = transport.Reserve(&mut id);
+                    let drained = nested.get().drain(&nested_broker);
+                    let shutdown = nested.get().shutdown();
+                    let refused =
+                        reserved.is_err() && id == 0 && drained.is_err() && shutdown.is_err();
+                    checked.set(refused);
+                    if refused {
+                        Ok(())
+                    } else {
+                        Err(E_FAIL.into())
+                    }
+                }));
+            }
             broker.Attach(context.as_raw(), transport.as_raw()).ok()?;
             let keys: ITfKeystrokeMgr = manager.cast()?;
             let capacity = if case == "capacity" {
@@ -158,15 +185,13 @@ pub(crate) fn exercise_broker_keys(
                     assert_eq!(pending, id);
                     assert_eq!(store.get().reads.get(), reads);
                 }
-                "escape" | "enter" => {
-                    let key = WPARAM(if case == "escape" { 0x1b } else { 0x0d });
+                "escape" | "enter" | "restart-after-cancel" => {
+                    let escape = case != "enter";
+                    let key = WPARAM(if escape { 0x1b } else { 0x0d });
                     // Same DLL callback as normal routing; explicit diagnostic
                     // interface avoids depending on OS foreground permission.
                     assert!(sink.OnTestKeyDown(&context, key, LPARAM(1))?.as_bool());
-                    assert_eq!(
-                        sink.OnKeyDown(&context, key, LPARAM(1))?.as_bool(),
-                        case == "escape"
-                    );
+                    assert_eq!(sink.OnKeyDown(&context, key, LPARAM(1))?.as_bool(), escape);
                     let mut pending = u64::MAX;
                     broker.Pending(&mut pending).ok()?;
                     assert_eq!(pending, 0);
@@ -266,10 +291,13 @@ pub(crate) fn exercise_broker_keys(
                 _ => {}
             }
             let delivery = wait_bridge(replacement.as_ref().unwrap_or(&bridge), &broker)?;
+            if case == "reuse-delivery-reentry" {
+                assert!(reentry.get());
+            }
             let apply = matches!(
                 case,
                 "apply" | "double-key" | "stale-reply" | "replace-transport"
-            );
+            ) || case.starts_with("reuse");
             assert_eq!(
                 delivery,
                 if apply {
@@ -295,7 +323,68 @@ pub(crate) fn exercise_broker_keys(
                 "prefix nihongo suffix".encode_utf16().collect::<Vec<_>>(),
                 "{case}"
             );
+            if case.starts_with("reuse") || case == "restart-after-cancel" {
+                let first = bridge.get().last_exchange();
+                assert_eq!(first.is_some(), case != "restart-after-cancel");
+                assert!(sink.OnPreservedKey(&context, &COMMAND_CONVERT)?.as_bool());
+                let mut next = 0;
+                broker.Pending(&mut next).ok()?;
+                assert!(next > id);
+                match case {
+                    "reuse-late-cancel" => {
+                        transport.Cancel(id).ok()?;
+                    }
+                    "reuse-escape" => {
+                        assert!(sink.OnKeyDown(&context, WPARAM(0x1b), LPARAM(1))?.as_bool());
+                    }
+                    "reuse-text-restored" => {
+                        store
+                            .get()
+                            .external_text("prefix NIHONGO suffix".encode_utf16().collect())?;
+                        pump_tsf_messages()?;
+                        store
+                            .get()
+                            .external_text("prefix nihongo suffix".encode_utf16().collect())?;
+                        pump_tsf_messages()?;
+                    }
+                    _ => {}
+                }
+                let second_applied = !matches!(case, "reuse-escape" | "reuse-text-restored");
+                assert_eq!(
+                    wait_bridge(&bridge, &broker)?,
+                    if second_applied {
+                        Delivery::Applied
+                    } else {
+                        Delivery::Discarded
+                    }
+                );
+                if second_applied {
+                    let (pid, wire) = bridge
+                        .get()
+                        .last_exchange()
+                        .ok_or("missing reused exchange")?;
+                    if let Some((previous, previous_wire)) = first {
+                        assert_eq!(pid, previous, "same launched child must be reused");
+                        assert_eq!(wire, previous_wire + 1);
+                    } else {
+                        assert_eq!(wire, 1, "explicit retry after cancel uses a new connection");
+                    }
+                    assert_eq!(
+                        *store.get().text.borrow(),
+                        "prefix 日本語 suffix".encode_utf16().collect::<Vec<_>>()
+                    );
+                    assert_eq!(store.get().undo.borrow().len(), 1);
+                    store.get().undo_once()?;
+                } else {
+                    assert!(store.get().undo.borrow().is_empty());
+                }
+                assert_eq!(
+                    *store.get().text.borrow(),
+                    "prefix nihongo suffix".encode_utf16().collect::<Vec<_>>()
+                );
+            }
             store.get().readonly.set(false);
+            store.get().write_hook.borrow_mut().take();
             store.get().deny_lock.set(false);
             bridge.get().shutdown()?;
             if let Some(bridge) = &replacement {

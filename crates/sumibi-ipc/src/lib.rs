@@ -17,6 +17,8 @@ pub mod job;
 mod pipe;
 #[cfg(windows)]
 mod support;
+#[cfg(windows)]
+pub mod worker;
 
 #[cfg(windows)]
 pub use identity::PinnedProcess;

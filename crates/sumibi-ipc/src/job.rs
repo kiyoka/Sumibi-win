@@ -94,7 +94,7 @@ pub struct Request {
     pub mode: Mode,
 }
 impl Request {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         let remaining = self.deadline.saturating_duration_since(Instant::now());
         if self.id == 0
             || self.revision.input == 0

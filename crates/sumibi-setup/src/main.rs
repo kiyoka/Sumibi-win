@@ -20,6 +20,8 @@ mod recovery_view;
 mod render;
 #[cfg(windows)]
 mod window_host;
+#[cfg(windows)]
+mod worker_probe;
 
 #[cfg(windows)]
 fn main() {

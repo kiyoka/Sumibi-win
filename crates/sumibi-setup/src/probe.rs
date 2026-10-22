@@ -163,6 +163,10 @@ fn checkpoint(point: FailAfter, requested: FailAfter) -> Result<(), Failure> {
 
 pub(super) fn run() -> Result<(), Failure> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.len() == 1 && args[0] == "broker-worker-test" {
+        crate::worker_probe::run()?;
+        return Ok(());
+    }
     if args.len() == 1
         && (args[0] == "broker-channel-test" || args[0] == "broker-channel-denied-test")
     {

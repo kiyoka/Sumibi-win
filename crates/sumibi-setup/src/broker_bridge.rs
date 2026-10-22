@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
 use sumibi_ipc::bootstrap::Mode;
-use sumibi_ipc::job::{BrokerJob, Request, Reservation};
+use sumibi_ipc::job::{Request, Reservation};
+use sumibi_ipc::worker::{Permit, Worker};
 use sumibi_protocol::message::Revision;
 use sumibi_tip::spike::{ISpikeBroker, ISpikeBrokerTransport, ISpikeBrokerTransport_Impl};
 use windows::core::{implement, ComObject, Result, HRESULT};
@@ -19,13 +20,22 @@ pub(crate) struct Bridge {
     owner: ThreadId,
     executable: PathBuf,
     mode: Mode,
-    reserved: RefCell<Option<(u64, Reservation)>>,
-    job: RefCell<Option<(u64, BrokerJob)>>,
+    reserved: RefCell<Option<(u64, Permit)>>,
+    worker: RefCell<Option<Worker>>,
+    pending: Cell<Option<u64>>,
+    exchange: Cell<Option<(u32, u64)>>,
     input_check: RefCell<Option<InputCheck>>,
     checking_input: Cell<bool>,
+    delivering: Cell<bool>,
 }
 pub(crate) type InputCheck = Box<dyn FnOnce(&[u16]) -> Result<()>>;
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(0);
+struct Delivering<'a>(&'a Cell<bool>);
+impl Drop for Delivering<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
 impl Bridge {
     pub(crate) fn new(
         mode: Mode,
@@ -42,9 +52,12 @@ impl Bridge {
             executable,
             mode,
             reserved: RefCell::new(None),
-            job: RefCell::new(None),
+            worker: RefCell::new(None),
+            pending: Cell::new(None),
+            exchange: Cell::new(None),
             input_check: RefCell::new(None),
             checking_input: Cell::new(false),
+            delivering: Cell::new(false),
         }))
     }
     fn check(&self) -> Result<()> {
@@ -54,18 +67,22 @@ impl Bridge {
         Ok(())
     }
     /// Handle remains owned by this bridge until drain/shutdown on this thread.
-    /// A Cancel callback only signals it; it does not remove the active job.
+    /// A Cancel callback only signals it; it does not remove the pending work.
     pub(crate) fn wait_handle(&self) -> Option<HANDLE> {
-        self.job
+        self.pending.get()?;
+        self.worker
             .borrow()
             .as_ref()
-            .map(|(_, job)| HANDLE(job.completion_handle().as_raw_handle()))
+            .map(|worker| HANDLE(worker.completion_handle().as_raw_handle()))
     }
     pub(crate) fn active(&self) -> bool {
-        self.job.borrow().is_some() || self.reserved.borrow().is_some()
+        self.delivering.get() || self.pending.get().is_some() || self.reserved.borrow().is_some()
+    }
+    pub(crate) fn last_exchange(&self) -> Option<(u32, u64)> {
+        self.exchange.get()
     }
     /// Owner-only, one synchronous attempt. Drop all captured targets before a
-    /// worker can start; no checker or COM reference enters Request/BrokerJob.
+    /// broker I/O can start; no checker or COM reference enters Request/Worker.
     pub(crate) fn check_next_input(&self, check: InputCheck) -> Result<()> {
         self.check()?;
         if self.active() || self.checking_input.get() || self.input_check.borrow().is_some() {
@@ -77,20 +94,36 @@ impl Bridge {
     pub(crate) fn clear_input_check(&self) {
         self.input_check.borrow_mut().take();
     }
-    /// Owner-loop only, outside WndProc. A completed worker has already reaped
-    /// its child; drop never waits or schedules a DLL callback.
+    /// Owner-loop only, outside WndProc. The worker retains an idle connection;
+    /// the completion's permit spans every reentrant DLL call below.
     pub(crate) fn drain(&self, control: &ISpikeBroker) -> Result<Option<Delivery>> {
         self.check()?;
-        let completion = self
-            .job
-            .borrow()
-            .as_ref()
-            .and_then(|(_, job)| job.try_result());
-        let Some(completion) = completion else {
+        if self.delivering.get() {
+            return Err(E_ABORT.into());
+        }
+        let Some(pending) = self.pending.get() else {
             return Ok(None);
         };
-        let job = self.job.borrow_mut().take();
-        drop(job);
+        self.delivering.set(true);
+        let _delivery = Delivering(&self.delivering);
+        let received = self.worker.borrow().as_ref().ok_or(E_ABORT)?.try_result();
+        let completion = match received {
+            Ok(Some(completion)) => completion,
+            Ok(None) => return Ok(None),
+            Err(_) => {
+                self.pending.set(None);
+                unsafe {
+                    let _ = control.Cancel(pending);
+                }
+                return Ok(Some(Delivery::Discarded));
+            }
+        };
+        if completion.id != pending {
+            // Never retire a newer target on an unrelated completion.
+            return Ok(None);
+        }
+        self.pending.set(None);
+        self.exchange.set(completion.exchange());
         let result = match completion.outcome() {
             Ok(text) => {
                 let text: Vec<u16> = text.encode_utf16().collect();
@@ -126,11 +159,16 @@ impl Bridge {
     /// the EXE, so even a failing teardown cannot execute unloaded DLL code.
     pub(crate) fn shutdown(&self) -> Result<()> {
         self.check()?;
+        if self.delivering.get() {
+            return Err(E_ABORT.into());
+        }
         self.clear_input_check();
         self.reserved.borrow_mut().take();
-        let job = self.job.borrow_mut().take();
-        if let Some((_, mut job)) = job {
-            job.shutdown(Duration::from_secs(3))
+        self.pending.set(None);
+        let worker = self.worker.borrow_mut().take();
+        if let Some(mut worker) = worker {
+            worker
+                .shutdown(Duration::from_secs(3))
                 .map_err(|_| windows::core::Error::from(E_ABORT))?;
         }
         Ok(())
@@ -160,15 +198,35 @@ impl ISpikeBrokerTransport_Impl for Bridge_Impl {
             if self.active() || self.checking_input.get() {
                 return Err(E_ABORT.into());
             }
-            let reservation =
-                Reservation::acquire().map_err(|_| windows::core::Error::from(E_ABORT))?;
+            let needs_worker = self
+                .worker
+                .borrow()
+                .as_ref()
+                .is_none_or(|worker| worker.is_closed());
+            if needs_worker {
+                // Dropping an old facade only signals; its EXE thread keeps
+                // the global slot until child/pipe cleanup actually finishes.
+                self.worker.borrow_mut().take();
+                let reservation =
+                    Reservation::acquire().map_err(|_| windows::core::Error::from(E_ABORT))?;
+                let worker = Worker::new(reservation, self.executable.clone(), self.mode)
+                    .map_err(|_| windows::core::Error::from(E_ABORT))?;
+                *self.worker.borrow_mut() = Some(worker);
+            }
             let id = NEXT_REQUEST
                 .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                     value.checked_add(1)
                 })
                 .map_err(|_| windows::core::Error::from(E_ABORT))?
                 + 1;
-            *self.reserved.borrow_mut() = Some((id, reservation));
+            let permit = self
+                .worker
+                .borrow()
+                .as_ref()
+                .ok_or(E_ABORT)?
+                .reserve(id)
+                .map_err(|_| windows::core::Error::from(E_ABORT))?;
+            *self.reserved.borrow_mut() = Some((id, permit));
             unsafe {
                 output.write(id);
             }
@@ -190,13 +248,15 @@ impl ISpikeBrokerTransport_Impl for Bridge_Impl {
             if request == 0
                 || self.checking_input.get()
                 || self.reserved.borrow().as_ref().map(|(id, _)| *id) != Some(request)
-                || self.job.borrow().is_some()
+                || self.pending.get().is_some()
             {
                 return Err(E_ABORT.into());
             }
             if text.is_null() || length == 0 || length > 1024 || !(1..=5000).contains(&timeout_ms) {
                 return Err(E_INVALIDARG.into());
             }
+            // Copy/checker time belongs to the same budget as dispatch and I/O.
+            let deadline = Instant::now() + Duration::from_millis(timeout_ms.into());
             // SAFETY: diagnostic caller borrows readable UTF-16 for this call.
             let units = unsafe { std::slice::from_raw_parts(text, length as usize) };
             let text =
@@ -215,10 +275,13 @@ impl ISpikeBrokerTransport_Impl for Bridge_Impl {
                     return Err(error);
                 }
             }
-            let (_, reservation) = self.reserved.borrow_mut().take().ok_or(E_ABORT)?;
-            let job = reservation
-                .start(
-                    self.executable.clone(),
+            let (_, permit) = self.reserved.borrow_mut().take().ok_or(E_ABORT)?;
+            self.worker
+                .borrow()
+                .as_ref()
+                .ok_or(E_ABORT)?
+                .submit(
+                    permit,
                     Request {
                         id: request,
                         revision: Revision {
@@ -227,18 +290,25 @@ impl ISpikeBrokerTransport_Impl for Bridge_Impl {
                             authorization,
                         },
                         text,
-                        deadline: Instant::now() + Duration::from_millis(timeout_ms.into()),
+                        deadline,
                         mode: self.mode,
                     },
                 )
                 .map_err(|_| windows::core::Error::from(E_ABORT))?;
-            *self.job.borrow_mut() = Some((request, job));
+            self.pending.set(Some(request));
             Ok(())
         })
     }
     unsafe fn Cancel(&self, request: u64) -> HRESULT {
         boundary(|| {
             self.check()?;
+            // Match while the pre-capture permit still exists; removing it
+            // first would lose the worker's request identity on cancellation.
+            if let Some(worker) = self.worker.borrow().as_ref() {
+                worker
+                    .cancel(request)
+                    .map_err(|_| windows::core::Error::from(E_ABORT))?;
+            }
             if self
                 .reserved
                 .borrow()
@@ -247,12 +317,6 @@ impl ISpikeBrokerTransport_Impl for Bridge_Impl {
             {
                 self.reserved.borrow_mut().take();
                 self.clear_input_check();
-            }
-            if let Some((id, job)) = self.job.borrow().as_ref() {
-                if *id == request {
-                    job.cancel()
-                        .map_err(|_| windows::core::Error::from(E_ABORT))?;
-                }
             }
             Ok(())
         })
