@@ -54,6 +54,22 @@ fn valid(point: InputPoint) -> bool {
         && point.selection.0 >= 0
         && point.selection.1 >= point.selection.0
 }
+fn valid_insertion(before: InputPoint, after: InputPoint, text: &[u16]) -> bool {
+    valid(before)
+        && valid(after)
+        && before.context == after.context
+        && after.generation > before.generation
+        && before.composition_generation == after.composition_generation
+        && !text.is_empty()
+        && text.len() <= MAX_TRACKED_UNITS
+        && char::decode_utf16(text.iter().copied())
+            .all(|unit| unit.is_ok_and(|value| !value.is_control()))
+        && before
+            .selection
+            .0
+            .checked_add(text.len() as i32)
+            .is_some_and(|end| after.selection == (end, end))
+}
 
 /// UTF-16 offset of the last `count` extended graphemes in supplied text.
 /// Bounded and allocation-free; never obtains surrounding document content.
@@ -239,22 +255,7 @@ impl InputSession {
     /// Failure is loss of tracking, never permission to replay/drop input.
     pub fn inserted(&mut self, before: InputPoint, after: InputPoint, text: &[u16]) {
         let previous = self.run.take();
-        if !valid(before)
-            || !valid(after)
-            || before.context != after.context
-            || after.generation <= before.generation
-            || before.composition_generation != after.composition_generation
-            || text.is_empty()
-            || text.len() > MAX_TRACKED_UNITS
-            || char::decode_utf16(text.iter().copied())
-                .any(|unit| unit.map_or(true, char::is_control))
-        {
-            return;
-        }
-        let Some(end) = before.selection.0.checked_add(text.len() as i32) else {
-            return;
-        };
-        if after.selection != (end, end) {
+        if !valid_insertion(before, after, text) {
             return;
         }
         let mut run = match previous {
@@ -275,6 +276,47 @@ impl InputSession {
             return;
         }
         run.text.extend_from_slice(text);
+        run.point = after;
+        self.run = Some(run);
+    }
+    /// Candidate for a verified insertion into an exact live record. Unlike
+    /// `inserted`, this never starts a new run or adopts surrounding text.
+    pub fn inserted_at_caret(&mut self, before: InputPoint, after: InputPoint, text: &[u16]) {
+        let previous = self.range(before);
+        let Some(mut run) = self.run.take() else {
+            return;
+        };
+        if previous.is_none()
+            || !valid_insertion(before, after, text)
+            || before.selection.0 != before.selection.1
+            || run.text.len() + text.len() > MAX_TRACKED_UNITS
+        {
+            return;
+        }
+        let Some(offset) = before
+            .selection
+            .0
+            .checked_sub(run.start)
+            .and_then(|offset| usize::try_from(offset).ok())
+        else {
+            return;
+        };
+        // A prior deletion can leave a caret inside a newly joined cluster.
+        // Insertion may split it, but must never split a UTF-16 surrogate pair.
+        if Boundaries::new(&run.text)
+            .and_then(|map| map.snap(offset, Direction::Backward))
+            .is_none()
+        {
+            return;
+        }
+        if run
+            .end()
+            .and_then(|end| end.checked_add(text.len() as i32))
+            .is_none()
+        {
+            return;
+        }
+        run.text.splice(offset..offset, text.iter().copied());
         run.point = after;
         self.run = Some(run);
     }

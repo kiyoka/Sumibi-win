@@ -70,6 +70,8 @@ pub(crate) fn exercise_recovery(
         "rescue/process-forward",
         "rescue/process-move",
         "rescue/process-internal-backspace",
+        "rescue/process-internal-insert",
+        "rescue/internal-insert-copy",
         "rescue/process-discard",
         "rescue/process-expire",
         "rescue/process-close",
@@ -97,6 +99,9 @@ pub(in crate::edit_host::input_host) fn test_recovery(
 ) -> Result<()> {
     if case.starts_with("process-") {
         return test_process_budget(window, editor, case);
+    }
+    if case == "internal-insert-copy" {
+        return test_internal_insert_copy(window, editor);
     }
     let clipboard = TestClipboard::new();
     let store = editor.store.get();
@@ -446,6 +451,62 @@ pub(in crate::edit_host::input_host) fn test_recovery(
     Ok(())
 }
 
+/// An internal failed write rescues only its supplied fragment. Clipboard is
+/// injected; copying must never write or resend anything to the document.
+fn test_internal_insert_copy(window: &crate::window_host::Window, editor: &Editor) -> Result<()> {
+    let store = editor.store.get();
+    editor.insert(&"a😀b".encode_utf16().collect::<Vec<_>>())?;
+    assert_eq!(
+        editor.input_disposition.get(),
+        sumibi_tip::spike::INPUT_APPLIED
+    );
+    editor.navigate(0x25, false, 2)?;
+    assert_eq!(
+        editor.input_disposition.get(),
+        sumibi_tip::spike::INPUT_APPLIED
+    );
+    let reads = super::super::composing_host::input_notify_host::body_reads()?;
+    store.fail_text_after.set(true);
+    editor.insert(&['z' as u16])?;
+    assert_eq!(
+        editor.input_disposition.get(),
+        sumibi_tip::spike::INPUT_UNCERTAIN
+    );
+    let metadata = editor.rescue.metadata().ok_or(E_FAIL)?;
+    assert!(metadata.copyable);
+    assert_eq!(metadata.operation, Operation::Insert(1));
+    assert_eq!(
+        editor
+            .rescue
+            .slot
+            .borrow()
+            .text(metadata.ticket, editor.rescue.now()),
+        Some(&['z' as u16][..])
+    );
+    let text = store.text.borrow().clone();
+    let writes = store.set_text_calls.get();
+    let history = store.undo.borrow().len();
+    let clipboard = TestClipboard::new();
+    editor.rescue.request(0x77);
+    editor.service_recovery(window, &clipboard)?;
+    editor.rescue.request(0x79);
+    editor.service_recovery(window, &clipboard)?;
+    assert_eq!(clipboard.calls.get(), 1);
+    assert_eq!(*clipboard.text.borrow(), vec!['z' as u16]);
+    assert!(editor.rescue.metadata().is_none());
+    assert_eq!(*store.text.borrow(), text);
+    assert_eq!(store.set_text_calls.get(), writes);
+    assert_eq!(store.undo.borrow().len(), history);
+    assert_eq!(
+        super::super::composing_host::input_notify_host::body_reads()?,
+        reads
+    );
+    editor.clear_tracking();
+    pump(window)?;
+    println!("Input recovery / internal-insert-copy: OK");
+    Ok(())
+}
+
 /// Distinct owner slots use the same EXE-wide budget. Auxiliary owners have no
 /// copy permission and hold only operation metadata; no extra focus or document
 /// is fabricated. The real editor still uses the actual DLL input transaction.
@@ -461,14 +522,17 @@ fn test_process_budget(
     let mut peers = Vec::new();
     if matches!(
         case,
-        "process-forward" | "process-move" | "process-internal-backspace"
+        "process-forward"
+            | "process-move"
+            | "process-internal-backspace"
+            | "process-internal-insert"
     ) {
         editor.insert(&"a👨‍👩‍👧‍👦b".encode_utf16().collect::<Vec<_>>())?;
         assert_eq!(
             editor.input_disposition.get(),
             sumibi_tip::spike::INPUT_APPLIED
         );
-        if case == "process-forward" {
+        if matches!(case, "process-forward" | "process-internal-insert") {
             editor.navigate(0x25, false, 2)?;
         } else if case == "process-internal-backspace" {
             editor.navigate(0x25, false, 1)?;
@@ -519,6 +583,8 @@ fn test_process_budget(
         "ab"
     } else if case == "process-move" {
         "a👨‍👩‍👧‍👦b"
+    } else if case == "process-internal-insert" {
+        "az👨‍👩‍👧‍👦b"
     } else {
         "z"
     }
@@ -537,7 +603,11 @@ fn test_process_budget(
     );
     if matches!(
         case,
-        "process-backspace" | "process-delete" | "process-forward" | "process-internal-backspace"
+        "process-backspace"
+            | "process-delete"
+            | "process-forward"
+            | "process-internal-backspace"
+            | "process-internal-insert"
     ) {
         store.undo_once()?;
         assert_eq!(*store.text.borrow(), original);
@@ -587,6 +657,7 @@ fn test_process_budget(
             | "process-forward"
             | "process-move"
             | "process-internal-backspace"
+            | "process-internal-insert"
     ) {
         // Releasing one owner's record lets a different owner reserve before a
         // failed DLL write. It neither replays the old input nor reads the body.

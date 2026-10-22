@@ -1,6 +1,8 @@
 //! Real DLL insertion; never edit user documents or replay attempted writes.
 use super::*;
 use sumibi_tip::spike::{INPUT_APPLIED, INPUT_APPLIED_UNTRACKED};
+#[path = "input_insertion_cursor_host.rs"]
+mod insertion_cursor;
 #[path = "input_selection_delete_host.rs"]
 mod selection_delete;
 #[path = "tracked_cursor_host.rs"]
@@ -85,6 +87,26 @@ pub(crate) fn exercise_transactions(
         "cursor/shift",
         "cursor/interior-typing",
         "cursor/rejoin",
+        "insert/start",
+        "insert/middle",
+        "insert/multi",
+        "insert/repeat",
+        "insert/convert",
+        "insert/combining",
+        "insert/rejoin",
+        "insert/maximum",
+        "insert/overflow",
+        "insert/budget",
+        "insert/readonly",
+        "insert/private",
+        "insert/foreign",
+        "insert/lock-denied",
+        "insert/text-fail-before",
+        "insert/text-fail-after",
+        "insert/caret-fail",
+        "insert/status-restored",
+        "insert/scope-restored",
+        "insert/compartment-restored",
     ] {
         run(manager, client, RunMode::TransactionTest(case))?;
     }
@@ -97,6 +119,9 @@ pub(in crate::edit_host::input_host) fn test_transactions(
     client: u32,
     case: &str,
 ) -> Result<()> {
+    if let Some(case) = case.strip_prefix("insert/") {
+        return insertion_cursor::test(window, editor, live, client, case);
+    }
     if let Some(case) = case.strip_prefix("cursor/") {
         return tracked_cursor::test(window, editor, live, client, case);
     }

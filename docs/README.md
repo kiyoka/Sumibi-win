@@ -40,6 +40,7 @@
 - [ADR 0026](adr/0026-initialize-explicit-selection-with-context.md)：初回文字入力なしで明示選択をF7へ接続し、選択方向と原文準備の一度だけの寿命を維持する。
 - [ADR 0027](adr/0027-tracked-caret-and-forward-delete.md)：記録範囲内の左右移動と前方Delete、記録全体の変換継続、試行後の再操作禁止と共有救済枠。
 - [ADR 0028](adr/0028-tracked-internal-backspace.md)：内部caretからのBackspace、前後の記録保持、共有削除計画と全repeatの境界検査。
+- [ADR 0029](adr/0029-tracked-internal-insertion.md)：記録内caretへの文字挿入、前後の記録保持、合計容量と供給断片だけの救済。
 
 ## 更新の規則
 

@@ -179,13 +179,32 @@ impl Tracker {
             selection: (end, end),
             ..before.point
         };
+        let previous = if self.owned.can_commit() {
+            let recorded = self.session.range(before.point).ok_or(E_ABORT)?;
+            if self.extent != Some(recorded) {
+                return Err(E_ABORT.into());
+            }
+            Some(recorded)
+        } else {
+            None
+        };
         let mut session = std::mem::take(&mut self.session);
         let range = if units.is_empty() {
             session.clear();
             None
         } else {
-            session.inserted(before.point, after, units);
-            Some(session.range(after).ok_or(E_ABORT)?)
+            if previous.is_some() {
+                session.inserted_at_caret(before.point, after, units);
+            } else {
+                session.inserted(before.point, after, units);
+            }
+            let recorded = session.range(after).ok_or(E_ABORT)?;
+            if let Some(old) = previous {
+                if recorded != (old.0, old.1.checked_add(units.len() as i32).ok_or(E_ABORT)?) {
+                    return Err(E_ABORT.into());
+                }
+            }
+            Some(recorded)
         };
         let edit = self.edit();
         let watch = self.watch.clone();
@@ -203,24 +222,29 @@ impl Tracker {
                 if watch.generation()? != before.notification {
                     return Err(E_ABORT.into());
                 }
-                if edit.owned.can_commit() {
-                    if Some(extent_of(&edit.owned.range(&edit.context)?)?) != edit.previous
-                        || edit
-                            .previous
-                            .is_none_or(|old| old.1 != before.metadata.selection.0)
+                let checked = if let Some(old) = previous {
+                    let owned = edit.owned.range(&edit.context)?;
+                    if extent_of(&owned)? != old
+                        || edit.previous != Some(old)
+                        || before.metadata.selection.0 < old.0
+                        || before.metadata.selection.0 > old.1
                         || before.metadata.selection.0 != before.metadata.selection.1
+                        || metadata_gate(&edit.context, &owned, cookie, &edit.owned)?
+                            != before.metadata.protection
                     {
                         return Err(E_ABORT.into());
                     }
+                    owned
                 } else {
                     // Owner rejection/missing sink happens before any body write.
                     edit.owned.start(&edit.context, &selected, cookie)?;
-                }
+                    selected.clone()
+                };
                 // Starting our composition may emit metadata notifications.
                 // Validate target/protection again after that external COM call.
                 edit.validate(cookie, before.metadata)?;
                 let property = unsafe { edit.context.GetProperty(&GUID_PROP_ATTRIBUTE)? };
-                if preview::runs(&property, &selected, cookie)?
+                if preview::runs(&property, &checked, cookie)?
                     .iter()
                     .any(|(_, value)| !value.is_empty() && !preview::is_atom(value, edit.atom))
                 {
@@ -232,6 +256,16 @@ impl Tracker {
                     || watch.boundary_generation()? != boundary
                     || !same_context(&unsafe { selected.GetContext()? }, &edit.context)?
                     || extent_of(&selected)? != before.metadata.selection
+                    || previous.is_some_and(|old| extent_of(&checked).ok() != Some(old))
+                    || previous.is_some_and(|old| {
+                        edit.owned
+                            .range(&edit.context)
+                            .and_then(|owned| extent_of(&owned))
+                            .ok()
+                            != Some(old)
+                    })
+                    || metadata_gate(&edit.context, &checked, cookie, &edit.owned)?
+                        != before.metadata.protection
                 {
                     return Err(E_ABORT.into());
                 }

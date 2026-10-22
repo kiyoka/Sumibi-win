@@ -3,6 +3,9 @@
 状態：Core・実DLL・専用ACPホストで実装・検証。Issue #4 / draft PR #10。
 [ADR 0027](0027-tracked-caret-and-forward-delete.md)の内部Backspaceの制約を更新する。
 
+後続の[ADR 0029](0029-tracked-internal-insertion.md)で内部挿入の追跡継続も実装した。
+以下の内部挿入の残課題と件数は、このADRの実装段階の記録である。
+
 ## 決定
 
 transaction-demoで記録範囲内を左右移動した後も、Backspaceで同じ入力runを継続する。

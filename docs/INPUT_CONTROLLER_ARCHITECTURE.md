@@ -148,7 +148,11 @@ DLLの書込前拒否/救済枠不足からのfallbackと旧composition観測経
 記録内repeatを全体として処理できない場合は退役して通常ホストへ戻す。内部caretのF7は記録全体だけを使う。
 内部Backspaceも同じeraseで処理し、削除前後に残る記録を保持する。Coreは方向付きの計画/完了を共有し、
 再結合した書記素を内部caretから削除する場合も全体を対象にする。旧Before/After観測のbackspacedは末尾限定のまま。
-内部挿入や任意選択の追跡継続、一般アプリと製品の待機/救済統合は残る
+途中挿入は既存ISpikeInputWriterとCoreのinserted_at_caretで同じrunを継続する。
+供給文字の前後を保持し、合計1024単位を超える場合は書込前に拒否する。旧観測用insertedは末尾追加の条件を維持する。
+自己compositionの全範囲と保護/属性をcookie内で検査し、候補は本文・caret・compositionの検証後だけ公開する。
+救済に渡す本文は新しい供給断片だけとする（[ADR 0029](adr/0029-tracked-internal-insertion.md)）。
+任意選択の追跡継続、一般アプリと製品の待機/救済統合は残る
 （[ADR 0027](adr/0027-tracked-caret-and-forward-delete.md)、[ADR 0028](adr/0028-tracked-internal-backspace.md)）。
 所有editorの救済はCoreの1件・最大1024単位のslotを取引前に予約し、未確認結果だけを有限期限で保持する。
 診断EXEは全Rescueへ同じBudgetを渡し、別STAも含む予約中/確認待ちを合計4件に制限する。

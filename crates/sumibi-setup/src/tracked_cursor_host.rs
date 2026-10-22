@@ -212,8 +212,11 @@ fn test_other(
             assert!(store.undo.borrow().is_empty());
         } else if case == "interior-typing" {
             editor.insert(&['z' as u16])?;
-            assert_eq!(editor.input_disposition.get(), INPUT_NOT_ATTEMPTED);
-            assert_eq!(store.set_text_calls.get(), writes);
+            assert_eq!(editor.input_disposition.get(), INPUT_APPLIED);
+            assert_eq!(store.set_text_calls.get(), writes + 1);
+            assert!(owned_view(&editor.context)?.cast::<IUnknown>()? == identity);
+            pump(window)?;
+            assert_eq!(live.scene()?.underlines, vec![7..27]);
             assert_eq!(
                 *store.text.borrow(),
                 "prefix ae\u{301}z👨‍👩‍👧‍👦🇯🇵b suffix"

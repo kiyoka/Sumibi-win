@@ -211,3 +211,127 @@ fn maximum_record_backward_deletion_preserves_the_unmodified_half() {
     assert_eq!(tracked.range(), (7, 519));
     assert!(tracked.matches(&"漢".repeat(512).encode_utf16().collect::<Vec<_>>()));
 }
+
+#[test]
+fn verified_insertion_keeps_recorded_text_on_both_sides_and_at_edges() {
+    for (caret, count, expected) in [(7, 3, "za😀b"), (8, 2, "az😀b"), (11, 0, "a😀bz")] {
+        let (mut session, mut before) = recorded("a😀b");
+        if count != 0 {
+            let next = point(caret, 3);
+            session.moved(before, next);
+            before = next;
+        }
+        let after = point(caret + 1, before.generation + 1);
+        session.inserted_at_caret(before, after, &['z' as u16]);
+        let tracked = session.take(after).unwrap();
+        assert_eq!(tracked.range(), (7, 12));
+        assert!(tracked.matches(&expected.encode_utf16().collect::<Vec<_>>()));
+    }
+}
+#[test]
+fn inserted_combining_text_rebuilds_clusters_before_the_next_deletion() {
+    let (mut session, end) = recorded("ab");
+    session.moved(end, point(8, 3));
+    session.inserted_at_caret(point(8, 3), point(9, 4), &[0x301]);
+    assert_eq!(session.backspace_range(point(9, 4), 1), Some((7, 9)));
+    session.deleted_backward(point(9, 4), point(7, 5), 1);
+    assert!(session.take(point(7, 5)).unwrap().matches(&['b' as u16]));
+}
+#[test]
+fn insertion_can_split_a_cluster_joined_by_a_previous_verified_deletion() {
+    let (mut session, end) = recorded("🇯x🇵b");
+    session.moved(end, point(9, 3));
+    session.deleted_forward(point(9, 3), point(9, 4), 1);
+    session.inserted_at_caret(point(9, 4), point(10, 5), &['x' as u16]);
+    let tracked = session.take(point(10, 5)).unwrap();
+    assert_eq!(tracked.range(), (7, 13));
+    assert!(tracked.matches(&"🇯x🇵b".encode_utf16().collect::<Vec<_>>()));
+}
+#[test]
+fn verified_insertion_rejects_stale_or_noncollapsed_observations() {
+    for (before, after) in [
+        (point(8, 2), point(9, 4)),
+        (point(8, 3), point(10, 4)),
+        (point(8, 3), point(9, 3)),
+        (
+            point(8, 3),
+            InputPoint {
+                context: 2,
+                ..point(9, 4)
+            },
+        ),
+        (
+            point(8, 3),
+            InputPoint {
+                allowed: false,
+                ..point(9, 4)
+            },
+        ),
+        (
+            point(8, 3),
+            InputPoint {
+                composition_generation: 1,
+                ..point(9, 4)
+            },
+        ),
+        (
+            InputPoint {
+                selection: (8, 10),
+                ..point(8, 3)
+            },
+            point(9, 4),
+        ),
+    ] {
+        let (mut session, end) = recorded("a😀b");
+        session.moved(end, point(8, 3));
+        session.inserted_at_caret(before, after, &['z' as u16]);
+        assert!(session.take(after).is_none());
+    }
+    let mut empty = InputSession::default();
+    empty.inserted_at_caret(point(8, 3), point(9, 4), &['z' as u16]);
+    assert!(empty.take(point(9, 4)).is_none());
+}
+#[test]
+fn verified_insertion_refuses_invalid_supplied_utf16_without_adopting_it() {
+    for text in [
+        vec![],
+        vec![0xd800],
+        vec![0xdc00],
+        vec![0],
+        vec![10],
+        vec![120; 1025],
+    ] {
+        let (mut session, end) = recorded("ab");
+        session.moved(end, point(8, 3));
+        let after = point(8 + text.len() as i32, 4);
+        session.inserted_at_caret(point(8, 3), after, &text);
+        assert!(session.take(after).is_none());
+    }
+}
+#[test]
+fn verified_insertion_admits_the_full_combined_capacity_only() {
+    for length in [1023, 1024] {
+        let (mut session, end) = recorded(&"漢".repeat(length));
+        session.moved(end, point(519, 3));
+        session.inserted_at_caret(
+            point(519, 3),
+            point(521, 4),
+            &"😀".encode_utf16().collect::<Vec<_>>(),
+        );
+        assert!(session.take(point(521, 4)).is_none());
+    }
+    let (mut session, end) = recorded(&"漢".repeat(1022));
+    session.moved(end, point(519, 3));
+    session.inserted_at_caret(
+        point(519, 3),
+        point(521, 4),
+        &"😀".encode_utf16().collect::<Vec<_>>(),
+    );
+    let tracked = session.take(point(521, 4)).unwrap();
+    assert_eq!(tracked.range(), (7, 1031));
+    assert!(tracked.matches(
+        &format!("{}😀{}", "漢".repeat(512), "漢".repeat(510))
+            .encode_utf16()
+            .collect::<Vec<_>>()
+    ));
+}
