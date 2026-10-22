@@ -7,6 +7,8 @@ mod insertion_cursor;
 mod selection_delete;
 #[path = "tracked_cursor_host.rs"]
 mod tracked_cursor;
+#[path = "input_tracked_selection_host.rs"]
+mod tracked_selection;
 
 pub(crate) fn run_transaction_demo(
     manager: &ITfThreadMgr,
@@ -107,6 +109,33 @@ pub(crate) fn exercise_transactions(
         "insert/status-restored",
         "insert/scope-restored",
         "insert/compartment-restored",
+        "select/left",
+        "select/right",
+        "select/shrink",
+        "select/reverse",
+        "select/collapse-left",
+        "select/collapse-right",
+        "select/collapse-repeat",
+        "select/type-after-collapse",
+        "select/convert",
+        "select/convert-forward",
+        "select/overshoot",
+        "select/budget",
+        "select/fail-before",
+        "select/fail-after",
+        "select/readonly",
+        "select/private",
+        "select/foreign",
+        "select/invalid",
+        "select/direction-no-notify",
+        "select/unknown-active",
+        "select/direction-restored",
+        "select/ready-direction",
+        "select/rejoin",
+        "select/replace-fallback",
+        "select/backspace-fallback",
+        "select/delete-boundary",
+        "select/home-retire",
     ] {
         run(manager, client, RunMode::TransactionTest(case))?;
     }
@@ -119,6 +148,9 @@ pub(in crate::edit_host::input_host) fn test_transactions(
     client: u32,
     case: &str,
 ) -> Result<()> {
+    if let Some(case) = case.strip_prefix("select/") {
+        return tracked_selection::test(window, editor, live, client, case);
+    }
     if let Some(case) = case.strip_prefix("insert/") {
         return insertion_cursor::test(window, editor, live, client, case);
     }

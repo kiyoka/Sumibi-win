@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 62件（応答照合9・入力範囲追跡/削除/caret計画34・書記素移動/削除境界7・救済12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計102件。
+現時点はCore 68件（応答照合9・入力範囲追跡/削除/caret計画40・書記素移動/削除境界7・救済12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計108件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -81,8 +81,11 @@ repeatは記録内の拡張書記素クラスタ単位で数え、追跡範囲�
 通常の左右移動が記録内なら同じcompositionを保持し、移動先からの前方Deleteも実DLLで処理する。
 内部Backspaceも削除前後に残った記録を同じcompositionで保持する。
 途中への文字挿入も前後の記録を保持し、合計1024 UTF-16単位以内なら同じcompositionを広げる。
-境界越え、Shift/Home/End、任意選択への移動は追跡を退役して通常ホストへ戻す。
-内部caretのF7も現在の記録全体だけを変換する。移動は本文/Undoを増やさず、削除は1回Undoで戻せる。
+Shift＋左右は記録内の選択を拡大/縮小/反転し、通常左右での選択解除後も追跡を保つ。
+非空の明示選択のF7はその部分だけ、collapsed caretのF7は現在の記録全体だけを変換する。
+境界越え、Home/End、Ctrl/Alt修飾や外部選択変更では追跡を退役して通常ホストへ戻す。
+選択したままの文字置換/Backspaceも旧追跡を退役する。選択Deleteは既存の同期削除を使い前後の記録を残さない。
+移動/選択は本文/Undoを増やさず、削除は1回Undoで戻せる。
 unicode-segmentation 1.13.3 / Unicode 17.0.0に固定し、通常ホストのBackspaceも同じ分割を使う。
 記録外の既存本文へクラスタを広げず、正規化もしない。
 非空の明示選択をDeleteすると、実DLLが同じwriteで削除・caret・一時composition終了を処理する。
@@ -112,9 +115,12 @@ Rust91件と関連回帰が成功した。操作規則と検証範囲は[ADR 002
 内部Backspace追加時は18件を加えて55件、共有満杯の内部削除を加えて救済38件、Core5件追加でRust96件。
 同期入力68・書記素ホスト22・composition46・通知30・追跡25・broker入力11・close4と静的検査も成功した。
 契約とログは[ADR 0028](adr/0028-tracked-internal-backspace.md)を参照。
-最新は途中挿入20件を加えて同期入力88件、共有満杯と断片コピーを加えて救済40件、Core6件追加でRust102件。
+途中挿入追加時は20件を加えて同期入力88件、共有満杯と断片コピーを加えて救済40件、Core6件追加でRust102件。
 Backspace55・書記素ホスト22・composition46・通知30・追跡25・broker入力11・close4と静的検査が成功した。
-契約と最大長の描画制限は[ADR 0029](adr/0029-tracked-internal-insertion.md)を参照。以下は以前の段階の検証結果である。
+契約と最大長の描画制限は[ADR 0029](adr/0029-tracked-internal-insertion.md)を参照。
+最新はShift選択27件を加えて同期入力115件、共有満杯の選択を加えて救済41件、Core6件追加でRust108件。
+Backspace55・書記素ホスト22・composition46・通知30・追跡25・broker入力11・close4と静的検査が成功した。
+選択方向と検証範囲は[ADR 0030](adr/0030-tracked-shift-selection.md)を参照。以下は以前の段階の検証結果である。
 fmt・Clippy 3構成・build・基本DLL検査も成功した。一括scriptはkey-testのShift押下状態で停止し、
 その後の単独key-testが成功した。script全体の成功とは区別する。
 救済34・同期入力22・追跡25・composition伸縮29・通知30・broker入力11・close 4も再確認した。

@@ -107,7 +107,10 @@ impl Tracker {
             false,
             Box::new(move |cookie| {
                 ensure_target(&manager, &context)?;
-                let (selected, _) = selection(&context, cookie)?;
+                let (selected, style) = selection(&context, cookie)?;
+                if style.ase != TF_AE_START && style.ase != TF_AE_END {
+                    return Err(E_ABORT.into());
+                }
                 if !same_context(&unsafe { selected.GetContext()? }, &context)? {
                     return Err(E_ABORT.into());
                 }
@@ -125,6 +128,7 @@ impl Tracker {
                 ensure_target(&manager, &context)?;
                 *result.borrow_mut() = Some(InputMetadata {
                     selection,
+                    active_start: style.ase == TF_AE_START,
                     protection,
                 });
                 Ok(())
@@ -150,9 +154,9 @@ impl Tracker {
         let metadata = self.inspect(true)?;
         if self.watch.generation()? != notification
             || self.settled.is_some_and(|old| old != notification)
-            || self
-                .metadata
-                .is_some_and(|old| !old.same_protection(&metadata))
+            || self.metadata.is_some_and(|old| {
+                !old.same_protection(&metadata) || old.active_start != metadata.active_start
+            })
         {
             return Err(E_ABORT.into());
         }
@@ -212,7 +216,7 @@ impl Tracker {
         let notification = self.watch.generation()?;
         let latest = self.inspect(true)?;
         if self.watch.generation()? != notification
-            || latest.selection != metadata.selection
+            || !latest.same_selection(&metadata)
             || !metadata.same_protection(&latest)
         {
             return Err(E_ABORT.into());
@@ -359,6 +363,7 @@ impl Tracker {
         if self.watch.generation()? != notification
             || self.watch.boundary_generation()? != boundary
             || metadata.selection != range
+            || metadata.active_start != (!collapsed && expected.active_start)
             || !metadata.same_protection(&expected)
         {
             return Err(E_ABORT.into());
@@ -380,7 +385,7 @@ impl Tracker {
             return Err(E_ABORT.into());
         }
         let metadata = self.inspect(false)?;
-        if metadata.selection != ready.metadata.selection
+        if !metadata.same_selection(&ready.metadata)
             || !metadata.same_protection(&ready.metadata)
             || self.watch.generation()? != ready.notification
         {
@@ -452,9 +457,13 @@ struct CompositionEdit {
 impl CompositionEdit {
     fn validate(&self, cookie: u32, expected: InputMetadata) -> Result<ITfRange> {
         ensure_target(&self.manager, &self.context)?;
-        let (selected, _) = selection(&self.context, cookie)?;
+        let (selected, style) = selection(&self.context, cookie)?;
+        if style.ase != TF_AE_START && style.ase != TF_AE_END {
+            return Err(E_ABORT.into());
+        }
         if !same_context(&unsafe { selected.GetContext()? }, &self.context)?
             || extent_of(&selected)? != expected.selection
+            || (style.ase == TF_AE_START) != expected.active_start
             || metadata_gate(&self.context, &selected, cookie, &self.owned)? != expected.protection
         {
             return Err(E_ABORT.into());

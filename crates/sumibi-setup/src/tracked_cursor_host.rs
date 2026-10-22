@@ -142,6 +142,8 @@ fn test_other(
             }
             "shift" => {
                 editor.navigate(0x25, true, 3)?;
+                assert_eq!(editor.input_disposition.get(), INPUT_APPLIED);
+                assert!(owned_view(&editor.context)?.cast::<IUnknown>()? == identity);
                 let selected = store.selection.get();
                 assert_eq!((selected.acpStart, selected.acpEnd), (10, 26));
                 assert_eq!(selected.style.ase, TS_AE_START);

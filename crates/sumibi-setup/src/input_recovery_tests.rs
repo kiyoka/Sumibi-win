@@ -71,6 +71,7 @@ pub(crate) fn exercise_recovery(
         "rescue/process-move",
         "rescue/process-internal-backspace",
         "rescue/process-internal-insert",
+        "rescue/process-select",
         "rescue/internal-insert-copy",
         "rescue/process-discard",
         "rescue/process-expire",
@@ -526,6 +527,7 @@ fn test_process_budget(
             | "process-move"
             | "process-internal-backspace"
             | "process-internal-insert"
+            | "process-select"
     ) {
         editor.insert(&"a👨‍👩‍👧‍👦b".encode_utf16().collect::<Vec<_>>())?;
         assert_eq!(
@@ -571,6 +573,8 @@ fn test_process_budget(
         editor.navigate(0x25, false, 2)?;
     } else if case == "process-internal-backspace" {
         editor.input(WM_CHAR, WPARAM(8), LPARAM(1))?;
+    } else if case == "process-select" {
+        editor.navigate(0x25, true, 2)?;
     } else {
         editor.insert(&['z' as u16])?;
     }
@@ -581,7 +585,7 @@ fn test_process_budget(
         "process-delete" | "process-forward" | "process-internal-backspace"
     ) {
         "ab"
-    } else if case == "process-move" {
+    } else if matches!(case, "process-move" | "process-select") {
         "a👨‍👩‍👧‍👦b"
     } else if case == "process-internal-insert" {
         "az👨‍👩‍👧‍👦b"
@@ -598,7 +602,7 @@ fn test_process_budget(
     );
     assert_eq!(
         store.undo.borrow().len(),
-        history + usize::from(case != "process-move"),
+        history + usize::from(!matches!(case, "process-move" | "process-select")),
         "host handles the whole original operation in one Undo entry"
     );
     if matches!(
@@ -621,6 +625,11 @@ fn test_process_budget(
     }
     if case == "process-move" {
         assert_eq!(store.selection.get().acpStart, 1);
+    }
+    if case == "process-select" {
+        let selected = store.selection.get();
+        assert_eq!((selected.acpStart, selected.acpEnd), (1, 13));
+        assert_eq!(selected.style.ase, TS_AE_START);
     }
     assert_eq!(
         editor.input_disposition.get(),
@@ -658,6 +667,7 @@ fn test_process_budget(
             | "process-move"
             | "process-internal-backspace"
             | "process-internal-insert"
+            | "process-select"
     ) {
         // Releasing one owner's record lets a different owner reserve before a
         // failed DLL write. It neither replays the old input nor reads the body.

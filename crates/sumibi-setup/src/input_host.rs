@@ -204,24 +204,30 @@ impl Editor {
     }
     fn navigate(&self, key: usize, extend: bool, repeats: usize) -> Result<()> {
         if self.transaction
-            && !extend
             && matches!(key, 0x25 | 0x27)
             && !self.store.get().input_problem.get()
             && (1..=MAX_SELECTION_UNITS).contains(&repeats)
         {
             let backward = key == 0x25;
-            let disposition = if let Some(ticket) =
-                self.rescue
-                    .reserve(sumibi_core::recovery::Operation::MoveCaret {
-                        backward,
-                        count: repeats as u32,
-                    }) {
-                let disposition = self
-                    .composing
-                    .as_ref()
-                    .ok_or(E_FAIL)?
-                    .edit_tracked(self, u32::from(!backward), repeats as u32)
-                    .unwrap_or(sumibi_tip::spike::INPUT_UNCERTAIN);
+            let operation = if extend {
+                sumibi_core::recovery::Operation::ExtendSelection {
+                    backward,
+                    count: repeats as u32,
+                }
+            } else {
+                sumibi_core::recovery::Operation::MoveCaret {
+                    backward,
+                    count: repeats as u32,
+                }
+            };
+            let disposition = if let Some(ticket) = self.rescue.reserve(operation) {
+                let composing = self.composing.as_ref().ok_or(E_FAIL)?;
+                let disposition = if extend {
+                    composing.extend_tracked(self, backward, repeats as u32)
+                } else {
+                    composing.edit_tracked(self, u32::from(!backward), repeats as u32)
+                }
+                .unwrap_or(sumibi_tip::spike::INPUT_UNCERTAIN);
                 self.rescue.finish(ticket, disposition, &[]);
                 disposition
             } else {

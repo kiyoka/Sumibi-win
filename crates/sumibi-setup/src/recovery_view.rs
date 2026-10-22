@@ -210,6 +210,9 @@ impl View {
             Operation::Backspace(count) => format!("Backspace × {count}"),
             Operation::DeleteSelection => "選択範囲の削除".into(),
             Operation::ForwardDelete(count) => format!("Delete × {count}"),
+            Operation::ExtendSelection { backward, count } => {
+                format!("Shift＋{} × {count}", if backward { "←" } else { "→" })
+            }
             Operation::MoveCaret { backward, count } => {
                 format!("{} × {count}", if backward { "←" } else { "→" })
             }

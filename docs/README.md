@@ -41,6 +41,7 @@
 - [ADR 0027](adr/0027-tracked-caret-and-forward-delete.md)：記録範囲内の左右移動と前方Delete、記録全体の変換継続、試行後の再操作禁止と共有救済枠。
 - [ADR 0028](adr/0028-tracked-internal-backspace.md)：内部caretからのBackspace、前後の記録保持、共有削除計画と全repeatの境界検査。
 - [ADR 0029](adr/0029-tracked-internal-insertion.md)：記録内caretへの文字挿入、前後の記録保持、合計容量と供給断片だけの救済。
+- [ADR 0030](adr/0030-tracked-shift-selection.md)：記録内のShift選択、選択方向の照合、選択解除後の入力継続と明示選択の変換。
 
 ## 更新の規則
 

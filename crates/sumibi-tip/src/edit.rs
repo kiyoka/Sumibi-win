@@ -57,9 +57,13 @@ pub struct SelectionSnapshot {
 #[derive(Clone, Copy)]
 pub struct InputMetadata {
     pub selection: (i32, i32),
+    pub active_start: bool,
     protection: crate::protection::Stamp,
 }
 impl InputMetadata {
+    pub fn same_selection(&self, other: &Self) -> bool {
+        self.selection == other.selection && self.active_start == other.active_start
+    }
     pub fn same_protection(&self, other: &Self) -> bool {
         self.protection == other.protection
     }
@@ -79,7 +83,7 @@ pub fn inspect_input(
         false,
         Box::new(move |cookie| {
             ensure_target(&manager, &target)?;
-            let (range, _) = selection(&target, cookie)?;
+            let (range, style) = selection(&target, cookie)?;
             if !same_context(&unsafe { range.GetContext()? }, &target)? {
                 return Err(E_ABORT.into());
             }
@@ -98,6 +102,7 @@ pub fn inspect_input(
             ensure_target(&manager, &target)?;
             *result.borrow_mut() = Some(InputMetadata {
                 selection: (start, end),
+                active_start: style.ase == TF_AE_START,
                 protection,
             });
             Ok(())

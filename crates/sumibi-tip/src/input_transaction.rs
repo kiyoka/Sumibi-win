@@ -108,6 +108,7 @@ impl Tracker {
                 write_body(&edit, cookie, target, &[], deleted.0, &attempted)?;
                 let metadata = InputMetadata {
                     selection: after.selection,
+                    active_start: false,
                     ..before.metadata
                 };
                 if let Some(range) = range {
@@ -279,6 +280,7 @@ impl Tracker {
                 )?;
                 let metadata = InputMetadata {
                     selection: (end, end),
+                    active_start: false,
                     ..before.metadata
                 };
                 if let Some(range) = range {
@@ -315,6 +317,15 @@ impl Tracker {
         count: u32,
         outcome: Rc<Cell<u32>>,
     ) -> Result<()> {
+        self.move_selection(backward, false, count, outcome)
+    }
+    pub(crate) fn move_selection(
+        &mut self,
+        backward: bool,
+        extend: bool,
+        count: u32,
+        outcome: Rc<Cell<u32>>,
+    ) -> Result<()> {
         let direction = if backward {
             sumibi_core::grapheme::Direction::Backward
         } else {
@@ -328,9 +339,15 @@ impl Tracker {
         if self.extent != Some(previous) || !self.owned.can_commit() {
             return Err(E_ABORT.into());
         }
-        let caret = self
+        let (selected_range, active_start) = self
             .session
-            .move_range(before.point, direction, count as usize)
+            .selection_range(
+                before.point,
+                direction,
+                extend,
+                before.metadata.active_start,
+                count as usize,
+            )
             .ok_or(E_ABORT)?;
         let sequence = self
             .sequence
@@ -339,11 +356,18 @@ impl Tracker {
             .ok_or(E_ABORT)?;
         let after = InputPoint {
             generation: sequence,
-            selection: (caret, caret),
+            selection: selected_range,
             ..before.point
         };
         let mut session = std::mem::take(&mut self.session);
-        session.moved(before.point, after);
+        session.selected(
+            before.point,
+            after,
+            direction,
+            extend,
+            before.metadata.active_start,
+            count as usize,
+        );
         if session.range(after) != Some(previous) {
             return Err(E_ABORT.into());
         }
@@ -370,9 +394,11 @@ impl Tracker {
                 }
                 let target = unsafe { edit.context.GetStart(cookie)? };
                 unsafe {
-                    target.cast::<ITfRangeACP>()?.SetExtent(caret, 0)?;
+                    target
+                        .cast::<ITfRangeACP>()?
+                        .SetExtent(selected_range.0, selected_range.1 - selected_range.0)?;
                 }
-                if extent_of(&target)? != (caret, caret)
+                if extent_of(&target)? != selected_range
                     || !same_context(&unsafe { target.GetContext()? }, &edit.context)?
                     || metadata_gate(&edit.context, &target, cookie, &edit.owned)?
                         != before.metadata.protection
@@ -389,10 +415,11 @@ impl Tracker {
                 // A failed SetSelection can still have moved the caret. Never apply
                 // the original host movement a second time after this point.
                 attempted.set(INPUT_UNCERTAIN);
-                place_caret(&edit, cookie, target)?;
+                place_selection(&edit, cookie, target, active_start)?;
                 attempted.set(INPUT_APPLIED_UNTRACKED);
                 let metadata = InputMetadata {
                     selection: after.selection,
+                    active_start,
                     ..before.metadata
                 };
                 edit.validate(cookie, metadata)?;
@@ -433,7 +460,7 @@ impl PendingInput {
         let metadata = tracker.inspect(false)?;
         if tracker.watch.generation()? != notification
             || tracker.watch.boundary_generation()? != self.boundary
-            || metadata.selection != expected.selection
+            || !metadata.same_selection(&expected)
             || !metadata.same_protection(&expected)
         {
             return Err(E_ABORT.into());
@@ -486,10 +513,18 @@ fn place_caret(edit: &CompositionEdit, cookie: u32, selected: ITfRange) -> Resul
     unsafe {
         selected.Collapse(cookie, TF_ANCHOR_END)?;
     }
+    place_selection(edit, cookie, selected, false)
+}
+fn place_selection(
+    edit: &CompositionEdit,
+    cookie: u32,
+    selected: ITfRange,
+    active_start: bool,
+) -> Result<()> {
     let mut caret = TF_SELECTION {
         range: ManuallyDrop::new(Some(selected)),
         style: TF_SELECTIONSTYLE {
-            ase: TF_AE_END,
+            ase: if active_start { TF_AE_START } else { TF_AE_END },
             fInterimChar: false.into(),
         },
     };

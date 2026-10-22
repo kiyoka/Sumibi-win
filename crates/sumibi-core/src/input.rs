@@ -121,6 +121,84 @@ impl InputSession {
     pub fn clear(&mut self) {
         self.run = None;
     }
+    /// Plan an owner-validated selection change from recorded UTF-16 only.
+    /// The caller must independently validate the observed active endpoint.
+    pub fn selection_range(
+        &self,
+        current: InputPoint,
+        direction: Direction,
+        extend: bool,
+        active_start: bool,
+        count: usize,
+    ) -> Option<((i32, i32), bool)> {
+        let run = self.run.as_ref()?;
+        let (start, end) = self.range(current)?;
+        if current.selection.0 < start
+            || current.selection.1 > end
+            || !(1..=MAX_TRACKED_UNITS).contains(&count)
+        {
+            return None;
+        }
+        let map = Boundaries::new(&run.text)?;
+        let left = usize::try_from(current.selection.0.checked_sub(start)?).ok()?;
+        let right = usize::try_from(current.selection.1.checked_sub(start)?).ok()?;
+        map.snap(left, Direction::Backward)?;
+        map.snap(right, Direction::Forward)?;
+        let (anchor, caret) = if active_start {
+            (right, left)
+        } else {
+            (left, right)
+        };
+        let next = if !extend && left != right {
+            let edge = if direction == Direction::Backward {
+                left
+            } else {
+                right
+            };
+            let edge = map.snap(edge, direction)?;
+            if count == 1 {
+                edge
+            } else {
+                map.move_within(edge, direction, count - 1)?
+            }
+        } else {
+            map.move_within(caret, direction, count)?
+        };
+        let anchor = if extend { anchor } else { next };
+        Some((
+            (
+                start.checked_add(anchor.min(next) as i32)?,
+                start.checked_add(anchor.max(next) as i32)?,
+            ),
+            next < anchor,
+        ))
+    }
+    /// Publish only the exact planned change, after the owner verifies it.
+    /// Invalid completion retires the record without inferring document text.
+    pub fn selected(
+        &mut self,
+        before: InputPoint,
+        after: InputPoint,
+        direction: Direction,
+        extend: bool,
+        active_start: bool,
+        count: usize,
+    ) {
+        let planned = self.selection_range(before, direction, extend, active_start, count);
+        let Some(mut run) = self.run.take() else {
+            return;
+        };
+        if !valid(after)
+            || planned.is_none_or(|(range, _)| range != after.selection)
+            || before.context != after.context
+            || before.composition_generation != after.composition_generation
+            || after.generation <= before.generation
+        {
+            return;
+        }
+        run.point = after;
+        self.run = Some(run);
+    }
     /// Metadata-only plan from recorded text. Movement cannot cross either
     /// hard run boundary, even for a repeat. This never authorizes an OS edit.
     pub fn move_range(
@@ -370,6 +448,9 @@ impl InputSession {
 #[cfg(test)]
 #[path = "input_cursor_tests.rs"]
 mod cursor_tests;
+#[cfg(test)]
+#[path = "input_selection_tests.rs"]
+mod selection_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

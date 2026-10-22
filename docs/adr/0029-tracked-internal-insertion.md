@@ -3,6 +3,9 @@
 状態：Core・実DLL・専用ACPホストで実装・検証。Issue #4 / draft PR #10。
 [ADR 0027](0027-tracked-caret-and-forward-delete.md)と[ADR 0028](0028-tracked-internal-backspace.md)の後続。
 
+後続の[ADR 0030](0030-tracked-shift-selection.md)で記録内のShift選択も追跡継続へ進めた。
+以下の残課題と件数は、このADRの実装段階の記録である。
+
 ## 決定
 
 transaction-demoで記録範囲内を左右移動した後の文字挿入も、同じ入力runとcompositionで継続する。

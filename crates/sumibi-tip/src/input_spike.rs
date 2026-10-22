@@ -76,6 +76,17 @@ pub unsafe trait ISpikeTrackedEditor: IUnknown {
         disposition: *mut u32,
     ) -> HRESULT;
 }
+/// Independent selection ABI; existing Edit action values/vtable are unchanged.
+#[interface("ef61b1ee-6ad7-4ccd-b38b-0d01a42845b4")]
+pub unsafe trait ISpikeTrackedSelector: IUnknown {
+    pub fn Extend(
+        &self,
+        context: *mut c_void,
+        backward: u32,
+        count: u32,
+        disposition: *mut u32,
+    ) -> HRESULT;
+}
 #[implement(
     ISpikeInput,
     ISpikeInputMonitor,
@@ -83,7 +94,8 @@ pub unsafe trait ISpikeTrackedEditor: IUnknown {
     ISpikeInputEraser,
     ISpikeSelectionEraser,
     ISpikeInputPreparer,
-    ISpikeTrackedEditor
+    ISpikeTrackedEditor,
+    ISpikeTrackedSelector
 )]
 struct Control {
     state: Weak<Controller>,
@@ -317,6 +329,32 @@ impl ISpikeTrackedEditor_Impl for Control_Impl {
             self.in_context(context, |tracker| match action {
                 0 | 1 => tracker.move_caret(action == 0, count, outcome.clone()),
                 _ => tracker.forward_delete(count, outcome.clone()),
+            })
+        });
+        if matches!(outcome.get(), INPUT_UNCERTAIN | INPUT_APPLIED_UNTRACKED) {
+            self.write_blocked.set(true);
+        }
+        if !disposition.is_null() {
+            unsafe { disposition.write(outcome.get()) };
+        }
+        result.into()
+    }
+}
+impl ISpikeTrackedSelector_Impl for Control_Impl {
+    unsafe fn Extend(
+        &self,
+        context: *mut c_void,
+        backward: u32,
+        count: u32,
+        disposition: *mut u32,
+    ) -> HRESULT {
+        let outcome = Rc::new(Cell::new(INPUT_NOT_ATTEMPTED));
+        let result = boundary(|| {
+            if disposition.is_null() || backward > 1 || !(1..=1024).contains(&count) {
+                return Err(E_INVALIDARG.into());
+            }
+            self.in_context(context, |tracker| {
+                tracker.move_selection(backward != 0, true, count, outcome.clone())
             })
         });
         if matches!(outcome.get(), INPUT_UNCERTAIN | INPUT_APPLIED_UNTRACKED) {
