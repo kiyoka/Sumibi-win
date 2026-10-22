@@ -148,8 +148,15 @@ impl Tracker {
         self.replace(units, outcome)
     }
     pub(crate) fn delete_selection(&mut self, outcome: Rc<Cell<u32>>) -> Result<()> {
-        // An explicit Delete retires the old run, never adopts pre-existing
-        // text as tracked input. Cleanup must finish before any body write.
+        // Retain only an exact live recorded selection. External/untracked
+        // selections keep the original retire-before-write behavior.
+        if self.observe().ok().is_some_and(|before| {
+            self.owned.can_commit()
+                && self.session.range(before.point) == self.extent
+                && self.session.replacement_range(before.point, 0).is_some()
+        }) {
+            return self.replace(&[], outcome);
+        }
         self.cancel(true)?;
         self.replace(&[], outcome)
     }
@@ -190,22 +197,33 @@ impl Tracker {
             None
         };
         let mut session = std::mem::take(&mut self.session);
-        let range = if units.is_empty() {
+        let range = if let Some(old) = previous {
+            let expected_end = old
+                .1
+                .checked_sub(before.point.selection.1 - before.point.selection.0)
+                .and_then(|end| end.checked_add(units.len() as i32))
+                .ok_or(E_ABORT)?;
+            if before.point.selection.0 == before.point.selection.1 {
+                session.inserted_at_caret(before.point, after, units);
+            } else {
+                if session.replacement_range(before.point, units.len())
+                    != Some((old.0, expected_end))
+                {
+                    return Err(E_ABORT.into());
+                }
+                session.replaced_selection(before.point, after, units);
+            }
+            let recorded = session.range(after);
+            if recorded != (expected_end > old.0).then_some((old.0, expected_end)) {
+                return Err(E_ABORT.into());
+            }
+            recorded
+        } else if units.is_empty() {
             session.clear();
             None
         } else {
-            if previous.is_some() {
-                session.inserted_at_caret(before.point, after, units);
-            } else {
-                session.inserted(before.point, after, units);
-            }
-            let recorded = session.range(after).ok_or(E_ABORT)?;
-            if let Some(old) = previous {
-                if recorded != (old.0, old.1.checked_add(units.len() as i32).ok_or(E_ABORT)?) {
-                    return Err(E_ABORT.into());
-                }
-            }
-            Some(recorded)
+            session.inserted(before.point, after, units);
+            Some(session.range(after).ok_or(E_ABORT)?)
         };
         let edit = self.edit();
         let watch = self.watch.clone();
@@ -228,8 +246,7 @@ impl Tracker {
                     if extent_of(&owned)? != old
                         || edit.previous != Some(old)
                         || before.metadata.selection.0 < old.0
-                        || before.metadata.selection.0 > old.1
-                        || before.metadata.selection.0 != before.metadata.selection.1
+                        || before.metadata.selection.1 > old.1
                         || metadata_gate(&edit.context, &owned, cookie, &edit.owned)?
                             != before.metadata.protection
                     {

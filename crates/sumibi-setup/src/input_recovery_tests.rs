@@ -73,6 +73,10 @@ pub(crate) fn exercise_recovery(
         "rescue/process-internal-insert",
         "rescue/process-select",
         "rescue/internal-insert-copy",
+        "rescue/selected-replace-copy",
+        "rescue/process-replace",
+        "rescue/process-selected-delete",
+        "rescue/process-selected-backspace",
         "rescue/process-discard",
         "rescue/process-expire",
         "rescue/process-close",
@@ -101,8 +105,8 @@ pub(in crate::edit_host::input_host) fn test_recovery(
     if case.starts_with("process-") {
         return test_process_budget(window, editor, case);
     }
-    if case == "internal-insert-copy" {
-        return test_internal_insert_copy(window, editor);
+    if matches!(case, "internal-insert-copy" | "selected-replace-copy") {
+        return test_internal_insert_copy(window, editor, case == "selected-replace-copy");
     }
     let clipboard = TestClipboard::new();
     let store = editor.store.get();
@@ -454,14 +458,18 @@ pub(in crate::edit_host::input_host) fn test_recovery(
 
 /// An internal failed write rescues only its supplied fragment. Clipboard is
 /// injected; copying must never write or resend anything to the document.
-fn test_internal_insert_copy(window: &crate::window_host::Window, editor: &Editor) -> Result<()> {
+fn test_internal_insert_copy(
+    window: &crate::window_host::Window,
+    editor: &Editor,
+    selected: bool,
+) -> Result<()> {
     let store = editor.store.get();
     editor.insert(&"a😀b".encode_utf16().collect::<Vec<_>>())?;
     assert_eq!(
         editor.input_disposition.get(),
         sumibi_tip::spike::INPUT_APPLIED
     );
-    editor.navigate(0x25, false, 2)?;
+    editor.navigate(0x25, selected, 2)?;
     assert_eq!(
         editor.input_disposition.get(),
         sumibi_tip::spike::INPUT_APPLIED
@@ -504,7 +512,14 @@ fn test_internal_insert_copy(window: &crate::window_host::Window, editor: &Edito
     );
     editor.clear_tracking();
     pump(window)?;
-    println!("Input recovery / internal-insert-copy: OK");
+    println!(
+        "Input recovery / {}: OK",
+        if selected {
+            "selected-replace-copy"
+        } else {
+            "internal-insert-copy"
+        }
+    );
     Ok(())
 }
 
@@ -528,6 +543,9 @@ fn test_process_budget(
             | "process-internal-backspace"
             | "process-internal-insert"
             | "process-select"
+            | "process-replace"
+            | "process-selected-delete"
+            | "process-selected-backspace"
     ) {
         editor.insert(&"a👨‍👩‍👧‍👦b".encode_utf16().collect::<Vec<_>>())?;
         assert_eq!(
@@ -538,6 +556,17 @@ fn test_process_budget(
             editor.navigate(0x25, false, 2)?;
         } else if case == "process-internal-backspace" {
             editor.navigate(0x25, false, 1)?;
+        }
+        if matches!(
+            case,
+            "process-replace" | "process-selected-delete" | "process-selected-backspace"
+        ) {
+            editor.navigate(0x25, false, 1)?;
+            editor.navigate(0x25, true, 1)?;
+            assert_eq!(
+                editor.input_disposition.get(),
+                sumibi_tip::spike::INPUT_APPLIED
+            );
         }
     }
     for _ in 0..sumibi_core::recovery::MAX_RECORDS {
@@ -563,7 +592,11 @@ fn test_process_budget(
     let history = store.undo.borrow().len();
     let original = store.text.borrow().clone();
     let selection = store.selection.get();
-    if case == "process-backspace" {
+    if case == "process-selected-backspace" {
+        editor.input(WM_CHAR, WPARAM(8), LPARAM(1024))?;
+    } else if case == "process-selected-delete" {
+        editor.delete_forward(1024)?;
+    } else if case == "process-backspace" {
         editor.input(WM_CHAR, WPARAM(8), LPARAM(2))?;
     } else if case == "process-delete" {
         editor.delete_forward(1024)?;
@@ -582,13 +615,19 @@ fn test_process_budget(
         "a"
     } else if matches!(
         case,
-        "process-delete" | "process-forward" | "process-internal-backspace"
+        "process-delete"
+            | "process-forward"
+            | "process-internal-backspace"
+            | "process-selected-delete"
+            | "process-selected-backspace"
     ) {
         "ab"
     } else if matches!(case, "process-move" | "process-select") {
         "a👨‍👩‍👧‍👦b"
     } else if case == "process-internal-insert" {
         "az👨‍👩‍👧‍👦b"
+    } else if case == "process-replace" {
+        "azb"
     } else {
         "z"
     }
@@ -612,6 +651,9 @@ fn test_process_budget(
             | "process-forward"
             | "process-internal-backspace"
             | "process-internal-insert"
+            | "process-replace"
+            | "process-selected-delete"
+            | "process-selected-backspace"
     ) {
         store.undo_once()?;
         assert_eq!(*store.text.borrow(), original);
@@ -620,6 +662,7 @@ fn test_process_budget(
             (restored.acpStart, restored.acpEnd),
             (selection.acpStart, selection.acpEnd)
         );
+        assert_eq!(restored.style.ase, selection.style.ase);
         store.redo_once()?;
         assert_eq!(*store.text.borrow(), expected);
     }
@@ -668,6 +711,9 @@ fn test_process_budget(
             | "process-internal-backspace"
             | "process-internal-insert"
             | "process-select"
+            | "process-replace"
+            | "process-selected-delete"
+            | "process-selected-backspace"
     ) {
         // Releasing one owner's record lets a different owner reserve before a
         // failed DLL write. It neither replays the old input nor reads the body.

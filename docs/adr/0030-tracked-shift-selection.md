@@ -3,6 +3,9 @@
 状態：Core・実DLL・専用ACPホストで実装・検証。Issue #4 / draft PR #10。
 [ADR 0029](0029-tracked-internal-insertion.md)の後続。一般アプリの選択編集の完成ではない。
 
+後続の[ADR 0031](0031-recorded-selection-replacement.md)で記録内の選択置換/削除後の追跡も継続へ進めた。
+以下の編集境界と件数は、このADRの実装段階の記録である。
+
 ## 決定
 
 transaction-demoでShift＋左右を使って記録範囲内を選択する場合、同じ入力runとcompositionを保持する。

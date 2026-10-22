@@ -33,8 +33,8 @@ F6プレビューは選択範囲をSumibi自身のcompositionとして保持し�
 `transaction-demo`のBackspaceは記録内の拡張書記素を同じ同期writeで削除し、左右移動後も削除前後に残った入力を同じcompositionで保持します。結合文字・複合絵文字とrepeatもまとめて扱い、全削除でcompositionを終了し、失敗時には再削除しません。`backspace-input-test`で55ケースを検証できます（[入力取引の条件](docs/adr/0013-synchronous-tracked-backspace.md)、[書記素の版と範囲](docs/adr/0023-grapheme-backspace-within-recorded-input.md)、[内部caretの削除](docs/adr/0028-tracked-internal-backspace.md)）。
 専用editorの左右移動・Shift選択・ホストDeleteも書記素単位で操作できます。ホストのBackspace連打は選択範囲を広げず、一度の編集とUndoにまとめます。`grapheme-input-test`で22ケースを検証できます（[操作と検証範囲](docs/adr/0024-grapheme-navigation-in-owned-host.md)）。`transaction-demo`は記録範囲内の通常左右移動で追跡を保ち、その位置からの前方Deleteも実DLLで扱います。一般アプリのキー配送は引き続き未実装です。
 Notepad等の実アプリでの表示と実打鍵は未確認です。
-`recovery-demo`では固定の入力失敗を再現し、F8で未確認入力を確認できます。editorごとに1件・最大1024 UTF-16単位を最大10分だけ保持し、診断EXE全体では予約中も含め合計4件に制限します。明示コピー／破棄を提供し、自動再入力はしません。`recovery-input-test`で41ケースを検証できます（[起動と操作](docs/DEVELOPMENT.md#未確認入力の救済を試す)、[保護と保持の契約](docs/adr/0014-bounded-input-recovery.md)、[共有容量](docs/adr/0021-shared-input-recovery-budget.md)）。
-`transaction-demo`では文字入力・記録内の移動/前方Delete・明示選択Deleteを実DLLへ接続します。途中への文字挿入も前後に残る入力を同じcompositionで保持します。Shift＋左右での選択も記録内なら追跡を維持し、通常の左右キーで選択を解除して入力を続けられます。F7は非空の明示選択があればその部分だけを変換します。試行後の失敗では自動再入力・再移動・再削除せず、確認を表示します。`transaction-input-test`で115ケースを検証できます（[起動と操作](docs/DEVELOPMENT.md#同期入力取引を試す)、[入力取引](docs/adr/0012-synchronous-input-transaction.md)、[選択Delete](docs/adr/0025-synchronous-selected-delete.md)、[記録内の移動とDelete](docs/adr/0027-tracked-caret-and-forward-delete.md)、[途中への挿入](docs/adr/0029-tracked-internal-insertion.md)、[Shift選択](docs/adr/0030-tracked-shift-selection.md)）。
+`recovery-demo`では固定の入力失敗を再現し、F8で未確認入力を確認できます。editorごとに1件・最大1024 UTF-16単位を最大10分だけ保持し、診断EXE全体では予約中も含め合計4件に制限します。明示コピー／破棄を提供し、自動再入力はしません。`recovery-input-test`で45ケースを検証できます（[起動と操作](docs/DEVELOPMENT.md#未確認入力の救済を試す)、[保護と保持の契約](docs/adr/0014-bounded-input-recovery.md)、[共有容量](docs/adr/0021-shared-input-recovery-budget.md)）。
+`transaction-demo`では文字入力・記録内の移動/前方Delete・明示選択Deleteを実DLLへ接続します。途中への文字挿入も前後に残る入力を同じcompositionで保持します。Shift＋左右での選択も記録内なら追跡を維持し、通常の左右キーで選択を解除して入力を続けられます。記録内の選択置換・Delete・Backspace後も残った入力を保持します。F7は非空の明示選択があればその部分だけを変換します。試行後の失敗では自動再入力・再移動・再削除せず、確認を表示します。`transaction-input-test`で148ケースを検証できます（[起動と操作](docs/DEVELOPMENT.md#同期入力取引を試す)、[入力取引](docs/adr/0012-synchronous-input-transaction.md)、[選択Delete](docs/adr/0025-synchronous-selected-delete.md)、[記録内の移動とDelete](docs/adr/0027-tracked-caret-and-forward-delete.md)、[途中への挿入](docs/adr/0029-tracked-internal-insertion.md)、[Shift選択](docs/adr/0030-tracked-shift-selection.md)、[選択編集後の追跡](docs/adr/0031-recorded-selection-replacement.md)）。
 
 - [実装着手 Issue #1](https://github.com/kiyoka/Sumibi-win/issues/1)
 - [言語・方式の選定案](docs/adr/0001-language-and-ime.md)
@@ -77,6 +77,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [記録範囲内のcaretからの同期Backspace](docs/adr/0028-tracked-internal-backspace.md)
 - [記録範囲内のcaretへの同期挿入](docs/adr/0029-tracked-internal-insertion.md)
 - [記録範囲内のShift選択と選択解除](docs/adr/0030-tracked-shift-selection.md)
+- [記録内の選択置換・削除後の追跡継続](docs/adr/0031-recorded-selection-replacement.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 
 設計基準はSumibi-mac main `553c69021eda7a8a5944d8748357f3790cc2f45c`。

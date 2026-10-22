@@ -141,7 +141,11 @@ Core6件追加でworkspace102件、同期入力20件追加で88件、共有満�
 選択方向を端点とは別に照合し、明示選択F7は選んだ部分だけを変換する。
 Core6件追加でworkspace108件、同期入力27件追加で115件、共有満杯の選択を加えて救済41件と関連回帰が成功した
 （[ADR 0030](adr/0030-tracked-shift-selection.md)）。
-一般アプリの入力adapter・通知/保護情報・sink寿命・標準Undo、選択置換/削除後の前後の追跡継続と製品統合は残る。
+さらに記録内の選択置換/Delete/Backspaceも前後のrunを継続し、同じcompositionを保持する。
+選択外へrepeatを広げず、容量は削除分を差し引いて検査する。外部選択変更後は旧runを継続しない。
+Core6件追加でworkspace114件、同期入力33件追加で148件、共有満杯3操作と断片コピーを加えて救済45件と関連回帰が成功した
+（[ADR 0031](adr/0031-recorded-selection-replacement.md)）。
+一般アプリの入力adapter・通知/保護情報・sink寿命・標準Undo、Home/End等の追跡継続と製品統合は残る。
 
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。

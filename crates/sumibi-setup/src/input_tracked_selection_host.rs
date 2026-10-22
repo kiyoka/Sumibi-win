@@ -256,43 +256,28 @@ pub(super) fn test(
                 )?;
             } else if matches!(
                 case,
-                "type-after-collapse"
-                    | "replace-fallback"
-                    | "backspace-fallback"
-                    | "delete-boundary"
+                "type-after-collapse" | "replace-tracked" | "backspace-tracked" | "delete-tracked"
             ) {
                 let selection = store.selection.get();
-                if matches!(case, "type-after-collapse" | "replace-fallback") {
+                if matches!(case, "type-after-collapse" | "replace-tracked") {
                     editor.insert(&['z' as u16])?;
-                } else if case == "backspace-fallback" {
+                } else if case == "backspace-tracked" {
                     editor.input(WM_CHAR, WPARAM(8), LPARAM(3))?;
                 } else {
                     editor.delete_forward(3)?;
                 }
-                let applied = matches!(case, "type-after-collapse" | "delete-boundary");
-                assert_eq!(
-                    editor.input_disposition.get(),
-                    if applied {
-                        INPUT_APPLIED
-                    } else {
-                        INPUT_NOT_ATTEMPTED
-                    }
-                );
-                assert_eq!(store.set_text_calls.get(), writes + usize::from(applied));
+                assert_eq!(editor.input_disposition.get(), INPUT_APPLIED);
+                assert_eq!(store.set_text_calls.get(), writes + 1);
                 let expected = match case {
                     "type-after-collapse" => "prefix ae\u{301}z👨‍👩‍👧‍👦🇯🇵b suffix",
-                    "replace-fallback" => "prefix ae\u{301}z suffix",
+                    "replace-tracked" => "prefix ae\u{301}z suffix",
                     _ => "prefix ae\u{301} suffix",
                 }
                 .encode_utf16()
                 .collect::<Vec<_>>();
                 assert_eq!(*store.text.borrow(), expected);
                 assert_eq!(store.undo.borrow().len(), 1);
-                if case == "type-after-collapse" {
-                    assert!(owned_view(&editor.context)?.cast::<IUnknown>()? == identity);
-                } else {
-                    assert!(no_composition(&editor.context)?);
-                }
+                assert!(owned_view(&editor.context)?.cast::<IUnknown>()? == identity);
                 store.undo_once()?;
                 assert_eq!(*store.text.borrow(), original);
                 assert_selection(

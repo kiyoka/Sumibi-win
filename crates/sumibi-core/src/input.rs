@@ -55,12 +55,15 @@ fn valid(point: InputPoint) -> bool {
         && point.selection.1 >= point.selection.0
 }
 fn valid_insertion(before: InputPoint, after: InputPoint, text: &[u16]) -> bool {
+    !text.is_empty() && valid_replacement(before, after, text)
+}
+fn valid_replacement(before: InputPoint, after: InputPoint, text: &[u16]) -> bool {
     valid(before)
         && valid(after)
         && before.context == after.context
         && after.generation > before.generation
         && before.composition_generation == after.composition_generation
-        && !text.is_empty()
+        && (before.selection.0 != before.selection.1 || !text.is_empty())
         && text.len() <= MAX_TRACKED_UNITS
         && char::decode_utf16(text.iter().copied())
             .all(|unit| unit.is_ok_and(|value| !value.is_control()))
@@ -268,7 +271,11 @@ impl InputSession {
         let run = self.run.as_ref()?;
         self.range(current)?;
         if current.selection.0 != current.selection.1 {
-            return None;
+            if !(1..=MAX_TRACKED_UNITS).contains(&count) {
+                return None;
+            }
+            self.replacement_range(current, 0)?;
+            return Some(current.selection);
         }
         let offset = usize::try_from(current.selection.0.checked_sub(run.start)?).ok()?;
         let map = Boundaries::new(&run.text)?;
@@ -398,6 +405,52 @@ impl InputSession {
         run.point = after;
         self.run = Some(run);
     }
+    /// Resulting extent of an exact nonempty selection replacement, including
+    /// deletion. No body read, allocation, cluster expansion or consumption.
+    pub fn replacement_range(&self, current: InputPoint, supplied: usize) -> Option<(i32, i32)> {
+        let run = self.run.as_ref()?;
+        let (start, end) = self.range(current)?;
+        if supplied > MAX_TRACKED_UNITS
+            || current.selection.0 < start
+            || current.selection.1 > end
+            || current.selection.0 >= current.selection.1
+        {
+            return None;
+        }
+        let map = Boundaries::new(&run.text)?;
+        let first = usize::try_from(current.selection.0.checked_sub(start)?).ok()?;
+        let last = usize::try_from(current.selection.1.checked_sub(start)?).ok()?;
+        map.snap(first, Direction::Backward)?;
+        map.snap(last, Direction::Forward)?;
+        let length = run
+            .text
+            .len()
+            .checked_sub(last - first)?
+            .checked_add(supplied)?;
+        if length > MAX_TRACKED_UNITS {
+            return None;
+        }
+        Some((start, start.checked_add(length as i32)?))
+    }
+    /// Candidate for exactly the selected recorded slice. The owner publishes
+    /// this only after the synchronous write and metadata are verified.
+    pub fn replaced_selection(&mut self, before: InputPoint, after: InputPoint, text: &[u16]) {
+        let planned = self.replacement_range(before, text.len());
+        let Some(mut run) = self.run.take() else {
+            return;
+        };
+        if planned.is_none() || !valid_replacement(before, after, text) {
+            return;
+        }
+        let first = (before.selection.0 - run.start) as usize;
+        let last = (before.selection.1 - run.start) as usize;
+        run.text.splice(first..last, text.iter().copied());
+        if run.text.is_empty() {
+            return;
+        }
+        run.point = after;
+        self.run = Some(run);
+    }
     /// Record a successful suffix deletion (or build a private transaction
     /// candidate). Never infer surrounding text or cross the tracked start;
     /// a split surrogate retires the run. Publish only after write validation.
@@ -448,6 +501,9 @@ impl InputSession {
 #[cfg(test)]
 #[path = "input_cursor_tests.rs"]
 mod cursor_tests;
+#[cfg(test)]
+#[path = "input_replacement_tests.rs"]
+mod replacement_tests;
 #[cfg(test)]
 #[path = "input_selection_tests.rs"]
 mod selection_tests;

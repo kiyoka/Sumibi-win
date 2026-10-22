@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 68件（応答照合9・入力範囲追跡/削除/caret計画40・書記素移動/削除境界7・救済12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計108件。
+現時点はCore 74件（応答照合9・入力範囲追跡/削除/caret計画46・書記素移動/削除境界7・救済12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計114件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -84,11 +84,12 @@ repeatは記録内の拡張書記素クラスタ単位で数え、追跡範囲�
 Shift＋左右は記録内の選択を拡大/縮小/反転し、通常左右での選択解除後も追跡を保つ。
 非空の明示選択のF7はその部分だけ、collapsed caretのF7は現在の記録全体だけを変換する。
 境界越え、Home/End、Ctrl/Alt修飾や外部選択変更では追跡を退役して通常ホストへ戻す。
-選択したままの文字置換/Backspaceも旧追跡を退役する。選択Deleteは既存の同期削除を使い前後の記録を残さない。
+記録内の選択置換/Delete/Backspaceも同じcompositionを保持し、前後に残る記録を継続する。
+置換後の容量は削除分を差し引いて検査する。全削除ではcompositionと記録を終了する。
 移動/選択は本文/Undoを増やさず、削除は1回Undoで戻せる。
 unicode-segmentation 1.13.3 / Unicode 17.0.0に固定し、通常ホストのBackspaceも同じ分割を使う。
 記録外の既存本文へクラスタを広げず、正規化もしない。
-非空の明示選択をDeleteすると、実DLLが同じwriteで削除・caret・一時composition終了を処理する。
+記録と一致しない明示選択Deleteは旧追跡を退役し、同じwriteで削除・caret・一時composition終了を処理する。
 repeatでも選択を一度だけ削除し、削除本文を取得・救済コピーしない。追跡できない前方DeleteとUndoは既存ホスト操作を使う。
 終了は×ボタン。既定IME・ユーザー文書・HTTP・資格情報は使用しない。
 
@@ -118,9 +119,12 @@ Rust91件と関連回帰が成功した。操作規則と検証範囲は[ADR 002
 途中挿入追加時は20件を加えて同期入力88件、共有満杯と断片コピーを加えて救済40件、Core6件追加でRust102件。
 Backspace55・書記素ホスト22・composition46・通知30・追跡25・broker入力11・close4と静的検査が成功した。
 契約と最大長の描画制限は[ADR 0029](adr/0029-tracked-internal-insertion.md)を参照。
-最新はShift選択27件を加えて同期入力115件、共有満杯の選択を加えて救済41件、Core6件追加でRust108件。
+Shift選択追加時は27件を加えて同期入力115件、共有満杯の選択を加えて救済41件、Core6件追加でRust108件。
 Backspace55・書記素ホスト22・composition46・通知30・追跡25・broker入力11・close4と静的検査が成功した。
-選択方向と検証範囲は[ADR 0030](adr/0030-tracked-shift-selection.md)を参照。以下は以前の段階の検証結果である。
+選択方向と検証範囲は[ADR 0030](adr/0030-tracked-shift-selection.md)を参照。
+最新は記録内の選択編集33件を加えて同期入力148件、共有満杯の3操作と断片コピーを加えて救済45件、Core6件追加でRust114件。
+Backspace55・書記素ホスト22・composition46・通知30・追跡25・broker入力11・close4と静的検査が成功した。
+追跡継続と失効後の非採用は[ADR 0031](adr/0031-recorded-selection-replacement.md)を参照。以下は以前の段階の検証結果である。
 fmt・Clippy 3構成・build・基本DLL検査も成功した。一括scriptはkey-testのShift押下状態で停止し、
 その後の単独key-testが成功した。script全体の成功とは区別する。
 救済34・同期入力22・追跡25・composition伸縮29・通知30・broker入力11・close 4も再確認した。

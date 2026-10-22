@@ -3,6 +3,8 @@ use super::*;
 use sumibi_tip::spike::{INPUT_APPLIED, INPUT_APPLIED_UNTRACKED};
 #[path = "input_insertion_cursor_host.rs"]
 mod insertion_cursor;
+#[path = "input_recorded_replacement_host.rs"]
+mod recorded_replacement;
 #[path = "input_selection_delete_host.rs"]
 mod selection_delete;
 #[path = "tracked_cursor_host.rs"]
@@ -132,10 +134,43 @@ pub(crate) fn exercise_transactions(
         "select/direction-restored",
         "select/ready-direction",
         "select/rejoin",
-        "select/replace-fallback",
-        "select/backspace-fallback",
-        "select/delete-boundary",
+        "select/replace-tracked",
+        "select/backspace-tracked",
+        "select/delete-tracked",
         "select/home-retire",
+        "edit/replace",
+        "edit/forward",
+        "edit/repeat",
+        "edit/all-replace",
+        "edit/prefix",
+        "edit/suffix",
+        "edit/convert",
+        "edit/delete",
+        "edit/backspace",
+        "edit/backspace-repeat",
+        "edit/all-delete",
+        "edit/all-backspace",
+        "edit/delete-convert",
+        "edit/rejoin",
+        "edit/maximum",
+        "edit/overflow",
+        "edit/budget",
+        "edit/delete-budget",
+        "edit/backspace-budget",
+        "edit/readonly",
+        "edit/private",
+        "edit/foreign",
+        "edit/external-replace",
+        "edit/external-delete",
+        "edit/text-before",
+        "edit/text-after",
+        "edit/caret-before",
+        "edit/caret-after",
+        "edit/status-restored",
+        "edit/scope-restored",
+        "edit/compartment-restored",
+        "edit/delete-text-after",
+        "edit/backspace-text-after",
     ] {
         run(manager, client, RunMode::TransactionTest(case))?;
     }
@@ -148,6 +183,9 @@ pub(in crate::edit_host::input_host) fn test_transactions(
     client: u32,
     case: &str,
 ) -> Result<()> {
+    if let Some(case) = case.strip_prefix("edit/") {
+        return recorded_replacement::test(window, editor, live, client, case);
+    }
     if let Some(case) = case.strip_prefix("select/") {
         return tracked_selection::test(window, editor, live, client, case);
     }

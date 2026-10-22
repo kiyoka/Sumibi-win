@@ -3,6 +3,9 @@
 状態：診断DLLと専用ACPホストで実装・検証。選択のない前方削除や一般アプリ対応は未完了。
 2026-10-22。Issue #4 / draft PR #10。ADR 0012・0013・0024の後続。
 
+記録と一致する選択の追跡継続は後続の[ADR 0031](0031-recorded-selection-replacement.md)を参照。
+未追跡の明示選択はこのADRの退役・一時compositionの条件を維持する。以下の件数はこの段階の記録である。
+
 ## 決定
 
 専用transaction-demoの非空選択に対するDeleteを、実DLLの同期writeへ接続する。
