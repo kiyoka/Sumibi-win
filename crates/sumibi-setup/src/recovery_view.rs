@@ -210,6 +210,15 @@ impl View {
             Operation::Backspace(count) => format!("Backspace × {count}"),
             Operation::DeleteSelection => "選択範囲の削除".into(),
             Operation::ForwardDelete(count) => format!("Delete × {count}"),
+            Operation::MoveToEdge {
+                to_end,
+                extend,
+                count,
+            } => format!(
+                "{}{} × {count}",
+                if extend { "Shift＋" } else { "" },
+                if to_end { "End" } else { "Home" }
+            ),
             Operation::ExtendSelection { backward, count } => {
                 format!("Shift＋{} × {count}", if backward { "←" } else { "→" })
             }
@@ -218,9 +227,9 @@ impl View {
             }
         };
         let result = if metadata.outcome == Outcome::AppliedUntracked {
-            "本文操作は成功。追跡を停止しました"
+            "操作は成功。追跡を停止しました"
         } else {
-            "本文操作の結果は不明です"
+            "操作の結果は不明です"
         };
         let remaining = metadata.remaining.as_secs().max(1);
         set_text(self.label, &format!("{operation}：{result}。\r\n本文への自動適用は行いません。残り約{remaining}秒で破棄します。\r\n×は保持して閉じます。{}", if failed { " コピー失敗。保持しています。" } else { "" }))

@@ -11,13 +11,13 @@
 | COMとDLL | tip/com.rs、build.rs。factory・独立lease・所有thread・解除再試行 | 一般アプリにロードされる常設登録と更新時の寿命 |
 | TSF編集 | tip/edit.rsとmanual_edit.rs。generic保持range、同期read/write、全文照合、Core gate、IPC結果の一度だけ適用。専用所有contextで検証。[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md) | 非ACP入力先の実検証、製品キーとの統合、一般アプリの対象分類と編集 |
 | 保護入力 | protection.rs。scope/status/compartmentの肯定検査、取得・source・適用時の再検査。実DLLで39ケース。statusの固定診断コードと標準RichEditの拒否7構成を追加（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)） | 一般アプリの実スコープ・独自機密欄・判定不能時の動作確認 |
-| 追跡composition | 選択composition 18・所有ホストの入力範囲25・実DLLのcomposition伸縮/初回選択46・同期入力取引148（選択Delete20・記録内移動/前方Delete26・内部挿入20・Shift選択27・記録内選択編集33を含む）・書記素Backspace 55（内部caret18を含む）・他サービス拒否16ケースを確認 | Home/End等の追跡継続・待機・製品全体の救済・製品InputSession・一般アプリの他IMEとの競合と寿命 |
+| 追跡composition | 選択composition 18・所有ホストの入力範囲25・実DLLのcomposition伸縮/初回選択46・同期入力取引174（選択Delete20・記録内移動/前方Delete26・内部挿入20・Shift選択27・記録内選択編集33・文書端移動/選択26を含む）・書記素Backspace 55（内部caret18を含む）・他サービス拒否16ケースを確認 | 一般アプリの行端移動・待機・製品全体の救済・製品InputSession・他IMEとの競合と寿命 |
 | 表示属性 | display.rs / preview.rs。点線、原文保持、属性だけ遅延解除 | 通常アプリでの下線、アクセシビリティ、既存属性との共存 |
 | 変更通知 | notifications.rs。本文・選択・scope・compartment・composition属性・フォーカスで失効。空compositionは所有ホストから取消を転送 | 製品追跡・IPC・候補との統合、一般アプリの未通知履歴 |
 | キー配送 | keys.rs / input_host.rs。専用windowで実TSF経路 | US/JIS配列・変換キー・Terminal・実打鍵 |
 | Undo/Redo | TextStoreに本文・選択・向きの履歴。固定変換含む | 一般アプリの標準履歴で変換が1回のUndoにまとまる |
 | 描画 | live_render / render / window_host。通知→WM_APP→Frame | 製品候補UIのUIElement、DPI、高コントラスト、読み上げ |
-| 手動待機と救済 | 所有editorの救済1件・1024単位・10分とEXE共有4枠・明示コピー/破棄を45ケースで確認。待機行列は未実装 | 製品の待機順序・超過・対象変更・期限と明示破棄の整合、プロセス間の政策 |
+| 手動待機と救済 | 所有editorの救済1件・1024単位・10分とEXE共有4枠・明示コピー/破棄を47ケースで確認。待機行列は未実装 | 製品の待機順序・超過・対象変更・期限と明示破棄の整合、プロセス間の政策 |
 | Protocol / Broker | 有限フレーム・JSON・client状態、固定process相互検査・8 endpoint・overlapped pipe。単発Host・容量4（完了済みjob・受取済み結果も含む）・各1結果。[ADR 0015](adr/0015-broker-admission-through-delivery.md)。実DLLキー・Core・実TSFから診断用EXE bridgeを通す経路も検証。EXE再利用workerへ実DLLキー・所有STA配送を接続し、25ケースを検証（[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)） | 製品Broker発見・常駐dispatch、一般アプリ内の配置と入力統合。AppContainerは初期非対応 |
 | HTTP | 未実装。固定文字列で検証 | 模擬HTTPで認証・同意・転送拒否・上限・取消・エラー分類 |
 | 設定・資格情報 | 未実装。LocalAppData / Credential Manager案 | 形式版・原子的保存・秘密分離・認可取消・破損回復 |
@@ -161,6 +161,13 @@ Core6件追加で74件・workspace114件、同期入力33件追加で148件、�
 置換/削除後のF7と書込後の非再操作、外部選択変更後の非採用を確認した。
 関連回帰と静的検査も成功。最大長の描画・一般アプリ・実打鍵の制限は維持する
 （[ADR 0031](adr/0031-recorded-selection-replacement.md)）。
+
+専用単一行ホストの文書端が記録内にあれば、Home/End・Shift選択も同じcompositionで継続する。
+位置情報だけで実contextの末尾を前後照合し、記録外への移動は記録端に置き換えない。
+Core6件追加で80件・workspace120件、同期入力26件追加で174件、共有満杯の2操作を加えて救済47件。
+選択counterでDLL1回/ホスト0回と、書込前fallbackのDLL0回/ホスト1回を区別し、失敗後の非再操作も確認した。
+関連回帰と静的検査も成功。一般アプリの行端・物理打鍵・未通過のdesktop3検査は維持する
+（[ADR 0032](adr/0032-recorded-document-edge-navigation.md)）。
 
 2026-10-22、context付きF7準備を追加し、文字入力前の明示選択を変換できるようにした。
 初回選択17件を加えてcomposing-input-testは46件。逆向き選択と1回Undo、sink欠損時の成功、

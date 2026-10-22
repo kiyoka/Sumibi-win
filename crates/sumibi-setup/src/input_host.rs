@@ -43,6 +43,8 @@ impl TextStore {
         if !self.boundary(anchor) || !self.boundary(caret) {
             return Err(E_INVALIDARG.into());
         }
+        self.host_selection_calls
+            .set(self.host_selection_calls.get() + 1);
         let mut selection = self.selection.get();
         selection.acpStart = anchor.min(caret) as i32;
         selection.acpEnd = anchor.max(caret) as i32;
@@ -204,12 +206,19 @@ impl Editor {
     }
     fn navigate(&self, key: usize, extend: bool, repeats: usize) -> Result<()> {
         if self.transaction
-            && matches!(key, 0x25 | 0x27)
+            && matches!(key, 0x23..=0x25 | 0x27)
             && !self.store.get().input_problem.get()
             && (1..=MAX_SELECTION_UNITS).contains(&repeats)
         {
             let backward = key == 0x25;
-            let operation = if extend {
+            let edge = matches!(key, 0x23 | 0x24);
+            let operation = if edge {
+                sumibi_core::recovery::Operation::MoveToEdge {
+                    to_end: key == 0x23,
+                    extend,
+                    count: repeats as u32,
+                }
+            } else if extend {
                 sumibi_core::recovery::Operation::ExtendSelection {
                     backward,
                     count: repeats as u32,
@@ -222,7 +231,9 @@ impl Editor {
             };
             let disposition = if let Some(ticket) = self.rescue.reserve(operation) {
                 let composing = self.composing.as_ref().ok_or(E_FAIL)?;
-                let disposition = if extend {
+                let disposition = if edge {
+                    composing.edge_tracked(self, key == 0x23, extend, repeats as u32)
+                } else if extend {
                     composing.extend_tracked(self, backward, repeats as u32)
                 } else {
                     composing.edit_tracked(self, u32::from(!backward), repeats as u32)

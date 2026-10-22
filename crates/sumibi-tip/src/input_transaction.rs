@@ -132,6 +132,7 @@ impl Tracker {
             session,
             sequence,
             range,
+            document_end: None,
             boundary,
             outcome,
         }
@@ -320,6 +321,7 @@ impl Tracker {
             session,
             sequence,
             range,
+            document_end: None,
             boundary,
             outcome,
         }
@@ -343,6 +345,46 @@ impl Tracker {
         count: u32,
         outcome: Rc<Cell<u32>>,
     ) -> Result<()> {
+        self.navigate_selection(backward, extend, count, false, outcome)
+    }
+    pub(crate) fn move_document_edge(
+        &mut self,
+        to_end: bool,
+        extend: bool,
+        count: u32,
+        outcome: Rc<Cell<u32>>,
+    ) -> Result<()> {
+        self.navigate_selection(!to_end, extend, count, true, outcome)
+    }
+    fn document_end(&self, expected: InputMetadata) -> Result<i32> {
+        let edit = self.edit();
+        let output = Rc::new(Cell::new(None));
+        let result = output.clone();
+        run(
+            &self.context,
+            self.client,
+            false,
+            Box::new(move |cookie| {
+                edit.validate(cookie, expected)?;
+                let end = read_document_end(&edit.context, cookie)?;
+                edit.validate(cookie, expected)?;
+                result.set(Some(end));
+                Ok(())
+            }),
+        )?;
+        output.get().ok_or_else(|| E_FAIL.into())
+    }
+    fn navigate_selection(
+        &mut self,
+        backward: bool,
+        extend: bool,
+        count: u32,
+        document_edge: bool,
+        outcome: Rc<Cell<u32>>,
+    ) -> Result<()> {
+        if !(1..=MAX_SELECTION_UNITS as u32).contains(&count) {
+            return Err(E_INVALIDARG.into());
+        }
         let direction = if backward {
             sumibi_core::grapheme::Direction::Backward
         } else {
@@ -356,16 +398,33 @@ impl Tracker {
         if self.extent != Some(previous) || !self.owned.can_commit() {
             return Err(E_ABORT.into());
         }
-        let (selected_range, active_start) = self
-            .session
-            .selection_range(
+        let document_end = if document_edge {
+            Some(self.document_end(before.metadata)?)
+        } else {
+            None
+        };
+        if self.watch.generation()? != before.notification {
+            return Err(E_ABORT.into());
+        }
+        let edge = document_end.map(|document_end| sumibi_core::input::EdgeMove {
+            to_end: !backward,
+            extend,
+            active_start: before.metadata.active_start,
+            document_end,
+            count: count as usize,
+        });
+        let (selected_range, active_start) = if let Some(edge) = edge {
+            self.session.edge_range(before.point, edge)
+        } else {
+            self.session.selection_range(
                 before.point,
                 direction,
                 extend,
                 before.metadata.active_start,
                 count as usize,
             )
-            .ok_or(E_ABORT)?;
+        }
+        .ok_or(E_ABORT)?;
         let sequence = self
             .sequence
             .checked_add(1)
@@ -377,14 +436,18 @@ impl Tracker {
             ..before.point
         };
         let mut session = std::mem::take(&mut self.session);
-        session.selected(
-            before.point,
-            after,
-            direction,
-            extend,
-            before.metadata.active_start,
-            count as usize,
-        );
+        if let Some(edge) = edge {
+            session.moved_to_edge(before.point, after, edge);
+        } else {
+            session.selected(
+                before.point,
+                after,
+                direction,
+                extend,
+                before.metadata.active_start,
+                count as usize,
+            );
+        }
         if session.range(after) != Some(previous) {
             return Err(E_ABORT.into());
         }
@@ -400,6 +463,7 @@ impl Tracker {
             true,
             Box::new(move |cookie| {
                 edit.validate(cookie, before.metadata)?;
+                check_document_end(&edit.context, cookie, document_end)?;
                 let owned = edit.owned.range(&edit.context)?;
                 if extent_of(&owned)? != previous
                     || edit.previous != Some(previous)
@@ -423,6 +487,7 @@ impl Tracker {
                     return Err(E_ABORT.into());
                 }
                 edit.validate(cookie, before.metadata)?;
+                check_document_end(&edit.context, cookie, document_end)?;
                 if watch.generation()? != before.notification
                     || watch.boundary_generation()? != boundary
                     || extent_of(&edit.owned.range(&edit.context)?)? != previous
@@ -440,6 +505,7 @@ impl Tracker {
                     ..before.metadata
                 };
                 edit.validate(cookie, metadata)?;
+                check_document_end(&edit.context, cookie, document_end)?;
                 if extent_of(&edit.owned.range(&edit.context)?)? != previous
                     || metadata_gate(&edit.context, &owned, cookie, &edit.owned)?
                         != before.metadata.protection
@@ -455,6 +521,7 @@ impl Tracker {
             session,
             sequence,
             range: Some(previous),
+            document_end,
             boundary,
             outcome,
         }
@@ -466,6 +533,7 @@ struct PendingInput {
     session: InputSession,
     sequence: u64,
     range: Option<(i32, i32)>,
+    document_end: Option<i32>,
     boundary: u64,
     outcome: Rc<Cell<u32>>,
 }
@@ -475,6 +543,11 @@ impl PendingInput {
         // independent of our own text/attribute notification and cannot reset.
         let notification = tracker.watch.generation()?;
         let metadata = tracker.inspect(false)?;
+        if let Some(expected) = self.document_end {
+            if tracker.document_end(metadata)? != expected {
+                return Err(E_ABORT.into());
+            }
+        }
         if tracker.watch.generation()? != notification
             || tracker.watch.boundary_generation()? != self.boundary
             || !metadata.same_selection(&expected)
@@ -494,6 +567,30 @@ impl PendingInput {
         self.outcome.set(INPUT_APPLIED);
         Ok(())
     }
+}
+
+/// Coordinate metadata only. Never GetText or enumerate the full document's
+/// attributes; ordinary host Home/End semantics are not inferred from this.
+fn read_document_end(context: &ITfContext, cookie: u32) -> Result<i32> {
+    let first = unsafe { context.GetStart(cookie)? };
+    let last = unsafe { context.GetEnd(cookie)? };
+    let (end, end_again) = extent_of(&last)?;
+    if extent_of(&first)? != (0, 0)
+        || end != end_again
+        || !same_context(&unsafe { first.GetContext()? }, context)?
+        || !same_context(&unsafe { last.GetContext()? }, context)?
+    {
+        return Err(E_ABORT.into());
+    }
+    Ok(end)
+}
+fn check_document_end(context: &ITfContext, cookie: u32, expected: Option<i32>) -> Result<()> {
+    if let Some(expected) = expected {
+        if read_document_end(context, cookie)? != expected {
+            return Err(E_ABORT.into());
+        }
+    }
+    Ok(())
 }
 
 /// The only body write for these operations. All authorization precedes this

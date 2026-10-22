@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 74件（応答照合9・入力範囲追跡/削除/caret計画46・書記素移動/削除境界7・救済12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計114件。
+現時点はCore 80件（応答照合9・入力範囲追跡/削除/caret計画52・書記素移動/削除境界7・救済12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計120件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -83,7 +83,9 @@ repeatは記録内の拡張書記素クラスタ単位で数え、追跡範囲�
 途中への文字挿入も前後の記録を保持し、合計1024 UTF-16単位以内なら同じcompositionを広げる。
 Shift＋左右は記録内の選択を拡大/縮小/反転し、通常左右での選択解除後も追跡を保つ。
 非空の明示選択のF7はその部分だけ、collapsed caretのF7は現在の記録全体だけを変換する。
-境界越え、Home/End、Ctrl/Alt修飾や外部選択変更では追跡を退役して通常ホストへ戻す。
+専用の単一行入力欄ではHome/EndとShift＋Home/Endも、移動先の文書端が記録内にある場合だけ追跡を継続する。
+実contextの文書端は位置情報だけから確認し、記録端に置き換えない。一般アプリの行端移動は未対応。
+境界越え、Ctrl/Alt修飾や外部選択変更では追跡を退役して通常ホストへ戻す。
 記録内の選択置換/Delete/Backspaceも同じcompositionを保持し、前後に残る記録を継続する。
 置換後の容量は削除分を差し引いて検査する。全削除ではcompositionと記録を終了する。
 移動/選択は本文/Undoを増やさず、削除は1回Undoで戻せる。
@@ -122,9 +124,13 @@ Backspace55・書記素ホスト22・composition46・通知30・追跡25・broke
 Shift選択追加時は27件を加えて同期入力115件、共有満杯の選択を加えて救済41件、Core6件追加でRust108件。
 Backspace55・書記素ホスト22・composition46・通知30・追跡25・broker入力11・close4と静的検査が成功した。
 選択方向と検証範囲は[ADR 0030](adr/0030-tracked-shift-selection.md)を参照。
-最新は記録内の選択編集33件を加えて同期入力148件、共有満杯の3操作と断片コピーを加えて救済45件、Core6件追加でRust114件。
+記録内の選択編集追加時は33件を加えて同期入力148件、共有満杯の3操作と断片コピーを加えて救済45件、Core6件追加でRust114件。
 Backspace55・書記素ホスト22・composition46・通知30・追跡25・broker入力11・close4と静的検査が成功した。
-追跡継続と失効後の非採用は[ADR 0031](adr/0031-recorded-selection-replacement.md)を参照。以下は以前の段階の検証結果である。
+追跡継続と失効後の非採用は[ADR 0031](adr/0031-recorded-selection-replacement.md)を参照。
+最新は文書端の移動/選択26件を加えて同期入力174件、共有満杯のHome/Shift＋Endを加えて救済47件、Core6件追加でRust120件。
+Backspace55・書記素ホスト22・composition46・通知30・追跡25・broker入力11・close4とTest-Spike.ps1 -SkipDesktopが成功した。
+文書端の照合、二重移動のcounter、物理打鍵と一般アプリの未確認範囲は[ADR 0032](adr/0032-recorded-document-edge-navigation.md)を参照。
+以下は以前の段階の検証結果である。
 fmt・Clippy 3構成・build・基本DLL検査も成功した。一括scriptはkey-testのShift押下状態で停止し、
 その後の単独key-testが成功した。script全体の成功とは区別する。
 救済34・同期入力22・追跡25・composition伸縮29・通知30・broker入力11・close 4も再確認した。
@@ -520,9 +526,9 @@ cargo run -p sumibi-setup --locked --offline -- demo --dll target/debug/sumibi_t
 | 文字入力 | 選択部分を置換、またはカーソル位置へ挿入 |
 | Backspace | 明示選択、または書記素を削除。内部caretは含まれる書記素全体を対象。ホストのrepeatは選択を広げず1回Undo（Unicode 17.0.0） |
 | Ctrl+A | 全文選択 |
-| Home / End | 文頭 / 文末へカーソル移動 |
+| Home / End | 専用単一行入力欄の文書先頭 / 末尾へ移動。transaction-demoは文書端が記録内にある場合だけ追跡を保持 |
 | ← / → | 書記素単位で移動。transaction-demoの記録内なら実DLLで追跡を保持。選択中は該当方向へcollapseして残りrepeat分を移動 |
-| Shift + ← / → / Home / End | 選択の始点を保持して範囲を伸縮 |
+| Shift + ← / → / Home / End | 選択の始点を保持して範囲を伸縮。transaction-demoは移動先が記録内にある場合だけ追跡を保持 |
 | Delete | 明示選択、または直後の書記素を削除。transaction-demoの明示選択/記録内は実DLLの同期取引。内部caretは含まれる書記素全体を対象 |
 | F6 | この入力欄を明示許可し、選択範囲を下線と自己所有compositionで保持。未選択なら全文を選択 |
 | F7 | 固定文字列「日本語」へ変換 |

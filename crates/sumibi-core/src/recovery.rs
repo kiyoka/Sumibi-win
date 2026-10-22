@@ -44,8 +44,19 @@ pub enum Operation {
     Backspace(u32),
     DeleteSelection,
     ForwardDelete(u32),
-    MoveCaret { backward: bool, count: u32 },
-    ExtendSelection { backward: bool, count: u32 },
+    MoveCaret {
+        backward: bool,
+        count: u32,
+    },
+    ExtendSelection {
+        backward: bool,
+        count: u32,
+    },
+    MoveToEdge {
+        to_end: bool,
+        extend: bool,
+        count: u32,
+    },
 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Outcome {
@@ -120,6 +131,7 @@ impl Recovery {
             Operation::ForwardDelete(count)
             | Operation::MoveCaret { count, .. }
             | Operation::ExtendSelection { count, .. }
+            | Operation::MoveToEdge { count, .. }
                 if (1..=MAX_UNITS as u32).contains(&count) =>
             {
                 0
@@ -489,6 +501,11 @@ mod tests {
             Operation::Backspace(2),
             Operation::DeleteSelection,
             Operation::ForwardDelete(2),
+            Operation::MoveToEdge {
+                to_end: true,
+                extend: true,
+                count: 2,
+            },
             Operation::ExtendSelection {
                 backward: true,
                 count: 2,
@@ -517,6 +534,16 @@ mod tests {
             Operation::Backspace(1025),
             Operation::ForwardDelete(0),
             Operation::ForwardDelete(1025),
+            Operation::MoveToEdge {
+                to_end: false,
+                extend: false,
+                count: 0,
+            },
+            Operation::MoveToEdge {
+                to_end: true,
+                extend: true,
+                count: 1025,
+            },
             Operation::ExtendSelection {
                 backward: false,
                 count: 0,

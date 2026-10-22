@@ -77,6 +77,8 @@ pub(crate) fn exercise_recovery(
         "rescue/process-replace",
         "rescue/process-selected-delete",
         "rescue/process-selected-backspace",
+        "rescue/process-home",
+        "rescue/process-shift-end",
         "rescue/process-discard",
         "rescue/process-expire",
         "rescue/process-close",
@@ -546,13 +548,18 @@ fn test_process_budget(
             | "process-replace"
             | "process-selected-delete"
             | "process-selected-backspace"
+            | "process-home"
+            | "process-shift-end"
     ) {
         editor.insert(&"a👨‍👩‍👧‍👦b".encode_utf16().collect::<Vec<_>>())?;
         assert_eq!(
             editor.input_disposition.get(),
             sumibi_tip::spike::INPUT_APPLIED
         );
-        if matches!(case, "process-forward" | "process-internal-insert") {
+        if matches!(
+            case,
+            "process-forward" | "process-internal-insert" | "process-home" | "process-shift-end"
+        ) {
             editor.navigate(0x25, false, 2)?;
         } else if case == "process-internal-backspace" {
             editor.navigate(0x25, false, 1)?;
@@ -592,6 +599,8 @@ fn test_process_budget(
     let history = store.undo.borrow().len();
     let original = store.text.borrow().clone();
     let selection = store.selection.get();
+    let selections = store.set_selection_calls.get();
+    let host_selections = store.host_selection_calls.get();
     if case == "process-selected-backspace" {
         editor.input(WM_CHAR, WPARAM(8), LPARAM(1024))?;
     } else if case == "process-selected-delete" {
@@ -608,6 +617,10 @@ fn test_process_budget(
         editor.input(WM_CHAR, WPARAM(8), LPARAM(1))?;
     } else if case == "process-select" {
         editor.navigate(0x25, true, 2)?;
+    } else if case == "process-home" {
+        editor.navigate(0x24, false, 1024)?;
+    } else if case == "process-shift-end" {
+        editor.navigate(0x23, true, 1024)?;
     } else {
         editor.insert(&['z' as u16])?;
     }
@@ -622,7 +635,10 @@ fn test_process_budget(
             | "process-selected-backspace"
     ) {
         "ab"
-    } else if matches!(case, "process-move" | "process-select") {
+    } else if matches!(
+        case,
+        "process-move" | "process-select" | "process-home" | "process-shift-end"
+    ) {
         "a👨‍👩‍👧‍👦b"
     } else if case == "process-internal-insert" {
         "az👨‍👩‍👧‍👦b"
@@ -641,7 +657,11 @@ fn test_process_budget(
     );
     assert_eq!(
         store.undo.borrow().len(),
-        history + usize::from(!matches!(case, "process-move" | "process-select")),
+        history
+            + usize::from(!matches!(
+                case,
+                "process-move" | "process-select" | "process-home" | "process-shift-end"
+            )),
         "host handles the whole original operation in one Undo entry"
     );
     if matches!(
@@ -673,6 +693,20 @@ fn test_process_budget(
         let selected = store.selection.get();
         assert_eq!((selected.acpStart, selected.acpEnd), (1, 13));
         assert_eq!(selected.style.ase, TS_AE_START);
+    }
+    if matches!(case, "process-home" | "process-shift-end") {
+        let selected = store.selection.get();
+        assert_eq!(
+            (selected.acpStart, selected.acpEnd),
+            if case == "process-home" {
+                (0, 0)
+            } else {
+                (1, 13)
+            }
+        );
+        assert_eq!(selected.style.ase, TS_AE_END);
+        assert_eq!(store.set_selection_calls.get(), selections);
+        assert_eq!(store.host_selection_calls.get(), host_selections + 1);
     }
     assert_eq!(
         editor.input_disposition.get(),
@@ -714,6 +748,8 @@ fn test_process_budget(
             | "process-replace"
             | "process-selected-delete"
             | "process-selected-backspace"
+            | "process-home"
+            | "process-shift-end"
     ) {
         // Releasing one owner's record lets a different owner reserve before a
         // failed DLL write. It neither replays the old input nor reads the body.

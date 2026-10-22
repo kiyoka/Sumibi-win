@@ -145,7 +145,11 @@ Core6件追加でworkspace108件、同期入力27件追加で115件、共有満�
 選択外へrepeatを広げず、容量は削除分を差し引いて検査する。外部選択変更後は旧runを継続しない。
 Core6件追加でworkspace114件、同期入力33件追加で148件、共有満杯3操作と断片コピーを加えて救済45件と関連回帰が成功した
 （[ADR 0031](adr/0031-recorded-selection-replacement.md)）。
-一般アプリの入力adapter・通知/保護情報・sink寿命・標準Undo、Home/End等の追跡継続と製品統合は残る。
+専用単一行ホストのHome/End・Shift選択も、実contextの文書端が記録内なら同じcompositionを保持する。
+文書端は位置だけで照合し、記録外へは通常移動を一度だけ行う。Core6件追加でworkspace120件、
+同期入力26件追加で174件、共有満杯の2操作を加えて救済47件と関連回帰・静的検査が成功した
+（[ADR 0032](adr/0032-recorded-document-edge-navigation.md)）。
+一般アプリの行端/折り返し・入力adapter・通知/保護情報・sink寿命・標準Undoと製品統合は残る。
 
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。

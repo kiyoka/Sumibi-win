@@ -43,6 +43,7 @@
 - [ADR 0029](adr/0029-tracked-internal-insertion.md)：記録内caretへの文字挿入、前後の記録保持、合計容量と供給断片だけの救済。
 - [ADR 0030](adr/0030-tracked-shift-selection.md)：記録内のShift選択、選択方向の照合、選択解除後の入力継続と明示選択の変換。
 - [ADR 0031](adr/0031-recorded-selection-replacement.md)：記録内の選択置換/Delete/Backspaceで前後の入力を保持し、失効後に既存本文を採用しない条件。
+- [ADR 0032](adr/0032-recorded-document-edge-navigation.md)：専用単一行ホストの文書端が記録内にある場合のHome/End・Shift選択と、位置だけを使う照合・二重移動の防止。
 
 ## 更新の規則
 

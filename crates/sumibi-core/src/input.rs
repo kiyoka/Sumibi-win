@@ -15,6 +15,16 @@ pub struct InputPoint {
     pub selection: (i32, i32),
     pub allowed: bool,
 }
+/// Metadata supplied by an owner that independently validates document edges.
+/// This is a document-edge plan, not a general host's visual-line Home/End.
+#[derive(Clone, Copy)]
+pub struct EdgeMove {
+    pub to_end: bool,
+    pub extend: bool,
+    pub active_start: bool,
+    pub document_end: i32,
+    pub count: usize,
+}
 struct Run {
     start: i32,
     point: InputPoint,
@@ -188,6 +198,52 @@ impl InputSession {
         count: usize,
     ) {
         let planned = self.selection_range(before, direction, extend, active_start, count);
+        self.selection_completed(before, after, planned);
+    }
+    /// Move only when the requested actual document edge is recorded. Never
+    /// reinterpret the record boundary as the document boundary or read text.
+    pub fn edge_range(&self, current: InputPoint, edge: EdgeMove) -> Option<((i32, i32), bool)> {
+        let run = self.run.as_ref()?;
+        let (start, end) = self.range(current)?;
+        if !(1..=MAX_TRACKED_UNITS).contains(&edge.count)
+            || edge.document_end < end
+            || current.selection.0 < start
+            || current.selection.1 > end
+        {
+            return None;
+        }
+        let target = if edge.to_end { edge.document_end } else { 0 };
+        if target < start || target > end {
+            return None;
+        }
+        let map = Boundaries::new(&run.text)?;
+        map.snap(
+            usize::try_from(current.selection.0.checked_sub(start)?).ok()?,
+            Direction::Backward,
+        )?;
+        map.snap(
+            usize::try_from(current.selection.1.checked_sub(start)?).ok()?,
+            Direction::Forward,
+        )?;
+        let anchor = if !edge.extend {
+            target
+        } else if edge.active_start {
+            current.selection.1
+        } else {
+            current.selection.0
+        };
+        Some(((anchor.min(target), anchor.max(target)), target < anchor))
+    }
+    pub fn moved_to_edge(&mut self, before: InputPoint, after: InputPoint, edge: EdgeMove) {
+        let planned = self.edge_range(before, edge);
+        self.selection_completed(before, after, planned);
+    }
+    fn selection_completed(
+        &mut self,
+        before: InputPoint,
+        after: InputPoint,
+        planned: Option<((i32, i32), bool)>,
+    ) {
         let Some(mut run) = self.run.take() else {
             return;
         };
@@ -501,6 +557,9 @@ impl InputSession {
 #[cfg(test)]
 #[path = "input_cursor_tests.rs"]
 mod cursor_tests;
+#[cfg(test)]
+#[path = "input_edge_tests.rs"]
+mod edge_tests;
 #[cfg(test)]
 #[path = "input_replacement_tests.rs"]
 mod replacement_tests;

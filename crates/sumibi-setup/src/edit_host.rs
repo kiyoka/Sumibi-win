@@ -86,6 +86,8 @@ struct TextStore {
     fail_text_before: Cell<bool>,
     fail_text_after: Cell<bool>,
     fail_selection: Cell<bool>,
+    set_selection_calls: Cell<usize>,
+    host_selection_calls: Cell<usize>,
     fail_selection_after: Cell<bool>,
     status_cycle_on_write: Cell<bool>,
     scope_cycle_on_write: Cell<bool>,
@@ -181,6 +183,8 @@ impl TextStore {
             fail_text_before: Cell::new(false),
             fail_text_after: Cell::new(false),
             fail_selection: Cell::new(false),
+            set_selection_calls: Cell::new(0),
+            host_selection_calls: Cell::new(0),
             fail_selection_after: Cell::new(false),
             status_cycle_on_write: Cell::new(false),
             scope_cycle_on_write: Cell::new(false),
@@ -385,6 +389,8 @@ impl ITextStoreACP_Impl for TextStore_Impl {
     }
     fn SetSelection(&self, count: u32, input: *const TS_SELECTION_ACP) -> Result<()> {
         self.writable()?;
+        self.set_selection_calls
+            .set(self.set_selection_calls.get() + 1);
         if self.fail_selection.replace(false) {
             return Err(E_FAIL.into());
         }

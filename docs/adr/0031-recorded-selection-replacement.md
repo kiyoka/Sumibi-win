@@ -74,3 +74,6 @@ Test-Spike.ps1 -SkipDesktopでRust114件・fmt・Clippy 3構成・build・load_s
 
 fixtureはEditor helper/診断ABIへ操作を明示して実TSFを使う専用storeの検査で、物理打鍵や一般アプリの互換を証明しない。
 前面化で未通過のwindow/input/delayedの3検査は維持し、省略なし全回帰の成功には読み替えない。
+
+後続の[ADR 0032](0032-recorded-document-edge-navigation.md)で、専用単一行ホストの文書端が記録内にある場合の
+Home/End・Shift選択を追加した。上記件数はこのADRの実装時点の記録である。

@@ -33,7 +33,7 @@ pub(super) struct Composing {
 }
 impl Composing {
     pub(super) fn edit_tracked(&self, editor: &Editor, action: u32, count: u32) -> Result<u32> {
-        self.navigate_tracked(editor, action, count, false)
+        self.navigate_tracked(editor, action, count, false, false)
     }
     pub(super) fn extend_tracked(
         &self,
@@ -41,7 +41,16 @@ impl Composing {
         backward: bool,
         count: u32,
     ) -> Result<u32> {
-        self.navigate_tracked(editor, u32::from(!backward), count, true)
+        self.navigate_tracked(editor, u32::from(!backward), count, true, false)
+    }
+    pub(super) fn edge_tracked(
+        &self,
+        editor: &Editor,
+        to_end: bool,
+        extend: bool,
+        count: u32,
+    ) -> Result<u32> {
+        self.navigate_tracked(editor, u32::from(to_end), count, extend, true)
     }
     fn navigate_tracked(
         &self,
@@ -49,6 +58,7 @@ impl Composing {
         action: u32,
         count: u32,
         extend: bool,
+        document_edge: bool,
     ) -> Result<u32> {
         if self.boundary_blocked.get() {
             self.cancel(editor, false);
@@ -64,7 +74,21 @@ impl Composing {
         }
         let mut disposition = INPUT_UNCERTAIN;
         unsafe {
-            if extend {
+            if document_edge {
+                let Ok(control) = self
+                    .control
+                    .cast::<sumibi_tip::spike::ISpikeDocumentNavigator>()
+                else {
+                    return Ok(INPUT_NOT_ATTEMPTED);
+                };
+                let _ = control.MoveEdge(
+                    editor.context.as_raw(),
+                    action,
+                    u32::from(extend),
+                    count,
+                    &mut disposition,
+                );
+            } else if extend {
                 let Ok(control) = self
                     .control
                     .cast::<sumibi_tip::spike::ISpikeTrackedSelector>()

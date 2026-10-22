@@ -161,8 +161,12 @@ SetSelectionだけで同じcompositionを保持し、通常左右での解除後
 Writer/SelectionEraserは共通replace、Backspaceはeraseで同じcompositionを更新し、全削除だけ終了する。
 容量は選択分を除いてから供給長を加える。選択Deleteは正確な観測と記録が一致する場合だけ継続し、
 外部変更後の置換は新しい供給文字だけを記録する（[ADR 0031](adr/0031-recorded-selection-replacement.md)）。
-Home/End等の追跡継続、一般アプリと製品の待機/救済統合は残る
-（[ADR 0027](adr/0027-tracked-caret-and-forward-delete.md)、[ADR 0028](adr/0028-tracked-internal-backspace.md)）。
+専用単一行ホストの文書端操作は独立ISpikeDocumentNavigatorとCoreのEdgeMoveを使う。
+GetStart/GetEnd/GetExtentだけで実contextの文書末尾を確認し、記録内にある場合だけ移動/Shift選択を継続する。
+通常左右と同じ同期writeでSetSelectionを一度だけ行い、本文/Undo/compositionは変更しない。
+文書末尾は計画時、write内の移動前後、PendingInputの完了時にも照合する。共有救済は本文のないMoveToEdgeを予約する
+（[ADR 0032](adr/0032-recorded-document-edge-navigation.md)）。
+一般アプリの行端/折り返し・キー配送と製品の待機/救済統合は残る。
 所有editorの救済はCoreの1件・最大1024単位のslotを取引前に予約し、未確認結果だけを有限期限で保持する。
 診断EXEは全Rescueへ同じBudgetを渡し、別STAも含む予約中/確認待ちを合計4件に制限する。
 redactや画面の開閉では返さず、レコードの破棄・期限切れcleanup・所有者Dropで共有枠を戻す

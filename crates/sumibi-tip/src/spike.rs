@@ -10,10 +10,10 @@ use crate::com::{boundary, ObjectLease};
 use crate::edit::preview::Preview;
 use crate::edit::{capture_selection, replace_selection, EditPolicy};
 pub use crate::input_spike::{
-    ISpikeInput, ISpikeInputEraser, ISpikeInputMonitor, ISpikeInputPreparer, ISpikeInputSignal,
-    ISpikeInputSignal_Impl, ISpikeInputWriter, ISpikeSelectionEraser, ISpikeTrackedEditor,
-    ISpikeTrackedSelector, FUNCTION_TEST_INPUT, INPUT_APPLIED, INPUT_APPLIED_UNTRACKED,
-    INPUT_NOT_ATTEMPTED, INPUT_UNCERTAIN,
+    ISpikeDocumentNavigator, ISpikeInput, ISpikeInputEraser, ISpikeInputMonitor,
+    ISpikeInputPreparer, ISpikeInputSignal, ISpikeInputSignal_Impl, ISpikeInputWriter,
+    ISpikeSelectionEraser, ISpikeTrackedEditor, ISpikeTrackedSelector, FUNCTION_TEST_INPUT,
+    INPUT_APPLIED, INPUT_APPLIED_UNTRACKED, INPUT_NOT_ATTEMPTED, INPUT_UNCERTAIN,
 };
 pub use crate::owned_composition::GUID_SPIKE_COMPOSITION_SINK;
 use std::cell::{Cell, RefCell};

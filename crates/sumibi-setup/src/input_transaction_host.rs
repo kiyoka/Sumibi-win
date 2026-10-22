@@ -1,6 +1,8 @@
 //! Real DLL insertion; never edit user documents or replay attempted writes.
 use super::*;
 use sumibi_tip::spike::{INPUT_APPLIED, INPUT_APPLIED_UNTRACKED};
+#[path = "input_document_edge_host.rs"]
+mod document_edge;
 #[path = "input_insertion_cursor_host.rs"]
 mod insertion_cursor;
 #[path = "input_recorded_replacement_host.rs"]
@@ -171,6 +173,32 @@ pub(crate) fn exercise_transactions(
         "edit/compartment-restored",
         "edit/delete-text-after",
         "edit/backspace-text-after",
+        "edge/home",
+        "edge/end",
+        "edge/shift-home",
+        "edge/shift-end",
+        "edge/reverse",
+        "edge/collapse",
+        "edge/repeat",
+        "edge/noop-home",
+        "edge/noop-end",
+        "edge/prefix-home",
+        "edge/prefix-end",
+        "edge/suffix-end",
+        "edge/suffix-home",
+        "edge/convert",
+        "edge/select-convert",
+        "edge/insert",
+        "edge/backspace",
+        "edge/budget",
+        "edge/fail-before",
+        "edge/fail-after",
+        "edge/readonly",
+        "edge/private",
+        "edge/foreign",
+        "edge/invalid",
+        "edge/external",
+        "edge/rejoin",
     ] {
         run(manager, client, RunMode::TransactionTest(case))?;
     }
@@ -183,6 +211,9 @@ pub(in crate::edit_host::input_host) fn test_transactions(
     client: u32,
     case: &str,
 ) -> Result<()> {
+    if let Some(case) = case.strip_prefix("edge/") {
+        return document_edge::test(window, editor, live, client, case);
+    }
     if let Some(case) = case.strip_prefix("edit/") {
         return recorded_replacement::test(window, editor, live, client, case);
     }

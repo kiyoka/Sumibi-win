@@ -87,6 +87,19 @@ pub unsafe trait ISpikeTrackedSelector: IUnknown {
         disposition: *mut u32,
     ) -> HRESULT;
 }
+/// Actual document edges only; a general app's visual-line Home/End is not
+/// inferred. This independent ABI leaves all prior action values unchanged.
+#[interface("a7e01842-802d-4b42-8db2-755b7d8bf2fa")]
+pub unsafe trait ISpikeDocumentNavigator: IUnknown {
+    pub fn MoveEdge(
+        &self,
+        context: *mut c_void,
+        to_end: u32,
+        extend: u32,
+        count: u32,
+        disposition: *mut u32,
+    ) -> HRESULT;
+}
 #[implement(
     ISpikeInput,
     ISpikeInputMonitor,
@@ -95,7 +108,8 @@ pub unsafe trait ISpikeTrackedSelector: IUnknown {
     ISpikeSelectionEraser,
     ISpikeInputPreparer,
     ISpikeTrackedEditor,
-    ISpikeTrackedSelector
+    ISpikeTrackedSelector,
+    ISpikeDocumentNavigator
 )]
 struct Control {
     state: Weak<Controller>,
@@ -355,6 +369,33 @@ impl ISpikeTrackedSelector_Impl for Control_Impl {
             }
             self.in_context(context, |tracker| {
                 tracker.move_selection(backward != 0, true, count, outcome.clone())
+            })
+        });
+        if matches!(outcome.get(), INPUT_UNCERTAIN | INPUT_APPLIED_UNTRACKED) {
+            self.write_blocked.set(true);
+        }
+        if !disposition.is_null() {
+            unsafe { disposition.write(outcome.get()) };
+        }
+        result.into()
+    }
+}
+impl ISpikeDocumentNavigator_Impl for Control_Impl {
+    unsafe fn MoveEdge(
+        &self,
+        context: *mut c_void,
+        to_end: u32,
+        extend: u32,
+        count: u32,
+        disposition: *mut u32,
+    ) -> HRESULT {
+        let outcome = Rc::new(Cell::new(INPUT_NOT_ATTEMPTED));
+        let result = boundary(|| {
+            if disposition.is_null() || to_end > 1 || extend > 1 || !(1..=1024).contains(&count) {
+                return Err(E_INVALIDARG.into());
+            }
+            self.in_context(context, |tracker| {
+                tracker.move_document_edge(to_end != 0, extend != 0, count, outcome.clone())
             })
         });
         if matches!(outcome.get(), INPUT_UNCERTAIN | INPUT_APPLIED_UNTRACKED) {
