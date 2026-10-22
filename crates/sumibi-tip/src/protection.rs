@@ -71,8 +71,10 @@ pub(crate) fn check(context: &ITfContext, range: &ITfRange, cookie: u32) -> Resu
         crate::composition::require_idle(context)
     })
 }
-/// Only metadata inspection may admit the exact owned composition. All body
-/// capture/source/write gates still call check(), which requires idle.
+/// Metadata inspection may admit the exact owned composition. This check alone
+/// never authorizes body access. Capture/source/result application require idle;
+/// the diagnostic input writer separately validates supplied text and an owned
+/// insertion range, and never reads existing body text.
 #[cfg(feature = "spike")]
 pub(crate) fn owned_metadata(
     context: &ITfContext,

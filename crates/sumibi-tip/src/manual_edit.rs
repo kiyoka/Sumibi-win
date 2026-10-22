@@ -13,6 +13,7 @@ struct Observation {
     owner: ThreadId,
     invalid: Cell<bool>,
     generation: Cell<Option<u64>>,
+    boundary_generation: Cell<Option<u64>>,
     #[cfg(feature = "spike")]
     wake: RefCell<Option<Rc<dyn Fn()>>>,
 }
@@ -28,7 +29,7 @@ struct Observer {
     _lease: ObjectLease,
 }
 impl Observer_Impl {
-    fn invalidate(&self) -> Result<()> {
+    fn invalidate(&self, protection_boundary: bool) -> Result<()> {
         boundary(|| {
             // Check before touching the apartment-local weak Rc.
             if self.owner != thread::current().id() {
@@ -36,6 +37,14 @@ impl Observer_Impl {
             }
             if let Some(state) = self.state.upgrade() {
                 state.invalid.set(true);
+                if protection_boundary {
+                    state.boundary_generation.set(
+                        state
+                            .boundary_generation
+                            .get()
+                            .and_then(|v| v.checked_add(1)),
+                    );
+                }
                 state.generation.set(
                     state
                         .generation
@@ -57,37 +66,63 @@ impl Observer_Impl {
     }
 }
 impl ITfTextEditSink_Impl for Observer_Impl {
-    fn OnEndEdit(&self, _: Ref<ITfContext>, _: u32, _: Ref<ITfEditRecord>) -> Result<()> {
+    fn OnEndEdit(&self, _: Ref<ITfContext>, _: u32, record: Ref<ITfEditRecord>) -> Result<()> {
         // Conservative: any write-session notification retires the captured
         // request, including a change that later restores the original text.
-        self.invalidate()
+        if self.owner != thread::current().id() {
+            return Err(RPC_E_WRONG_THREAD.into());
+        }
+        // Inspect only whether INPUTSCOPE metadata changed, never a range's
+        // text or property value. Such history must not be blessed as our own
+        // insertion's ordinary OnEndEdit, including a change restored in-lock.
+        let scope_changed = (|| -> Result<bool> {
+            let ranges = unsafe {
+                record.ok()?.GetTextAndPropertyUpdates(
+                    GET_TEXT_AND_PROPERTY_UPDATES_FLAGS(0),
+                    &[&GUID_PROP_INPUTSCOPE],
+                )?
+            };
+            let mut slot: Option<ITfRange> = None;
+            let mut count = 0;
+            let status = unsafe {
+                (ranges.vtable().Next)(
+                    ranges.as_raw(),
+                    1,
+                    (&mut slot as *mut Option<ITfRange>).cast(),
+                    &mut count,
+                )
+            };
+            Ok(!(status == windows::Win32::Foundation::S_FALSE && count == 0 && slot.is_none()))
+        })()
+        .unwrap_or(true);
+        self.invalidate(scope_changed)
     }
 }
 impl ITfThreadMgrEventSink_Impl for Observer_Impl {
     fn OnInitDocumentMgr(&self, _: Ref<ITfDocumentMgr>) -> Result<()> {
-        self.invalidate()
+        self.invalidate(true)
     }
     fn OnUninitDocumentMgr(&self, _: Ref<ITfDocumentMgr>) -> Result<()> {
-        self.invalidate()
+        self.invalidate(true)
     }
     fn OnSetFocus(&self, _: Ref<ITfDocumentMgr>, _: Ref<ITfDocumentMgr>) -> Result<()> {
-        self.invalidate()
+        self.invalidate(true)
     }
     fn OnPushContext(&self, _: Ref<ITfContext>) -> Result<()> {
-        self.invalidate()
+        self.invalidate(true)
     }
     fn OnPopContext(&self, _: Ref<ITfContext>) -> Result<()> {
-        self.invalidate()
+        self.invalidate(true)
     }
 }
 impl ITfCompartmentEventSink_Impl for Observer_Impl {
     fn OnChange(&self, _: *const windows::core::GUID) -> Result<()> {
-        self.invalidate()
+        self.invalidate(true)
     }
 }
 impl ITfStatusSink_Impl for Observer_Impl {
     fn OnStatusChange(&self, _: Ref<ITfContext>, _: u32) -> Result<()> {
-        self.invalidate()
+        self.invalidate(true)
     }
 }
 struct Subscription {
@@ -111,6 +146,7 @@ impl Guard {
             owner: thread::current().id(),
             invalid: Cell::new(false),
             generation: Cell::new(Some(0)),
+            boundary_generation: Cell::new(Some(0)),
             #[cfg(feature = "spike")]
             wake: RefCell::new(None),
         });
@@ -170,13 +206,14 @@ impl Guard {
 
 /// Metadata-only observation generation for a cooperating host's input run.
 /// This never authorizes an edit or reads text. Exhaustion remains denied.
+#[derive(Clone)]
 pub struct InputWatch {
-    guard: Guard,
+    guard: Rc<Guard>,
 }
 impl InputWatch {
     pub fn attach(manager: &ITfThreadMgr, context: &ITfContext) -> Result<Self> {
         Ok(Self {
-            guard: Guard::new(manager, context)?,
+            guard: Rc::new(Guard::new(manager, context)?),
         })
     }
     #[cfg(feature = "spike")]
@@ -186,6 +223,17 @@ impl InputWatch {
         }
         *self.guard.state.wake.borrow_mut() = wake;
         Ok(())
+    }
+    #[cfg(feature = "spike")]
+    pub(crate) fn boundary_generation(&self) -> Result<u64> {
+        if self.guard.state.owner != thread::current().id() {
+            return Err(RPC_E_WRONG_THREAD.into());
+        }
+        self.guard
+            .state
+            .boundary_generation
+            .get()
+            .ok_or_else(|| E_ABORT.into())
     }
     pub fn generation(&self) -> Result<u64> {
         if self.guard.state.owner != thread::current().id() {

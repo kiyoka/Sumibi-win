@@ -18,8 +18,8 @@ use windows::Win32::UI::TextServices::*;
 mod input_host;
 pub(super) use input_host::{
     exercise_broker_input, exercise_close, exercise_composing, exercise_input,
-    exercise_notifications, exercise_tracking, run_broker_demo, run_composing_demo, run_demo,
-    run_tracking_demo,
+    exercise_notifications, exercise_tracking, exercise_transactions, run_broker_demo,
+    run_composing_demo, run_demo, run_tracking_demo, run_transaction_demo,
 };
 #[path = "delayed_host.rs"]
 mod delayed_host;
@@ -72,6 +72,17 @@ struct TextStore {
     composition_events: Cell<u32>,
     input_signal: RefCell<Option<ComObject<crate::input_signal::Signal>>>,
     reject_composition: Cell<bool>,
+    input_problem: Cell<bool>,
+    set_text_calls: Cell<usize>,
+    fail_text_before: Cell<bool>,
+    fail_text_after: Cell<bool>,
+    fail_selection: Cell<bool>,
+    status_cycle_on_write: Cell<bool>,
+    scope_cycle_on_write: Cell<bool>,
+    compartment_cycle_on_write: RefCell<Option<(ITfCompartment, u32)>>,
+    write_locks: Cell<usize>,
+    last_text_lock: Cell<usize>,
+    last_composition_lock: Cell<usize>,
 }
 
 struct Lock<'a>(&'a Cell<u32>);
@@ -83,6 +94,7 @@ impl Drop for Lock<'_> {
 
 impl TextStore_Impl {
     fn composition_changed(&self) {
+        self.last_composition_lock.set(self.write_locks.get());
         self.composition_events
             .set(self.composition_events.get().saturating_add(1));
         let signal = self.input_signal.borrow().clone();
@@ -153,6 +165,17 @@ impl TextStore {
             composition_events: Cell::new(0),
             input_signal: RefCell::new(None),
             reject_composition: Cell::new(false),
+            input_problem: Cell::new(false),
+            set_text_calls: Cell::new(0),
+            fail_text_before: Cell::new(false),
+            fail_text_after: Cell::new(false),
+            fail_selection: Cell::new(false),
+            status_cycle_on_write: Cell::new(false),
+            scope_cycle_on_write: Cell::new(false),
+            compartment_cycle_on_write: RefCell::new(None),
+            write_locks: Cell::new(0),
+            last_text_lock: Cell::new(0),
+            last_composition_lock: Cell::new(0),
         }
     }
     fn readable(&self) -> Result<()> {
@@ -285,6 +308,9 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         }
         let sink = self.sink.borrow().clone().ok_or(E_FAIL)?;
         self.lock.set(flags);
+        if flags & TS_LF_READWRITE.0 == TS_LF_READWRITE.0 {
+            self.write_locks.set(self.write_locks.get() + 1);
+        }
         let _lock = Lock(&self.lock);
         // SAFETY: live sink reference on the owning thread. Keep no RefCell
         // borrow across OnLockGranted, which calls back into this text store.
@@ -347,6 +373,9 @@ impl ITextStoreACP_Impl for TextStore_Impl {
     }
     fn SetSelection(&self, count: u32, input: *const TS_SELECTION_ACP) -> Result<()> {
         self.writable()?;
+        if self.fail_selection.replace(false) {
+            return Err(E_FAIL.into());
+        }
         if count != 1 || input.is_null() {
             return Err(E_INVALIDARG.into());
         }
@@ -422,6 +451,11 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         count: u32,
     ) -> Result<TS_TEXTCHANGE> {
         self.writable()?;
+        self.set_text_calls.set(self.set_text_calls.get() + 1);
+        self.last_text_lock.set(self.write_locks.get());
+        if self.fail_text_before.replace(false) {
+            return Err(E_FAIL.into());
+        }
         let (start, end) = self.bounds(start, end)?;
         if count > 0 && input.is_null() {
             return Err(E_INVALIDARG.into());
@@ -444,6 +478,43 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         selection.acpStart = start as i32;
         selection.acpEnd = (start + input.len()) as i32;
         self.selection.set(selection);
+        if self.scope_cycle_on_write.replace(false) {
+            let sink = self.sink.borrow().clone().ok_or(E_FAIL)?;
+            let length = self.text.borrow().len() as i32;
+            *self.scopes.borrow_mut() = ScopeSpec::List(vec![IS_PRIVATE]);
+            unsafe {
+                sink.OnAttrsChange(0, length, &[GUID_PROP_INPUTSCOPE])?;
+            }
+            *self.scopes.borrow_mut() = ScopeSpec::List(vec![IS_TEXT]);
+            unsafe {
+                sink.OnAttrsChange(0, length, &[GUID_PROP_INPUTSCOPE])?;
+            }
+        }
+        let compartment_cycle = self.compartment_cycle_on_write.borrow_mut().take();
+        if let Some((compartment, client)) = compartment_cycle {
+            unsafe {
+                compartment.SetValue(
+                    client,
+                    &windows::Win32::System::Variant::VARIANT::from(1i32),
+                )?;
+                compartment.SetValue(
+                    client,
+                    &windows::Win32::System::Variant::VARIANT::from(0i32),
+                )?;
+            }
+        }
+        if self.status_cycle_on_write.replace(false) {
+            let sink = self.sink.borrow().clone();
+            if let Some(sink) = sink {
+                unsafe {
+                    sink.OnStatusChange(TS_SD_READONLY)?;
+                    sink.OnStatusChange(0)?;
+                }
+            }
+        }
+        if self.fail_text_after.replace(false) {
+            return Err(E_FAIL.into());
+        }
         Ok(TS_TEXTCHANGE {
             acpStart: start as i32,
             acpOldEnd: end as i32,

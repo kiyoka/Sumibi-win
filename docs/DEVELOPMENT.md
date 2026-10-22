@@ -16,6 +16,33 @@ JSON構造・固定エラー・世代・取消・再接続・期限・対象照�
 停止・期限・偽の相手・drop・容量・handle解放を確認する。起動方式と限界は[ADR 0003](adr/0003-pinned-desktop-peers.md)。
 通常のデスクトップmedium integrity限定で、サンドボックスや昇格環境で拒否されてもACLを拡張しない。
 
+## 同期入力取引を試す
+
+通常ユーザーのPowerShellで、リポジトリのフォルダから実行する。
+
+```powershell
+cargo build --workspace --locked --offline
+cargo build -p sumibi-host --features spike --locked --offline
+./target/debug/sumibi-setup.exe transaction-input-test --dll ./target/debug/sumibi_tip.dll
+./target/debug/sumibi-setup.exe transaction-demo --dll ./target/debug/sumibi_tip.dll
+```
+
+デモは専用の空の合成入力欄を開く。通常文字を入力すると実DLLが本文・caret・composition・下線を
+同じ同期write cookieで更新する。F7で入力範囲を固定の「日本語」へ変換し、Ctrl+Zで戻せる。
+Escは追跡を解除する。Backspace/削除/Undoは既存ホスト操作を使い、削除の同期入力取引は未実装。
+終了は×ボタン。既定IME・ユーザー文書・HTTP・資格情報は使用しない。
+
+書き込み前拒否ではホストが元の入力を一度だけ反映する。書き込みを試みた後の失敗では、
+診断タイトルに確認を表示し、再入力・rollbackとF7を停止する。Esc/Enter/移動で停止を解除できるが、
+未確認入力を自動復旧する機能ではない。入力結果を確認する必要がある。
+一般アプリ向けのキー消費・待機・救済を有効にする段階ではない。
+
+2026-10-22 / Windows 11 x64 build 26300 / medium / Rust 1.99.1で22ケース、
+TSF/COM解除とDLLアンロード検査が成功。ログはtarget/issue-4-input-transaction.log。
+Test-Spike.ps1を省略なしで実行し、workspace 47件、Clippyの3構成、既存の全native検査も成功した。
+全回帰ログはtarget/issue-4-input-transaction-regression.log。
+条件とdispositionの契約は[ADR 0012](adr/0012-synchronous-input-transaction.md)を参照。
+
 ## 別Host EXEから実TSFまでの検証
 
 通常ユーザーのPowerShellで実行する。既定のworkspaceビルドで作るHostは変換を許可しないため、

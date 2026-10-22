@@ -15,6 +15,7 @@ pub(crate) use tracking_host::{exercise_tracking, run_tracking_demo};
 mod composing_host;
 pub(crate) use composing_host::exercise_notifications;
 pub(crate) use composing_host::{exercise_composing, run_composing_demo};
+pub(crate) use composing_host::{exercise_transactions, run_transaction_demo};
 
 impl TextStore {
     fn boundary(&self, position: usize) -> bool {
@@ -186,6 +187,8 @@ struct Editor {
     broker: Option<(ISpikeBroker, ComObject<Bridge>)>,
     tracking: Option<tracking_host::Tracking>,
     composing: Option<composing_host::Composing>,
+    transaction: bool,
+    input_disposition: Cell<u32>,
 }
 impl Editor {
     fn clear_tracking(&self) {
@@ -197,6 +200,21 @@ impl Editor {
         }
     }
     fn insert(&self, text: &[u16]) -> Result<()> {
+        if self.transaction {
+            let disposition = self.composing.as_ref().ok_or(E_FAIL)?.insert(self, text)?;
+            self.input_disposition.set(disposition);
+            if disposition != sumibi_tip::spike::INPUT_NOT_ATTEMPTED {
+                if disposition != sumibi_tip::spike::INPUT_APPLIED {
+                    // No automatic body retry/rollback after an attempted write.
+                    // Keep failure visible in this diagnostic UI without text.
+                    self.store.get().input_problem.set(true);
+                }
+                return Ok(());
+            }
+            // Only an explicit not-attempted result permits the original host
+            // input once. Do not attach tracking to a denied transaction.
+            return self.store.get().type_text(text);
+        }
         let before = self
             .tracking
             .as_ref()
@@ -285,6 +303,9 @@ impl Editor {
             if let Some((broker, _)) = &self.broker {
                 if matches!(key.0, 0x1b | 0x0d) {
                     self.clear_tracking();
+                    if let Some(composing) = &self.composing {
+                        composing.cancel(self, true);
+                    }
                     let mut pending = 0;
                     unsafe {
                         let _ = broker.Pending(&mut pending);
@@ -557,6 +578,8 @@ enum RunMode {
     ComposingDemo,
     ComposingTest(&'static str),
     NotificationTest(&'static str),
+    TransactionDemo,
+    TransactionTest(&'static str),
 }
 
 fn run(
@@ -605,6 +628,8 @@ fn run(
                 | RunMode::ComposingDemo
                 | RunMode::ComposingTest(_)
                 | RunMode::NotificationTest(_)
+                | RunMode::TransactionDemo
+                | RunMode::TransactionTest(_)
         ) {
             window.set_title("Sumibi 非同期変換デモ（固定結果） | F7 変換 | Esc 取消 | Enter 原文確定 | Ctrl+Z Undo")?;
             let broker: ISpikeBroker = manager
@@ -629,9 +654,15 @@ fn run(
             submits: Cell::new(0),
             broker,
             tracking,
+            transaction: matches!(mode, RunMode::TransactionDemo | RunMode::TransactionTest(_)),
+            input_disposition: Cell::new(sumibi_tip::spike::INPUT_NOT_ATTEMPTED),
             composing: if matches!(
                 mode,
-                RunMode::ComposingDemo | RunMode::ComposingTest(_) | RunMode::NotificationTest(_)
+                RunMode::ComposingDemo
+                    | RunMode::ComposingTest(_)
+                    | RunMode::NotificationTest(_)
+                    | RunMode::TransactionDemo
+                    | RunMode::TransactionTest(_)
             ) {
                 Some(composing_host::Composing::new(manager)?)
             } else {
@@ -651,7 +682,10 @@ fn run(
             message_loop(&window)
         } else if matches!(
             mode,
-            RunMode::BrokerDemo | RunMode::TrackingDemo | RunMode::ComposingDemo
+            RunMode::BrokerDemo
+                | RunMode::TrackingDemo
+                | RunMode::ComposingDemo
+                | RunMode::TransactionDemo
         ) {
             if matches!(mode, RunMode::TrackingDemo) {
                 window.set_title(
@@ -662,6 +696,9 @@ fn run(
                 window.set_title(
                     "Sumibi 入力composition | F7 変換 | Backspace 範囲縮小 | Esc 取消",
                 )?;
+            }
+            if matches!(mode, RunMode::TransactionDemo) {
+                window.set_title("Sumibi 同期入力取引 | F7 変換 | Esc 取消 | Ctrl+Z Undo")?;
             }
             if matches!(mode, RunMode::TrackingDemo | RunMode::ComposingDemo) {
                 println!("Tracked input demo: F7 converts the recent typed run or an explicit selection. Esc cancels; Enter confirms the original. Close to exit.");
@@ -677,6 +714,8 @@ fn run(
             composing_host::test_composing(&window, &editor, &live, client, case)
         } else if let RunMode::NotificationTest(case) = mode {
             composing_host::test_notifications(&window, &editor, &live, client, case)
+        } else if let RunMode::TransactionTest(case) = mode {
+            composing_host::test_transactions(&window, &editor, &live, client, case)
         } else if let RunMode::CloseTest(case) = mode {
             test_close(&window, &editor, case)
         } else {
@@ -736,6 +775,11 @@ fn broker_message_loop(window: &crate::window_host::Window, editor: &Editor) -> 
             window.set_title("Sumibi 変換中（固定結果） | Esc 取消 | Enter 原文確定")?;
         }
         pending = active;
+        if editor.store.get().input_problem.get() {
+            window.set_title(
+                "Sumibi 入力取引に失敗しました。入力結果を確認してください（自動再入力なし）",
+            )?;
+        }
         let handles: Vec<_> = bridge
             .get()
             .wait_handle()

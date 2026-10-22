@@ -33,11 +33,28 @@ pub unsafe trait ISpikeInputMonitor: IUnknown {
     pub fn SetSignal(&self, signal: *mut c_void) -> HRESULT;
     pub fn Poll(&self) -> HRESULT;
 }
-#[implement(ISpikeInput, ISpikeInputMonitor)]
+pub const INPUT_NOT_ATTEMPTED: u32 = 0;
+pub const INPUT_APPLIED: u32 = 1;
+pub const INPUT_APPLIED_UNTRACKED: u32 = 2;
+pub const INPUT_UNCERTAIN: u32 = 3;
+/// Synchronous insertion only. HRESULT never authorizes host fallback: only
+/// INPUT_NOT_ATTEMPTED does. No Rust allocation crosses this independent ABI.
+#[interface("8ceca767-ac74-49ea-9408-8e508578acda")]
+pub unsafe trait ISpikeInputWriter: IUnknown {
+    pub fn Insert(
+        &self,
+        context: *mut c_void,
+        text: *const u16,
+        length: u32,
+        disposition: *mut u32,
+    ) -> HRESULT;
+}
+#[implement(ISpikeInput, ISpikeInputMonitor, ISpikeInputWriter)]
 struct Control {
     state: Weak<Controller>,
     owner: ThreadId,
     busy: Cell<bool>,
+    write_blocked: Cell<bool>,
     tracker: RefCell<Option<Tracker>>,
     wake: RefCell<Option<Rc<dyn Fn()>>>,
     _lease: ObjectLease,
@@ -49,6 +66,47 @@ impl Drop for Busy<'_> {
     }
 }
 impl Control_Impl {
+    fn in_context(
+        &self,
+        context: *mut c_void,
+        action: impl FnOnce(&mut Tracker) -> Result<()>,
+    ) -> Result<()> {
+        let _busy = self.enter()?;
+        if self.write_blocked.get() {
+            return Err(E_ABORT.into());
+        }
+        let state = self.state.upgrade().ok_or(E_ABORT)?;
+        let (manager, client) = state.input_owner()?;
+        let context = unsafe { ITfContext::from_raw_borrowed(&context) }.ok_or(E_INVALIDARG)?;
+        let mut tracker = self.tracker.borrow_mut().take();
+        let result = (|| {
+            let incoming = context.cast::<IUnknown>()?;
+            if tracker
+                .as_ref()
+                .map(|old| old.context.cast::<IUnknown>())
+                .transpose()?
+                .is_some_and(|old| old != incoming)
+            {
+                tracker.as_mut().ok_or(E_ABORT)?.cancel(false)?;
+                tracker = None;
+            }
+            if tracker.is_none() {
+                tracker = Some(Tracker::new(&manager, context, client)?);
+                tracker
+                    .as_ref()
+                    .ok_or(E_ABORT)?
+                    .set_wake(self.wake.borrow().clone())?;
+            }
+            action(tracker.as_mut().ok_or(E_ABORT)?)
+        })();
+        if result.is_err() {
+            if let Some(tracker) = &mut tracker {
+                let _ = tracker.cancel(false);
+            }
+        }
+        *self.tracker.borrow_mut() = tracker;
+        result
+    }
     fn enter(&self) -> Result<Busy<'_>> {
         if thread::current().id() != self.owner {
             return Err(RPC_E_WRONG_THREAD.into());
@@ -60,6 +118,9 @@ impl Control_Impl {
     }
     fn change(&self, action: impl FnOnce(&mut Tracker) -> Result<()>) -> Result<()> {
         let _busy = self.enter()?;
+        if self.write_blocked.get() {
+            return Err(E_ABORT.into());
+        }
         self.state.upgrade().ok_or(E_ABORT)?.check_thread()?;
         let mut tracker = self.tracker.borrow_mut().take().ok_or(E_ABORT)?;
         let result = action(&mut tracker);
@@ -73,41 +134,12 @@ impl Control_Impl {
 impl ISpikeInput_Impl for Control_Impl {
     unsafe fn BeforeInput(&self, context: *mut c_void, backspace: u32) -> HRESULT {
         boundary(|| {
-            let _busy = self.enter()?;
-            let state = self.state.upgrade().ok_or(E_ABORT)?;
-            let (manager, client) = state.input_owner()?;
-            if context.is_null() || backspace > 1 {
-                return Err(E_INVALIDARG.into());
-            }
-            let context = unsafe { ITfContext::from_raw_borrowed(&context) }.ok_or(E_INVALIDARG)?;
-            let mut tracker = self.tracker.borrow_mut().take();
-            let result = (|| {
-                let incoming = context.cast::<IUnknown>()?;
-                if tracker
-                    .as_ref()
-                    .map(|old| old.context.cast::<IUnknown>())
-                    .transpose()?
-                    .is_some_and(|old| old != incoming)
-                {
-                    tracker.as_mut().ok_or(E_ABORT)?.cancel(false)?;
-                    tracker = None;
+            self.in_context(context, |tracker| {
+                if backspace > 1 {
+                    return Err(E_INVALIDARG.into());
                 }
-                if tracker.is_none() {
-                    tracker = Some(Tracker::new(&manager, context, client)?);
-                    tracker
-                        .as_ref()
-                        .ok_or(E_ABORT)?
-                        .set_wake(self.wake.borrow().clone())?;
-                }
-                tracker.as_mut().ok_or(E_ABORT)?.before(backspace != 0)
-            })();
-            if result.is_err() {
-                if let Some(tracker) = &mut tracker {
-                    let _ = tracker.cancel(false);
-                }
-            }
-            *self.tracker.borrow_mut() = tracker;
-            result
+                tracker.before(backspace != 0)
+            })
         })
         .into()
     }
@@ -148,6 +180,9 @@ impl ISpikeInput_Impl for Control_Impl {
             if user_boundary > 1 {
                 return Err(E_INVALIDARG.into());
             }
+            if user_boundary == 1 {
+                self.write_blocked.set(false);
+            }
             let mut tracker = self.tracker.borrow_mut().take();
             let result = tracker
                 .as_mut()
@@ -156,6 +191,41 @@ impl ISpikeInput_Impl for Control_Impl {
             result
         })
         .into()
+    }
+}
+impl ISpikeInputWriter_Impl for Control_Impl {
+    unsafe fn Insert(
+        &self,
+        context: *mut c_void,
+        text: *const u16,
+        length: u32,
+        disposition: *mut u32,
+    ) -> HRESULT {
+        // Keep this cell outside boundary(), so a caught panic cannot turn an
+        // attempted body write into permission to replay the host input.
+        let outcome = Rc::new(Cell::new(INPUT_NOT_ATTEMPTED));
+        let result = boundary(|| {
+            if disposition.is_null() {
+                return Err(E_INVALIDARG.into());
+            }
+            self.in_context(context, |tracker| {
+                if text.is_null() || !(1..=1024).contains(&length) {
+                    return Err(E_INVALIDARG.into());
+                }
+                let units = unsafe { std::slice::from_raw_parts(text, length as usize) };
+                tracker.insert(units, outcome.clone())
+            })
+        });
+        if matches!(outcome.get(), INPUT_UNCERTAIN | INPUT_APPLIED_UNTRACKED) {
+            // These states can only be produced after enter() on the owner.
+            self.write_blocked.set(true);
+        }
+        if !disposition.is_null() {
+            unsafe {
+                disposition.write(outcome.get());
+            }
+        }
+        result.into()
     }
 }
 impl ISpikeInputMonitor_Impl for Control_Impl {
@@ -208,6 +278,7 @@ pub(crate) fn control(state: &Rc<Controller>) -> IUnknown {
         state: Rc::downgrade(state),
         owner: thread::current().id(),
         busy: Cell::new(false),
+        write_blocked: Cell::new(false),
         tracker: RefCell::new(None),
         wake: RefCell::new(None),
         _lease: ObjectLease::new(),

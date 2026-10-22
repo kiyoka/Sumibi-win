@@ -1,19 +1,54 @@
 //! Owner-host boundary around the actual DLL input-composition ABI.
 use super::*;
 use sumibi_tip::spike::{ISpikeInput, ISpikeInputMonitor, ISpikeInputSignal, FUNCTION_TEST_INPUT};
+use sumibi_tip::spike::{
+    ISpikeInputWriter, INPUT_APPLIED_UNTRACKED, INPUT_NOT_ATTEMPTED, INPUT_UNCERTAIN,
+};
 use windows::Win32::Foundation::HANDLE;
 #[path = "input_notify_host.rs"]
 mod input_notify_host;
 pub(crate) use input_notify_host::exercise_notifications;
 pub(super) use input_notify_host::test_notifications;
+#[path = "input_transaction_host.rs"]
+mod input_transaction_host;
+pub(super) use input_transaction_host::test_transactions;
+pub(crate) use input_transaction_host::{exercise_transactions, run_transaction_demo};
 
 pub(super) struct Composing {
     control: ISpikeInput,
     settled_composition: Cell<u32>,
     monitor: ISpikeInputMonitor,
     signal: ComObject<crate::input_signal::Signal>,
+    uncertain: Cell<bool>,
 }
 impl Composing {
+    pub(super) fn insert(&self, editor: &Editor, units: &[u16]) -> Result<u32> {
+        if self.uncertain.get() {
+            return Ok(INPUT_NOT_ATTEMPTED);
+        }
+        if self.settled_composition.get() != editor.store.get().composition_events.get() {
+            self.cancel(editor, false);
+        }
+        if editor.store.get().composition_events.get() == u32::MAX {
+            return Ok(INPUT_NOT_ATTEMPTED);
+        }
+        let writer: ISpikeInputWriter = self.control.cast()?;
+        let mut disposition = INPUT_UNCERTAIN;
+        unsafe {
+            let _ = writer.Insert(
+                editor.context.as_raw(),
+                units.as_ptr(),
+                units.len() as u32,
+                &mut disposition,
+            );
+        }
+        self.settled_composition
+            .set(editor.store.get().composition_events.get());
+        if matches!(disposition, INPUT_UNCERTAIN | INPUT_APPLIED_UNTRACKED) {
+            self.uncertain.set(true);
+        }
+        Ok(disposition)
+    }
     pub(super) fn new(manager: &ITfThreadMgr) -> Result<Self> {
         let control: ISpikeInput = unsafe {
             manager
@@ -33,6 +68,7 @@ impl Composing {
             settled_composition: Cell::new(0),
             monitor,
             signal,
+            uncertain: Cell::new(false),
         })
     }
     pub(super) fn connect(&self, editor: &Editor) {
@@ -91,6 +127,10 @@ impl Composing {
             .set(editor.store.get().composition_events.get());
     }
     pub(super) fn cancel(&self, editor: &Editor, user_boundary: bool) {
+        if user_boundary {
+            self.uncertain.set(false);
+            editor.store.get().input_problem.set(false);
+        }
         unsafe {
             let _ = self.control.Cancel(user_boundary.into());
         }
@@ -98,6 +138,9 @@ impl Composing {
             .set(editor.store.get().composition_events.get());
     }
     pub(super) fn prepare(&self, editor: &Editor, bridge: &ComObject<Bridge>) -> Result<bool> {
+        if self.uncertain.get() {
+            return Ok(false);
+        }
         if self.settled_composition.get() != editor.store.get().composition_events.get() {
             self.cancel(editor, false);
             return Ok(false);

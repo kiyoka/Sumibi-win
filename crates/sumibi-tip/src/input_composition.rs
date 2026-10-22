@@ -1,10 +1,13 @@
-//! Cooperating-host input composition. Metadata changes only: the host has
-//! already performed each text insertion/deletion exactly once.
+//! Cooperating-host input composition. Before/After updates metadata after one
+//! host edit; the independent writer inserts supplied text in one write cookie.
 use super::*;
 use crate::owned_composition::OwnedComposition;
 use sumibi_core::input::{InputPoint, InputSession, TrackedInput};
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::Variant::VARIANT;
+
+#[path = "input_transaction.rs"]
+mod transaction;
 
 struct Observation {
     point: InputPoint,
@@ -219,71 +222,25 @@ impl Tracker {
         Ok(())
     }
     fn update(&mut self, range: (i32, i32), expected: InputMetadata) -> Result<()> {
-        if range.0 < 0 || range.1 <= range.0 || range.1 - range.0 > MAX_SELECTION_UNITS as i32 {
-            return Err(E_ABORT.into());
-        }
-        let context = self.context.clone();
-        let manager = self.manager.clone();
-        let owned = self.owned.clone();
-        let marked = self.marked.clone();
-        let atom = self.atom;
-        let previous = self.extent;
+        let edit = self.edit();
         run(
             &self.context,
             self.client,
             true,
-            Box::new(move |cookie| {
-                ensure_target(&manager, &context)?;
-                let (selected, _) = selection(&context, cookie)?;
-                if extent_of(&selected)? != expected.selection
-                    || metadata_gate(&context, &selected, cookie, &owned)? != expected.protection
-                {
-                    return Err(E_ABORT.into());
-                }
-                if previous.is_some_and(|old| old.0 != range.0) {
-                    return Err(E_ABORT.into());
-                }
-                let target = unsafe { context.GetStart(cookie)? };
-                unsafe {
-                    target
-                        .cast::<ITfRangeACP>()?
-                        .SetExtent(range.0, range.1 - range.0)?;
-                }
-                if extent_of(&target)? != range
-                    || !same_context(&unsafe { target.GetContext()? }, &context)?
-                {
-                    return Err(E_ABORT.into());
-                }
-                if metadata_gate(&context, &target, cookie, &owned)? != expected.protection {
-                    return Err(E_ABORT.into());
-                }
-                unsafe {
-                    let property = context.GetProperty(&GUID_PROP_ATTRIBUTE)?;
-                    if preview::runs(&property, &target, cookie)?
-                        .iter()
-                        .any(|(_, value)| !value.is_empty() && !preview::is_atom(value, atom))
-                    {
-                        return Err(E_ABORT.into());
-                    }
-                    clear_mark(&context, cookie, &marked, atom)?;
-                    *marked.borrow_mut() = Some(target.Clone()?);
-                    property.SetValue(cookie, &target, &VARIANT::from(atom))?;
-                    if owned.can_commit() {
-                        owned.shift_end(&context, cookie, &target)?;
-                    } else {
-                        owned.start(&context, &target, cookie)?;
-                    }
-                }
-                if extent_of(&owned.range(&context)?)? != range
-                    || metadata_gate(&context, &target, cookie, &owned)? != expected.protection
-                {
-                    return Err(E_ABORT.into());
-                }
-                ensure_target(&manager, &context)
-            }),
+            Box::new(move |cookie| edit.update(cookie, range, expected)),
         )?;
         self.extent = Some(range);
         Ok(())
+    }
+    fn edit(&self) -> CompositionEdit {
+        CompositionEdit {
+            context: self.context.clone(),
+            manager: self.manager.clone(),
+            owned: self.owned.clone(),
+            marked: self.marked.clone(),
+            atom: self.atom,
+            previous: self.extent,
+        }
     }
     pub(crate) fn cancel(&mut self, user_boundary: bool) -> Result<()> {
         self.cleanup_pending = true;
@@ -474,4 +431,73 @@ fn clear_mark(
         marked.borrow_mut().take();
     }
     Ok(())
+}
+
+/// Shared cookie-local metadata operations for host-after-edit and DLL insertion.
+struct CompositionEdit {
+    context: ITfContext,
+    manager: ITfThreadMgr,
+    owned: Rc<OwnedComposition>,
+    marked: Rc<RefCell<Option<ITfRange>>>,
+    atom: i32,
+    previous: Option<(i32, i32)>,
+}
+impl CompositionEdit {
+    fn validate(&self, cookie: u32, expected: InputMetadata) -> Result<ITfRange> {
+        ensure_target(&self.manager, &self.context)?;
+        let (selected, _) = selection(&self.context, cookie)?;
+        if !same_context(&unsafe { selected.GetContext()? }, &self.context)?
+            || extent_of(&selected)? != expected.selection
+            || metadata_gate(&self.context, &selected, cookie, &self.owned)? != expected.protection
+        {
+            return Err(E_ABORT.into());
+        }
+        Ok(selected)
+    }
+    fn update(&self, cookie: u32, range: (i32, i32), expected: InputMetadata) -> Result<()> {
+        if range.0 < 0 || range.1 <= range.0 || range.1 - range.0 > MAX_SELECTION_UNITS as i32 {
+            return Err(E_ABORT.into());
+        }
+        self.validate(cookie, expected)?;
+        if self.previous.is_some_and(|old| old.0 != range.0) {
+            return Err(E_ABORT.into());
+        }
+        let target = unsafe { self.context.GetStart(cookie)? };
+        unsafe {
+            target
+                .cast::<ITfRangeACP>()?
+                .SetExtent(range.0, range.1 - range.0)?;
+        }
+        if extent_of(&target)? != range
+            || !same_context(&unsafe { target.GetContext()? }, &self.context)?
+        {
+            return Err(E_ABORT.into());
+        }
+        if metadata_gate(&self.context, &target, cookie, &self.owned)? != expected.protection {
+            return Err(E_ABORT.into());
+        }
+        unsafe {
+            let property = self.context.GetProperty(&GUID_PROP_ATTRIBUTE)?;
+            if preview::runs(&property, &target, cookie)?
+                .iter()
+                .any(|(_, value)| !value.is_empty() && !preview::is_atom(value, self.atom))
+            {
+                return Err(E_ABORT.into());
+            }
+            clear_mark(&self.context, cookie, &self.marked, self.atom)?;
+            *self.marked.borrow_mut() = Some(target.Clone()?);
+            property.SetValue(cookie, &target, &VARIANT::from(self.atom))?;
+            if self.owned.can_commit() {
+                self.owned.shift_end(&self.context, cookie, &target)?;
+            } else {
+                self.owned.start(&self.context, &target, cookie)?;
+            }
+        }
+        if extent_of(&self.owned.range(&self.context)?)? != range
+            || metadata_gate(&self.context, &target, cookie, &self.owned)? != expected.protection
+        {
+            return Err(E_ABORT.into());
+        }
+        ensure_target(&self.manager, &self.context)
+    }
 }

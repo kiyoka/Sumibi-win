@@ -89,6 +89,11 @@ InputWatch/ManualEdit Guardはstatus通知も購読する。外部通知をEXE�
 次の打鍵を待たず所有ループのPollで追跡を失効・cleanupする。
 失敗直後の通知世代を保持し、同じ世代の再signalだけではwriteを再試行しない。
 参照と終了後通知の扱いは[ADR 0011](adr/0011-owner-loop-input-invalidation.md)を参照。
+transaction-demoでは独立ISpikeInputWriterが供給された文字を一度だけ挿入し、caretとcompositionを
+同じ同期write cookieで更新する。scope/status/compartment/focusの履歴を自己OnEndEditと分けて検査する。
+SetTextを試みた後の失敗ではHRESULTから再入力を推測せず、変換を停止して明示boundaryを待つ。
+既存本文取得のidle gateは維持する。Backspace・待機・救済・一般アプリ統合の完成ではない
+（[ADR 0012](adr/0012-synchronous-input-transaction.md)）。
 Controllerのbusyガードにより操作中の再入を拒否し、自分の書込で生じる通知を外部編集と誤認しない。
 TSFを呼ぶ前にRefCellの借用を解放し、通知やウィンドウ破棄が再入しても借用違反を起こさないようにする。
 

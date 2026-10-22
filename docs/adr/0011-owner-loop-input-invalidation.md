@@ -80,3 +80,6 @@ signal失敗はホストの正常な入力通知へ失敗を返さず、通常�
 
 根拠：[ITfStatusSink](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nn-msctf-itfstatussink)、
 [RequestEditSessionの同期要求制限](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontext-requesteditsession)。
+
+後続：[ADR 0012](0012-synchronous-input-transaction.md)で、所有ホスト向けに本文挿入とcompositionを
+同じwrite cookieで更新する経路を追加した。削除・待機・救済と一般アプリ統合は引き続き未完了。

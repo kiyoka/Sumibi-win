@@ -23,7 +23,7 @@ Mac技術解説自身の実装照合基準 `d2b96fc` と区別する。Macの機
 | TIPのCOM・キー・表示属性・編集 | 専用ホストで実装済み。通常アプリへの常設登録なし |
 | 入力保護 | scope/status/compartmentと取得・送信前・適用時の検査を実装。専用ACPで39ケース。一般アプリの全機密欄の識別は未検証 |
 | 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。実キーボードの手動確認は未実施 |
-| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮29・選択composition 18・他サービス拒否16ケースを確認。原子的な本文入力取引・製品統合・候補UIは未実装 |
+| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮29・選択composition 18・他サービス拒否16・同期入力取引22ケースを確認。削除・待機・救済・製品統合・候補UIは未実装 |
 | Protocol / IPC | 有限フレーム・版付きJSON・client状態、固定process相互検査・overlapped pipe。実DLLのキー・Core・所有TSFから診断用EXE bridge経由で単発Brokerへ接続。一般アプリは未接続 |
 | Host・HTTP・キー保存・設定UI | 単発の診断Host EXEを実装。既定では変換拒否。常駐Host・HTTP・キー保存・設定UIは未実装 |
 | Decisions・辞書・署名付き配布 | 未実装。後続段階 |
@@ -178,6 +178,10 @@ F7前に自分のcompositionを終了し、通常の保護検査と原文の完�
 外部メタデータ通知はEXEのeventへ集約し、所有ループが次の打鍵を待たず古いcompositionを解除する。
 statusの変更・復元もGuardで失効させ、同じ世代のwakeだけで拒否されたcleanupを繰り返さない。
 通知callbackは編集・本文取得を行わない（[ADR 0011](adr/0011-owner-loop-input-invalidation.md)）。
+transaction-demoでは供給された文字の挿入・caret・composition更新を同じ同期writeで行う。
+書込前拒否と書込後の未確認状態を分け、後者では二重入力を防ぐため再入力せず、変換を停止して
+確認を表示する。rollback・入力救済・製品の削除取引や一般アプリ対応の完成ではない
+（[ADR 0012](adr/0012-synchronous-input-transaction.md)）。
 
 ### 5.2 製品の追跡入力（未実装）
 
