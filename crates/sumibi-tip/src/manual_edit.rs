@@ -225,7 +225,7 @@ impl InputWatch {
         Ok(())
     }
     #[cfg(feature = "spike")]
-    pub(crate) fn boundary_generation(&self) -> Result<u64> {
+    pub fn boundary_generation(&self) -> Result<u64> {
         if self.guard.state.owner != thread::current().id() {
             return Err(RPC_E_WRONG_THREAD.into());
         }

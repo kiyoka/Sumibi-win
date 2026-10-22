@@ -24,6 +24,7 @@
 - [ADR 0011](adr/0011-owner-loop-input-invalidation.md)：メタデータ通知で所有ループを起こす仕組みと、本文を読まない失効cleanup。
 - [ADR 0012](adr/0012-synchronous-input-transaction.md)：同期writeでの文字・caret・composition更新と、書込後の再入力禁止。
 - [ADR 0013](adr/0013-synchronous-tracked-backspace.md)：記録末尾のBackspaceと全削除、repeat・UTF-16・失敗時の再削除禁止。
+- [ADR 0014](adr/0014-bounded-input-recovery.md)：未確認入力の有限救済、保護失効、期限、明示コピー・破棄。
 - [Mac版移植範囲](MAC_PARITY.md)：共通契約とOS固有の再設計。
 
 ## 更新の規則

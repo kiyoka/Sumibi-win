@@ -86,3 +86,6 @@ transaction-demoのBackspaceは今回の経路を使用する。前方Delete、�
 
 根拠：[ITfRange.SetText](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfrange-settext)、
 [ITfComposition.ShiftEnd](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcomposition-shiftend)。
+
+後続：[ADR 0014](0014-bounded-input-recovery.md)で未確認入力の救済を追加した。
+Escでは救済を消さず、明示破棄・コピー・期限で解除する。旧native試験の追跡再開ではF9の明示破棄も行う。

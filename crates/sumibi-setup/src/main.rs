@@ -13,6 +13,8 @@ mod pipe_probe;
 #[cfg(windows)]
 mod probe;
 #[cfg(windows)]
+mod recovery_view;
+#[cfg(windows)]
 mod render;
 #[cfg(windows)]
 mod window_host;

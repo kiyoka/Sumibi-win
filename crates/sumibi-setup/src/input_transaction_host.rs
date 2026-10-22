@@ -192,6 +192,8 @@ pub(in crate::edit_host::input_host) fn test_transactions(
             assert_eq!(store.set_text_calls.get(), 1);
             editor.input(WM_KEYDOWN, WPARAM(0x1b), LPARAM(1))?;
             assert!(!store.input_problem.get());
+            editor.input(WM_KEYDOWN, WPARAM(0x78), LPARAM(1))?;
+            editor.service_recovery(window, &crate::recovery_view::SystemClipboard)?;
             editor.insert(&['q' as u16])?;
             assert_eq!(editor.input_disposition.get(), INPUT_APPLIED);
         } else if matches!(

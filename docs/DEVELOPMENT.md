@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 17件（応答照合7・入力範囲追跡/削除計画10）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 6件、TIP 5件を含めworkspace合計50件。
+現時点はCore 24件（応答照合7・入力範囲追跡/削除計画10・救済7）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 6件、TIP 5件を含めworkspace合計57件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -49,6 +49,32 @@ Backspaceの27ケースも成功。ログはtarget/issue-4-backspace-transaction
 [ADR 0013](adr/0013-synchronous-tracked-backspace.md)を参照。
 最終版はTest-Spike.ps1を省略なしで実行し、workspace 50件・Clippy 3構成と既存native検査も成功した。
 全回帰ログはtarget/issue-4-backspace-transaction-regression.log。
+
+## 未確認入力の救済を試す
+
+リポジトリのフォルダで、通常ユーザーのPowerShellから実行する。
+
+```powershell
+cargo build --workspace --locked --offline
+cargo build -p sumibi-host --features spike --locked --offline
+./target/debug/sumibi-setup.exe recovery-input-test --dll ./target/debug/sumibi_tip.dll
+./target/debug/sumibi-setup.exe recovery-demo --dll ./target/debug/sumibi_tip.dll
+```
+
+recovery-demoは合成文字列の入力失敗を作り、空の入力欄を表示する。F8で救済の確認画面を開く。
+確認画面のコピー欄、または画面を開いた状態のF10で実クリップボードへ全文をコピーできる。
+コピー後も文書へ自動的には挿入しない。F9または破棄欄で救済を消し、×は画面だけ閉じる。
+Escは入力追跡の停止を解除するが、救済は保持する。満杯の間の新規入力は通常ホスト経路で一度だけ処理する。
+
+保持は1件・最大1024 UTF-16単位・失敗確定から最大10分。開閉やコピー失敗で延長しない。
+保持期限後は所有ループで画面と救済を解除する。終了時にも破棄し、ディスクへ保存しない。
+保護状態の変更・復元やfocus喪失では本文を取り除き、操作情報だけを残す。Backspaceも操作情報だけで、コピーはできない。
+既に明示コピーしたOSクリップボードは救済期限で自動消去しない。
+
+recovery-input-testは実DLLの25ケースを自動検証する。コピー先は試験用メモリーで、利用者のクリップボードは変更しない。
+Core救済7件を加えworkspaceは57件。ログはtarget/issue-4-input-recovery.logとtarget/issue-4-input-recovery-regression.log。
+Test-Spike.ps1を省略なしで実行し、fmt・Clippy 3構成・build・既存native検査・pipe/peerも成功した。
+条件と製品への残タスクは[ADR 0014](adr/0014-bounded-input-recovery.md)を参照。
 
 ## 別Host EXEから実TSFまでの検証
 

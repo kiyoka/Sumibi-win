@@ -29,6 +29,7 @@ F6プレビューは選択範囲をSumibi自身のcompositionとして保持し�
 外部編集や保護状態の通知では、次の打鍵を待たず所有ループで古い追跡を解除します。`input-notify-test`で通知20ケースを検証できます（[条件と制限](docs/adr/0011-owner-loop-input-invalidation.md)）。
 `transaction-demo`のBackspaceは記録末尾だけを同じ同期writeで削除し、repeatも一括更新します。全削除でcompositionを終了し、失敗時には再削除しません。`backspace-input-test`で27ケースを検証できます（[条件と制限](docs/adr/0013-synchronous-tracked-backspace.md)）。
 Notepad等の実アプリでの表示と実打鍵は未確認です。
+`recovery-demo`では固定の入力失敗を再現し、F8で未確認入力を確認できます。1件・最大1024 UTF-16単位を最大10分だけ保持し、明示コピー／破棄を提供します。自動再入力はしません。`recovery-input-test`で25ケースを検証できます（[起動と操作](docs/DEVELOPMENT.md#未確認入力の救済を試す)、[保護と保持の契約](docs/adr/0014-bounded-input-recovery.md)）。
 `transaction-demo`では文字入力・caret・compositionを同じ同期writeで更新します。書込後の失敗では自動再入力せず、確認を表示します。`transaction-input-test`で22ケースを検証できます（[起動と操作](docs/DEVELOPMENT.md#同期入力取引を試す)、[範囲と失敗時の契約](docs/adr/0012-synchronous-input-transaction.md)）。
 
 - [実装着手 Issue #1](https://github.com/kiyoka/Sumibi-win/issues/1)
@@ -54,6 +55,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [所有ループによる入力追跡の失効処理](docs/adr/0011-owner-loop-input-invalidation.md)
 - [同期入力取引と二重入力の防止](docs/adr/0012-synchronous-input-transaction.md)
 - [記録済み入力末尾の同期Backspace](docs/adr/0013-synchronous-tracked-backspace.md)
+- [未確認入力の有限救済と明示コピー](docs/adr/0014-bounded-input-recovery.md)
 - [Issue #1の受入記録](docs/ISSUE_1_ACCEPTANCE.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 

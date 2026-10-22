@@ -46,6 +46,10 @@ status変更後の復元、cleanup拒否からの回復、有限event、終了�
 1回Undo、書込後の再削除禁止、保護復元と追跡外へのfallbackを27ケースで検証した
 （[ADR 0013](adr/0013-synchronous-tracked-backspace.md)）。Coreの計画3件を追加しworkspaceは50件。
 次は前方Delete等の製品キー配送、未確認入力の保持・救済と待機容量、一般アプリでの入力・寿命・Undoを進める。
+続いて未確認入力の救済を追加した。診断editorの1件・最大1024 UTF-16単位を最大10分保持し、
+明示確認・コピー・破棄、保護変更での本文除去、容量超過時の通常入力、期限によるowner wakeを25ケースで確認した
+（[ADR 0014](adr/0014-bounded-input-recovery.md)）。Core救済7件を加えworkspaceは57件。
+次は製品のプロセス全体の待機容量・キー配送、一般アプリ内での入力・寿命・Undoと常駐Brokerを進める。
 
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。

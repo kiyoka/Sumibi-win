@@ -387,7 +387,7 @@ fn notify_status(editor: &Editor, flags: u32) -> Result<()> {
     let sink = editor.store.get().sink.borrow().clone().ok_or(E_FAIL)?;
     unsafe { sink.OnStatusChange(flags) }
 }
-pub(super) fn body_reads() -> Result<u64> {
+pub(in crate::edit_host::input_host) fn body_reads() -> Result<u64> {
     // Borrow the already-loaded build artifact, retained by probe throughout
     // this synchronous test. Do not read the statically linked EXE counter.
     unsafe {

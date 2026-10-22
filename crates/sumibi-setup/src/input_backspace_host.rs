@@ -202,6 +202,8 @@ pub(in crate::edit_host::input_host) fn test_backspace(
             assert!(!editor.broker.as_ref().ok_or(E_FAIL)?.1.get().active());
             editor.input(WM_KEYDOWN, WPARAM(0x1b), LPARAM(1))?;
             assert!(!store.input_problem.get());
+            editor.input(WM_KEYDOWN, WPARAM(0x78), LPARAM(1))?;
+            editor.service_recovery(window, &crate::recovery_view::SystemClipboard)?;
             editor.insert(&['z' as u16])?;
             assert_eq!(editor.input_disposition.get(), INPUT_APPLIED);
             pump(window)?;

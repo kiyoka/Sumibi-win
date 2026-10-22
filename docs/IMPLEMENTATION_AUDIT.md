@@ -7,17 +7,17 @@
 
 | 領域 | 現在のコード・状態 | 次の受入条件 |
 | --- | --- | --- |
-| OS非依存Core | core/lib.rsのManualConversionとinput.rsの有限InputSession。所有ホストの実入力を1024 UTF-16単位まで記録 | 製品追跡・待機・候補・手動／自動の状態と効果を追加 |
+| OS非依存Core | core/lib.rsのManualConversionとinput.rsの有限InputSession。所有ホストの実入力を1024 UTF-16単位まで記録。recovery.rsに有限救済 | 製品追跡・待機・候補・手動／自動の状態と効果を追加 |
 | COMとDLL | tip/com.rs、build.rs。factory・独立lease・所有thread・解除再試行 | 一般アプリにロードされる常設登録と更新時の寿命 |
 | TSF編集 | tip/edit.rsとmanual_edit.rs。同期read/write、全文照合、Core gate、IPC結果の一度だけ適用。所有ACP context限定 | 製品キーとの統合、一般アプリの対象分類と編集 |
 | 保護入力 | protection.rs。scope/status/compartmentの肯定検査、取得・source・適用時の再検査。実DLLで39ケース | 一般アプリの実スコープ・独自機密欄・判定不能時の動作確認 |
-| 追跡composition | 選択composition 18・所有ホストの入力範囲25・実DLLのcomposition伸縮29・同期入力取引22・Backspace 27・他サービス拒否16ケースを確認 | 前方Delete・待機・入力救済・製品InputSession・一般アプリの他IMEとの競合と寿命 |
+| 追跡composition | 選択composition 18・所有ホストの入力範囲25・実DLLのcomposition伸縮29・同期入力取引22・Backspace 27・他サービス拒否16ケースを確認 | 前方Delete・待機・製品全体の救済・製品InputSession・一般アプリの他IMEとの競合と寿命 |
 | 表示属性 | display.rs / preview.rs。点線、原文保持、属性だけ遅延解除 | 通常アプリでの下線、アクセシビリティ、既存属性との共存 |
 | 変更通知 | notifications.rs。本文・選択・scope・compartment・composition属性・フォーカスで失効。空compositionは所有ホストから取消を転送 | 製品追跡・IPC・候補との統合、一般アプリの未通知履歴 |
 | キー配送 | keys.rs / input_host.rs。専用windowで実TSF経路 | US/JIS配列・変換キー・Terminal・実打鍵 |
 | Undo/Redo | TextStoreに本文・選択・向きの履歴。固定変換含む | 一般アプリの標準履歴で変換が1回のUndoにまとまる |
 | 描画 | live_render / render / window_host。通知→WM_APP→Frame | 製品候補UIのUIElement、DPI、高コントラスト、読み上げ |
-| 手動待機と救済 | 未実装。初期設計に容量・保持期間の案 | 消費前容量確保・順序・超過・対象変更・期限と明示破棄の整合 |
+| 手動待機と救済 | 所有editorの救済1件・1024単位・10分と明示コピー/破棄を25ケースで確認。待機行列は未実装 | 消費前容量確保・順序・超過・対象変更・期限と明示破棄の整合 |
 | Protocol / Broker | 有限フレーム・JSON・client状態、固定process相互検査・8 endpoint・overlapped pipe。単発Host・容量4 worker・各1結果。実DLLキー・Core・実TSFから診断用EXE bridgeを通す経路も検証 | 製品Broker発見・常駐dispatch、一般アプリ内の配置と入力統合。AppContainerは初期非対応 |
 | HTTP | 未実装。固定文字列で検証 | 模擬HTTPで認証・同意・転送拒否・上限・取消・エラー分類 |
 | 設定・資格情報 | 未実装。LocalAppData / Credential Manager案 | 形式版・原子的保存・秘密分離・認可取消・破損回復 |
@@ -113,6 +113,14 @@ Coreに計画の3件を追加し、workspaceは50件。挿入と削除で本文�
 詳細は[ADR 0013](adr/0013-synchronous-tracked-backspace.md)を参照。
 Test-Spike.ps1を省略なしで実行し、上記50件と既存native検査も成功した。
 ログはtarget/issue-4-backspace-transaction-regression.log。TSF/COM解除・DLLアンロードと診断process残留なしを確認した。
+
+同日、所有editorの未確認入力を1件・1024単位・10分に制限する救済と確認画面を追加した。
+recovery-input-testの25ケースで、予約・容量・明示コピー/失敗/破棄・期限・保護失効・古い操作の拒否を確認。
+Coreに救済7件を追加してworkspaceは57件。コピー試験は差替え先を使い、実クリップボードを変更しない。
+文書本文・Undo・SetText・実DLLの本文取得回数を救済操作で増やさないことも確認した。
+詳細は[ADR 0014](adr/0014-bounded-input-recovery.md)を参照。製品の待機行列・全体容量と一般アプリは未完了。
+Test-Spike.ps1の全検査を省略なしで実行し、57件と既存native/pipe/peerも成功した。
+ログはtarget/issue-4-input-recovery-regression.log。TSF/COM解除・DLLアンロード、診断process残留なしも確認。
 
 ## 3. アプリ互換表の記録形式
 

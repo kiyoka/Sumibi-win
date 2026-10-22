@@ -7,7 +7,7 @@ use sumibi_tip::spike::{
 };
 use windows::Win32::Foundation::HANDLE;
 #[path = "input_notify_host.rs"]
-mod input_notify_host;
+pub(super) mod input_notify_host;
 pub(crate) use input_notify_host::exercise_notifications;
 pub(super) use input_notify_host::test_notifications;
 #[path = "input_transaction_host.rs"]
@@ -37,7 +37,9 @@ impl Composing {
         if editor.store.get().composition_events.get() == u32::MAX {
             return Ok(INPUT_NOT_ATTEMPTED);
         }
-        let eraser: ISpikeInputEraser = self.control.cast()?;
+        let Ok(eraser) = self.control.cast::<ISpikeInputEraser>() else {
+            return Ok(INPUT_NOT_ATTEMPTED);
+        };
         let mut disposition = INPUT_UNCERTAIN;
         unsafe {
             let _ = eraser.Backspace(editor.context.as_raw(), count, &mut disposition);
@@ -62,7 +64,9 @@ impl Composing {
         if editor.store.get().composition_events.get() == u32::MAX {
             return Ok(INPUT_NOT_ATTEMPTED);
         }
-        let writer: ISpikeInputWriter = self.control.cast()?;
+        let Ok(writer) = self.control.cast::<ISpikeInputWriter>() else {
+            return Ok(INPUT_NOT_ATTEMPTED);
+        };
         let mut disposition = INPUT_UNCERTAIN;
         unsafe {
             let _ = writer.Insert(

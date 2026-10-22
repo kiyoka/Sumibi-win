@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod input;
+pub mod recovery;
 
 /// Opaque, globally unique request identity supplied by the future adapter.
 /// Never reuse an identity, including after cancellation or reconnection.

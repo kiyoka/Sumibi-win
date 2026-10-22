@@ -16,6 +16,9 @@ mod composing_host;
 pub(crate) use composing_host::{exercise_backspace, exercise_notifications};
 pub(crate) use composing_host::{exercise_composing, run_composing_demo};
 pub(crate) use composing_host::{exercise_transactions, run_transaction_demo};
+#[path = "input_recovery_host.rs"]
+mod input_recovery_host;
+pub(crate) use input_recovery_host::{exercise_recovery, run_recovery_demo};
 
 impl TextStore {
     fn boundary(&self, position: usize) -> bool {
@@ -189,6 +192,7 @@ struct Editor {
     composing: Option<composing_host::Composing>,
     transaction: bool,
     input_disposition: Cell<u32>,
+    rescue: input_recovery_host::Rescue,
 }
 impl Editor {
     fn handled_transaction(&self, disposition: u32) -> bool {
@@ -211,7 +215,22 @@ impl Editor {
     }
     fn insert(&self, text: &[u16]) -> Result<()> {
         if self.transaction {
-            let disposition = self.composing.as_ref().ok_or(E_FAIL)?.insert(self, text)?;
+            let Some(ticket) = self
+                .rescue
+                .reserve(sumibi_core::recovery::Operation::Insert(text.len()))
+            else {
+                self.clear_tracking();
+                self.input_disposition
+                    .set(sumibi_tip::spike::INPUT_NOT_ATTEMPTED);
+                return self.store.get().type_text(text);
+            };
+            let disposition = self
+                .composing
+                .as_ref()
+                .ok_or(E_FAIL)?
+                .insert(self, text)
+                .unwrap_or(sumibi_tip::spike::INPUT_UNCERTAIN);
+            self.rescue.finish(ticket, disposition, text);
             if self.handled_transaction(disposition) {
                 return Ok(());
             }
@@ -252,6 +271,7 @@ impl Editor {
     }
     fn input(&self, message: u32, key: WPARAM, flags: LPARAM) -> Result<bool> {
         if message == WM_CLOSE {
+            self.rescue.close();
             self.clear_tracking();
             self.high.set(None);
             // SAFETY: revoke this editor's owner-thread grant before its view
@@ -262,6 +282,7 @@ impl Editor {
             return Ok(false);
         }
         if message == WM_KILLFOCUS {
+            self.rescue.invalidate();
             self.clear_tracking();
             self.high.set(None);
             if self.broker.is_some() {
@@ -286,6 +307,10 @@ impl Editor {
             .unwrap_or(false));
         }
         if message == WM_KEYDOWN {
+            if self.transaction && matches!(key.0, 0x77..=0x79) {
+                self.rescue.request(key.0);
+                return Ok(true);
+            }
             if self.high.take().is_some() {
                 self.clear_tracking();
             }
@@ -492,11 +517,22 @@ impl Editor {
             }
             0x08 => {
                 if self.transaction {
-                    let disposition = self
-                        .composing
-                        .as_ref()
-                        .ok_or(E_FAIL)?
-                        .backspace(self, repeats as u32)?;
+                    let ticket = self
+                        .rescue
+                        .reserve(sumibi_core::recovery::Operation::Backspace(repeats as u32));
+                    let disposition = if let Some(ticket) = ticket {
+                        let disposition = self
+                            .composing
+                            .as_ref()
+                            .ok_or(E_FAIL)?
+                            .backspace(self, repeats as u32)
+                            .unwrap_or(sumibi_tip::spike::INPUT_UNCERTAIN);
+                        self.rescue.finish(ticket, disposition, &[]);
+                        disposition
+                    } else {
+                        self.clear_tracking();
+                        sumibi_tip::spike::INPUT_NOT_ATTEMPTED
+                    };
                     if !self.handled_transaction(disposition) {
                         // Only an explicit no-write outcome permits this
                         // original host operation once, including its repeat.
@@ -675,6 +711,13 @@ fn run(
             tracking,
             transaction: matches!(mode, RunMode::TransactionDemo | RunMode::TransactionTest(_)),
             input_disposition: Cell::new(sumibi_tip::spike::INPUT_NOT_ATTEMPTED),
+            rescue: input_recovery_host::Rescue::new(
+                manager,
+                &context,
+                client,
+                matches!(mode, RunMode::TransactionDemo | RunMode::TransactionTest(_)),
+                matches!(mode, RunMode::TransactionTest("rescue/expire-wake")),
+            )?,
             composing: if matches!(
                 mode,
                 RunMode::ComposingDemo
@@ -736,6 +779,8 @@ fn run(
         } else if let RunMode::TransactionTest(case) = mode {
             if let Some(case) = case.strip_prefix("erase/") {
                 composing_host::test_backspace(&window, &editor, &live, client, case)
+            } else if let Some(case) = case.strip_prefix("rescue/") {
+                input_recovery_host::test_recovery(&window, &editor, &live, client, case)
             } else {
                 composing_host::test_transactions(&window, &editor, &live, client, case)
             }
@@ -745,6 +790,7 @@ fn run(
             test_input(&window, &editor, &live)
         };
         window.clear_input();
+        editor.rescue.close();
         editor.clear_tracking();
         if let Some(composing) = &editor.composing {
             composing.close(&editor)?;
@@ -803,6 +849,7 @@ fn broker_message_loop(window: &crate::window_host::Window, editor: &Editor) -> 
                 "Sumibi 入力取引に失敗しました。入力結果を確認してください（自動再入力なし）",
             )?;
         }
+        editor.service_recovery(window, &crate::recovery_view::SystemClipboard)?;
         let handles: Vec<_> = bridge
             .get()
             .wait_handle()
@@ -817,7 +864,12 @@ fn broker_message_loop(window: &crate::window_host::Window, editor: &Editor) -> 
         // No IPC wait or result callback inside WndProc. Sent close/focus
         // messages are handled by the owner and wake the ordinary message path.
         let wait = unsafe {
-            MsgWaitForMultipleObjectsEx(Some(&handles), u32::MAX, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+            MsgWaitForMultipleObjectsEx(
+                Some(&handles),
+                editor.rescue.wait_ms(),
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            )
         };
         if wait == windows::Win32::Foundation::WAIT_FAILED {
             return Err(windows::core::Error::from_thread());

@@ -167,6 +167,8 @@ Start前の一度だけのCheckSourceで記録原文・範囲・保護状態・�
 追跡対象・未確認入力・dispositionをwireやworkerへ渡さず、既存のF7 source照合とidle gateを維持する。
 記録末尾のBackspaceも同じwrite取引へ接続した（[ADR 0013](adr/0013-synchronous-tracked-backspace.md)）。
 Coreの計画と実DLLの削除だけで処理し、削除本文・COM range・cookieをBrokerへ渡さずwire形式も変えない。
+未確認入力の有限救済も所有editor内だけで完結させる（[ADR 0014](adr/0014-bounded-input-recovery.md)）。
+保護履歴・期限を検査し、救済本文・操作ticket・コピー先をwire/workerへ渡さない。本文をBrokerから復旧しない。
 製品の常駐Broker、前方Delete等のキー配送・救済・一般アプリでの判定はIssue #4で引き続き実装する。
 Protocol自体がOS認証する責務には変更しない。
 
