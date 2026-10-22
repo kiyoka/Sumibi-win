@@ -19,8 +19,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
     GetWindowLongPtrW, LoadCursorW, PostMessageW, RegisterClassW, SetForegroundWindow,
     SetWindowLongPtrW, SetWindowTextW, TranslateMessage, GWLP_USERDATA, IDC_ARROW, MSG, PM_REMOVE,
-    WM_APP, WM_CHAR, WM_CLOSE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_NCDESTROY, WM_PAINT,
-    WNDCLASSW, WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    WM_ACTIVATEAPP, WM_APP, WM_CANCELMODE, WM_CHAR, WM_CLOSE, WM_ENABLE, WM_KEYDOWN, WM_KEYUP,
+    WM_KILLFOCUS, WM_NCDESTROY, WM_PAINT, WNDCLASSW, WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW,
+    WS_VISIBLE,
 };
 
 pub(crate) struct Window {
@@ -47,6 +48,13 @@ struct View {
 }
 type Refresh = Rc<dyn Fn() -> Result<Frame>>;
 pub(crate) type Input = Rc<dyn Fn(u32, WPARAM, LPARAM) -> Result<bool>>;
+
+/// Owner-detected loss of input eligibility, even without a TSF focus notice.
+/// Positive activation/enable messages never grant or revive an old request.
+pub(crate) fn input_boundary(message: u32, wparam: WPARAM) -> bool {
+    matches!(message, WM_KILLFOCUS | WM_CANCELMODE)
+        || (matches!(message, WM_ACTIVATEAPP | WM_ENABLE) && wparam.0 == 0)
+}
 
 const WM_REFRESH: u32 = WM_APP + 17;
 const WM_CLOSE_READY: u32 = WM_APP + 18;
@@ -156,19 +164,25 @@ unsafe extern "system" fn window_proc(
             if message == WM_CLOSE_READY {
                 return LRESULT(0);
             }
-            if matches!(message, WM_CHAR | WM_KILLFOCUS) && view.active.get() {
+            let boundary = input_boundary(message, wparam);
+            if (message == WM_CHAR || boundary) && view.active.get() {
                 let input = view.input.borrow().clone();
                 if let Some(input) = input {
                     match input(message, wparam, lparam) {
-                        Ok(true) => return LRESULT(0),
+                        Ok(true) if !boundary => return LRESULT(0),
+                        Ok(true) => {}
                         Ok(false) => {}
                         Err(error) => {
                             view.input_error.set(Some(error.code()));
-                            return LRESULT(0);
+                            if !boundary {
+                                return LRESULT(0);
+                            }
                         }
                     }
                 }
             }
+            // Boundary notices still reach DefWindowProc, including failures:
+            // WM_CANCELMODE must retain native menu/capture cancellation.
             if message == WM_REFRESH {
                 if !view.active.get() || wparam.0 != view.token.get() {
                     return LRESULT(0);

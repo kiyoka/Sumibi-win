@@ -73,9 +73,12 @@ Coreへは絶対座標と区別した長さstampだけを渡す（[ADR 0018](adr
 通信取消・予約/結果の解放は別に行い、callbackから待たない。
 共通helperも保持したITfMessagePumpを受け取り、所有loopでだけ配送を進める
 （[ADR 0020](adr/0020-owner-cancellation-and-shared-tsf-pump.md)）。
-入力ホストもWM_KILLFOCUSでComposing.owner_boundaryを呼び、再利用禁止と有限eventへの集約だけを行う。
+入力ホストはWM_KILLFOCUS・WM_ACTIVATEAPP(FALSE)・WM_ENABLE(FALSE)・WM_CANCELMODEで
+Composing.owner_boundaryを呼び、再利用禁止と有限eventへの集約を行う。
 所有loopでDLLへ取消を渡す。境界前の送信前checkerは世代の前後照合で拒否し、
 復元・cleanup後も旧checkerを再利用しない。自然なOS通知だけの成立保証とは分ける。
+同時に救済本文・途中surrogateとBroker grantを失効させる。境界の標準WndProc処理は維持する
+（[ADR 0022](adr/0022-native-owner-window-boundaries.md)）。
 実DLLのキー・Core・編集から診断用EXE bridgeを通す非同期経路も追加した
 （[ADR 0005](adr/0005-dll-key-broker-bridge.md)）。workerはDLLへの参照やcallbackを保持しない。
 単発ジョブの予約はworker・job・結果が共有し、最後の解放までprocess内4件に数える。

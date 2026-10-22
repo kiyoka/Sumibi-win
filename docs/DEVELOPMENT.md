@@ -118,11 +118,14 @@ Escは入力追跡の停止を解除するが、救済は保持する。満杯�
 保護状態の変更・復元やfocus喪失では本文を取り除き、操作情報だけを残す。Backspaceも操作情報だけで、コピーはできない。
 既に明示コピーしたOSクリップボードは救済期限で自動消去しない。
 
-recovery-input-testは実DLLの31ケースを自動検証する。コピー先は試験用メモリーで、利用者のクリップボードは変更しない。
+recovery-input-testは実DLLの34ケースを自動検証する。コピー先は試験用メモリーで、利用者のクリップボードは変更しない。
 共有予算のCore 5件を追加し、workspaceは71件。Test-Spike.ps1 -SkipDesktopと、救済31・同期入力22・Backspace 27・通知24・close 4が成功。
 今回、省略なし全回帰は再実行していない。前面化条件で未通過のwindow/input/delayedは引き続き未確認。
 ログはtarget/issue-4-shared-recovery-static.logとtarget/issue-4-shared-recovery-native-final.log。
 基本契約は[ADR 0014](adr/0014-bounded-input-recovery.md)、共有容量・所有者と制限は[ADR 0021](adr/0021-shared-input-recovery-budget.md)を参照。
+追加3件は無効化・非アクティブ化・モード取消と復元後のコピー拒否を検証する。
+確認画面で予約した旧コピーも本文除去後は実行せず、操作情報だけを元の期限まで保持する。
+最新ログはtarget/issue-4-window-boundary-final-recovery-input-test.log。
 
 ## 別Host EXEから実TSFまでの検証
 
@@ -192,7 +195,7 @@ broker-demoは手動操作用。文字を入力し、F7で選択部分（未選�
 本文は専用入力欄と別Hostのメモリーだけで扱い、外部APIへ送信・保存しない。
 
 broker-key-testは実DLLの予約キーから25ケース、broker-input-testは描画・Undo・Enter・編集・
-同期SC_CLOSE・WM_KILLFOCUS・空composition開始終了を含む8ケースが成功。いずれも自動終了する。前者のcapacity/Esc/Enterは
+同期SC_CLOSE・WM_KILLFOCUS・空composition開始終了・無効化・非アクティブ化・モード取消を含む11ケースが成功。いずれも自動終了する。前者のcapacity/Esc/Enterは
 前面化に依存しない同じDLL callbackで確認し、物理キーボード操作の手動確認は含めない。
 容量検査には未起動予約に加え、完了済みjob・受取済み結果を保持した満杯と、解放後の同じ入力欄での再利用を含む。
 さらに同じ子での連続変換・古いCancel・配送中の再入拒否・2回目の取消/本文復元・取消後の明示再開も確認する。
@@ -319,7 +322,7 @@ Test-Spike.ps1の全検査が省略なしで成功。workspace 47件、解除と
 ./target/debug/sumibi-setup.exe input-notify-test --dll ./target/debug/sumibi_tip.dll
 ```
 
-専用ホスト24ケース。composing-demoの所有ループはメタデータのeventも待ち、外部の本文・選択・
+専用ホスト30ケース。composing-demoの所有ループはメタデータのeventも待ち、外部の本文・選択・
 scope・compartment・status・focusやcompositionの変更で古い追跡を解除する。
 通知自体では編集せず、本文を読まず、次の打鍵やF7も必要としない。
 変更後に元へ戻しても旧追跡を復活させない。変換待ちのreadonly復元も適用を拒否する。
@@ -336,6 +339,13 @@ WM_KILLFOCUSで旧入力を即時に再利用禁止にし、本文取得・編�
 owner loopでcleanupし、focus復元・古い送信前checker・cleanup拒否/回復後も旧入力を再利用しない。
 追加した4件を含む24ケースの結果と前段階のfocus失敗の記録は
 [ADR 0020](adr/0020-owner-cancellation-and-shared-tsf-pump.md)を参照。
+続いてWndProcからWM_ACTIVATEAPP(FALSE)・WM_ENABLE(FALSE)・WM_CANCELMODEも同じ失効経路へ接続した。
+正のactivation/enableは正常な追跡を取り消さず、古い権利を復活させない。
+境界callbackがhandled/errorを返してもDefWindowProcを通し、標準のmouse capture解除を維持する。
+今回のRust 71件・fmt・Clippy・基本DLL/TSF検査と、通知30・broker入力11・救済34、
+追跡25・composition伸縮29・同期入力22・Backspace 27・close 4が成功。
+前面化で未通過のwindow/input/delayedは維持し、今回、省略なし全回帰は再実行していない。
+詳細と最新ログは[ADR 0022](adr/0022-native-owner-window-boundaries.md)を参照。
 
 ## 初期環境の記録（2026-10-20）
 

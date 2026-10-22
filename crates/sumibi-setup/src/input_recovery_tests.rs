@@ -70,6 +70,9 @@ pub(crate) fn exercise_recovery(
         "rescue/process-expire",
         "rescue/process-close",
         "rescue/process-drop",
+        "rescue/window-deactivate",
+        "rescue/window-disable",
+        "rescue/window-cancel-mode",
     ] {
         run(manager, client, RunMode::TransactionTest(case))?;
     }
@@ -200,6 +203,26 @@ pub(in crate::edit_host::input_host) fn test_recovery(
             assert!(editor.rescue.view.borrow().is_some());
             assert_eq!(clipboard.calls.get(), 0);
             match case {
+                "window-deactivate" | "window-disable" | "window-cancel-mode" => {
+                    // A queued copy from the shown preview must not survive
+                    // the boundary, even when activation/enable is restored.
+                    editor.rescue.request(0x79);
+                    test_window_boundary(window, case.strip_prefix("window-").ok_or(E_FAIL)?)?;
+                    assert!(!editor.rescue.metadata().ok_or(E_FAIL)?.copyable);
+                    editor.service_recovery(window, &clipboard)?;
+                    assert_eq!(clipboard.calls.get(), 0);
+                    assert!(editor.rescue.view.borrow().is_none());
+                    assert_eq!(
+                        editor.rescue.metadata().ok_or(E_FAIL)?.ticket,
+                        original.ticket
+                    );
+                    editor.rescue.request(0x77);
+                    editor.service_recovery(window, &clipboard)?;
+                    editor.rescue.request(0x79);
+                    editor.service_recovery(window, &clipboard)?;
+                    assert_eq!(clipboard.calls.get(), 0);
+                    assert!(!editor.rescue.metadata().ok_or(E_FAIL)?.copyable);
+                }
                 "copy" | "copy-failed" | "maximum" | "keyboard-copy" => {
                     clipboard.fail.set(case == "copy-failed");
                     if case == "keyboard-copy" {

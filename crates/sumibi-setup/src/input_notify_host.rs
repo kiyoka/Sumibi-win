@@ -33,9 +33,52 @@ pub(crate) fn exercise_notifications(
         "late-close",
         "failed-signal",
         "pending-status-restored",
+        "window-deactivate",
+        "window-disable",
+        "window-cancel-mode",
+        "window-activation-noop",
     ] {
         run(manager, client, RunMode::NotificationTest(case))
             .map_err(|error| format!("input-notify-test / {case}: {error}"))?;
+    }
+    test_default_cancellation(manager)?;
+    Ok(())
+}
+
+fn test_default_cancellation(manager: &ITfThreadMgr) -> Result<()> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetCapture, SetCapture};
+    for fail in [false, true] {
+        let window = crate::window_host::Window::new(manager)?;
+        window.set_input(Rc::new(move |message, _, _| {
+            if message != WM_CANCELMODE {
+                return Ok(false);
+            }
+            if fail {
+                Err(E_FAIL.into())
+            } else {
+                Ok(true)
+            }
+        }))?;
+        unsafe {
+            assert!(GetCapture().0.is_null());
+            SetCapture(window.hwnd());
+            assert_eq!(GetCapture(), window.hwnd());
+            SendMessageW(window.hwnd(), WM_CANCELMODE, None, None);
+            assert!(
+                GetCapture().0.is_null(),
+                "native default processing must release capture"
+            );
+        }
+        if fail {
+            assert_eq!(window.input_status().unwrap_err().code(), E_FAIL);
+        } else {
+            window.input_status()?;
+        }
+        window.clear_input();
+        println!(
+            "Input owner wake / window-cancel-default-{}: OK",
+            if fail { "error" } else { "handled" }
+        );
     }
     Ok(())
 }
@@ -74,6 +117,48 @@ pub(in crate::edit_host::input_host) fn test_notifications(
     let original = store.text.borrow().clone();
     store.undo.borrow_mut().clear();
     let body_before = body_reads()?;
+    if let Some(kind) = case.strip_prefix("window-") {
+        let generation = composing.boundary_generation.get();
+        if kind == "activation-noop" {
+            unsafe {
+                SendMessageW(window.hwnd(), WM_ACTIVATEAPP, Some(WPARAM(1)), None);
+                SendMessageW(window.hwnd(), WM_ENABLE, Some(WPARAM(1)), None);
+            }
+            window.input_status()?;
+            drain(window, editor)?;
+            assert_eq!(composing.boundary_generation.get(), generation);
+            assert!(owned_view(&editor.context)?.cast::<IUnknown>()? == identity);
+            assert_eq!(live.scene()?.underlines, vec![7..14]);
+            editor.clear_tracking();
+        } else {
+            editor.input(WM_CHAR, WPARAM(0xd83d), LPARAM(1))?;
+            assert!(editor.high.get().is_some());
+            test_window_boundary(window, kind)?;
+            assert!(
+                editor.high.get().is_none(),
+                "partial surrogate cannot cross boundary"
+            );
+            assert_ne!(composing.boundary_generation.get(), generation);
+            assert!(composing.boundary_blocked.get());
+            assert!(!composing.prepare(editor, bridge)?);
+            assert_eq!(body_reads()?, body_before);
+            wait_signal(window, composing.wait_handle().ok_or(E_FAIL)?)?;
+            assert!(drain(window, editor)? <= 3);
+            assert!(
+                !composing.prepare(editor, bridge)?,
+                "restoration cannot revive old input"
+            );
+        }
+        drain(window, editor)?;
+        assert!(no_composition(&editor.context)?);
+        assert!(live.scene()?.underlines.is_empty());
+        assert_eq!(body_reads()?, body_before);
+        assert_eq!(*store.text.borrow(), original);
+        assert!(store.undo.borrow().is_empty());
+        assert!(!bridge.get().active());
+        println!("Input owner wake / {case}: OK");
+        return Ok(());
+    }
     if case == "owner-ready-restored" {
         assert!(composing.prepare(editor, bridge)?);
         composing.owner_boundary()?;

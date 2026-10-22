@@ -91,6 +91,11 @@ Core 5件追加でworkspace 71件、救済31ケースと同期入力/削除/通�
 （[ADR 0021](adr/0021-shared-input-recovery-budget.md)）。製品の待機行列・複数入力先UI・プロセス間政策は残る。
 前面化で未通過のwindow/input/delayedの3検査は維持し、一般アプリの保護情報・sink寿命・標準Undoを次に進める。
 
+所有windowの非アクティブ化・無効化・モード取消も実WndProcから失効経路へ接続した。
+復元後の保留変換・救済コピーを拒否し、Windows標準のモード取消は維持する。
+通知30・broker入力11・救済34と関連回帰を確認した（[ADR 0022](adr/0022-native-owner-window-boundaries.md)）。
+一般アプリの通知保証・保護情報・composition寿命・標準Undoと製品の配置/認証を引き続き進める。
+
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。
 - named pipeの非同期I/Oと停止伝播、偽server・PID再利用・容量超過・終了待機を試験。

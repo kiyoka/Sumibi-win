@@ -281,7 +281,7 @@ impl Editor {
             }
             return Ok(false);
         }
-        if message == WM_KILLFOCUS {
+        if crate::window_host::input_boundary(message, key) {
             self.rescue.invalidate();
             let boundary = self
                 .composing
@@ -613,6 +613,9 @@ pub(crate) fn exercise_broker_input(
         "composition",
         "close",
         "sent-close",
+        "window-deactivate",
+        "window-disable",
+        "window-cancel-mode",
     ] {
         run(manager, client, RunMode::BrokerInputTest(case))?;
     }
@@ -901,6 +904,19 @@ fn test_broker_input(
     pump(window)?;
     editor.input(WM_KEYDOWN, WPARAM(0x76), LPARAM(1))?;
     assert!(bridge.get().active());
+    let captured = composing_host::input_notify_host::body_reads()?;
+    if let Some(kind) = case.strip_prefix("window-") {
+        test_window_boundary(window, kind)?;
+        let mut pending = 1;
+        unsafe {
+            control.Pending(&mut pending).ok()?;
+        }
+        assert_eq!(
+            pending, 0,
+            "window boundary revokes pending target before delivery"
+        );
+        assert_eq!(composing_host::input_notify_host::body_reads()?, captured);
+    }
     if case == "composition" {
         super::composition_host::empty_cycle(&editor.context, client)?;
         assert!(editor.store.get().composition_events.get() >= 2);
@@ -998,6 +1014,13 @@ fn test_broker_input(
         );
     } else if case != "edit" {
         assert!(editor.store.get().undo.borrow().is_empty());
+    }
+    if case.starts_with("window-") {
+        assert_eq!(
+            composing_host::input_notify_host::body_reads()?,
+            captured,
+            "late response after a restored window boundary cannot reread the body"
+        );
     }
     println!("Async input loop / F7 / {case}: OK");
     Ok(())
@@ -1147,6 +1170,31 @@ fn test_close(window: &crate::window_host::Window, editor: &Rc<Editor>, case: &s
     }
     println!("Caption HTCLOSE / sent SC_CLOSE / GetMessage shutdown / {case}: OK");
     Ok(())
+}
+
+/// Diagnostic delivery through the real WndProc. Deactivation is a synthetic
+/// notice; disable/restore uses EnableWindow and its synchronous OS messages.
+fn test_window_boundary(window: &crate::window_host::Window, kind: &str) -> Result<()> {
+    unsafe {
+        match kind {
+            "deactivate" => {
+                SendMessageW(window.hwnd(), WM_ACTIVATEAPP, Some(WPARAM(0)), None);
+                SendMessageW(window.hwnd(), WM_ACTIVATEAPP, Some(WPARAM(1)), None);
+            }
+            "disable" => {
+                use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled};
+                let _ = EnableWindow(window.hwnd(), false);
+                assert!(!IsWindowEnabled(window.hwnd()).as_bool());
+                let _ = EnableWindow(window.hwnd(), true);
+                assert!(IsWindowEnabled(window.hwnd()).as_bool());
+            }
+            "cancel-mode" => {
+                SendMessageW(window.hwnd(), WM_CANCELMODE, None, None);
+            }
+            _ => return Err(E_INVALIDARG.into()),
+        }
+    }
+    window.input_status()
 }
 
 fn pump(window: &crate::window_host::Window) -> Result<()> {
