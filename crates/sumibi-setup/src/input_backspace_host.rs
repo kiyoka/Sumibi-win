@@ -240,14 +240,7 @@ pub(in crate::edit_host::input_host) fn test_backspace(
                 "{case}"
             );
             assert_eq!(store.set_text_calls.get(), 0, "{case}: host fallback only");
-            assert_eq!(
-                store.undo.borrow().len(),
-                match case {
-                    "empty" => 0,
-                    "cross-start" => 4,
-                    _ => 1,
-                }
-            );
+            assert_eq!(store.undo.borrow().len(), usize::from(case != "empty"));
             let expected = match case {
                 "empty" => "",
                 "untracked" => "prefix suffix",

@@ -106,6 +106,12 @@ workspace83件と関連回帰が成功。保留中の編集は旧結果を拒否
 （[ADR 0024](adr/0024-grapheme-navigation-in-owned-host.md)）。
 製品DLLの前方削除取引・任意位置のcomposition継続、一般アプリの保護情報・寿命・標準Undoは引き続き残る。
 
+専用ホストのBackspace連打を一括編集へ統一した。従来のfallbackでは、明示選択を消した後に
+残りrepeatが手前の文字へ進み、Undoも分かれていた。同期取引の書込前拒否・救済枠不足と
+旧composition観測経路を同じ削除計画へ接続し、選択外を削除せず1回Undo/Redoで復元する。
+grapheme-input-testは10件追加で22件。共有救済4枠満杯の既存検査も1回Undoへ強化した。
+Core/workspaceの件数は83件のまま。一般アプリと製品DLLの残範囲は上記を維持する。
+
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。
 - named pipeの非同期I/Oと停止伝播、偽server・PID再利用・容量超過・終了待機を試験。

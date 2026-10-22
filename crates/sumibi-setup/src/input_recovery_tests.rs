@@ -473,6 +473,8 @@ fn test_process_budget(
     }
     let writes = store.set_text_calls.get();
     let history = store.undo.borrow().len();
+    let original = store.text.borrow().clone();
+    let selection = store.selection.get();
     if case == "process-backspace" {
         editor.input(WM_CHAR, WPARAM(8), LPARAM(2))?;
     } else {
@@ -493,9 +495,20 @@ fn test_process_budget(
     );
     assert_eq!(
         store.undo.borrow().len(),
-        history + if case == "process-backspace" { 2 } else { 1 },
-        "host handles the original insert or exactly two repeated deletions"
+        history + 1,
+        "host handles the whole original operation in one Undo entry"
     );
+    if case == "process-backspace" {
+        store.undo_once()?;
+        assert_eq!(*store.text.borrow(), original);
+        let restored = store.selection.get();
+        assert_eq!(
+            (restored.acpStart, restored.acpEnd),
+            (selection.acpStart, selection.acpEnd)
+        );
+        store.redo_once()?;
+        assert_eq!(*store.text.borrow(), expected);
+    }
     assert_eq!(
         editor.input_disposition.get(),
         sumibi_tip::spike::INPUT_NOT_ATTEMPTED

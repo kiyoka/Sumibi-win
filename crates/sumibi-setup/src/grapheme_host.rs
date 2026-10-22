@@ -8,6 +8,14 @@ pub(crate) fn exercise_graphemes(
     client: u32,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     for case in [
+        "grapheme/backspace-selection-repeat",
+        "grapheme/backspace-repeat",
+        "grapheme/backspace-interior-repeat",
+        "grapheme/backspace-max-repeat",
+        "grapheme/backspace-budget-repeat",
+        "grapheme/backspace-start-repeat",
+        "grapheme/backspace-invalid-repeat",
+        "grapheme/backspace-pending-repeat",
         "grapheme/arrows",
         "grapheme/shift",
         "grapheme/collapse-repeat",
@@ -22,6 +30,12 @@ pub(crate) fn exercise_graphemes(
         "grapheme/interior-navigation",
     ] {
         run(manager, client, RunMode::TransactionTest(case))?;
+    }
+    for case in [
+        "grapheme/backspace-observed-repeat",
+        "grapheme/backspace-observed-selection-repeat",
+    ] {
+        run(manager, client, RunMode::ComposingTest(case))?;
     }
     Ok(())
 }
@@ -38,7 +52,9 @@ pub(super) fn test_graphemes(
     store.host_selection(0, 0)?;
     pump(window)?;
     editor.insert(&TEXT.encode_utf16().collect::<Vec<_>>())?;
-    assert_eq!(editor.input_disposition.get(), INPUT_APPLIED);
+    if editor.transaction {
+        assert_eq!(editor.input_disposition.get(), INPUT_APPLIED);
+    }
     pump(window)?;
     let original = store.text.borrow().clone();
     assert_eq!(original.len(), 19); // grapheme edges: 0,1,3,14,18,19
@@ -48,6 +64,93 @@ pub(super) fn test_graphemes(
     let mut reads = composing_host::input_notify_host::body_reads()?;
     let mut edited = false;
     match case {
+        "backspace-selection-repeat" | "backspace-observed-selection-repeat" => {
+            store.host_selection(2, 3)?; // explicit accent-only selection
+            editor.input(WM_CHAR, WPARAM(0x08), LPARAM(1024))?;
+            if editor.transaction {
+                assert_eq!(
+                    editor.input_disposition.get(),
+                    sumibi_tip::spike::INPUT_NOT_ATTEMPTED
+                );
+            }
+            body(store, "ae👨‍👩‍👧‍👦🇯🇵b");
+            caret(store, 2, 2, false);
+            edited = true;
+        }
+        "backspace-repeat" | "backspace-max-repeat" | "backspace-observed-repeat" => {
+            if editor.transaction {
+                editor.clear_tracking();
+            }
+            editor.input(
+                WM_CHAR,
+                WPARAM(0x08),
+                LPARAM(if case == "backspace-max-repeat" {
+                    1024
+                } else {
+                    3
+                }),
+            )?;
+            if editor.transaction {
+                assert_eq!(
+                    editor.input_disposition.get(),
+                    sumibi_tip::spike::INPUT_NOT_ATTEMPTED
+                );
+            }
+            if case == "backspace-max-repeat" {
+                body(store, "");
+                caret(store, 0, 0, false);
+            } else {
+                body(store, "ae\u{301}");
+                caret(store, 3, 3, false);
+            }
+            edited = true;
+        }
+        "backspace-interior-repeat" => {
+            store.host_selection(5, 5)?;
+            editor.input(WM_CHAR, WPARAM(0x08), LPARAM(2))?;
+            assert_eq!(
+                editor.input_disposition.get(),
+                sumibi_tip::spike::INPUT_NOT_ATTEMPTED
+            );
+            body(store, "a🇯🇵b");
+            caret(store, 1, 1, false);
+            edited = true;
+        }
+        "backspace-budget-repeat" => {
+            // Hold this owner's rescue slot before the key arrives. No DLL
+            // write may be attempted when pre-consumption admission fails.
+            let ticket = editor
+                .rescue
+                .reserve(sumibi_core::recovery::Operation::Insert(1))
+                .ok_or(E_FAIL)?;
+            let result = editor.input(WM_CHAR, WPARAM(0x08), LPARAM(3));
+            editor
+                .rescue
+                .finish(ticket, sumibi_tip::spike::INPUT_NOT_ATTEMPTED, &[]);
+            result?;
+            assert_eq!(
+                editor.input_disposition.get(),
+                sumibi_tip::spike::INPUT_NOT_ATTEMPTED
+            );
+            body(store, "ae\u{301}");
+            caret(store, 3, 3, false);
+            edited = true;
+        }
+        "backspace-start-repeat" => {
+            store.host_selection(0, 0)?;
+            editor.input(WM_CHAR, WPARAM(0x08), LPARAM(1024))?;
+            assert_eq!(
+                editor.input_disposition.get(),
+                sumibi_tip::spike::INPUT_NOT_ATTEMPTED
+            );
+            caret(store, 0, 0, false);
+        }
+        "backspace-invalid-repeat" => {
+            assert!(!composing_host::no_composition(&editor.context)?);
+            assert_eq!(store.backspace(0).unwrap_err().code(), E_INVALIDARG);
+            assert!(!composing_host::no_composition(&editor.context)?);
+            editor.clear_tracking();
+        }
         "arrows" => {
             store.host_selection(0, 0)?;
             for next in [1, 3, 14, 18, 19] {
@@ -88,7 +191,7 @@ pub(super) fn test_graphemes(
         }
         "backspace-interior" => {
             store.host_selection(5, 5)?; // after first scalar within ZWJ family
-            store.backspace()?;
+            store.backspace(1)?;
             body(store, "ae\u{301}🇯🇵b");
             caret(store, 3, 3, false);
             edited = true;
@@ -109,7 +212,7 @@ pub(super) fn test_graphemes(
         }
         "ends" => {
             store.host_selection(0, 0)?;
-            store.backspace()?;
+            store.backspace(1024)?;
             store.navigate(0x27, false, 1024)?;
             caret(store, 19, 19, false);
             store.delete_forward(1024)?;
@@ -124,7 +227,7 @@ pub(super) fn test_graphemes(
             store.host_selection(1, 1)?;
             store.readonly.set(true);
             let deleted = store.delete_forward(2);
-            let backspaced = store.backspace();
+            let backspaced = store.backspace(1024);
             store.readonly.set(false);
             assert_eq!(deleted.unwrap_err().code(), E_ACCESSDENIED);
             assert_eq!(backspaced.unwrap_err().code(), E_ACCESSDENIED);
@@ -133,13 +236,15 @@ pub(super) fn test_graphemes(
             store.host_selection(1, 1)?;
             let previous = store.lock.replace(TS_LF_READ.0);
             let deleted = store.delete_forward(2);
+            let backspaced = store.backspace(1024);
             let moved = store.navigate(0x27, false, 1);
             store.lock.set(previous);
             assert_eq!(deleted.unwrap_err().code(), TS_E_NOLOCK);
+            assert_eq!(backspaced.unwrap_err().code(), TS_E_NOLOCK);
             assert_eq!(moved.unwrap_err().code(), TS_E_NOLOCK);
             caret(store, 1, 1, false);
         }
-        "pending" => {
+        "pending" | "backspace-pending-repeat" => {
             editor.input(WM_KEYDOWN, WPARAM(0x76), LPARAM(1))?;
             let (broker, bridge) = editor.broker.as_ref().ok_or(E_FAIL)?;
             assert!(bridge.get().active());
@@ -147,12 +252,24 @@ pub(super) fn test_graphemes(
             // Use the host operation and its real TSF notifications, without
             // an explicit Cancel or a direct DLL notification callback.
             // F7 selected the conversion run; first collapse it to its end.
-            store.navigate(0x27, false, 1)?;
-            store.navigate(0x25, false, 1)?;
-            store.delete_forward(1)?;
-            body(store, "ae\u{301}👨‍👩‍👧‍👦🇯🇵");
+            let expected = if case == "pending" {
+                store.navigate(0x27, false, 1)?;
+                store.navigate(0x25, false, 1)?;
+                store.delete_forward(1)?;
+                "ae\u{301}👨‍👩‍👧‍👦🇯🇵"
+            } else {
+                store.host_selection(1, 18)?;
+                editor.input(WM_CHAR, WPARAM(0x08), LPARAM(3))?;
+                assert_eq!(
+                    editor.input_disposition.get(),
+                    sumibi_tip::spike::INPUT_NOT_ATTEMPTED
+                );
+                caret(store, 1, 1, false);
+                "ab"
+            };
+            body(store, expected);
             tracking_host::wait_result(window, broker, bridge, false)?;
-            body(store, "ae\u{301}👨‍👩‍👧‍👦🇯🇵");
+            body(store, expected);
             edited = true;
         }
         "interior-navigation" => {

@@ -50,6 +50,8 @@ recovery-input-testは既存25件と共有予算6件の31ケースが成功。
 host履歴が元の操作分だけ増える。破棄・期限切れ・close・Drop後は別所有者の失敗入力を保持でき、
 本文再取得・Clipboard呼出し・過去入力の再送がないことも確認した。
 初回の新Backspace試験ではhostの2回削除を1履歴と数えた期待値が失敗したため、元のrepeat分の2履歴へ修正した。
+これは当時の実装を記録したもの。後続の[ADR 0024追補](0024-grapheme-navigation-in-owned-host.md#追補backspace連打の一括編集)で、
+repeat全体を一度の編集へ修正し、共有枠満杯でも1回Undo/Redoで復元できることを検証した。
 実装の入力回数は変更していない。初回ログはtarget/issue-4-shared-recovery-native.log。
 
 Test-Spike.ps1 -SkipDesktopで71件・fmt・各構成Clippy・build・load_smoke・self/edit/keyが成功。

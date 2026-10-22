@@ -127,6 +127,9 @@ ISpikeInputEraserで削除・caret・composition縮小を同じwriteに接続す
 別途、ホストは自身の全本文からCore Boundariesを操作ごとに作り、左右/Shift移動とDeleteを計画する。
 本文の借用は通知前に解放し、境界表は位置だけを保持する。ホストの編集と正式な通知で旧追跡/変換を失効させ、
 DLLの本文取得範囲は広げない（[ADR 0024](adr/0024-grapheme-navigation-in-owned-host.md)）。
+通常ホストのBackspaceもrepeat全体を変更前の選択・本文から一度だけ計画する。
+DLLの書込前拒否/救済枠不足からのfallbackと旧composition観測経路の双方で、一度の編集とUndoにまとめる。
+非空選択を消した後で残りrepeatを再計画せず、選択外の文字を巻き込まない。
 本文書込と確定処理は挿入と共有する。旧世代・追跡外・選択・他composition等では一部を先に消さず、
 書込前に元のホスト処理へ返す。試行後の失敗では再削除せず、明示boundaryまで変換を停止する。
 前方Delete・任意位置編集・製品の待機/救済統合は未完了（[ADR 0013](adr/0013-synchronous-tracked-backspace.md)）。

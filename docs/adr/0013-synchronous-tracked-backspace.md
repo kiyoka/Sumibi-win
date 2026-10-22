@@ -54,7 +54,9 @@ DLLからのGetText、追跡済み本文全体の書き直し、削除結果を�
 dispositionの4状態とpanic境界はADR 0012と同じ。NOT_ATTEMPTEDの場合だけ、
 元のホストBackspaceをその場で一度処理できる。専用ホストは受け取ったrepeat数を従来通り処理する。
 範囲越えや選択削除を、無許可のDLL本文取得や部分削除で代替しない。
-このfallbackのUndo単位はホストが決める。診断ホストはrepeatごとの履歴を維持する。
+このfallbackのUndo単位はホストが決める。この段階の診断ホストはrepeatごとの履歴を維持した。
+後続の[ADR 0024追補](0024-grapheme-navigation-in-owned-host.md#追補backspace連打の一括編集)で、
+選択外削除の不具合を修正し、元のrepeat全体を一度の編集とUndoへ統一した。
 
 APPLIED_UNTRACKED/UNCERTAINでは、再削除・rollbackせず追跡と変換を停止し、診断タイトルで確認を表示する。
 通知PollやCancel(false)は停止を解除しない。Esc等の明示boundaryで解除した後、

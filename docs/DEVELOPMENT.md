@@ -112,7 +112,11 @@ cargo build --workspace --features sumibi-host/spike --locked --offline
 ./target/debug/sumibi-setup.exe grapheme-input-test --dll ./target/debug/sumibi_tip.dll
 ```
 
-実TSF contextでホストの編集処理を直接呼ぶ12ケースが成功。新しいCore境界7件を加えworkspaceは83件。
+実TSF contextでホストの編集処理を呼ぶ22ケースが成功。Core境界7件を含めworkspaceは83件。
+Backspaceのrepeatは、DLLが書込前に拒否した場合や救済枠不足でも一度のホスト編集にする。
+非空の明示選択は一度だけ削除し、collapsed caretでは指定数の書記素を文書端まで削除する。
+同期取引と旧composition観測経路の両方で1回Undo/Redoを検査する。通常キー配送の検査ではなく、
+追加ケースはEditor.inputへWM_CHAR相当の引数を直接渡す。
 Test-Spike.ps1 -SkipDesktopと、関連するBackspace37・救済34・同期入力22・追跡25・composition29・通知30・broker入力11・close4も成功。
 前面化が必要なwindow/input/delayedは未確認のままで、通常キー配送の成功に読み替えない。
 操作規則とログは[ADR 0024](adr/0024-grapheme-navigation-in-owned-host.md)を参照。
@@ -481,7 +485,7 @@ cargo run -p sumibi-setup --locked --offline -- demo --dll target/debug/sumibi_t
 | 操作 | 動作 |
 | --- | --- |
 | 文字入力 | 選択部分を置換、またはカーソル位置へ挿入 |
-| Backspace | 明示選択、または書記素を削除。ホストの内部caretは含まれる書記素全体を対象（Unicode 17.0.0） |
+| Backspace | 明示選択、または書記素を削除。内部caretは含まれる書記素全体を対象。ホストのrepeatは選択を広げず1回Undo（Unicode 17.0.0） |
 | Ctrl+A | 全文選択 |
 | Home / End | 文頭 / 文末へカーソル移動 |
 | ← / → | 書記素単位で移動。選択中は該当方向の端へ寄せ、残りrepeat分だけ移動 |

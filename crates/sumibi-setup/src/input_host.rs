@@ -101,12 +101,21 @@ impl TextStore {
         self.select_caret(if extend { anchor } else { caret }, caret)
     }
     fn delete_forward(&self, repeats: usize) -> Result<()> {
+        self.delete(Direction::Forward, repeats)
+    }
+    fn backspace(&self, repeats: usize) -> Result<()> {
+        self.delete(Direction::Backward, repeats)
+    }
+    fn delete(&self, direction: Direction, repeats: usize) -> Result<()> {
         let selected = self.selection.get();
+        // Plan the entire original operation once. Recomputing after each
+        // repeat could delete beyond an explicit selection and split Undo.
+        // No text borrow survives into the edit or external notifications.
         let map = Boundaries::new(&self.text.borrow()).ok_or(E_INVALIDARG)?;
         let (start, end) = map
             .deletion(
                 (selected.acpStart as usize, selected.acpEnd as usize),
-                Direction::Forward,
+                direction,
                 repeats.min(MAX_SELECTION_UNITS),
             )
             .ok_or(E_INVALIDARG)?;
@@ -166,23 +175,6 @@ impl TextStore {
     fn type_text(&self, text: &[u16]) -> Result<()> {
         let selected = self.selection.get();
         self.user_edit(selected.acpStart as usize..selected.acpEnd as usize, text)
-    }
-    fn backspace(&self) -> Result<()> {
-        let selected = self.selection.get();
-        // This host owns the complete body. Planning retains offsets only and
-        // releases the text borrow before user_edit can notify external COM.
-        let map = Boundaries::new(&self.text.borrow()).ok_or(E_INVALIDARG)?;
-        let (start, end) = map
-            .deletion(
-                (selected.acpStart as usize, selected.acpEnd as usize),
-                Direction::Backward,
-                1,
-            )
-            .ok_or(E_INVALIDARG)?;
-        if start == end {
-            return Ok(());
-        }
-        self.user_edit(start..end, &[])
     }
 }
 
@@ -549,9 +541,7 @@ impl Editor {
                     if !self.handled_transaction(disposition) {
                         // Only an explicit no-write outcome permits this
                         // original host operation once, including its repeat.
-                        for _ in 0..repeats {
-                            self.store.get().backspace()?;
-                        }
+                        self.store.get().backspace(repeats)?;
                     }
                     return Ok(true);
                 }
@@ -559,9 +549,7 @@ impl Editor {
                     .composing
                     .as_ref()
                     .is_some_and(|composing| composing.before(self, true));
-                for _ in 0..repeats {
-                    self.store.get().backspace()?;
-                }
+                self.store.get().backspace(repeats)?;
                 if let Some(composing) = &self.composing {
                     composing.after(self, &[], recorded);
                 }
@@ -791,7 +779,11 @@ fn run(
         } else if let RunMode::TrackingTest(case) = mode {
             tracking_host::test_tracking(&window, &editor, &live, client, case)
         } else if let RunMode::ComposingTest(case) = mode {
-            composing_host::test_composing(&window, &editor, &live, client, case)
+            if let Some(case) = case.strip_prefix("grapheme/") {
+                grapheme_host::test_graphemes(&window, &editor, &live, case)
+            } else {
+                composing_host::test_composing(&window, &editor, &live, client, case)
+            }
         } else if let RunMode::NotificationTest(case) = mode {
             composing_host::test_notifications(&window, &editor, &live, client, case)
         } else if let RunMode::TransactionTest(case) = mode {

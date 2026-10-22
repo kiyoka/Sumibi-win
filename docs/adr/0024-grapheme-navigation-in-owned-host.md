@@ -68,3 +68,37 @@ Test-Spike.ps1に新コマンドを追加し、-SkipDesktopの省略表示にも
 ログはtarget/issue-4-grapheme-editor-static.log、grapheme-editor-native-final.logと、
 grapheme-editor-<検査名>.log（全てtarget/配下）。native検査のTSF/COM解除・DLLアンロードを確認した。
 省略なし全回帰と一般アプリの保護情報・sink寿命・標準Undo・製品配置/認証は残る。
+
+## 追補：Backspace連打の一括編集
+
+2026-10-22。上記のホストBackspaceにrepeatの欠落が残っていた。
+Editor.inputは元のrepeat回数だけ単発削除を呼んでいたため、選択を最初に削除した後、
+残りの回数で選択前の文字まで削除し、Undoも回数分に分かれた。
+結合アクセントだけを選択してcount=1024を渡す再現試験では、選択外のbaseとprefixまで消えた。
+
+BackspaceとDeleteは同じTextStore.delete(direction, repeats)を使う。
+変更前の全体から一度だけBoundaries.deletionを計画し、user_editを一度だけ呼ぶ。
+非空選択はそのまま一度削除、collapsed caretは指定数の書記素を文書端で止めて削除する。
+内部caretでは含まれる書記素全体を最初の一個と数える。上限は従来どおり1024、0は拒否する。
+文書端の空範囲は本文/Undoを増やさず、実編集のreadonly/lock拒否を維持する。
+DLLの書込前拒否と救済枠不足からのfallback、および旧composition観測経路をこの処理へ接続した。
+書込試行後の失敗を再送しない条件と、DLLの硬い記録境界は変更しない。
+
+grapheme-input-testへ10ケースを追加し、合計22件が成功した。
+明示部分選択と最大repeat、追跡なしの複数削除/全削除、内部caret、救済slot予約中、先頭no-op、
+不正count、Broker保留中の選択削除、旧composition観測経路の複数削除/明示選択を検査する。
+追加ケースはEditor.inputへWM_CHAR相当の引数を直接渡し、実TSF通知と1回Undo/Redo、
+旧結果の拒否、DLLのSetText/adapter本文取得不変を確認する。物理キー/通常TSF配送の代替ではない。
+既存の救済34件に含まれる共有4枠満杯の検査も、家族絵文字入りの2回削除を一度にUndo/Redoして、
+本文と選択が復元することを確認する。workspaceのテスト数は83件（Core43件）を維持する。
+
+再現ログはtarget/issue-4-backspace-repeat-before.log。
+追加試験の初回実行では、不正countによる無変更でも共通後処理がcompositionの終了を期待し停止した。
+試験を「不正countでcompositionが維持されたことを検査してから明示cleanup」へ修正した。
+その後の回帰では、救済満杯の古い期待値が2回分のUndo増加だったため停止した。
+期待値を一度の編集に更新し、実際の1回Undo/Redoも追加して再確認した。
+最終ログはtarget/issue-4-backspace-repeat-grapheme-input-test.log、backspace-repeat-static.logと
+backspace-repeat-<検査名>.log（すべてtarget/配下）。
+Test-Spike.ps1 -SkipDesktopと、Backspace37・救済34・同期入力22・追跡25・composition29・
+通知30・broker入力11・close4の関連回帰も成功し、native検査はTSF/COM解除とDLLアンロードを確認した。
+前面化で未通過の3検査と、一般アプリ・製品DLLの残範囲は維持する。

@@ -131,6 +131,11 @@ fixtureは依然ACP方式で、非ACPアプリの互換性や未通知本文変�
 
 ## 3. アプリ互換表の記録形式
 
+2026-10-22、専用ホストのBackspace repeatで選択外の文字まで消す問題を再現し、一度の削除計画/編集へ修正した。
+同期取引のfallback・救済枠不足・旧composition観測経路の検査10件を加え、grapheme-input-testは22件。
+共有4枠満杯の救済検査も1回Undo/Redoによる本文/選択復元を確認する。Core/workspaceは83件を維持する。
+今回のログと受入範囲は[ADR 0024の追補](adr/0024-grapheme-navigation-in-owned-host.md#追補backspace連打の一括編集)を参照。
+
 2026-10-22、Coreに書記素境界の7件を追加し、workspaceは83件。専用ホストの移動/Shift選択/Deleteへ接続した。
 grapheme-input-testの12ケースはホストの編集処理と実TSF通知・旧結果拒否・Undo/Redoを確認し、通常キー配送とは分ける。
 Test-Spike.ps1 -SkipDesktopとBackspace37・救済34・同期入力22・追跡25・composition29・通知30・broker入力11・close4が成功。
