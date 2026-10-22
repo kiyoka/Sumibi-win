@@ -59,12 +59,19 @@ pub unsafe trait ISpikeInputEraser: IUnknown {
 pub unsafe trait ISpikeSelectionEraser: IUnknown {
     pub fn DeleteSelection(&self, context: *mut c_void, disposition: *mut u32) -> HRESULT;
 }
+/// Bind an explicit context before preparing a selected or recorded source.
+/// This initializes metadata only; it never infers text from a collapsed caret.
+#[interface("ec1aa9bd-14ef-4dcb-918e-ded188760c22")]
+pub unsafe trait ISpikeInputPreparer: IUnknown {
+    pub fn Prepare(&self, context: *mut c_void) -> HRESULT;
+}
 #[implement(
     ISpikeInput,
     ISpikeInputMonitor,
     ISpikeInputWriter,
     ISpikeInputEraser,
-    ISpikeSelectionEraser
+    ISpikeSelectionEraser,
+    ISpikeInputPreparer
 )]
 struct Control {
     state: Weak<Controller>,
@@ -280,6 +287,11 @@ impl ISpikeSelectionEraser_Impl for Control_Impl {
             unsafe { disposition.write(outcome.get()) };
         }
         result.into()
+    }
+}
+impl ISpikeInputPreparer_Impl for Control_Impl {
+    unsafe fn Prepare(&self, context: *mut c_void) -> HRESULT {
+        boundary(|| self.in_context(context, Tracker::prepare)).into()
     }
 }
 impl ISpikeInputMonitor_Impl for Control_Impl {

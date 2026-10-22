@@ -23,7 +23,7 @@ Mac技術解説自身の実装照合基準 `d2b96fc` と区別する。Macの機
 | TIPのCOM・キー・表示属性・編集 | 専用ホストで実装済み。通常アプリへの常設登録なし |
 | 入力保護 | scope/status/compartmentと取得・送信前・適用時の検査を実装。専用ACPで39ケース。status診断と標準RichEditの拒否7構成を確認（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)）。一般アプリの全機密欄の識別は未検証 |
 | 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。実キーボードの手動確認は未実施 |
-| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮29・選択composition 18・他サービス拒否16・同期入力取引42（選択Delete20を含む）・書記素Backspace 37ケースを確認。所有editorの救済35ケースとEXE共有4枠、window境界を含む通知30ケースも確認。専用ホストの書記素移動/削除22ケースも確認。選択のないDLL前方Delete・待機・製品統合・候補UIは未実装 |
+| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮/初回選択46・選択composition 18・他サービス拒否16・同期入力取引42（選択Delete20を含む）・書記素Backspace 37ケースを確認。所有editorの救済35ケースとEXE共有4枠、window境界を含む通知30ケースも確認。専用ホストの書記素移動/削除22ケースも確認。選択のないDLL前方Delete・待機・製品統合・候補UIは未実装 |
 | Protocol / IPC | 有限フレーム・版付きJSON・client状態、固定process相互検査・overlapped pipe。実DLLのキー・Core・所有TSFから診断用EXE bridge経由で再利用Brokerへ接続。一般アプリは未接続 |
 | Host・HTTP・キー保存・設定UI | 単発/有限連続要求の診断Host EXEを実装。既定では変換拒否。常駐Host・HTTP・キー保存・設定UIは未実装 |
 | Decisions・辞書・署名付き配布 | 未実装。後続段階 |
@@ -170,6 +170,10 @@ Coreの位置だけの境界表とホスト編集の22ケースは[ADR 0024](adr
 製品DLLの任意位置編集や前方削除取引の完成ではない。
 
 追加のtracking-demoは所有ホストが実際に挿入した文字だけをCoreで記録する。
+composing/transactionホストの明示選択は、context付きF7準備で初回入力前でも扱える。
+準備は本文を取得せず、選択の向きと一度だけのReadyを維持する。記録のないcollapsed caretは拒否する。
+初回選択ではcompositionを開始しないため、診断sink欠損でも成立する
+（[ADR 0026](adr/0026-initialize-explicit-selection-with-context.md)）。
 カーソルが有効な入力範囲の末尾にある場合だけ、F7でその範囲を選択して既存の非同期変換へ渡す。
 移動・外部編集・保護変更等で無効になった範囲を復元せず、全文を推測しない。
 明示選択は従来の選択変換を使う。入力反映自体はホストが一度だけ行い、追跡失敗で再送しない。

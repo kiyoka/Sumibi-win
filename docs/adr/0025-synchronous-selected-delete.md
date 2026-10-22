@@ -70,6 +70,8 @@ OS内部の全照会を計測する主張ではない。テストはEditorの操
 保留ケースの初回は、実入力前の新しいControlにはTrackerがないためF7が開始されず停止した。
 fixtureを実DLL入力で初期化し、F7が選択した範囲をUndoの基準にして再確認した。
 新しいcontextの既存選択をF7だけで初期化する一般入力adapterは、この検査で実装したものではない。
+後続の[ADR 0026](0026-initialize-explicit-selection-with-context.md)では、専用ACPホストのcontext付き
+初回選択準備を追加した。保留Delete fixtureも事前入力なしの既存選択へ更新した。一般アプリ対応は引き続き残る。
 
 recovery-input-testへ共有4枠満杯の選択Deleteを追加し、合計35件が成功した。
 本文書込をDLLへ渡さず、選択だけを削除して1回Undo/Redoし、既存救済ticketを変更しない。

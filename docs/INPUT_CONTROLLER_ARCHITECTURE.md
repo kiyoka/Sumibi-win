@@ -119,6 +119,11 @@ transaction-demoでは独立ISpikeInputWriterが供給された文字を一度�
 SetTextを試みた後の失敗ではHRESULTから再入力を推測せず、変換を停止して明示boundaryを待つ。
 既存本文取得のidle gateは維持する。待機・救済・一般アプリ統合の完成ではない
 （[ADR 0012](adr/0012-synchronous-input-transaction.md)）。
+F7の準備は独立ISpikeInputPreparer::Prepare(context)で初回のowner/context/watchを検査・作成する。
+明示選択は事前入力なしで扱い、SetSelectionで向きを変えない。記録なしのcollapsed caretは拒否する。
+保護境界世代とReadyの通知世代を照合し、CheckSourceで一度だけ消費する。準備では本文を取得しない。
+初回の選択準備はcompositionを開始せず、診断sink欠損でも成立する。入力compositionの製品寿命とは区別する
+（[ADR 0026](adr/0026-initialize-explicit-selection-with-context.md)）。
 transaction-demoのBackspaceは、Coreの記録末尾だけから削除範囲を計算し、実DLLの独立
 ISpikeInputEraserで削除・caret・composition縮小を同じwriteに接続する。全削除では自己objectを終了する。
 現在の削除計画はUnicode 17.0.0の拡張書記素単位。Coreは記録UTF-16を固定scratchで分割し、

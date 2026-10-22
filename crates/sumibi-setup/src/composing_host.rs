@@ -18,6 +18,8 @@ pub(crate) use input_transaction_host::{exercise_transactions, run_transaction_d
 mod input_backspace_host;
 pub(crate) use input_backspace_host::exercise_backspace;
 pub(super) use input_backspace_host::test_backspace;
+#[path = "fresh_selection_host.rs"]
+mod fresh_selection_host;
 
 pub(super) struct Composing {
     control: ISpikeInput,
@@ -242,7 +244,13 @@ impl Composing {
             self.cancel(editor, false);
             return Ok(false);
         }
-        if unsafe { self.control.PrepareConversion().is_err() } {
+        let Ok(preparer) = self
+            .control
+            .cast::<sumibi_tip::spike::ISpikeInputPreparer>()
+        else {
+            return Ok(false);
+        };
+        if unsafe { preparer.Prepare(editor.context.as_raw()).is_err() } {
             return Ok(false);
         }
         if self.boundary_blocked.get() || generation.get() != Some(epoch) {
@@ -315,6 +323,23 @@ pub(crate) fn exercise_composing(
         "pending-edit",
         "empty-cycle",
         "close",
+        "fresh/apply",
+        "fresh/backward",
+        "fresh/maximum",
+        "fresh/missing-sink",
+        "fresh/collapsed",
+        "fresh/private",
+        "fresh/readonly",
+        "fresh/lock-denied",
+        "fresh/foreign",
+        "fresh/null-context",
+        "fresh/cancel",
+        "fresh/pending-edit",
+        "fresh/pending-protection",
+        "fresh/gate-selection",
+        "fresh/gate-protection",
+        "fresh/gate-body-restored",
+        "fresh/one-shot",
     ] {
         run(manager, client, RunMode::ComposingTest(case))?;
     }
@@ -327,6 +352,9 @@ pub(super) fn test_composing(
     client: u32,
     case: &str,
 ) -> Result<()> {
+    if let Some(case) = case.strip_prefix("fresh/") {
+        return fresh_selection_host::test(window, editor, live, client, case);
+    }
     let store = editor.store.get();
     store.external_text("prefix  suffix".encode_utf16().collect())?;
     store.host_selection(7, 7)?;

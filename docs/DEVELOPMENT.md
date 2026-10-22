@@ -327,11 +327,16 @@ cargo build -p sumibi-host --features spike --locked --offline
 入力すると、その範囲に下線が付き、同じcompositionが入力に合わせて伸びる。
 Backspaceで範囲を縮め、末尾まで消すと下線とcompositionを終了する。
 F7でその範囲または明示選択を固定の「日本語」へ非同期変換し、Ctrl+Zで1回Undoする。
+composing/transactionホストの初回選択も、文字入力で追跡を作る前にF7を開始できる。
+明示選択の向きを維持し、記録のないcollapsed caretからは全文を推測しない。
 Escは追跡/待機を取消し、Enterは原文確定をホストへ通す。移動・focus喪失・×終了でも後始末する。
 F6は使用しない。本文はホストで一度だけ反映し、composition操作失敗を理由に再送しない。
 
 自動検証は次のコマンド。専用ホスト29ケースで、実DLLの所有CLSIDと同一objectの伸縮、
 開始拒否、失効、別composition非干渉、取消、1回Undo、送信前検査、同期SC_CLOSEを確認する。
+最新は初回選択の17ケースを追加し、合計46件が成功。初期化・逆向き選択・最大範囲・sink欠損、
+各種拒否・取消・履歴復元とReadyの一度だけの使用を検査する。Rust83件・関連回帰と範囲は
+[ADR 0026](adr/0026-initialize-explicit-selection-with-context.md)を参照。
 2026-10-22 / Windows 11 x64 build 26300 / medium / Rust 1.99.1で、29ケースと
 Test-Spike.ps1の全検査が省略なしで成功。workspace 47件、解除とDLLアンロードも確認した。
 

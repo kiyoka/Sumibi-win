@@ -288,6 +288,7 @@ impl Tracker {
         if self.auto_selected || self.cleanup_pending {
             return Err(E_ABORT.into());
         }
+        let boundary = self.watch.boundary_generation()?;
         let observed = self.observe()?;
         let collapsed = observed.metadata.selection.0 == observed.metadata.selection.1;
         let tracked = if collapsed {
@@ -298,7 +299,7 @@ impl Tracker {
         let range = tracked
             .as_ref()
             .map_or(observed.metadata.selection, TrackedInput::range);
-        if range.0 == range.1 {
+        if range.0 >= range.1 || range.1 - range.0 > MAX_SELECTION_UNITS as i32 {
             return Err(E_ABORT.into());
         }
         self.session.clear();
@@ -330,6 +331,11 @@ impl Tracker {
                     return Err(E_ABORT.into());
                 }
                 ensure_target(&manager, &context)?;
+                // Only a recorded run needs an automatic selection. Keep the
+                // endpoints and direction of an explicit selection unchanged.
+                if !collapsed {
+                    return Ok(());
+                }
                 let mut selected = TF_SELECTION {
                     range: ManuallyDrop::new(Some(target)),
                     style: TF_SELECTIONSTYLE {
@@ -351,6 +357,7 @@ impl Tracker {
         let notification = self.watch.generation()?;
         let metadata = self.inspect(false)?;
         if self.watch.generation()? != notification
+            || self.watch.boundary_generation()? != boundary
             || metadata.selection != range
             || !metadata.same_protection(&expected)
         {

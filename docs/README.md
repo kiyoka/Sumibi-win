@@ -37,6 +37,7 @@
 - [ADR 0023](adr/0023-grapheme-backspace-within-recorded-input.md)：Unicode版を固定した記録内の書記素Backspace、通常ホストfallbackと範囲の限界。
 - [ADR 0024](adr/0024-grapheme-navigation-in-owned-host.md)：専用ホストの書記素移動/Shift選択/Delete、本文を持たない境界表と保留結果の拒否。
 - [ADR 0025](adr/0025-synchronous-selected-delete.md)：明示選択Deleteを実DLLの同期writeへ接続し、二重削除と削除本文の取得/救済コピーを防ぐ。
+- [ADR 0026](adr/0026-initialize-explicit-selection-with-context.md)：初回文字入力なしで明示選択をF7へ接続し、選択方向と原文準備の一度だけの寿命を維持する。
 
 ## 更新の規則
 

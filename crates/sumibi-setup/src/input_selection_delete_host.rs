@@ -28,15 +28,13 @@ pub(super) fn test(
     } else if case == "maximum" {
         store.external_text(vec!['x' as u16; 1024])?;
         store.host_selection(0, 1024)?;
-    } else if matches!(case, "tracked" | "pending") {
+    } else if case == "tracked" {
         store.external_text("prefix  suffix".encode_utf16().collect())?;
         store.host_selection(7, 7)?;
         pump(window)?;
         editor.insert(&"a😀b".encode_utf16().collect::<Vec<_>>())?;
         assert_eq!(editor.input_disposition.get(), INPUT_APPLIED);
-        if case == "tracked" {
-            store.host_selection(7, 11)?;
-        }
+        store.host_selection(7, 11)?;
     } else if case == "empty" {
         store.host_selection(7, 7)?;
     }

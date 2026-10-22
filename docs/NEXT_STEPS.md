@@ -118,6 +118,12 @@ Core/workspaceの件数は83件のまま。一般アプリと製品DLLの残範�
 workspace83件を維持する（[ADR 0025](adr/0025-synchronous-selected-delete.md)）。
 選択のないDLL前方削除・任意位置のcomposition継続と、一般アプリ/製品統合の残範囲を次に進める。
 
+続いてF7準備へcontext付き初期化を追加し、最初の文字入力前でも明示選択を変換できるようにした。
+選択の向きを保ち、記録のないcollapsed caretから全文を推測しない。準備は本文を取得せず、
+保護境界世代と一度だけのReadyを検査する。初回選択17件を加えcomposition検査は46件。
+同期入力42・救済35ほか関連回帰とRust83件が成功した（[ADR 0026](adr/0026-initialize-explicit-selection-with-context.md)）。
+一般アプリ/製品統合、選択のないDLL前方削除と任意位置の追跡継続は引き続き残る。
+
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。
 - named pipeの非同期I/Oと停止伝播、偽server・PID再利用・容量超過・終了待機を試験。
