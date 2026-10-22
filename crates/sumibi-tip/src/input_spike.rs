@@ -54,7 +54,18 @@ pub unsafe trait ISpikeInputWriter: IUnknown {
 pub unsafe trait ISpikeInputEraser: IUnknown {
     pub fn Backspace(&self, context: *mut c_void, count: u32, disposition: *mut u32) -> HRESULT;
 }
-#[implement(ISpikeInput, ISpikeInputMonitor, ISpikeInputWriter, ISpikeInputEraser)]
+/// Explicit nonempty selection only; never reads text to infer a forward range.
+#[interface("6ac5e8a1-c126-4ec2-aad2-cea21324be31")]
+pub unsafe trait ISpikeSelectionEraser: IUnknown {
+    pub fn DeleteSelection(&self, context: *mut c_void, disposition: *mut u32) -> HRESULT;
+}
+#[implement(
+    ISpikeInput,
+    ISpikeInputMonitor,
+    ISpikeInputWriter,
+    ISpikeInputEraser,
+    ISpikeSelectionEraser
+)]
 struct Control {
     state: Weak<Controller>,
     owner: ThreadId,
@@ -249,6 +260,24 @@ impl ISpikeInputEraser_Impl for Control_Impl {
             unsafe {
                 disposition.write(outcome.get());
             }
+        }
+        result.into()
+    }
+}
+impl ISpikeSelectionEraser_Impl for Control_Impl {
+    unsafe fn DeleteSelection(&self, context: *mut c_void, disposition: *mut u32) -> HRESULT {
+        let outcome = Rc::new(Cell::new(INPUT_NOT_ATTEMPTED));
+        let result = boundary(|| {
+            if disposition.is_null() {
+                return Err(E_INVALIDARG.into());
+            }
+            self.in_context(context, |tracker| tracker.delete_selection(outcome.clone()))
+        });
+        if matches!(outcome.get(), INPUT_UNCERTAIN | INPUT_APPLIED_UNTRACKED) {
+            self.write_blocked.set(true);
+        }
+        if !disposition.is_null() {
+            unsafe { disposition.write(outcome.get()) };
         }
         result.into()
     }

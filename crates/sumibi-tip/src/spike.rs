@@ -11,8 +11,8 @@ use crate::edit::preview::Preview;
 use crate::edit::{capture_selection, replace_selection, EditPolicy};
 pub use crate::input_spike::{
     ISpikeInput, ISpikeInputEraser, ISpikeInputMonitor, ISpikeInputSignal, ISpikeInputSignal_Impl,
-    ISpikeInputWriter, FUNCTION_TEST_INPUT, INPUT_APPLIED, INPUT_APPLIED_UNTRACKED,
-    INPUT_NOT_ATTEMPTED, INPUT_UNCERTAIN,
+    ISpikeInputWriter, ISpikeSelectionEraser, FUNCTION_TEST_INPUT, INPUT_APPLIED,
+    INPUT_APPLIED_UNTRACKED, INPUT_NOT_ATTEMPTED, INPUT_UNCERTAIN,
 };
 pub use crate::owned_composition::GUID_SPIKE_COMPOSITION_SINK;
 use std::cell::{Cell, RefCell};

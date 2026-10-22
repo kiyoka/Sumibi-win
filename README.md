@@ -31,10 +31,10 @@ F6プレビューは選択範囲をSumibi自身のcompositionとして保持し�
 `composing-demo`では同じ入力を実DLLのcompositionと下線で追跡し、文字入力で広げ、Backspaceで縮めます。`composing-input-test`で29ケースを検証できます（[操作手順](docs/DEVELOPMENT.md#入力compositionの伸縮を試す)、[条件と制限](docs/adr/0010-cooperating-host-composition-growth.md)）。本文はホストで反映する診断経路で、一般アプリへの統合は未実装です。
 外部編集や保護状態の通知では、次の打鍵を待たず所有ループで古い追跡を解除します。所有ホストのフォーカス喪失・非アクティブ化・無効化・モード取消も転送し、`input-notify-test`で30ケースを検証できます（[通知の条件](docs/adr/0011-owner-loop-input-invalidation.md)、[明示境界と制限](docs/adr/0020-owner-cancellation-and-shared-tsf-pump.md)、[ウィンドウ通知](docs/adr/0022-native-owner-window-boundaries.md)）。
 `transaction-demo`のBackspaceは記録末尾の拡張書記素を同じ同期writeで削除し、結合文字・複合絵文字とrepeatもまとめて扱います。全削除でcompositionを終了し、失敗時には再削除しません。`backspace-input-test`で37ケースを検証できます（[入力取引の条件](docs/adr/0013-synchronous-tracked-backspace.md)、[書記素の版と範囲](docs/adr/0023-grapheme-backspace-within-recorded-input.md)）。
-専用editorの左右移動・Shift選択・ホストDeleteも書記素単位で操作できます。ホストのBackspace連打は選択範囲を広げず、一度の編集とUndoにまとめます。`grapheme-input-test`で22ケースを検証できます（[操作と検証範囲](docs/adr/0024-grapheme-navigation-in-owned-host.md)）。製品DLLの前方Deleteや一般アプリのキー配送は引き続き未実装です。
+専用editorの左右移動・Shift選択・ホストDeleteも書記素単位で操作できます。ホストのBackspace連打は選択範囲を広げず、一度の編集とUndoにまとめます。`grapheme-input-test`で22ケースを検証できます（[操作と検証範囲](docs/adr/0024-grapheme-navigation-in-owned-host.md)）。選択のないDLL前方Deleteや一般アプリのキー配送は引き続き未実装です。
 Notepad等の実アプリでの表示と実打鍵は未確認です。
 `recovery-demo`では固定の入力失敗を再現し、F8で未確認入力を確認できます。editorごとに1件・最大1024 UTF-16単位を最大10分だけ保持し、診断EXE全体では予約中も含め合計4件に制限します。明示コピー／破棄を提供し、自動再入力はしません。`recovery-input-test`で34ケースを検証できます（[起動と操作](docs/DEVELOPMENT.md#未確認入力の救済を試す)、[保護と保持の契約](docs/adr/0014-bounded-input-recovery.md)、[共有容量](docs/adr/0021-shared-input-recovery-budget.md)）。
-`transaction-demo`では文字入力・caret・compositionを同じ同期writeで更新します。書込後の失敗では自動再入力せず、確認を表示します。`transaction-input-test`で22ケースを検証できます（[起動と操作](docs/DEVELOPMENT.md#同期入力取引を試す)、[範囲と失敗時の契約](docs/adr/0012-synchronous-input-transaction.md)）。
+`transaction-demo`では文字入力と明示選択のDeleteを実DLLへ接続し、本文・caret・compositionを同じ同期writeで更新します。書込後の失敗では自動再入力・再削除せず、確認を表示します。`transaction-input-test`で42ケースを検証できます（[起動と操作](docs/DEVELOPMENT.md#同期入力取引を試す)、[入力取引](docs/adr/0012-synchronous-input-transaction.md)、[選択Deleteの範囲](docs/adr/0025-synchronous-selected-delete.md)）。
 
 - [実装着手 Issue #1](https://github.com/kiyoka/Sumibi-win/issues/1)
 - [言語・方式の選定案](docs/adr/0001-language-and-ime.md)
@@ -71,6 +71,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [所有ウィンドウの無効化・非アクティブ化による失効](docs/adr/0022-native-owner-window-boundaries.md)
 - [記録範囲内の拡張書記素Backspace](docs/adr/0023-grapheme-backspace-within-recorded-input.md)
 - [所有ホストの書記素移動・選択・前方削除](docs/adr/0024-grapheme-navigation-in-owned-host.md)
+- [明示選択Deleteの同期取引](docs/adr/0025-synchronous-selected-delete.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 
 設計基準はSumibi-mac main `553c69021eda7a8a5944d8748357f3790cc2f45c`。

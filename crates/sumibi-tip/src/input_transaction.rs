@@ -1,5 +1,5 @@
 //! A single synchronous write cookie covers supplied insertion or recorded
-//! suffix deletion, caret and composition.
+//! suffix/explicit-selection deletion, caret and composition.
 //! This is not rollback: SetText may mutate a store even when it returns failure.
 use super::*;
 use crate::input_spike::{INPUT_APPLIED, INPUT_APPLIED_UNTRACKED, INPUT_UNCERTAIN};
@@ -126,8 +126,25 @@ impl Tracker {
         {
             return Err(E_INVALIDARG.into());
         }
+        self.replace(units, outcome)
+    }
+    pub(crate) fn delete_selection(&mut self, outcome: Rc<Cell<u32>>) -> Result<()> {
+        // An explicit Delete retires the old run, never adopts pre-existing
+        // text as tracked input. Cleanup must finish before any body write.
+        self.cancel(true)?;
+        self.replace(&[], outcome)
+    }
+    fn replace(&mut self, units: &[u16], outcome: Rc<Cell<u32>>) -> Result<()> {
         self.before(false)?;
         let (before, _) = self.before.take().ok_or(E_ABORT)?;
+        if units.is_empty()
+            && (before.metadata.selection.0 < 0
+                || before.metadata.selection.0 >= before.metadata.selection.1
+                || before.metadata.selection.1 - before.metadata.selection.0
+                    > MAX_SELECTION_UNITS as i32)
+        {
+            return Err(E_ABORT.into());
+        }
         let sequence = self
             .sequence
             .checked_add(1)
@@ -145,8 +162,13 @@ impl Tracker {
             ..before.point
         };
         let mut session = std::mem::take(&mut self.session);
-        session.inserted(before.point, after, units);
-        let range = session.range(after).ok_or(E_ABORT)?;
+        let range = if units.is_empty() {
+            session.clear();
+            None
+        } else {
+            session.inserted(before.point, after, units);
+            Some(session.range(after).ok_or(E_ABORT)?)
+        };
         let edit = self.edit();
         let watch = self.watch.clone();
         let boundary = watch.boundary_generation()?;
@@ -176,7 +198,7 @@ impl Tracker {
                     // Owner rejection/missing sink happens before any body write.
                     edit.owned.start(&edit.context, &selected, cookie)?;
                 }
-                // Starting our empty composition may emit metadata notifications.
+                // Starting our composition may emit metadata notifications.
                 // Validate target/protection again after that external COM call.
                 edit.validate(cookie, before.metadata)?;
                 let property = unsafe { edit.context.GetProperty(&GUID_PROP_ATTRIBUTE)? };
@@ -207,7 +229,14 @@ impl Tracker {
                     selection: (end, end),
                     ..before.metadata
                 };
-                edit.update(cookie, range, metadata)?;
+                if let Some(range) = range {
+                    edit.update(cookie, range, metadata)?;
+                } else {
+                    edit.validate(cookie, metadata)?;
+                    edit.owned.end(&edit.context, cookie)?;
+                    clear_mark(&edit.context, cookie, &edit.marked, edit.atom)?;
+                    edit.validate(cookie, metadata)?;
+                }
                 if watch.boundary_generation()? != boundary {
                     return Err(E_ABORT.into());
                 }
@@ -219,7 +248,7 @@ impl Tracker {
         PendingInput {
             session,
             sequence,
-            range: Some(range),
+            range,
             boundary,
             outcome,
         }
@@ -261,7 +290,7 @@ impl PendingInput {
     }
 }
 
-/// The only body write for either operation. All authorization precedes this
+/// The only body write for these operations. All authorization precedes this
 /// helper; errors after the call can never grant host replay or rollback.
 fn write_body(
     edit: &CompositionEdit,

@@ -130,9 +130,14 @@ DLLの本文取得範囲は広げない（[ADR 0024](adr/0024-grapheme-navigatio
 通常ホストのBackspaceもrepeat全体を変更前の選択・本文から一度だけ計画する。
 DLLの書込前拒否/救済枠不足からのfallbackと旧composition観測経路の双方で、一度の編集とUndoにまとめる。
 非空選択を消した後で残りrepeatを再計画せず、選択外の文字を巻き込まない。
+明示選択のDeleteは独立ISpikeSelectionEraserで同期replaceへ接続する。
+旧runを退役し、肯定的な保護検査と一時compositionの開始、空文字へのSetText、caretと終了を同じwriteで処理する。
+本文を取得せず、削除後は空のInputSessionにする。救済はOperation::DeleteSelectionの操作情報だけでコピー不可。
+書込前拒否/共有枠満杯だけを通常ホストへ返し、試行後の失敗は再削除しない。
+選択のないDLL前方削除と任意位置の追跡継続は残る（[ADR 0025](adr/0025-synchronous-selected-delete.md)）。
 本文書込と確定処理は挿入と共有する。旧世代・追跡外・選択・他composition等では一部を先に消さず、
 書込前に元のホスト処理へ返す。試行後の失敗では再削除せず、明示boundaryまで変換を停止する。
-前方Delete・任意位置編集・製品の待機/救済統合は未完了（[ADR 0013](adr/0013-synchronous-tracked-backspace.md)）。
+選択のないDLL前方Delete・任意位置編集・製品の待機/救済統合は未完了（[ADR 0013](adr/0013-synchronous-tracked-backspace.md)）。
 所有editorの救済はCoreの1件・最大1024単位のslotを取引前に予約し、未確認結果だけを有限期限で保持する。
 診断EXEは全Rescueへ同じBudgetを渡し、別STAも含む予約中/確認待ちを合計4件に制限する。
 redactや画面の開閉では返さず、レコードの破棄・期限切れcleanup・所有者Dropで共有枠を戻す

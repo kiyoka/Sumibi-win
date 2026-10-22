@@ -79,7 +79,9 @@ cargo build -p sumibi-host --features spike --locked --offline
 Escは追跡を解除する。Backspaceは記録末尾を同じwrite内で削除・縮小し、全削除でcompositionを終了する。
 repeatは記録内の拡張書記素クラスタ単位で数え、追跡範囲を越える要求は全体を元のホスト操作へ返す。
 unicode-segmentation 1.13.3 / Unicode 17.0.0に固定し、通常ホストのBackspaceも同じ分割を使う。
-記録外の既存本文へクラスタを広げず、正規化もしない。前方Delete・Undoは既存ホスト操作を使う。
+記録外の既存本文へクラスタを広げず、正規化もしない。
+非空の明示選択をDeleteすると、実DLLが同じwriteで削除・caret・一時composition終了を処理する。
+repeatでも選択を一度だけ削除し、削除本文を取得・救済コピーしない。選択のない前方DeleteとUndoは既存ホスト操作を使う。
 終了は×ボタン。既定IME・ユーザー文書・HTTP・資格情報は使用しない。
 
 書き込み前拒否ではホストが元の入力を一度だけ反映する。書き込みを試みた後の失敗では、
@@ -97,6 +99,9 @@ Backspaceの27ケースも成功。ログはtarget/issue-4-backspace-transaction
 最終版はTest-Spike.ps1を省略なしで実行し、workspace 50件・Clippy 3構成と既存native検査も成功した。
 全回帰ログはtarget/issue-4-backspace-transaction-regression.log。
 最新のbackspace-input-testは書記素10件を加え37ケースが成功。Core 5件追加でworkspaceは76件。
+最新のtransaction-input-testは選択Deleteの20件を加え42ケース、recovery-input-testは35件が成功した。
+削除後の新規追跡、保留変換の失効、書込後の再削除禁止、救済満杯での1回Undo/Redoも検査する。
+Rust83件と関連回帰・検証範囲・ログは[ADR 0025](adr/0025-synchronous-selected-delete.md)を参照。
 fmt・Clippy 3構成・build・基本DLL検査も成功した。一括scriptはkey-testのShift押下状態で停止し、
 その後の単独key-testが成功した。script全体の成功とは区別する。
 救済34・同期入力22・追跡25・composition伸縮29・通知30・broker入力11・close 4も再確認した。
@@ -490,7 +495,7 @@ cargo run -p sumibi-setup --locked --offline -- demo --dll target/debug/sumibi_t
 | Home / End | 文頭 / 文末へカーソル移動 |
 | ← / → | 書記素単位で移動。選択中は該当方向の端へ寄せ、残りrepeat分だけ移動 |
 | Shift + ← / → / Home / End | 選択の始点を保持して範囲を伸縮 |
-| Delete | 明示選択、または直後の書記素を削除。内部caretは含まれる書記素全体を対象 |
+| Delete | 明示選択、または直後の書記素を削除。transaction-demoの明示選択は実DLLの同期取引。ホストの内部caretは含まれる書記素全体を対象 |
 | F6 | この入力欄を明示許可し、選択範囲を下線と自己所有compositionで保持。未選択なら全文を選択 |
 | F7 | 固定文字列「日本語」へ変換 |
 | Esc | 下線プレビューを取消 |

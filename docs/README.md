@@ -36,6 +36,7 @@
 - [ADR 0022](adr/0022-native-owner-window-boundaries.md)：所有windowの無効化・非アクティブ化・モード取消による追跡/変換/救済の失効と標準処理の維持。
 - [ADR 0023](adr/0023-grapheme-backspace-within-recorded-input.md)：Unicode版を固定した記録内の書記素Backspace、通常ホストfallbackと範囲の限界。
 - [ADR 0024](adr/0024-grapheme-navigation-in-owned-host.md)：専用ホストの書記素移動/Shift選択/Delete、本文を持たない境界表と保留結果の拒否。
+- [ADR 0025](adr/0025-synchronous-selected-delete.md)：明示選択Deleteを実DLLの同期writeへ接続し、二重削除と削除本文の取得/救済コピーを防ぐ。
 
 ## 更新の規則
 

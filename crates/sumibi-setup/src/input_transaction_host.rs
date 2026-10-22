@@ -1,6 +1,8 @@
 //! Real DLL insertion; never edit user documents or replay attempted writes.
 use super::*;
 use sumibi_tip::spike::{INPUT_APPLIED, INPUT_APPLIED_UNTRACKED};
+#[path = "input_selection_delete_host.rs"]
+mod selection_delete;
 
 pub(crate) fn run_transaction_demo(
     manager: &ITfThreadMgr,
@@ -35,6 +37,26 @@ pub(crate) fn exercise_transactions(
         "close",
         "invalid",
         "capacity",
+        "delete/selection",
+        "delete/repeat",
+        "delete/partial",
+        "delete/maximum",
+        "delete/tracked",
+        "delete/pending",
+        "delete/empty",
+        "delete/readonly",
+        "delete/private",
+        "delete/foreign",
+        "delete/lock-denied",
+        "delete/owner-rejected",
+        "delete/missing-sink",
+        "delete/budget",
+        "delete/text-fail-before",
+        "delete/text-fail-after",
+        "delete/selection-fail",
+        "delete/status-restored",
+        "delete/scope-restored",
+        "delete/compartment-restored",
     ] {
         run(manager, client, RunMode::TransactionTest(case))?;
     }
@@ -47,6 +69,9 @@ pub(in crate::edit_host::input_host) fn test_transactions(
     client: u32,
     case: &str,
 ) -> Result<()> {
+    if let Some(case) = case.strip_prefix("delete/") {
+        return selection_delete::test(window, editor, live, client, case);
+    }
     let store = editor.store.get();
     let composing = editor.composing.as_ref().ok_or(E_FAIL)?;
     let writer: ISpikeInputWriter = composing.control.cast()?;

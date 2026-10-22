@@ -42,6 +42,7 @@ pub struct Ticket(u64);
 pub enum Operation {
     Insert(usize),
     Backspace(u32),
+    DeleteSelection,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Outcome {
@@ -112,6 +113,7 @@ impl Recovery {
         let length = match operation {
             Operation::Insert(length) if (1..=MAX_UNITS).contains(&length) => length,
             Operation::Backspace(count) if (1..=MAX_UNITS as u32).contains(&count) => 0,
+            Operation::DeleteSelection => 0,
             _ => return Err(ReserveError::Invalid),
         };
         let sequence = self
@@ -473,12 +475,15 @@ mod tests {
     fn deletion_has_only_operation_metadata_and_never_copies_supplied_text() {
         let now = Instant::now();
         let mut recovery = Recovery::default();
-        let ticket = recovery.reserve(Operation::Backspace(2), now).unwrap();
-        recovery.finish(ticket, Outcome::Uncertain, &['x' as u16], now);
-        let metadata = recovery.metadata(now).unwrap();
-        assert_eq!(metadata.operation, Operation::Backspace(2));
-        assert!(!metadata.copyable);
-        assert!(recovery.text(ticket, now).is_none());
+        for operation in [Operation::Backspace(2), Operation::DeleteSelection] {
+            let ticket = recovery.reserve(operation, now).unwrap();
+            recovery.finish(ticket, Outcome::Uncertain, &['x' as u16], now);
+            let metadata = recovery.metadata(now).unwrap();
+            assert_eq!(metadata.operation, operation);
+            assert!(!metadata.copyable);
+            assert!(recovery.text(ticket, now).is_none());
+            recovery.clear();
+        }
     }
     #[test]
     fn malformed_payloads_and_invalid_capacities_never_expose_text() {

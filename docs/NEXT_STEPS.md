@@ -112,6 +112,12 @@ workspace83件と関連回帰が成功。保留中の編集は旧結果を拒否
 grapheme-input-testは10件追加で22件。共有救済4枠満杯の既存検査も1回Undoへ強化した。
 Core/workspaceの件数は83件のまま。一般アプリと製品DLLの残範囲は上記を維持する。
 
+明示選択のDeleteを実DLLの同期writeへ接続し、本文・caret・一時composition終了を一度だけ処理する。
+削除本文を取得せず、旧追跡を退役し、未確認結果は操作情報だけを救済する。
+選択Delete20件を加えて同期入力42件、共有4枠満杯の削除を加えて救済35件と関連回帰が成功した。
+workspace83件を維持する（[ADR 0025](adr/0025-synchronous-selected-delete.md)）。
+選択のないDLL前方削除・任意位置のcomposition継続と、一般アプリ/製品統合の残範囲を次に進める。
+
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。
 - named pipeの非同期I/Oと停止伝播、偽server・PID再利用・容量超過・終了待機を試験。

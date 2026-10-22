@@ -208,6 +208,7 @@ impl View {
         let operation = match metadata.operation {
             Operation::Insert(_) => "文字入力".into(),
             Operation::Backspace(count) => format!("Backspace × {count}"),
+            Operation::DeleteSelection => "選択範囲の削除".into(),
         };
         let result = if metadata.outcome == Outcome::AppliedUntracked {
             "本文操作は成功。追跡を停止しました"

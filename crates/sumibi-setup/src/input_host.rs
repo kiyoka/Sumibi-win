@@ -193,6 +193,34 @@ struct Editor {
     rescue: input_recovery_host::Rescue,
 }
 impl Editor {
+    fn delete_forward(&self, repeats: usize) -> Result<()> {
+        if repeats == 0 {
+            return Err(E_INVALIDARG.into());
+        }
+        let selected = self.store.get().selection.get();
+        if self.transaction && selected.acpStart != selected.acpEnd {
+            let disposition = if let Some(ticket) = self
+                .rescue
+                .reserve(sumibi_core::recovery::Operation::DeleteSelection)
+            {
+                let disposition = self
+                    .composing
+                    .as_ref()
+                    .ok_or(E_FAIL)?
+                    .delete_selection(self)
+                    .unwrap_or(sumibi_tip::spike::INPUT_UNCERTAIN);
+                self.rescue.finish(ticket, disposition, &[]);
+                disposition
+            } else {
+                self.clear_tracking();
+                sumibi_tip::spike::INPUT_NOT_ATTEMPTED
+            };
+            if self.handled_transaction(disposition) {
+                return Ok(());
+            }
+        }
+        self.store.get().delete_forward(repeats)
+    }
     fn handled_transaction(&self, disposition: u32) -> bool {
         self.input_disposition.set(disposition);
         if disposition == sumibi_tip::spike::INPUT_NOT_ATTEMPTED {
@@ -371,7 +399,7 @@ impl Editor {
                 let repeats = (flags.0 as usize & 0xffff).max(1);
                 if key.0 == 0x2e {
                     if !shift && !self.store.get().readonly.get() {
-                        self.store.get().delete_forward(repeats)?;
+                        self.delete_forward(repeats)?;
                     }
                 } else {
                     self.store.get().navigate(key.0, shift, repeats)?;

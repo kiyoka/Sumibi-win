@@ -66,6 +66,7 @@ pub(crate) fn exercise_recovery(
         "rescue/copy-invalidated",
         "rescue/process-insert",
         "rescue/process-backspace",
+        "rescue/process-delete",
         "rescue/process-discard",
         "rescue/process-expire",
         "rescue/process-close",
@@ -468,8 +469,11 @@ fn test_process_budget(
         peers.push(peer);
     }
     let old_tickets: Vec<_> = peers.iter().map(|p| p.metadata().unwrap().ticket).collect();
-    if case == "process-backspace" {
+    if matches!(case, "process-backspace" | "process-delete") {
         store.type_text(&"a👨‍👩‍👧‍👦b".encode_utf16().collect::<Vec<_>>())?;
+        if case == "process-delete" {
+            store.host_selection(1, 12)?;
+        }
     }
     let writes = store.set_text_calls.get();
     let history = store.undo.borrow().len();
@@ -477,11 +481,15 @@ fn test_process_budget(
     let selection = store.selection.get();
     if case == "process-backspace" {
         editor.input(WM_CHAR, WPARAM(8), LPARAM(2))?;
+    } else if case == "process-delete" {
+        editor.delete_forward(1024)?;
     } else {
         editor.insert(&['z' as u16])?;
     }
     let expected: Vec<_> = if case == "process-backspace" {
         "a"
+    } else if case == "process-delete" {
+        "ab"
     } else {
         "z"
     }
@@ -498,7 +506,7 @@ fn test_process_budget(
         history + 1,
         "host handles the whole original operation in one Undo entry"
     );
-    if case == "process-backspace" {
+    if matches!(case, "process-backspace" | "process-delete") {
         store.undo_once()?;
         assert_eq!(*store.text.borrow(), original);
         let restored = store.selection.get();
@@ -536,7 +544,10 @@ fn test_process_budget(
         }
         _ => {}
     }
-    if !matches!(case, "process-insert" | "process-backspace") {
+    if !matches!(
+        case,
+        "process-insert" | "process-backspace" | "process-delete"
+    ) {
         // Releasing one owner's record lets a different owner reserve before a
         // failed DLL write. It neither replays the old input nor reads the body.
         store.fail_text_before.set(true);

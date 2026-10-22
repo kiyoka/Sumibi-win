@@ -114,7 +114,7 @@ impl Rescue {
             _ => {}
         }
     }
-    fn metadata(&self) -> Option<Metadata> {
+    pub(super) fn metadata(&self) -> Option<Metadata> {
         self.slot.borrow().metadata(self.now())
     }
     pub(super) fn invalidate(&self) {
