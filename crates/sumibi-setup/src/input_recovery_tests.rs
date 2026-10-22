@@ -64,6 +64,12 @@ pub(crate) fn exercise_recovery(
         "rescue/protection-restored",
         "rescue/late-command",
         "rescue/copy-invalidated",
+        "rescue/process-insert",
+        "rescue/process-backspace",
+        "rescue/process-discard",
+        "rescue/process-expire",
+        "rescue/process-close",
+        "rescue/process-drop",
     ] {
         run(manager, client, RunMode::TransactionTest(case))?;
     }
@@ -82,6 +88,9 @@ pub(in crate::edit_host::input_host) fn test_recovery(
     _client: u32,
     case: &str,
 ) -> Result<()> {
+    if case.starts_with("process-") {
+        return test_process_budget(window, editor, case);
+    }
     let clipboard = TestClipboard::new();
     let store = editor.store.get();
     let reads = super::super::composing_host::input_notify_host::body_reads()?;
@@ -406,6 +415,120 @@ pub(in crate::edit_host::input_host) fn test_recovery(
     editor.rescue.close();
     assert!(editor.rescue.metadata().is_none());
     assert!(editor.rescue.view.borrow().is_none());
+    println!("Input recovery / {case}: OK");
+    Ok(())
+}
+
+/// Distinct owner slots use the same EXE-wide budget. Auxiliary owners have no
+/// copy permission and hold only operation metadata; no extra focus or document
+/// is fabricated. The real editor still uses the actual DLL input transaction.
+fn test_process_budget(
+    window: &crate::window_host::Window,
+    editor: &Editor,
+    case: &str,
+) -> Result<()> {
+    let safety = editor.rescue.safety.as_ref().ok_or(E_FAIL)?;
+    let clipboard = TestClipboard::new();
+    let store = editor.store.get();
+    let reads = super::super::composing_host::input_notify_host::body_reads()?;
+    let mut peers = Vec::new();
+    for _ in 0..sumibi_core::recovery::MAX_RECORDS {
+        let peer = Rescue::new(
+            &safety.manager,
+            &editor.context,
+            safety.client,
+            false,
+            false,
+        )?;
+        let ticket = peer.reserve(Operation::Backspace(1)).ok_or(E_FAIL)?;
+        peer.finish(ticket, sumibi_tip::spike::INPUT_UNCERTAIN, &[]);
+        peers.push(peer);
+    }
+    let old_tickets: Vec<_> = peers.iter().map(|p| p.metadata().unwrap().ticket).collect();
+    if case == "process-backspace" {
+        store.type_text(&"a😀b".encode_utf16().collect::<Vec<_>>())?;
+    }
+    let writes = store.set_text_calls.get();
+    let history = store.undo.borrow().len();
+    if case == "process-backspace" {
+        editor.input(WM_CHAR, WPARAM(8), LPARAM(2))?;
+    } else {
+        editor.insert(&['z' as u16])?;
+    }
+    let expected: Vec<_> = if case == "process-backspace" {
+        "a"
+    } else {
+        "z"
+    }
+    .encode_utf16()
+    .collect();
+    assert_eq!(*store.text.borrow(), expected);
+    assert_eq!(
+        store.set_text_calls.get(),
+        writes,
+        "full shared budget must not enter DLL write"
+    );
+    assert_eq!(
+        store.undo.borrow().len(),
+        history + if case == "process-backspace" { 2 } else { 1 },
+        "host handles the original insert or exactly two repeated deletions"
+    );
+    assert_eq!(
+        editor.input_disposition.get(),
+        sumibi_tip::spike::INPUT_NOT_ATTEMPTED
+    );
+    assert!(editor.rescue.metadata().is_none());
+    for (peer, ticket) in peers.iter().zip(old_tickets) {
+        let metadata = peer.metadata().ok_or(E_FAIL)?;
+        assert_eq!(metadata.ticket, ticket);
+        assert_eq!(metadata.operation, Operation::Backspace(1));
+        assert!(!metadata.copyable);
+        assert!(peer.reserve(Operation::Insert(1)).is_none());
+    }
+    match case {
+        "process-discard" => {
+            peers[0].request(0x78);
+            assert!(peers[0].service(window, &clipboard)?);
+        }
+        "process-expire" => {
+            peers[0].clock.set(Some(Instant::now() + RETENTION));
+            assert!(!peers[0].service(window, &clipboard)?);
+        }
+        "process-close" => peers[0].close(),
+        "process-drop" => {
+            peers.remove(0);
+        }
+        _ => {}
+    }
+    if !matches!(case, "process-insert" | "process-backspace") {
+        // Releasing one owner's record lets a different owner reserve before a
+        // failed DLL write. It neither replays the old input nor reads the body.
+        store.fail_text_before.set(true);
+        editor.insert(&['x' as u16])?;
+        assert_eq!(store.set_text_calls.get(), writes + 1);
+        assert_eq!(*store.text.borrow(), expected);
+        assert_eq!(store.undo.borrow().len(), history + 1);
+        let metadata = editor.rescue.metadata().ok_or(E_FAIL)?;
+        assert_eq!(metadata.outcome, Outcome::Uncertain);
+        assert_eq!(
+            editor
+                .rescue
+                .slot
+                .borrow()
+                .text(metadata.ticket, editor.rescue.now()),
+            Some(&['x' as u16][..])
+        );
+        for peer in peers.iter().filter(|peer| peer.metadata().is_some()) {
+            assert_eq!(peer.metadata().unwrap().operation, Operation::Backspace(1));
+        }
+    }
+    assert_eq!(clipboard.calls.get(), 0);
+    assert_eq!(
+        super::super::composing_host::input_notify_host::body_reads()?,
+        reads
+    );
+    editor.rescue.close();
+    drop(peers);
     println!("Input recovery / {case}: OK");
     Ok(())
 }

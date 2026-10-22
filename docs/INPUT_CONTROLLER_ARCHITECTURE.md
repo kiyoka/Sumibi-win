@@ -122,6 +122,9 @@ ISpikeInputEraserで削除・caret・composition縮小を同じwriteに接続す
 書込前に元のホスト処理へ返す。試行後の失敗では再削除せず、明示boundaryまで変換を停止する。
 前方Delete・任意位置編集・待機・救済は未完了（[ADR 0013](adr/0013-synchronous-tracked-backspace.md)）。
 所有editorの救済はCoreの1件・最大1024単位のslotを取引前に予約し、未確認結果だけを有限期限で保持する。
+診断EXEは全Rescueへ同じBudgetを渡し、別STAも含む予約中/確認待ちを合計4件に制限する。
+redactや画面の開閉では返さず、レコードの破棄・期限切れcleanup・所有者Dropで共有枠を戻す
+（[ADR 0021](adr/0021-shared-input-recovery-budget.md)）。
 UI callbackはticket付き操作のみを通知し、所有ループが期限・保護履歴を検査して明示コピー／破棄する。
 TSF対象・cookieを救済へ保存せず、workerやIPCにも渡さない。本文書込や遅延キー再送は行わない。
 保護変更やfocus喪失ではpayloadを除去する。一般アプリや製品の待機行列ではない

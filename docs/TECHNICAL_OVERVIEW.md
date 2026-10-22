@@ -23,7 +23,7 @@ Mac技術解説自身の実装照合基準 `d2b96fc` と区別する。Macの機
 | TIPのCOM・キー・表示属性・編集 | 専用ホストで実装済み。通常アプリへの常設登録なし |
 | 入力保護 | scope/status/compartmentと取得・送信前・適用時の検査を実装。専用ACPで39ケース。status診断と標準RichEditの拒否7構成を確認（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)）。一般アプリの全機密欄の識別は未検証 |
 | 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。実キーボードの手動確認は未実施 |
-| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮29・選択composition 18・他サービス拒否16・同期入力取引22・Backspace 27ケースを確認。所有editorの救済25ケースも確認。前方Delete・待機・製品統合・候補UIは未実装 |
+| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮29・選択composition 18・他サービス拒否16・同期入力取引22・Backspace 27ケースを確認。所有editorの救済31ケースとEXE共有4枠も確認。前方Delete・待機・製品統合・候補UIは未実装 |
 | Protocol / IPC | 有限フレーム・版付きJSON・client状態、固定process相互検査・overlapped pipe。実DLLのキー・Core・所有TSFから診断用EXE bridge経由で再利用Brokerへ接続。一般アプリは未接続 |
 | Host・HTTP・キー保存・設定UI | 単発/有限連続要求の診断Host EXEを実装。既定では変換拒否。常駐Host・HTTP・キー保存・設定UIは未実装 |
 | Decisions・辞書・署名付き配布 | 未実装。後続段階 |
@@ -303,6 +303,11 @@ Mac実装の最大12候補とSPECの追加10件の差は[移植表](MAC_PARITY.m
 結果不明／適用後追跡失敗の場合だけ保持する。保護履歴と新しいmetadata検査に失敗すれば本文を保存しない。
 F8で明示確認し、確認画面からF10でコピー、F9で破棄する。文書への自動適用や待機キーの再送はしない。
 診断経路では期限による自動破棄を事前表示し、ownerの期限待機で解除する。製品の全体予算・期限政策は未決。
+診断EXEには別途共有Budgetを追加し、予約中を含め全editor合計4件（レコード本文合計4096単位）とする。
+本文を除去した警告も数え、他所有者の枠が満杯なら書込前に元のホスト入力へ返す。
+期限切れの容量はそのownerのcleanupで戻し、別ownerが本文を取得・再適用することはない。
+UIやコピーの一時bufferはこの本文上限とは別で、製品案やプロセス間の予算には読み替えない
+（[ADR 0021](adr/0021-shared-input-recovery-budget.md)）。
 
 ## 9. Decisions自動変換（後続設計）
 

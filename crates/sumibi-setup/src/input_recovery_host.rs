@@ -1,13 +1,18 @@
 //! Owner-loop rescue handling; never replays keys or edits document text.
 use super::*;
 use crate::recovery_view::{Action, Clipboard, View};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-use sumibi_core::recovery::{Metadata, Operation, Outcome, Recovery, Ticket};
+use sumibi_core::recovery::{Budget, Metadata, Operation, Outcome, Recovery, Ticket};
 pub(crate) use tests::exercise_recovery;
 pub(crate) use tests::run_recovery_demo;
 pub(super) use tests::test_recovery;
 #[path = "input_recovery_tests.rs"]
 mod tests;
+
+// One EXE-wide admission pool, including owners on different STAs. It never
+// owns COM, payloads or editor state, and reserves no slot merely for an editor.
+static RECOVERY_BUDGET: OnceLock<Budget> = OnceLock::new();
 
 pub(super) struct Rescue {
     slot: RefCell<Recovery>,
@@ -40,11 +45,12 @@ impl Rescue {
         enabled: bool,
         short: bool,
     ) -> Result<Self> {
+        let budget = RECOVERY_BUDGET.get_or_init(Budget::default).clone();
         Ok(Self {
             slot: RefCell::new(if short {
-                Recovery::with_retention(Duration::from_millis(500)).unwrap()
+                Recovery::with_retention_and_budget(Duration::from_millis(500), budget).unwrap()
             } else {
-                Recovery::default()
+                Recovery::with_budget(budget)
             }),
             view: RefCell::new(None),
             show: Cell::new(None),

@@ -85,6 +85,12 @@ RichEditはTS_SS_REGIONSを報告し、TS_SS_NOHIDDENTEXTを報告しないた�
 通知試験はowner-focus等の24件へ拡張した。前段階の自然focus待機が再発した結果も記録し、
 一般アプリの自然通知だけを保証する意味ではない。
 
+直近では救済の予算を所有者間で共有し、診断EXEの全editorで予約中を含め合計4件に制限した。
+共有枠は本文bufferより先に予約し、破棄・期限切れcleanup・所有者Dropまで保持する。
+Core 5件追加でworkspace 71件、救済31ケースと同期入力/削除/通知/終了の回帰が成功した
+（[ADR 0021](adr/0021-shared-input-recovery-budget.md)）。製品の待機行列・複数入力先UI・プロセス間政策は残る。
+前面化で未通過のwindow/input/delayedの3検査は維持し、一般アプリの保護情報・sink寿命・標準Undoを次に進める。
+
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。
 - named pipeの非同期I/Oと停止伝播、偽server・PID再利用・容量超過・終了待機を試験。

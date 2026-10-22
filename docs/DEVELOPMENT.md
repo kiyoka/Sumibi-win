@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 26件（応答照合9・入力範囲追跡/削除計画10・救済7）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計66件。
+現時点はCore 31件（応答照合9・入力範囲追跡/削除計画10・救済12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計71件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -56,7 +56,7 @@ workspace 65件を含むTest-Spike.ps1の全検査も省略なしで成功した
 共通helperも保持したITfMessagePumpを使うが、全focus履歴の自然通知を保証する変更ではない。
 最新の個別ログはtarget/issue-4-owner-boundary-final-range-target-test.log、全回帰試行はtarget/issue-4-owner-boundary-regression.log。
 所有・通信取消との分担と検証の境界は[ADR 0020](adr/0020-owner-cancellation-and-shared-tsf-pump.md)を参照。
-最新の最終版ではRust 66件・fmt・各構成Clippy・build・load_smoke・self/edit/keyと範囲16・通知24が成功。
+ADR 0020の最終版ではRust 66件・fmt・各構成Clippy・build・load_smoke・self/edit/keyと範囲16・通知24が成功。
 window/input/delayedの3検査は、所有windowの前面化が拒否されたため未通過。
 入力と焦点のassertionは維持し、直接DLL callbackの成功へ読み替えない。
 通常の対話desktopでTest-Spike.ps1を省略なしで再実行する必要がある。
@@ -112,15 +112,17 @@ recovery-demoは合成文字列の入力失敗を作り、空の入力欄を表�
 コピー後も文書へ自動的には挿入しない。F9または破棄欄で救済を消し、×は画面だけ閉じる。
 Escは入力追跡の停止を解除するが、救済は保持する。満杯の間の新規入力は通常ホスト経路で一度だけ処理する。
 
-保持は1件・最大1024 UTF-16単位・失敗確定から最大10分。開閉やコピー失敗で延長しない。
+保持はeditorごとに1件・最大1024 UTF-16単位・失敗確定から最大10分。診断EXE全体で予約中も含め合計4件。
+満杯なら他所有者のデータを上書きせず、DLL取引に入る前に元の通常ホスト入力へ返す。開閉やコピー失敗で延長しない。
 保持期限後は所有ループで画面と救済を解除する。終了時にも破棄し、ディスクへ保存しない。
 保護状態の変更・復元やfocus喪失では本文を取り除き、操作情報だけを残す。Backspaceも操作情報だけで、コピーはできない。
 既に明示コピーしたOSクリップボードは救済期限で自動消去しない。
 
-recovery-input-testは実DLLの25ケースを自動検証する。コピー先は試験用メモリーで、利用者のクリップボードは変更しない。
-Core救済7件を加えworkspaceは57件。ログはtarget/issue-4-input-recovery.logとtarget/issue-4-input-recovery-regression.log。
-Test-Spike.ps1を省略なしで実行し、fmt・Clippy 3構成・build・既存native検査・pipe/peerも成功した。
-条件と製品への残タスクは[ADR 0014](adr/0014-bounded-input-recovery.md)を参照。
+recovery-input-testは実DLLの31ケースを自動検証する。コピー先は試験用メモリーで、利用者のクリップボードは変更しない。
+共有予算のCore 5件を追加し、workspaceは71件。Test-Spike.ps1 -SkipDesktopと、救済31・同期入力22・Backspace 27・通知24・close 4が成功。
+今回、省略なし全回帰は再実行していない。前面化条件で未通過のwindow/input/delayedは引き続き未確認。
+ログはtarget/issue-4-shared-recovery-static.logとtarget/issue-4-shared-recovery-native-final.log。
+基本契約は[ADR 0014](adr/0014-bounded-input-recovery.md)、共有容量・所有者と制限は[ADR 0021](adr/0021-shared-input-recovery-budget.md)を参照。
 
 ## 別Host EXEから実TSFまでの検証
 
