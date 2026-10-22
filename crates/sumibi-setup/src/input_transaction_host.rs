@@ -3,6 +3,8 @@ use super::*;
 use sumibi_tip::spike::{INPUT_APPLIED, INPUT_APPLIED_UNTRACKED};
 #[path = "input_selection_delete_host.rs"]
 mod selection_delete;
+#[path = "tracked_cursor_host.rs"]
+mod tracked_cursor;
 
 pub(crate) fn run_transaction_demo(
     manager: &ITfThreadMgr,
@@ -57,6 +59,32 @@ pub(crate) fn exercise_transactions(
         "delete/status-restored",
         "delete/scope-restored",
         "delete/compartment-restored",
+        "cursor/delete",
+        "cursor/repeat",
+        "cursor/move",
+        "cursor/all",
+        "cursor/convert",
+        "cursor/convert-after-delete",
+        "cursor/overshoot",
+        "cursor/delete-overshoot",
+        "cursor/nav-budget",
+        "cursor/delete-budget",
+        "cursor/nav-fail",
+        "cursor/nav-fail-after",
+        "cursor/tail-append",
+        "cursor/text-fail-before",
+        "cursor/text-fail-after",
+        "cursor/selection-fail",
+        "cursor/status-restored",
+        "cursor/scope-restored",
+        "cursor/compartment-restored",
+        "cursor/private",
+        "cursor/readonly",
+        "cursor/foreign",
+        "cursor/invalid",
+        "cursor/shift",
+        "cursor/interior-typing",
+        "cursor/rejoin",
     ] {
         run(manager, client, RunMode::TransactionTest(case))?;
     }
@@ -69,6 +97,9 @@ pub(in crate::edit_host::input_host) fn test_transactions(
     client: u32,
     case: &str,
 ) -> Result<()> {
+    if let Some(case) = case.strip_prefix("cursor/") {
+        return tracked_cursor::test(window, editor, live, client, case);
+    }
     if let Some(case) = case.strip_prefix("delete/") {
         return selection_delete::test(window, editor, live, client, case);
     }

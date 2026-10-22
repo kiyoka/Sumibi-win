@@ -65,13 +65,25 @@ pub unsafe trait ISpikeSelectionEraser: IUnknown {
 pub unsafe trait ISpikeInputPreparer: IUnknown {
     pub fn Prepare(&self, context: *mut c_void) -> HRESULT;
 }
+/// Actions 0/1 move left/right; 2 deletes forward inside recorded input only.
+#[interface("e878ca43-d149-4864-9047-59ae210da34a")]
+pub unsafe trait ISpikeTrackedEditor: IUnknown {
+    pub fn Edit(
+        &self,
+        context: *mut c_void,
+        action: u32,
+        count: u32,
+        disposition: *mut u32,
+    ) -> HRESULT;
+}
 #[implement(
     ISpikeInput,
     ISpikeInputMonitor,
     ISpikeInputWriter,
     ISpikeInputEraser,
     ISpikeSelectionEraser,
-    ISpikeInputPreparer
+    ISpikeInputPreparer,
+    ISpikeTrackedEditor
 )]
 struct Control {
     state: Weak<Controller>,
@@ -279,6 +291,33 @@ impl ISpikeSelectionEraser_Impl for Control_Impl {
                 return Err(E_INVALIDARG.into());
             }
             self.in_context(context, |tracker| tracker.delete_selection(outcome.clone()))
+        });
+        if matches!(outcome.get(), INPUT_UNCERTAIN | INPUT_APPLIED_UNTRACKED) {
+            self.write_blocked.set(true);
+        }
+        if !disposition.is_null() {
+            unsafe { disposition.write(outcome.get()) };
+        }
+        result.into()
+    }
+}
+impl ISpikeTrackedEditor_Impl for Control_Impl {
+    unsafe fn Edit(
+        &self,
+        context: *mut c_void,
+        action: u32,
+        count: u32,
+        disposition: *mut u32,
+    ) -> HRESULT {
+        let outcome = Rc::new(Cell::new(INPUT_NOT_ATTEMPTED));
+        let result = boundary(|| {
+            if disposition.is_null() || action > 2 || !(1..=1024).contains(&count) {
+                return Err(E_INVALIDARG.into());
+            }
+            self.in_context(context, |tracker| match action {
+                0 | 1 => tracker.move_caret(action == 0, count, outcome.clone()),
+                _ => tracker.forward_delete(count, outcome.clone()),
+            })
         });
         if matches!(outcome.get(), INPUT_UNCERTAIN | INPUT_APPLIED_UNTRACKED) {
             self.write_blocked.set(true);

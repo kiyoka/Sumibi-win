@@ -139,10 +139,15 @@ DLLの書込前拒否/救済枠不足からのfallbackと旧composition観測経
 旧runを退役し、肯定的な保護検査と一時compositionの開始、空文字へのSetText、caretと終了を同じwriteで処理する。
 本文を取得せず、削除後は空のInputSessionにする。救済はOperation::DeleteSelectionの操作情報だけでコピー不可。
 書込前拒否/共有枠満杯だけを通常ホストへ返し、試行後の失敗は再削除しない。
-選択のないDLL前方削除と任意位置の追跡継続は残る（[ADR 0025](adr/0025-synchronous-selected-delete.md)）。
+明示選択Deleteの契約は[ADR 0025](adr/0025-synchronous-selected-delete.md)を参照。
 本文書込と確定処理は挿入と共有する。旧世代・追跡外・選択・他composition等では一部を先に消さず、
 書込前に元のホスト処理へ返す。試行後の失敗では再削除せず、明示boundaryまで変換を停止する。
-選択のないDLL前方Delete・任意位置編集・製品の待機/救済統合は未完了（[ADR 0013](adr/0013-synchronous-tracked-backspace.md)）。
+記録内では独立ISpikeTrackedEditorが左右移動/前方Deleteを処理し、Coreはcaretと記録終端を分ける。
+移動は同期SetSelectionだけ、削除はBackspaceと共通のerase/write_bodyで本文・caret・compositionを更新する。
+移動/削除前に共有Recovery枠を予約し、試行後の失敗では元の操作を再送しない。救済は操作情報だけでコピー不可。
+記録内repeatを全体として処理できない場合は退役して通常ホストへ戻す。内部caretのF7は記録全体だけを使う。
+内部挿入/Backspaceや任意選択の追跡継続、一般アプリと製品の待機/救済統合は残る
+（[ADR 0027](adr/0027-tracked-caret-and-forward-delete.md)）。
 所有editorの救済はCoreの1件・最大1024単位のslotを取引前に予約し、未確認結果だけを有限期限で保持する。
 診断EXEは全Rescueへ同じBudgetを渡し、別STAも含む予約中/確認待ちを合計4件に制限する。
 redactや画面の開閉では返さず、レコードの破棄・期限切れcleanup・所有者Dropで共有枠を戻す

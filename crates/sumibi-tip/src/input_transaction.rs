@@ -1,20 +1,29 @@
-//! A single synchronous write cookie covers supplied insertion or recorded
-//! suffix/explicit-selection deletion, caret and composition.
+//! Synchronous transactions for supplied insertion, recorded/selected deletion
+//! and caret movement, with the same cookie for their composition metadata.
 //! This is not rollback: SetText may mutate a store even when it returns failure.
 use super::*;
 use crate::input_spike::{INPUT_APPLIED, INPUT_APPLIED_UNTRACKED, INPUT_UNCERTAIN};
 
 impl Tracker {
     pub(crate) fn backspace(&mut self, count: u32, outcome: Rc<Cell<u32>>) -> Result<()> {
+        self.erase(count, false, outcome)
+    }
+    pub(crate) fn forward_delete(&mut self, count: u32, outcome: Rc<Cell<u32>>) -> Result<()> {
+        self.erase(count, true, outcome)
+    }
+    fn erase(&mut self, count: u32, forward: bool, outcome: Rc<Cell<u32>>) -> Result<()> {
         if !(1..=MAX_SELECTION_UNITS as u32).contains(&count) {
             return Err(E_INVALIDARG.into());
         }
         self.before(true)?;
         let (before, _) = self.before.take().ok_or(E_ABORT)?;
-        let deleted = self
-            .session
-            .backspace_range(before.point, count as usize)
-            .ok_or(E_ABORT)?;
+        let deleted = if forward {
+            self.session
+                .forward_delete_range(before.point, count as usize)
+        } else {
+            self.session.backspace_range(before.point, count as usize)
+        }
+        .ok_or(E_ABORT)?;
         let previous = self.session.range(before.point).ok_or(E_ABORT)?;
         if self.extent != Some(previous) || !self.owned.can_commit() {
             return Err(E_ABORT.into());
@@ -30,10 +39,18 @@ impl Tracker {
             ..before.point
         };
         let mut session = std::mem::take(&mut self.session);
-        session.backspaced(before.point, after);
+        if forward {
+            session.deleted_forward(before.point, after, count as usize);
+        } else {
+            session.backspaced(before.point, after);
+        }
         let range = session.range(after);
-        if (range.is_none() && deleted.0 != previous.0)
-            || range.is_some_and(|value| value != (previous.0, deleted.0))
+        let end = previous
+            .1
+            .checked_sub(deleted.1 - deleted.0)
+            .ok_or(E_ABORT)?;
+        if (range.is_none() && end != previous.0)
+            || range.is_some_and(|value| value != (previous.0, end))
         {
             return Err(E_ABORT.into());
         }
@@ -53,7 +70,8 @@ impl Tracker {
                     || Some(extent_of(&edit.owned.range(&edit.context)?)?) != edit.previous
                     || edit.previous != Some(previous)
                     || deleted.0 < previous.0
-                    || deleted.1 != previous.1
+                    || deleted.1 > previous.1
+                    || deleted.0 >= deleted.1
                 {
                     return Err(E_ABORT.into());
                 }
@@ -256,6 +274,116 @@ impl Tracker {
     }
 }
 
+impl Tracker {
+    pub(crate) fn move_caret(
+        &mut self,
+        backward: bool,
+        count: u32,
+        outcome: Rc<Cell<u32>>,
+    ) -> Result<()> {
+        let direction = if backward {
+            sumibi_core::grapheme::Direction::Backward
+        } else {
+            sumibi_core::grapheme::Direction::Forward
+        };
+        let before = self.observe()?;
+        if self.ready.is_some() || self.before.is_some() || self.cleanup_pending {
+            return Err(E_ABORT.into());
+        }
+        let previous = self.session.range(before.point).ok_or(E_ABORT)?;
+        if self.extent != Some(previous) || !self.owned.can_commit() {
+            return Err(E_ABORT.into());
+        }
+        let caret = self
+            .session
+            .move_range(before.point, direction, count as usize)
+            .ok_or(E_ABORT)?;
+        let sequence = self
+            .sequence
+            .checked_add(1)
+            .filter(|v| *v != u64::MAX)
+            .ok_or(E_ABORT)?;
+        let after = InputPoint {
+            generation: sequence,
+            selection: (caret, caret),
+            ..before.point
+        };
+        let mut session = std::mem::take(&mut self.session);
+        session.moved(before.point, after);
+        if session.range(after) != Some(previous) {
+            return Err(E_ABORT.into());
+        }
+        let edit = self.edit();
+        let watch = self.watch.clone();
+        let boundary = watch.boundary_generation()?;
+        let attempted = outcome.clone();
+        let finished = Rc::new(Cell::new(None));
+        let written = finished.clone();
+        run(
+            &self.context,
+            self.client,
+            true,
+            Box::new(move |cookie| {
+                edit.validate(cookie, before.metadata)?;
+                let owned = edit.owned.range(&edit.context)?;
+                if extent_of(&owned)? != previous
+                    || edit.previous != Some(previous)
+                    || metadata_gate(&edit.context, &owned, cookie, &edit.owned)?
+                        != before.metadata.protection
+                    || watch.generation()? != before.notification
+                {
+                    return Err(E_ABORT.into());
+                }
+                let target = unsafe { edit.context.GetStart(cookie)? };
+                unsafe {
+                    target.cast::<ITfRangeACP>()?.SetExtent(caret, 0)?;
+                }
+                if extent_of(&target)? != (caret, caret)
+                    || !same_context(&unsafe { target.GetContext()? }, &edit.context)?
+                    || metadata_gate(&edit.context, &target, cookie, &edit.owned)?
+                        != before.metadata.protection
+                {
+                    return Err(E_ABORT.into());
+                }
+                edit.validate(cookie, before.metadata)?;
+                if watch.generation()? != before.notification
+                    || watch.boundary_generation()? != boundary
+                    || extent_of(&edit.owned.range(&edit.context)?)? != previous
+                {
+                    return Err(E_ABORT.into());
+                }
+                // A failed SetSelection can still have moved the caret. Never apply
+                // the original host movement a second time after this point.
+                attempted.set(INPUT_UNCERTAIN);
+                place_caret(&edit, cookie, target)?;
+                attempted.set(INPUT_APPLIED_UNTRACKED);
+                let metadata = InputMetadata {
+                    selection: after.selection,
+                    ..before.metadata
+                };
+                edit.validate(cookie, metadata)?;
+                if extent_of(&edit.owned.range(&edit.context)?)? != previous
+                    || metadata_gate(&edit.context, &owned, cookie, &edit.owned)?
+                        != before.metadata.protection
+                    || watch.boundary_generation()? != boundary
+                {
+                    return Err(E_ABORT.into());
+                }
+                written.set(Some(metadata));
+                Ok(())
+            }),
+        )?;
+        PendingInput {
+            session,
+            sequence,
+            range: Some(previous),
+            boundary,
+            outcome,
+        }
+        .finish(self, finished.get().ok_or(E_FAIL)?)
+    }
+}
+
 struct PendingInput {
     session: InputSession,
     sequence: u64,
@@ -318,6 +446,9 @@ fn write_body(
     if extent_of(&selected)? != (start, end) {
         return Err(E_ABORT.into());
     }
+    place_caret(edit, cookie, selected)
+}
+fn place_caret(edit: &CompositionEdit, cookie: u32, selected: ITfRange) -> Result<()> {
     unsafe {
         selected.Collapse(cookie, TF_ANCHOR_END)?;
     }

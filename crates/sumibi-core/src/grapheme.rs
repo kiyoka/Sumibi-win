@@ -42,6 +42,25 @@ impl Boundaries {
     pub fn end(&self) -> usize {
         self.points[self.count - 1] as usize
     }
+    /// Exact movement to cluster edges, including the containing edge first
+    /// for an interior scalar caret. Refuse repeats crossing the snapshot.
+    pub fn move_within(&self, caret: usize, direction: Direction, count: usize) -> Option<usize> {
+        if !(1..=MAX_TRACKED_UNITS).contains(&count) {
+            return None;
+        }
+        let position = self.index(caret)?;
+        let index = match (position, direction) {
+            (Ok(index), _) | (Err(index), Direction::Backward) => index,
+            (Err(index), Direction::Forward) => index.checked_sub(1)?,
+        };
+        let next = match direction {
+            Direction::Backward => index.checked_sub(count)?,
+            Direction::Forward => index.checked_add(count)?,
+        };
+        self.points[..self.count]
+            .get(next)
+            .map(|offset| *offset as usize)
+    }
     fn valid_caret(&self, caret: usize) -> bool {
         caret <= self.end() && self.scalars[caret / 64] & (1u64 << (caret % 64)) != 0
     }

@@ -209,6 +209,10 @@ impl View {
             Operation::Insert(_) => "文字入力".into(),
             Operation::Backspace(count) => format!("Backspace × {count}"),
             Operation::DeleteSelection => "選択範囲の削除".into(),
+            Operation::ForwardDelete(count) => format!("Delete × {count}"),
+            Operation::MoveCaret { backward, count } => {
+                format!("{} × {count}", if backward { "←" } else { "→" })
+            }
         };
         let result = if metadata.outcome == Outcome::AppliedUntracked {
             "本文操作は成功。追跡を停止しました"

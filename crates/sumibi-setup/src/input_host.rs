@@ -193,22 +193,73 @@ struct Editor {
     rescue: input_recovery_host::Rescue,
 }
 impl Editor {
+    fn navigation_boundary(&self) {
+        self.clear_tracking();
+        if let Some(composing) = &self.composing {
+            composing.cancel(self, true);
+        }
+        if let Some(tracking) = &self.tracking {
+            tracking.user_boundary();
+        }
+    }
+    fn navigate(&self, key: usize, extend: bool, repeats: usize) -> Result<()> {
+        if self.transaction
+            && !extend
+            && matches!(key, 0x25 | 0x27)
+            && !self.store.get().input_problem.get()
+            && (1..=MAX_SELECTION_UNITS).contains(&repeats)
+        {
+            let backward = key == 0x25;
+            let disposition = if let Some(ticket) =
+                self.rescue
+                    .reserve(sumibi_core::recovery::Operation::MoveCaret {
+                        backward,
+                        count: repeats as u32,
+                    }) {
+                let disposition = self
+                    .composing
+                    .as_ref()
+                    .ok_or(E_FAIL)?
+                    .edit_tracked(self, u32::from(!backward), repeats as u32)
+                    .unwrap_or(sumibi_tip::spike::INPUT_UNCERTAIN);
+                self.rescue.finish(ticket, disposition, &[]);
+                disposition
+            } else {
+                sumibi_tip::spike::INPUT_NOT_ATTEMPTED
+            };
+            if self.handled_transaction(disposition) {
+                return Ok(());
+            }
+        }
+        self.input_disposition
+            .set(sumibi_tip::spike::INPUT_NOT_ATTEMPTED);
+        self.navigation_boundary();
+        self.store.get().navigate(key, extend, repeats)
+    }
     fn delete_forward(&self, repeats: usize) -> Result<()> {
         if repeats == 0 {
             return Err(E_INVALIDARG.into());
         }
         let selected = self.store.get().selection.get();
-        if self.transaction && selected.acpStart != selected.acpEnd {
-            let disposition = if let Some(ticket) = self
-                .rescue
-                .reserve(sumibi_core::recovery::Operation::DeleteSelection)
-            {
-                let disposition = self
-                    .composing
-                    .as_ref()
-                    .ok_or(E_FAIL)?
-                    .delete_selection(self)
-                    .unwrap_or(sumibi_tip::spike::INPUT_UNCERTAIN);
+        if self.store.get().input_problem.get() {
+            self.navigation_boundary();
+        }
+        if self.transaction {
+            let count = u32::try_from(repeats).unwrap_or(u32::MAX);
+            let has_selection = selected.acpStart != selected.acpEnd;
+            let operation = if has_selection {
+                sumibi_core::recovery::Operation::DeleteSelection
+            } else {
+                sumibi_core::recovery::Operation::ForwardDelete(count)
+            };
+            let disposition = if let Some(ticket) = self.rescue.reserve(operation) {
+                let composing = self.composing.as_ref().ok_or(E_FAIL)?;
+                let disposition = if has_selection {
+                    composing.delete_selection(self)
+                } else {
+                    composing.edit_tracked(self, 2, count)
+                }
+                .unwrap_or(sumibi_tip::spike::INPUT_UNCERTAIN);
                 self.rescue.finish(ticket, disposition, &[]);
                 disposition
             } else {
@@ -219,6 +270,7 @@ impl Editor {
                 return Ok(());
             }
         }
+        self.navigation_boundary();
         self.store.get().delete_forward(repeats)
     }
     fn handled_transaction(&self, disposition: u32) -> bool {
@@ -379,13 +431,6 @@ impl Editor {
                 }
             }
             if matches!(key.0, 0x23..=0x25 | 0x27 | 0x2e) {
-                self.clear_tracking();
-                if let Some(composing) = &self.composing {
-                    composing.cancel(self, true);
-                }
-                if let Some(tracking) = &self.tracking {
-                    tracking.user_boundary();
-                }
                 // SAFETY: read the calling thread's keyboard state; never modify it.
                 let (shift, modified) = unsafe {
                     (
@@ -394,15 +439,18 @@ impl Editor {
                     )
                 };
                 if modified {
+                    self.navigation_boundary();
                     return Ok(false);
                 }
                 let repeats = (flags.0 as usize & 0xffff).max(1);
                 if key.0 == 0x2e {
                     if !shift && !self.store.get().readonly.get() {
                         self.delete_forward(repeats)?;
+                    } else {
+                        self.navigation_boundary();
                     }
                 } else {
-                    self.store.get().navigate(key.0, shift, repeats)?;
+                    self.navigate(key.0, shift, repeats)?;
                 }
                 return Ok(true);
             }

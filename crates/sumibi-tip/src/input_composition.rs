@@ -134,8 +134,8 @@ impl Tracker {
         Ok(metadata)
     }
     fn point(&self, metadata: InputMetadata) -> InputPoint {
-        // This coordinator advances its Core epoch only after an actual host
-        // edit. Raw TSF notifications are checked separately against settled;
+        // Advance the Core epoch only after a validated input/caret transaction
+        // or observed host edit. Check raw TSF notifications against settled;
         // its own composition/underline notifications never bless old text.
         InputPoint {
             context: 1,

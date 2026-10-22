@@ -1,5 +1,6 @@
 //! Bounded tracking of text actually inserted by a cooperating host. This does
 //! not consume events, edit a document, or infer pre-existing text from a caret.
+use crate::grapheme::{Boundaries, Direction};
 use unicode_segmentation::UnicodeSegmentation;
 
 pub const MAX_TRACKED_UNITS: usize = 1024;
@@ -18,6 +19,11 @@ struct Run {
     start: i32,
     point: InputPoint,
     text: Vec<u16>,
+}
+impl Run {
+    fn end(&self) -> Option<i32> {
+        self.start.checked_add(self.text.len() as i32)
+    }
 }
 /// Text-bearing types intentionally omit Debug. No state is persisted.
 #[derive(Default)]
@@ -91,10 +97,103 @@ impl InputSession {
     /// Metadata for an exact live observation, without consuming private text.
     pub fn range(&self, current: InputPoint) -> Option<(i32, i32)> {
         let run = self.run.as_ref()?;
-        (valid(current) && current == run.point).then_some((run.start, run.point.selection.1))
+        if !valid(current) || current != run.point {
+            return None;
+        }
+        Some((run.start, run.end()?))
     }
     pub fn clear(&mut self) {
         self.run = None;
+    }
+    /// Metadata-only plan from recorded text. Movement cannot cross either
+    /// hard run boundary, even for a repeat. This never authorizes an OS edit.
+    pub fn move_range(
+        &self,
+        current: InputPoint,
+        direction: Direction,
+        count: usize,
+    ) -> Option<i32> {
+        let run = self.run.as_ref()?;
+        self.range(current)?;
+        if current.selection.0 != current.selection.1 {
+            return None;
+        }
+        let offset = current.selection.0.checked_sub(run.start)?;
+        let next = Boundaries::new(&run.text)?.move_within(
+            usize::try_from(offset).ok()?,
+            direction,
+            count,
+        )?;
+        run.start.checked_add(next as i32)
+    }
+    /// Record an owner-validated caret change with no text change. Invalid
+    /// observations retire the run; only exact cluster edges remain live.
+    pub fn moved(&mut self, before: InputPoint, after: InputPoint) {
+        let Some(mut run) = self.run.take() else {
+            return;
+        };
+        if !valid(before)
+            || !valid(after)
+            || before != run.point
+            || before.context != after.context
+            || before.composition_generation != after.composition_generation
+            || after.generation <= before.generation
+            || before.selection.0 != before.selection.1
+            || after.selection.0 != after.selection.1
+        {
+            return;
+        }
+        let Some(offset) = after
+            .selection
+            .0
+            .checked_sub(run.start)
+            .and_then(|v| usize::try_from(v).ok())
+        else {
+            return;
+        };
+        let Some(map) = Boundaries::new(&run.text) else {
+            return;
+        };
+        if map.snap(offset, Direction::Backward) != Some(offset)
+            || map.snap(offset, Direction::Forward) != Some(offset)
+        {
+            return;
+        }
+        run.point = after;
+        self.run = Some(run);
+    }
+    pub fn forward_delete_range(&self, current: InputPoint, count: usize) -> Option<(i32, i32)> {
+        let end = self.move_range(current, Direction::Forward, count)?;
+        let run = self.run.as_ref()?;
+        let offset = usize::try_from(current.selection.0.checked_sub(run.start)?).ok()?;
+        let start = Boundaries::new(&run.text)?.snap(offset, Direction::Backward)?;
+        Some((run.start.checked_add(start as i32)?, end))
+    }
+    /// Build a candidate after exactly the planned deletion. Text before/after
+    /// the run is never inferred; newly adjacent clusters are rebuilt later.
+    pub fn deleted_forward(&mut self, before: InputPoint, after: InputPoint, count: usize) {
+        let planned = self.forward_delete_range(before, count);
+        let Some(mut run) = self.run.take() else {
+            return;
+        };
+        let Some((start, end)) = planned else {
+            return;
+        };
+        if !valid(after)
+            || before.context != after.context
+            || before.composition_generation != after.composition_generation
+            || after.generation <= before.generation
+            || after.selection != (start, start)
+        {
+            return;
+        }
+        run.text
+            .drain((start - run.start) as usize..(end - run.start) as usize);
+        if run.text.is_empty() {
+            return;
+        }
+        run.point = after;
+        self.run = Some(run);
     }
     /// Plan a suffix deletion from recorded input only, without reading the
     /// document or consuming the record. Counts extended grapheme clusters
@@ -103,6 +202,7 @@ impl InputSession {
     pub fn backspace_range(&self, current: InputPoint, count: usize) -> Option<(i32, i32)> {
         let run = self.run.as_ref()?;
         if self.range(current).is_none()
+            || run.end() != Some(current.selection.0)
             || current.selection.0 != current.selection.1
             || !(1..=MAX_TRACKED_UNITS).contains(&count)
         {
@@ -138,7 +238,13 @@ impl InputSession {
             return;
         }
         let mut run = match previous {
-            Some(run) if run.point == before && before.selection.0 == before.selection.1 => run,
+            Some(run)
+                if run.point == before
+                    && before.selection.0 == before.selection.1
+                    && run.end() == Some(before.selection.0) =>
+            {
+                run
+            }
             _ => Run {
                 start: before.selection.0,
                 point: before,
@@ -162,6 +268,7 @@ impl InputSession {
         if !valid(before)
             || !valid(after)
             || before != run.point
+            || run.end() != Some(before.selection.0)
             || before.context != after.context
             || after.generation <= before.generation
             || before.composition_generation != after.composition_generation
@@ -192,12 +299,15 @@ impl InputSession {
         }
         Some(TrackedInput {
             start: run.start,
-            end: run.point.selection.1,
+            end: run.end()?,
             text: run.text,
         })
     }
 }
 
+#[cfg(test)]
+#[path = "input_cursor_tests.rs"]
+mod cursor_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

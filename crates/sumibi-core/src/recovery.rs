@@ -43,6 +43,8 @@ pub enum Operation {
     Insert(usize),
     Backspace(u32),
     DeleteSelection,
+    ForwardDelete(u32),
+    MoveCaret { backward: bool, count: u32 },
 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Outcome {
@@ -114,6 +116,11 @@ impl Recovery {
             Operation::Insert(length) if (1..=MAX_UNITS).contains(&length) => length,
             Operation::Backspace(count) if (1..=MAX_UNITS as u32).contains(&count) => 0,
             Operation::DeleteSelection => 0,
+            Operation::ForwardDelete(count) | Operation::MoveCaret { count, .. }
+                if (1..=MAX_UNITS as u32).contains(&count) =>
+            {
+                0
+            }
             _ => return Err(ReserveError::Invalid),
         };
         let sequence = self
@@ -475,7 +482,15 @@ mod tests {
     fn deletion_has_only_operation_metadata_and_never_copies_supplied_text() {
         let now = Instant::now();
         let mut recovery = Recovery::default();
-        for operation in [Operation::Backspace(2), Operation::DeleteSelection] {
+        for operation in [
+            Operation::Backspace(2),
+            Operation::DeleteSelection,
+            Operation::ForwardDelete(2),
+            Operation::MoveCaret {
+                backward: true,
+                count: 3,
+            },
+        ] {
             let ticket = recovery.reserve(operation, now).unwrap();
             recovery.finish(ticket, Outcome::Uncertain, &['x' as u16], now);
             let metadata = recovery.metadata(now).unwrap();
@@ -493,6 +508,16 @@ mod tests {
             Operation::Insert(1025),
             Operation::Backspace(0),
             Operation::Backspace(1025),
+            Operation::ForwardDelete(0),
+            Operation::ForwardDelete(1025),
+            Operation::MoveCaret {
+                backward: false,
+                count: 0,
+            },
+            Operation::MoveCaret {
+                backward: true,
+                count: 1025,
+            },
         ] {
             assert_eq!(
                 Recovery::default().reserve(operation, now),

@@ -32,6 +32,32 @@ pub(super) struct Composing {
     boundary_generation: Rc<Cell<Option<u64>>>,
 }
 impl Composing {
+    pub(super) fn edit_tracked(&self, editor: &Editor, action: u32, count: u32) -> Result<u32> {
+        if self.boundary_blocked.get() {
+            self.cancel(editor, false);
+        }
+        if self.uncertain.get() || self.boundary_blocked.get() {
+            return Ok(INPUT_NOT_ATTEMPTED);
+        }
+        if self.settled_composition.get() != editor.store.get().composition_events.get() {
+            self.cancel(editor, false);
+        }
+        if editor.store.get().composition_events.get() == u32::MAX {
+            return Ok(INPUT_NOT_ATTEMPTED);
+        }
+        let Ok(control) = self
+            .control
+            .cast::<sumibi_tip::spike::ISpikeTrackedEditor>()
+        else {
+            return Ok(INPUT_NOT_ATTEMPTED);
+        };
+        let mut disposition = INPUT_UNCERTAIN;
+        unsafe {
+            let _ = control.Edit(editor.context.as_raw(), action, count, &mut disposition);
+        }
+        self.accept_disposition(editor, disposition);
+        Ok(disposition)
+    }
     pub(super) fn delete_selection(&self, editor: &Editor) -> Result<u32> {
         if self.boundary_blocked.get() {
             self.cancel(editor, false);

@@ -67,6 +67,8 @@ pub(crate) fn exercise_recovery(
         "rescue/process-insert",
         "rescue/process-backspace",
         "rescue/process-delete",
+        "rescue/process-forward",
+        "rescue/process-move",
         "rescue/process-discard",
         "rescue/process-expire",
         "rescue/process-close",
@@ -456,6 +458,16 @@ fn test_process_budget(
     let store = editor.store.get();
     let reads = super::super::composing_host::input_notify_host::body_reads()?;
     let mut peers = Vec::new();
+    if matches!(case, "process-forward" | "process-move") {
+        editor.insert(&"a👨‍👩‍👧‍👦b".encode_utf16().collect::<Vec<_>>())?;
+        assert_eq!(
+            editor.input_disposition.get(),
+            sumibi_tip::spike::INPUT_APPLIED
+        );
+        if case == "process-forward" {
+            editor.navigate(0x25, false, 2)?;
+        }
+    }
     for _ in 0..sumibi_core::recovery::MAX_RECORDS {
         let peer = Rescue::new(
             &safety.manager,
@@ -483,13 +495,19 @@ fn test_process_budget(
         editor.input(WM_CHAR, WPARAM(8), LPARAM(2))?;
     } else if case == "process-delete" {
         editor.delete_forward(1024)?;
+    } else if case == "process-forward" {
+        editor.delete_forward(1)?;
+    } else if case == "process-move" {
+        editor.navigate(0x25, false, 2)?;
     } else {
         editor.insert(&['z' as u16])?;
     }
     let expected: Vec<_> = if case == "process-backspace" {
         "a"
-    } else if case == "process-delete" {
+    } else if matches!(case, "process-delete" | "process-forward") {
         "ab"
+    } else if case == "process-move" {
+        "a👨‍👩‍👧‍👦b"
     } else {
         "z"
     }
@@ -503,10 +521,13 @@ fn test_process_budget(
     );
     assert_eq!(
         store.undo.borrow().len(),
-        history + 1,
+        history + usize::from(case != "process-move"),
         "host handles the whole original operation in one Undo entry"
     );
-    if matches!(case, "process-backspace" | "process-delete") {
+    if matches!(
+        case,
+        "process-backspace" | "process-delete" | "process-forward"
+    ) {
         store.undo_once()?;
         assert_eq!(*store.text.borrow(), original);
         let restored = store.selection.get();
@@ -516,6 +537,9 @@ fn test_process_budget(
         );
         store.redo_once()?;
         assert_eq!(*store.text.borrow(), expected);
+    }
+    if case == "process-move" {
+        assert_eq!(store.selection.get().acpStart, 1);
     }
     assert_eq!(
         editor.input_disposition.get(),
@@ -546,7 +570,11 @@ fn test_process_budget(
     }
     if !matches!(
         case,
-        "process-insert" | "process-backspace" | "process-delete"
+        "process-insert"
+            | "process-backspace"
+            | "process-delete"
+            | "process-forward"
+            | "process-move"
     ) {
         // Releasing one owner's record lets a different owner reserve before a
         // failed DLL write. It neither replays the old input nor reads the body.

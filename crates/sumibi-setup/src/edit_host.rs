@@ -86,6 +86,7 @@ struct TextStore {
     fail_text_before: Cell<bool>,
     fail_text_after: Cell<bool>,
     fail_selection: Cell<bool>,
+    fail_selection_after: Cell<bool>,
     status_cycle_on_write: Cell<bool>,
     scope_cycle_on_write: Cell<bool>,
     compartment_cycle_on_write: RefCell<Option<(ITfCompartment, u32)>>,
@@ -180,6 +181,7 @@ impl TextStore {
             fail_text_before: Cell::new(false),
             fail_text_after: Cell::new(false),
             fail_selection: Cell::new(false),
+            fail_selection_after: Cell::new(false),
             status_cycle_on_write: Cell::new(false),
             scope_cycle_on_write: Cell::new(false),
             compartment_cycle_on_write: RefCell::new(None),
@@ -393,6 +395,9 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         let input = unsafe { *input };
         self.bounds(input.acpStart, input.acpEnd)?;
         self.selection.set(input);
+        if self.fail_selection_after.replace(false) {
+            return Err(E_FAIL.into());
+        }
         Ok(())
     }
     fn GetText(
