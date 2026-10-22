@@ -13,7 +13,7 @@ mod tracking_host;
 pub(crate) use tracking_host::{exercise_tracking, run_tracking_demo};
 #[path = "composing_host.rs"]
 mod composing_host;
-pub(crate) use composing_host::exercise_notifications;
+pub(crate) use composing_host::{exercise_backspace, exercise_notifications};
 pub(crate) use composing_host::{exercise_composing, run_composing_demo};
 pub(crate) use composing_host::{exercise_transactions, run_transaction_demo};
 
@@ -191,6 +191,16 @@ struct Editor {
     input_disposition: Cell<u32>,
 }
 impl Editor {
+    fn handled_transaction(&self, disposition: u32) -> bool {
+        self.input_disposition.set(disposition);
+        if disposition == sumibi_tip::spike::INPUT_NOT_ATTEMPTED {
+            return false;
+        }
+        if disposition != sumibi_tip::spike::INPUT_APPLIED {
+            self.store.get().input_problem.set(true);
+        }
+        true
+    }
     fn clear_tracking(&self) {
         if let Some(composing) = &self.composing {
             composing.cancel(self, false);
@@ -202,13 +212,7 @@ impl Editor {
     fn insert(&self, text: &[u16]) -> Result<()> {
         if self.transaction {
             let disposition = self.composing.as_ref().ok_or(E_FAIL)?.insert(self, text)?;
-            self.input_disposition.set(disposition);
-            if disposition != sumibi_tip::spike::INPUT_NOT_ATTEMPTED {
-                if disposition != sumibi_tip::spike::INPUT_APPLIED {
-                    // No automatic body retry/rollback after an attempted write.
-                    // Keep failure visible in this diagnostic UI without text.
-                    self.store.get().input_problem.set(true);
-                }
+            if self.handled_transaction(disposition) {
                 return Ok(());
             }
             // Only an explicit not-attempted result permits the original host
@@ -487,6 +491,21 @@ impl Editor {
                 self.store.get().host_selection(0, length)?;
             }
             0x08 => {
+                if self.transaction {
+                    let disposition = self
+                        .composing
+                        .as_ref()
+                        .ok_or(E_FAIL)?
+                        .backspace(self, repeats as u32)?;
+                    if !self.handled_transaction(disposition) {
+                        // Only an explicit no-write outcome permits this
+                        // original host operation once, including its repeat.
+                        for _ in 0..repeats {
+                            self.store.get().backspace()?;
+                        }
+                    }
+                    return Ok(true);
+                }
                 let recorded = self
                     .composing
                     .as_ref()
@@ -715,7 +734,11 @@ fn run(
         } else if let RunMode::NotificationTest(case) = mode {
             composing_host::test_notifications(&window, &editor, &live, client, case)
         } else if let RunMode::TransactionTest(case) = mode {
-            composing_host::test_transactions(&window, &editor, &live, client, case)
+            if let Some(case) = case.strip_prefix("erase/") {
+                composing_host::test_backspace(&window, &editor, &live, client, case)
+            } else {
+                composing_host::test_transactions(&window, &editor, &live, client, case)
+            }
         } else if let RunMode::CloseTest(case) = mode {
             test_close(&window, &editor, case)
         } else {

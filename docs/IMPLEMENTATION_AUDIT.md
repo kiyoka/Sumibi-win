@@ -11,7 +11,7 @@
 | COMとDLL | tip/com.rs、build.rs。factory・独立lease・所有thread・解除再試行 | 一般アプリにロードされる常設登録と更新時の寿命 |
 | TSF編集 | tip/edit.rsとmanual_edit.rs。同期read/write、全文照合、Core gate、IPC結果の一度だけ適用。所有ACP context限定 | 製品キーとの統合、一般アプリの対象分類と編集 |
 | 保護入力 | protection.rs。scope/status/compartmentの肯定検査、取得・source・適用時の再検査。実DLLで39ケース | 一般アプリの実スコープ・独自機密欄・判定不能時の動作確認 |
-| 追跡composition | 選択composition 18・所有ホストの入力範囲25・実DLLのcomposition伸縮29・同期入力取引22・他サービス拒否16ケースを確認 | 削除・待機・入力救済・製品InputSession・一般アプリの他IMEとの競合と寿命 |
+| 追跡composition | 選択composition 18・所有ホストの入力範囲25・実DLLのcomposition伸縮29・同期入力取引22・Backspace 27・他サービス拒否16ケースを確認 | 前方Delete・待機・入力救済・製品InputSession・一般アプリの他IMEとの競合と寿命 |
 | 表示属性 | display.rs / preview.rs。点線、原文保持、属性だけ遅延解除 | 通常アプリでの下線、アクセシビリティ、既存属性との共存 |
 | 変更通知 | notifications.rs。本文・選択・scope・compartment・composition属性・フォーカスで失効。空compositionは所有ホストから取消を転送 | 製品追跡・IPC・候補との統合、一般アプリの未通知履歴 |
 | キー配送 | keys.rs / input_host.rs。専用windowで実TSF経路 | US/JIS配列・変換キー・Terminal・実打鍵 |
@@ -105,6 +105,14 @@ transaction-input-testの22ケースで、正常入力・F7/Undo、書込前拒�
 workspace 47件とTest-Spike.ps1の全検査が省略なしで成功。ログはtarget/issue-4-input-transaction-regression.log。
 削除の入力取引、未確認入力の救済と一般アプリの製品キー配送は未完了である。
 詳細は[ADR 0012](adr/0012-synchronous-input-transaction.md)を参照。
+
+同日、記録末尾のBackspaceを実DLLの同期writeへ接続した。backspace-input-testの27ケースで、
+scalar単位の範囲計画・一括repeat・全削除・Undo/Redo・F7、追跡外への返却と失敗後の再削除禁止を確認した。
+Coreに計画の3件を追加し、workspaceは50件。挿入と削除で本文書込・確定処理を共有し、
+自己compositionだけを縮小・終了する。前方Deleteや任意位置編集・製品キー配送は未完了。
+詳細は[ADR 0013](adr/0013-synchronous-tracked-backspace.md)を参照。
+Test-Spike.ps1を省略なしで実行し、上記50件と既存native検査も成功した。
+ログはtarget/issue-4-backspace-transaction-regression.log。TSF/COM解除・DLLアンロードと診断process残留なしを確認した。
 
 ## 3. アプリ互換表の記録形式
 

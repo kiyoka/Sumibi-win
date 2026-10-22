@@ -2,7 +2,8 @@
 use super::*;
 use sumibi_tip::spike::{ISpikeInput, ISpikeInputMonitor, ISpikeInputSignal, FUNCTION_TEST_INPUT};
 use sumibi_tip::spike::{
-    ISpikeInputWriter, INPUT_APPLIED_UNTRACKED, INPUT_NOT_ATTEMPTED, INPUT_UNCERTAIN,
+    ISpikeInputEraser, ISpikeInputWriter, INPUT_APPLIED_UNTRACKED, INPUT_NOT_ATTEMPTED,
+    INPUT_UNCERTAIN,
 };
 use windows::Win32::Foundation::HANDLE;
 #[path = "input_notify_host.rs"]
@@ -13,6 +14,10 @@ pub(super) use input_notify_host::test_notifications;
 mod input_transaction_host;
 pub(super) use input_transaction_host::test_transactions;
 pub(crate) use input_transaction_host::{exercise_transactions, run_transaction_demo};
+#[path = "input_backspace_host.rs"]
+mod input_backspace_host;
+pub(crate) use input_backspace_host::exercise_backspace;
+pub(super) use input_backspace_host::test_backspace;
 
 pub(super) struct Composing {
     control: ISpikeInput,
@@ -22,6 +27,31 @@ pub(super) struct Composing {
     uncertain: Cell<bool>,
 }
 impl Composing {
+    pub(super) fn backspace(&self, editor: &Editor, count: u32) -> Result<u32> {
+        if self.uncertain.get() {
+            return Ok(INPUT_NOT_ATTEMPTED);
+        }
+        if self.settled_composition.get() != editor.store.get().composition_events.get() {
+            self.cancel(editor, false);
+        }
+        if editor.store.get().composition_events.get() == u32::MAX {
+            return Ok(INPUT_NOT_ATTEMPTED);
+        }
+        let eraser: ISpikeInputEraser = self.control.cast()?;
+        let mut disposition = INPUT_UNCERTAIN;
+        unsafe {
+            let _ = eraser.Backspace(editor.context.as_raw(), count, &mut disposition);
+        }
+        self.accept_disposition(editor, disposition);
+        Ok(disposition)
+    }
+    fn accept_disposition(&self, editor: &Editor, disposition: u32) {
+        self.settled_composition
+            .set(editor.store.get().composition_events.get());
+        if matches!(disposition, INPUT_UNCERTAIN | INPUT_APPLIED_UNTRACKED) {
+            self.uncertain.set(true);
+        }
+    }
     pub(super) fn insert(&self, editor: &Editor, units: &[u16]) -> Result<u32> {
         if self.uncertain.get() {
             return Ok(INPUT_NOT_ATTEMPTED);
@@ -42,11 +72,7 @@ impl Composing {
                 &mut disposition,
             );
         }
-        self.settled_composition
-            .set(editor.store.get().composition_events.get());
-        if matches!(disposition, INPUT_UNCERTAIN | INPUT_APPLIED_UNTRACKED) {
-            self.uncertain.set(true);
-        }
+        self.accept_disposition(editor, disposition);
         Ok(disposition)
     }
     pub(super) fn new(manager: &ITfThreadMgr) -> Result<Self> {

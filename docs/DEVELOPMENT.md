@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 14件（応答照合7・入力範囲追跡7）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 6件、TIP 5件を含めworkspace合計47件。
+現時点はCore 17件（応答照合7・入力範囲追跡/削除計画10）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 6件、TIP 5件を含めworkspace合計50件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -24,12 +24,15 @@ JSON構造・固定エラー・世代・取消・再接続・期限・対象照�
 cargo build --workspace --locked --offline
 cargo build -p sumibi-host --features spike --locked --offline
 ./target/debug/sumibi-setup.exe transaction-input-test --dll ./target/debug/sumibi_tip.dll
+./target/debug/sumibi-setup.exe backspace-input-test --dll ./target/debug/sumibi_tip.dll
 ./target/debug/sumibi-setup.exe transaction-demo --dll ./target/debug/sumibi_tip.dll
 ```
 
 デモは専用の空の合成入力欄を開く。通常文字を入力すると実DLLが本文・caret・composition・下線を
 同じ同期write cookieで更新する。F7で入力範囲を固定の「日本語」へ変換し、Ctrl+Zで戻せる。
-Escは追跡を解除する。Backspace/削除/Undoは既存ホスト操作を使い、削除の同期入力取引は未実装。
+Escは追跡を解除する。Backspaceは記録末尾を同じwrite内で削除・縮小し、全削除でcompositionを終了する。
+repeatはUnicode scalar単位で数え、追跡範囲を越える要求は全体を元のホスト操作へ返す。
+前方Delete・Undoは既存ホスト操作を使う。書記素cluster単位の削除仕様は未確定。
 終了は×ボタン。既定IME・ユーザー文書・HTTP・資格情報は使用しない。
 
 書き込み前拒否ではホストが元の入力を一度だけ反映する。書き込みを試みた後の失敗では、
@@ -42,6 +45,10 @@ TSF/COM解除とDLLアンロード検査が成功。ログはtarget/issue-4-inpu
 Test-Spike.ps1を省略なしで実行し、workspace 47件、Clippyの3構成、既存の全native検査も成功した。
 全回帰ログはtarget/issue-4-input-transaction-regression.log。
 条件とdispositionの契約は[ADR 0012](adr/0012-synchronous-input-transaction.md)を参照。
+Backspaceの27ケースも成功。ログはtarget/issue-4-backspace-transaction.log。範囲とfallbackの契約は
+[ADR 0013](adr/0013-synchronous-tracked-backspace.md)を参照。
+最終版はTest-Spike.ps1を省略なしで実行し、workspace 50件・Clippy 3構成と既存native検査も成功した。
+全回帰ログはtarget/issue-4-backspace-transaction-regression.log。
 
 ## 別Host EXEから実TSFまでの検証
 

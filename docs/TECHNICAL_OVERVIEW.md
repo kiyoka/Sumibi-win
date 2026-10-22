@@ -23,7 +23,7 @@ Mac技術解説自身の実装照合基準 `d2b96fc` と区別する。Macの機
 | TIPのCOM・キー・表示属性・編集 | 専用ホストで実装済み。通常アプリへの常設登録なし |
 | 入力保護 | scope/status/compartmentと取得・送信前・適用時の検査を実装。専用ACPで39ケース。一般アプリの全機密欄の識別は未検証 |
 | 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。実キーボードの手動確認は未実施 |
-| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮29・選択composition 18・他サービス拒否16・同期入力取引22ケースを確認。削除・待機・救済・製品統合・候補UIは未実装 |
+| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮29・選択composition 18・他サービス拒否16・同期入力取引22・Backspace 27ケースを確認。前方Delete・待機・救済・製品統合・候補UIは未実装 |
 | Protocol / IPC | 有限フレーム・版付きJSON・client状態、固定process相互検査・overlapped pipe。実DLLのキー・Core・所有TSFから診断用EXE bridge経由で単発Brokerへ接続。一般アプリは未接続 |
 | Host・HTTP・キー保存・設定UI | 単発の診断Host EXEを実装。既定では変換拒否。常駐Host・HTTP・キー保存・設定UIは未実装 |
 | Decisions・辞書・署名付き配布 | 未実装。後続段階 |
@@ -182,6 +182,10 @@ transaction-demoでは供給された文字の挿入・caret・composition更新
 書込前拒否と書込後の未確認状態を分け、後者では二重入力を防ぐため再入力せず、変換を停止して
 確認を表示する。rollback・入力救済・製品の削除取引や一般アプリ対応の完成ではない
 （[ADR 0012](adr/0012-synchronous-input-transaction.md)）。
+記録末尾のBackspaceも、削除・caret・composition縮小を同じwriteで処理する。
+記録済みUTF-16だけからscalar単位で削除範囲を決め、全削除では自己compositionを終了する。
+範囲越え等は部分削除せず書込前にホストへ返し、試行後の失敗では再削除しない。
+前方Deleteや書記素単位の編集仕様は未完了（[ADR 0013](adr/0013-synchronous-tracked-backspace.md)）。
 
 ### 5.2 製品の追跡入力（未実装）
 

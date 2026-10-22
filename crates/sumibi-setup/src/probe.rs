@@ -137,6 +137,7 @@ enum Exercise {
     Composing,
     Notifications,
     Transactions,
+    Backspace,
     TransactionDemo,
     Demo,
 }
@@ -196,11 +197,12 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "composing-input-test"
             && args[0] != "input-notify-test"
             && args[0] != "transaction-input-test"
+            && args[0] != "backspace-input-test"
             && args[0] != "transaction-demo"
             && args[0] != "demo")
     {
         return Err(
-            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|close-test|delayed-test|broker-test|broker-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|composing-input-test|composing-demo|input-notify-test|transaction-input-test|transaction-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
+            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|close-test|delayed-test|broker-test|broker-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|composing-input-test|composing-demo|input-notify-test|transaction-input-test|backspace-input-test|transaction-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
                 .into(),
         );
     }
@@ -268,6 +270,7 @@ pub(super) fn run() -> Result<(), Failure> {
                 Some("composing-input-test") => Exercise::Composing,
                 Some("input-notify-test") => Exercise::Notifications,
                 Some("transaction-input-test") => Exercise::Transactions,
+                Some("backspace-input-test") => Exercise::Backspace,
                 Some("transaction-demo") => Exercise::TransactionDemo,
                 Some("demo") => Exercise::Demo,
                 _ => Exercise::None,
@@ -393,6 +396,7 @@ fn registered_probe(
             Exercise::Transactions => {
                 crate::edit_host::exercise_transactions(&manager.0, app_client)?
             }
+            Exercise::Backspace => crate::edit_host::exercise_backspace(&manager.0, app_client)?,
             Exercise::TransactionDemo => {
                 crate::edit_host::run_transaction_demo(&manager.0, app_client)?
             }

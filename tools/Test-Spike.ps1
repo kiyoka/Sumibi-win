@@ -47,6 +47,7 @@ try {
         Invoke-Spike -Name 'composing-input-test'
         Invoke-Spike -Name 'input-notify-test'
         Invoke-Spike -Name 'transaction-input-test'
+        Invoke-Spike -Name 'backspace-input-test'
         foreach ($name in @('window-test', 'input-test', 'close-test', 'delayed-test')) { Invoke-Spike -Name $name }
         & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') ipc-test
         if ($LASTEXITCODE -ne 0) { throw 'Desktop pipe check failed; use a normal user session.' }
@@ -54,7 +55,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Two-process pipe check failed; use a normal user session.' }
     }
     Write-Output 'All selected spike checks passed.'
-    if ($SkipDesktop) { Write-Output 'Desktop window/input/close/delayed/broker/protection/composition/owned-composition/tracking/composing/input-notify/transaction/pipe/peer checks were explicitly skipped.' }
+    if ($SkipDesktop) { Write-Output 'Desktop window/input/close/delayed/broker/protection/composition/owned-composition/tracking/composing/input-notify/transaction/backspace/pipe/peer checks were explicitly skipped.' }
 }
 finally {
     $env:CARGO_INCREMENTAL = $previousIncremental

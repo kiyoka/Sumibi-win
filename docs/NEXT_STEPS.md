@@ -42,6 +42,10 @@ status変更後の復元、cleanup拒否からの回復、有限event、終了�
 書込前拒否と書込後の失敗を区別し、自動再入力を防ぐ22ケースを検証する
 （[ADR 0012](adr/0012-synchronous-input-transaction.md)）。rollbackや入力救済の完成ではない。
 次は削除を含む製品キー処理、待機容量と未確認入力の救済、一般アプリでの通知・寿命・Undo保証を進める。
+続いて記録末尾のBackspaceも同じ同期writeへ接続した。repeatと補助面文字、全削除時のcomposition終了、
+1回Undo、書込後の再削除禁止、保護復元と追跡外へのfallbackを27ケースで検証した
+（[ADR 0013](adr/0013-synchronous-tracked-backspace.md)）。Coreの計画3件を追加しworkspaceは50件。
+次は前方Delete等の製品キー配送、未確認入力の保持・救済と待機容量、一般アプリでの入力・寿命・Undoを進める。
 
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。

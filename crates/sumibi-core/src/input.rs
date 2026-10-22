@@ -53,8 +53,37 @@ impl InputSession {
     pub fn clear(&mut self) {
         self.run = None;
     }
-    /// Call only after the original host insertion succeeds. Failure here is
-    /// loss of tracking, never permission to undo/replay/drop that input event.
+    /// Plan a suffix deletion from recorded input only, without reading the
+    /// document or consuming the record. Counts Unicode scalar values, not
+    /// grapheme clusters. An oversized repeat is refused as a whole.
+    pub fn backspace_range(&self, current: InputPoint, count: usize) -> Option<(i32, i32)> {
+        let run = self.run.as_ref()?;
+        if self.range(current).is_none()
+            || current.selection.0 != current.selection.1
+            || !(1..=MAX_TRACKED_UNITS).contains(&count)
+        {
+            return None;
+        }
+        let mut remaining = run.text.len();
+        for _ in 0..count {
+            remaining = remaining.checked_sub(1)?;
+            if (0xdc00..=0xdfff).contains(&run.text[remaining]) {
+                remaining = remaining.checked_sub(1)?;
+                if !(0xd800..=0xdbff).contains(&run.text[remaining]) {
+                    return None;
+                }
+            } else if (0xd800..=0xdbff).contains(&run.text[remaining]) {
+                return None;
+            }
+        }
+        Some((
+            run.start.checked_add(remaining as i32)?,
+            current.selection.0,
+        ))
+    }
+    /// Record a successful insertion. A write transaction may first build a
+    /// private candidate, publishing it only after the write is verified.
+    /// Failure is loss of tracking, never permission to replay/drop input.
     pub fn inserted(&mut self, before: InputPoint, after: InputPoint, text: &[u16]) {
         let previous = self.run.take();
         if !valid(before)
@@ -90,8 +119,9 @@ impl InputSession {
         run.point = after;
         self.run = Some(run);
     }
-    /// A cooperating host already deleted a suffix. Never infer surrounding
-    /// text or cross the tracked start; a split surrogate retires the run.
+    /// Record a successful suffix deletion (or build a private transaction
+    /// candidate). Never infer surrounding text or cross the tracked start;
+    /// a split surrogate retires the run. Publish only after write validation.
     pub fn backspaced(&mut self, before: InputPoint, after: InputPoint) {
         let Some(mut run) = self.run.take() else {
             return;
@@ -146,6 +176,59 @@ mod tests {
             selection: (position, position),
             allowed: true,
         }
+    }
+    #[test]
+    fn deletion_plan_counts_scalars_without_consuming_or_splitting_utf16() {
+        let mut session = InputSession::default();
+        let units: Vec<_> = "a😀b".encode_utf16().collect();
+        session.inserted(point(7, 1), point(11, 2), &units);
+        assert_eq!(session.backspace_range(point(11, 2), 1), Some((10, 11)));
+        assert_eq!(session.backspace_range(point(11, 2), 2), Some((8, 11)));
+        assert_eq!(session.backspace_range(point(11, 2), 3), Some((7, 11)));
+        assert_eq!(session.backspace_range(point(11, 2), 4), None);
+        assert!(session.take(point(11, 2)).unwrap().matches(&units));
+    }
+    #[test]
+    fn deletion_plan_refuses_stale_selected_disallowed_or_excessive_operations() {
+        let mut session = InputSession::default();
+        session.inserted(point(7, 1), point(8, 2), &['a' as u16]);
+        for case in 0..6 {
+            let mut current = point(8, 2);
+            match case {
+                0 => current.generation += 1,
+                1 => current.context += 1,
+                2 => current.composition_generation += 1,
+                3 => current.selection = (7, 8),
+                4 => current.allowed = false,
+                _ => current.selection = (7, 7),
+            }
+            assert_eq!(session.backspace_range(current, 1), None);
+        }
+        for count in [0, 2, MAX_TRACKED_UNITS + 1, usize::MAX] {
+            assert_eq!(session.backspace_range(point(8, 2), count), None);
+        }
+    }
+    #[test]
+    fn deletion_plan_handles_full_capacity_and_never_crosses_the_recorded_start() {
+        let mut session = InputSession::default();
+        let end = 7 + MAX_TRACKED_UNITS as i32;
+        session.inserted(
+            point(7, 1),
+            point(end, 2),
+            &vec!['x' as u16; MAX_TRACKED_UNITS],
+        );
+        assert_eq!(
+            session.backspace_range(point(end, 2), MAX_TRACKED_UNITS),
+            Some((7, end))
+        );
+        assert_eq!(
+            session.backspace_range(point(end, 2), MAX_TRACKED_UNITS + 1),
+            None
+        );
+        assert_eq!(
+            InputSession::default().backspace_range(point(7, 1), 1),
+            None
+        );
     }
     #[test]
     fn suffix_backspace_preserves_prefix_and_unicode_then_retires_empty_run() {

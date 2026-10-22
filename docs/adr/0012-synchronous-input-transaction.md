@@ -90,3 +90,6 @@ HTTP・同意・設定・資格情報は未完了であり、Issue #4は閉じ�
 根拠：[ITfRange.SetText](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfrange-settext)、
 [Microsoft SampleIMEのcomposition編集](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/IME/cpp/SampleIME/Composition.cpp)、
 [ITfEditRecord.GetTextAndPropertyUpdates](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfeditrecord-gettextandpropertyupdates)。
+
+後続：[ADR 0013](0013-synchronous-tracked-backspace.md)で、transaction-demoの記録末尾Backspaceも
+同じwrite cookieへ接続した。前方Delete・待機・救済・一般アプリ統合は引き続き未完了。

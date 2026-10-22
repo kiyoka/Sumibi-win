@@ -165,7 +165,9 @@ Start前の一度だけのCheckSourceで記録原文・範囲・保護状態・�
 所有ホストでは本文・caret・compositionを同じ同期writeで更新するISpikeInputWriterも追加した
 （[ADR 0012](adr/0012-synchronous-input-transaction.md)）。書込後の失敗では再入力せず変換を停止する。
 追跡対象・未確認入力・dispositionをwireやworkerへ渡さず、既存のF7 source照合とidle gateを維持する。
-製品の常駐Broker、削除を含む入力取引・救済・一般アプリでの判定はIssue #4で引き続き実装する。
+記録末尾のBackspaceも同じwrite取引へ接続した（[ADR 0013](adr/0013-synchronous-tracked-backspace.md)）。
+Coreの計画と実DLLの削除だけで処理し、削除本文・COM range・cookieをBrokerへ渡さずwire形式も変えない。
+製品の常駐Broker、前方Delete等のキー配送・救済・一般アプリでの判定はIssue #4で引き続き実装する。
 Protocol自体がOS認証する責務には変更しない。
 
 型付き変換は純粋なRustの模擬通信だけで検証するため、前面ウィンドウや実API・資格情報を必要としない。

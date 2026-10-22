@@ -49,7 +49,12 @@ pub unsafe trait ISpikeInputWriter: IUnknown {
         disposition: *mut u32,
     ) -> HRESULT;
 }
-#[implement(ISpikeInput, ISpikeInputMonitor, ISpikeInputWriter)]
+/// Independent ABI: the original writer's vtable remains unchanged.
+#[interface("80cd3b94-4b51-4a31-aaec-752b385fb120")]
+pub unsafe trait ISpikeInputEraser: IUnknown {
+    pub fn Backspace(&self, context: *mut c_void, count: u32, disposition: *mut u32) -> HRESULT;
+}
+#[implement(ISpikeInput, ISpikeInputMonitor, ISpikeInputWriter, ISpikeInputEraser)]
 struct Control {
     state: Weak<Controller>,
     owner: ThreadId,
@@ -218,6 +223,26 @@ impl ISpikeInputWriter_Impl for Control_Impl {
         });
         if matches!(outcome.get(), INPUT_UNCERTAIN | INPUT_APPLIED_UNTRACKED) {
             // These states can only be produced after enter() on the owner.
+            self.write_blocked.set(true);
+        }
+        if !disposition.is_null() {
+            unsafe {
+                disposition.write(outcome.get());
+            }
+        }
+        result.into()
+    }
+}
+impl ISpikeInputEraser_Impl for Control_Impl {
+    unsafe fn Backspace(&self, context: *mut c_void, count: u32, disposition: *mut u32) -> HRESULT {
+        let outcome = Rc::new(Cell::new(INPUT_NOT_ATTEMPTED));
+        let result = boundary(|| {
+            if disposition.is_null() {
+                return Err(E_INVALIDARG.into());
+            }
+            self.in_context(context, |tracker| tracker.backspace(count, outcome.clone()))
+        });
+        if matches!(outcome.get(), INPUT_UNCERTAIN | INPUT_APPLIED_UNTRACKED) {
             self.write_blocked.set(true);
         }
         if !disposition.is_null() {

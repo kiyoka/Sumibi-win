@@ -1,9 +1,123 @@
-//! A single synchronous write cookie covers insertion, caret and composition.
+//! A single synchronous write cookie covers supplied insertion or recorded
+//! suffix deletion, caret and composition.
 //! This is not rollback: SetText may mutate a store even when it returns failure.
 use super::*;
 use crate::input_spike::{INPUT_APPLIED, INPUT_APPLIED_UNTRACKED, INPUT_UNCERTAIN};
 
 impl Tracker {
+    pub(crate) fn backspace(&mut self, count: u32, outcome: Rc<Cell<u32>>) -> Result<()> {
+        if !(1..=MAX_SELECTION_UNITS as u32).contains(&count) {
+            return Err(E_INVALIDARG.into());
+        }
+        self.before(true)?;
+        let (before, _) = self.before.take().ok_or(E_ABORT)?;
+        let deleted = self
+            .session
+            .backspace_range(before.point, count as usize)
+            .ok_or(E_ABORT)?;
+        let previous = self.session.range(before.point).ok_or(E_ABORT)?;
+        if self.extent != Some(previous) || !self.owned.can_commit() {
+            return Err(E_ABORT.into());
+        }
+        let sequence = self
+            .sequence
+            .checked_add(1)
+            .filter(|v| *v != u64::MAX)
+            .ok_or(E_ABORT)?;
+        let after = InputPoint {
+            generation: sequence,
+            selection: (deleted.0, deleted.0),
+            ..before.point
+        };
+        let mut session = std::mem::take(&mut self.session);
+        session.backspaced(before.point, after);
+        let range = session.range(after);
+        if (range.is_none() && deleted.0 != previous.0)
+            || range.is_some_and(|value| value != (previous.0, deleted.0))
+        {
+            return Err(E_ABORT.into());
+        }
+        let edit = self.edit();
+        let watch = self.watch.clone();
+        let boundary = watch.boundary_generation()?;
+        let attempted = outcome.clone();
+        let finished = Rc::new(Cell::new(None));
+        let written = finished.clone();
+        run(
+            &self.context,
+            self.client,
+            true,
+            Box::new(move |cookie| {
+                edit.validate(cookie, before.metadata)?;
+                if watch.generation()? != before.notification
+                    || Some(extent_of(&edit.owned.range(&edit.context)?)?) != edit.previous
+                    || edit.previous != Some(previous)
+                    || deleted.0 < previous.0
+                    || deleted.1 != previous.1
+                {
+                    return Err(E_ABORT.into());
+                }
+                let target = unsafe { edit.context.GetStart(cookie)? };
+                unsafe {
+                    target
+                        .cast::<ITfRangeACP>()?
+                        .SetExtent(deleted.0, deleted.1 - deleted.0)?;
+                }
+                if extent_of(&target)? != deleted
+                    || !same_context(&unsafe { target.GetContext()? }, &edit.context)?
+                    || metadata_gate(&edit.context, &target, cookie, &edit.owned)?
+                        != before.metadata.protection
+                {
+                    return Err(E_ABORT.into());
+                }
+                let property = unsafe { edit.context.GetProperty(&GUID_PROP_ATTRIBUTE)? };
+                if preview::runs(&property, &target, cookie)?
+                    .iter()
+                    .any(|(_, value)| !value.is_empty() && !preview::is_atom(value, edit.atom))
+                {
+                    return Err(E_ABORT.into());
+                }
+                edit.validate(cookie, before.metadata)?;
+                if extent_of(&target)? != deleted
+                    || extent_of(&edit.owned.range(&edit.context)?)? != previous
+                    || metadata_gate(&edit.context, &target, cookie, &edit.owned)?
+                        != before.metadata.protection
+                    || watch.generation()? != before.notification
+                    || watch.boundary_generation()? != boundary
+                {
+                    return Err(E_ABORT.into());
+                }
+                write_body(&edit, cookie, target, &[], deleted.0, &attempted)?;
+                let metadata = InputMetadata {
+                    selection: after.selection,
+                    ..before.metadata
+                };
+                if let Some(range) = range {
+                    edit.update(cookie, range, metadata)?;
+                } else {
+                    // End only the exact retained object. Full deletion must not
+                    // leave an empty composition authorizing later body access.
+                    edit.validate(cookie, metadata)?;
+                    edit.owned.end(&edit.context, cookie)?;
+                    clear_mark(&edit.context, cookie, &edit.marked, edit.atom)?;
+                    edit.validate(cookie, metadata)?;
+                }
+                if watch.boundary_generation()? != boundary {
+                    return Err(E_ABORT.into());
+                }
+                written.set(Some(metadata));
+                Ok(())
+            }),
+        )?;
+        PendingInput {
+            session,
+            sequence,
+            range,
+            boundary,
+            outcome,
+        }
+        .finish(self, finished.get().ok_or(E_FAIL)?)
+    }
     pub(crate) fn insert(&mut self, units: &[u16], outcome: Rc<Cell<u32>>) -> Result<()> {
         if units.is_empty()
             || units.len() > MAX_SELECTION_UNITS
@@ -81,45 +195,14 @@ impl Tracker {
                 {
                     return Err(E_ABORT.into());
                 }
-                // Commit the no-replay disposition BEFORE crossing SetText. Raw
-                // HRESULT matters: S_FALSE is not a confirmed successful insertion.
-                attempted.set(INPUT_UNCERTAIN);
-                let status = unsafe {
-                    (selected.vtable().SetText)(
-                        selected.as_raw(),
-                        cookie,
-                        0,
-                        windows::core::PCWSTR(text.as_ptr()),
-                        text.len() as i32,
-                    )
-                };
-                if status != S_OK {
-                    return Err(if status.is_err() { status } else { E_FAIL }.into());
-                }
-                attempted.set(INPUT_APPLIED_UNTRACKED);
-                // Do not undo or retry the body if any following metadata operation
-                // fails. End only our composition in the outer cleanup path.
-                if extent_of(&selected)? != (before.metadata.selection.0, end) {
-                    return Err(E_ABORT.into());
-                }
-                unsafe {
-                    selected.Collapse(cookie, TF_ANCHOR_END)?;
-                }
-                let mut caret = TF_SELECTION {
-                    range: ManuallyDrop::new(Some(selected)),
-                    style: TF_SELECTIONSTYLE {
-                        ase: TF_AE_END,
-                        fInterimChar: false.into(),
-                    },
-                };
-                let set = unsafe {
-                    edit.context
-                        .SetSelection(cookie, std::slice::from_ref(&caret))
-                };
-                unsafe {
-                    ManuallyDrop::drop(&mut caret.range);
-                }
-                set?;
+                write_body(
+                    &edit,
+                    cookie,
+                    selected,
+                    &text,
+                    before.metadata.selection.0,
+                    &attempted,
+                )?;
                 let metadata = InputMetadata {
                     selection: (end, end),
                     ..before.metadata
@@ -133,25 +216,95 @@ impl Tracker {
             }),
         );
         result?;
-        let expected = finished.get().ok_or(E_FAIL)?;
+        PendingInput {
+            session,
+            sequence,
+            range: Some(range),
+            boundary,
+            outcome,
+        }
+        .finish(self, finished.get().ok_or(E_FAIL)?)
+    }
+}
+
+struct PendingInput {
+    session: InputSession,
+    sequence: u64,
+    range: Option<(i32, i32)>,
+    boundary: u64,
+    outcome: Rc<Cell<u32>>,
+}
+impl PendingInput {
+    fn finish(self, tracker: &mut Tracker, expected: InputMetadata) -> Result<()> {
         // OnEndEdit is delivered after the cookie. Protection/focus history is
         // independent of our own text/attribute notification and cannot reset.
-        let notification = self.watch.generation()?;
-        let metadata = self.inspect(false)?;
-        if self.watch.generation()? != notification
-            || self.watch.boundary_generation()? != boundary
+        let notification = tracker.watch.generation()?;
+        let metadata = tracker.inspect(false)?;
+        if tracker.watch.generation()? != notification
+            || tracker.watch.boundary_generation()? != self.boundary
             || metadata.selection != expected.selection
             || !metadata.same_protection(&expected)
         {
             return Err(E_ABORT.into());
         }
-        self.session = session;
-        self.sequence = sequence;
-        self.metadata = Some(metadata);
-        self.settled = Some(notification);
-        self.extent = Some(range);
-        self.auto_selected = false;
-        outcome.set(INPUT_APPLIED);
+        tracker.session = self.session;
+        tracker.sequence = self.sequence;
+        tracker.metadata = Some(metadata);
+        tracker.settled = Some(notification);
+        tracker.extent = self.range;
+        if self.range.is_none() {
+            tracker.owned = OwnedComposition::new();
+        }
+        tracker.auto_selected = false;
+        self.outcome.set(INPUT_APPLIED);
         Ok(())
     }
+}
+
+/// The only body write for either operation. All authorization precedes this
+/// helper; errors after the call can never grant host replay or rollback.
+fn write_body(
+    edit: &CompositionEdit,
+    cookie: u32,
+    selected: ITfRange,
+    text: &[u16],
+    start: i32,
+    attempted: &Cell<u32>,
+) -> Result<()> {
+    let end = start.checked_add(text.len() as i32).ok_or(E_ABORT)?;
+    attempted.set(INPUT_UNCERTAIN);
+    let status = unsafe {
+        (selected.vtable().SetText)(
+            selected.as_raw(),
+            cookie,
+            0,
+            windows::core::PCWSTR(text.as_ptr()),
+            text.len() as i32,
+        )
+    };
+    if status != S_OK {
+        return Err(if status.is_err() { status } else { E_FAIL }.into());
+    }
+    attempted.set(INPUT_APPLIED_UNTRACKED);
+    if extent_of(&selected)? != (start, end) {
+        return Err(E_ABORT.into());
+    }
+    unsafe {
+        selected.Collapse(cookie, TF_ANCHOR_END)?;
+    }
+    let mut caret = TF_SELECTION {
+        range: ManuallyDrop::new(Some(selected)),
+        style: TF_SELECTIONSTYLE {
+            ase: TF_AE_END,
+            fInterimChar: false.into(),
+        },
+    };
+    let set = unsafe {
+        edit.context
+            .SetSelection(cookie, std::slice::from_ref(&caret))
+    };
+    unsafe {
+        ManuallyDrop::drop(&mut caret.range);
+    }
+    set
 }

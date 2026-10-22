@@ -92,8 +92,13 @@ InputWatch/ManualEdit Guardはstatus通知も購読する。外部通知をEXE�
 transaction-demoでは独立ISpikeInputWriterが供給された文字を一度だけ挿入し、caretとcompositionを
 同じ同期write cookieで更新する。scope/status/compartment/focusの履歴を自己OnEndEditと分けて検査する。
 SetTextを試みた後の失敗ではHRESULTから再入力を推測せず、変換を停止して明示boundaryを待つ。
-既存本文取得のidle gateは維持する。Backspace・待機・救済・一般アプリ統合の完成ではない
+既存本文取得のidle gateは維持する。待機・救済・一般アプリ統合の完成ではない
 （[ADR 0012](adr/0012-synchronous-input-transaction.md)）。
+transaction-demoのBackspaceは、Coreの記録末尾だけから削除範囲を計算し、実DLLの独立
+ISpikeInputEraserで削除・caret・composition縮小を同じwriteに接続する。全削除では自己objectを終了する。
+本文書込と確定処理は挿入と共有する。旧世代・追跡外・選択・他composition等では一部を先に消さず、
+書込前に元のホスト処理へ返す。試行後の失敗では再削除せず、明示boundaryまで変換を停止する。
+前方Delete・任意位置編集・待機・救済は未完了（[ADR 0013](adr/0013-synchronous-tracked-backspace.md)）。
 Controllerのbusyガードにより操作中の再入を拒否し、自分の書込で生じる通知を外部編集と誤認しない。
 TSFを呼ぶ前にRefCellの借用を解放し、通知やウィンドウ破棄が再入しても借用違反を起こさないようにする。
 
