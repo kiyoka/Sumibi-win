@@ -20,6 +20,7 @@ Issue #4では版付きJSONとclient接続状態を追加し、取消・切断�
 Brokerの予約は未受取・受取済み結果も含め合計4件に制限し、解放後に枠を戻します（[容量と寿命](docs/adr/0015-broker-admission-through-delivery.md)）。
 `broker-key-test`は実DLLのキーから、`broker-input-test`は非同期デモの入力と終了まで検証します。
 `broker-demo`では同じ非同期の固定変換を手動で試せます（[起動と操作](docs/DEVELOPMENT.md#実dllのキーから非同期変換を試す)）。
+起動したBrokerを連続要求で再利用するworker専用APIも追加しています。`broker-channel-test`で同じ子process・取消・期限・容量・終了を検証できます（[起動手順](docs/DEVELOPMENT.md#broker接続の再利用を検証する)、[契約](docs/adr/0016-authenticated-reusable-broker-channel.md)）。既存デモへの接続は次段階です。
 常駐Broker、一般アプリの入力基盤、HTTP通信はまだありません。
 入力保護の検査を追加し、通常テキストと確認できないscope・状態ではDLLの本文取得と要求送信を拒否します。
 `protection-test`で実DLL/TSFの39ケースを検証できます（[境界と制限](docs/adr/0006-input-protection-metadata.md)）。
@@ -58,6 +59,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [記録済み入力末尾の同期Backspace](docs/adr/0013-synchronous-tracked-backspace.md)
 - [未確認入力の有限救済と明示コピー](docs/adr/0014-bounded-input-recovery.md)
 - [Brokerの受取・破棄まで保持する容量予約](docs/adr/0015-broker-admission-through-delivery.md)
+- [認証済み子Brokerを再利用する有限接続](docs/adr/0016-authenticated-reusable-broker-channel.md)
 - [Issue #1の受入記録](docs/ISSUE_1_ACCEPTANCE.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 

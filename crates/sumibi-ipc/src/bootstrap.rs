@@ -1,4 +1,4 @@
-//! Restricted one-shot broker launch. This is not per-user broker discovery or
+//! Restricted broker launch. This is not per-user broker discovery or
 //! executable signature verification. Callers must supply a trusted full path.
 use crate::support::{own, raw, Error, Nonce, Result};
 use crate::{PinnedProcess, Pipe, Stop};
@@ -15,6 +15,19 @@ use windows::Win32::System::Threading::*;
 pub enum Mode {
     Disabled,
     DiagnosticFixed { delay_ms: u32 },
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Service {
+    Once,
+    Channel,
+}
+impl Service {
+    fn argument(self) -> &'static str {
+        match self {
+            Self::Once => "serve",
+            Self::Channel => "serve-channel",
+        }
+    }
 }
 impl Mode {
     fn argument(self) -> Result<String> {
@@ -100,6 +113,26 @@ impl Launched {
         stop: &Stop,
         deadline: Instant,
     ) -> Result<(Self, Pipe, Nonce)> {
+        Self::connect_service(path, mode, stop, deadline, Service::Once)
+    }
+    pub(crate) fn connect_channel(
+        path: &Path,
+        mode: Mode,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<(Self, Pipe, Nonce)> {
+        Self::connect_service(path, mode, stop, deadline, Service::Channel)
+    }
+    pub(crate) fn peer(&self) -> Result<PinnedProcess> {
+        PinnedProcess::from_launch_handle(self.process.as_handle())
+    }
+    fn connect_service(
+        path: &Path,
+        mode: Mode,
+        stop: &Stop,
+        deadline: Instant,
+        service: Service,
+    ) -> Result<(Self, Pipe, Nonce)> {
         let path_text = path.to_str().ok_or(Error::InvalidArgument)?;
         if !path.is_absolute() || path_text.contains(['\0', '"']) {
             return Err(Error::InvalidArgument);
@@ -121,8 +154,9 @@ impl Launched {
         let boot = Nonce::random()?;
         let application: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
         let mut command: Vec<u16> = format!(
-            "\"{}\" serve {} {} {} {} {} {}",
+            "\"{}\" {} {} {} {} {} {} {}",
             path_text,
+            service.argument(),
             parent_handle.as_raw_handle() as usize,
             stop_handle.as_raw_handle() as usize,
             ready_handle.as_raw_handle() as usize,
@@ -210,11 +244,12 @@ pub struct Bootstrap {
     pub(crate) name: Nonce,
     pub(crate) boot: Nonce,
     pub(crate) mode: Mode,
+    pub(crate) service: Service,
 }
 impl Bootstrap {
     pub fn parse(args: &[OsString]) -> Result<Self> {
         if args.len() != 7
-            || args[0] != "serve"
+            || (args[0] != "serve" && args[0] != "serve-channel")
             || args[1] == args[2]
             || args[1] == args[3]
             || args[2] == args[3]
@@ -246,6 +281,11 @@ impl Bootstrap {
             name,
             boot,
             mode,
+            service: if args[0] == "serve-channel" {
+                Service::Channel
+            } else {
+                Service::Once
+            },
         })
     }
     pub(crate) fn ready(&self) -> Result<()> {

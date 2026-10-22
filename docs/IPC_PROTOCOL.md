@@ -148,6 +148,10 @@ Protocolは22テスト（既存frame 6、session 8、JSON 4、Core模擬接続4�
 実DLLキー・Core・TSFからも診断用bridgeへ接続し19ケースと非同期入力・終了8ケースを確認した。
 完了済みjob・受取済み結果の保持中も予約を維持し、worker・job・結果の最後の解放後に枠を返す
 （[ADR 0015](adr/0015-broker-admission-through-delivery.md)）。満杯時は本文取得前にキーを通過させる。
+同じ認証済み子processとpipeの再利用もworker専用Channelとして追加した。wire版1は維持し、
+最大64要求・1要求/結果・共通4枠・有限期限を設ける。取消・通信失敗で永久に接続を閉じる
+（[ADR 0016](adr/0016-authenticated-reusable-broker-channel.md)）。既存デモの単発経路は維持し、
+再利用ChannelへのEXE dispatchと所有STA配送は次段階。
 scope/status/compartmentの保護検査を追加し、実DLLで39ケースを確認した
 （[ADR 0006](adr/0006-input-protection-metadata.md)）。
 同一contextのcompositionを拒否し、実DLL/TSFで16ケースを確認した

@@ -8,6 +8,8 @@ pub mod bootstrap;
 #[cfg(windows)]
 pub mod broker;
 #[cfg(windows)]
+pub mod channel;
+#[cfg(windows)]
 mod identity;
 #[cfg(windows)]
 pub mod job;

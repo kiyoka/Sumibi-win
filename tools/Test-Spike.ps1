@@ -36,7 +36,11 @@ try {
     Invoke-Cargo -Arguments @('run', '-p', 'sumibi-tip', '--features', 'spike', '--example', 'load_smoke', '--locked', '--offline', '--', 'target/debug/sumibi_tip.dll')
     foreach ($name in @('self-test', 'edit-test', 'key-test')) { Invoke-Spike -Name $name }
     if (!$SkipDesktop) {
+        & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') broker-channel-denied-test
+        if ($LASTEXITCODE -ne 0) { throw 'Default Host broker channel rejection check failed.' }
         Invoke-Cargo -Arguments @('build', '-p', 'sumibi-host', '--features', 'spike', '--locked', '--offline')
+        & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') broker-channel-test
+        if ($LASTEXITCODE -ne 0) { throw 'Reusable broker channel check failed.' }
         Invoke-Spike -Name 'broker-test'
         Invoke-Spike -Name 'broker-key-test'
         Invoke-Spike -Name 'broker-input-test'
@@ -56,7 +60,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Two-process pipe check failed; use a normal user session.' }
     }
     Write-Output 'All selected spike checks passed.'
-    if ($SkipDesktop) { Write-Output 'Desktop window/input/close/delayed/broker/protection/composition/owned-composition/tracking/composing/input-notify/transaction/backspace/recovery/pipe/peer checks were explicitly skipped.' }
+    if ($SkipDesktop) { Write-Output 'Desktop window/input/close/delayed/broker/broker-channel/protection/composition/owned-composition/tracking/composing/input-notify/transaction/backspace/recovery/pipe/peer checks were explicitly skipped.' }
 }
 finally {
     $env:CARGO_INCREMENTAL = $previousIncremental

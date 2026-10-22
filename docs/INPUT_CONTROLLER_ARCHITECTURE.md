@@ -69,6 +69,10 @@ TSF/COMの操作は生成時のスレッドに限定し、別スレッドは固�
 単発ジョブの予約はworker・job・結果が共有し、最後の解放までprocess内4件に数える。
 結果を取り出してjobを外した後のCOM再入でも、Completionが枠を保持する
 （[ADR 0015](adr/0015-broker-admission-through-delivery.md)）。
+worker専用Channelは同じ認証済み子とpipeを再利用し、Replyを保持している間は次要求を拒否する。
+取消・通信失敗・期限で接続を閉じ、古い要求を再送しない。Channel/Replyは共通4枠を最後のDropまで保持する
+（[ADR 0016](adr/0016-authenticated-reusable-broker-channel.md)）。connect/close/Dropにも待機があり、
+既存のTSF callbackやBridgeで直接呼ばず、EXE workerへのdispatchと所有STA配送への統合を次段階とする。
 製品InputSessionと一般アプリ内でのBrokerClientの配置は未実装。
 さらにsourceを返す前と編集時に保護メタデータを再検査し、scope/compartmentの変更で要求を失効させる。
 scopeのStampと通知、MSCTF内部読取との境界は[ADR 0006](adr/0006-input-protection-metadata.md)を参照。

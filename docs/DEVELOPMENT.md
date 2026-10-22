@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 24件（応答照合7・入力範囲追跡/削除計画10・救済7）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 8件、TIP 5件を含めworkspace合計59件。
+現時点はCore 24件（応答照合7・入力範囲追跡/削除計画10・救済7）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 10件、TIP 5件を含めworkspace合計61件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -106,6 +106,24 @@ TSFの所有loopがeventを受けて新しい同期write内でCore.finishとSetT
 Hostのspike featureは開発診断用で、配布しない。`cargo build --workspace`はHostを既定の拒否構成へ戻す。
 `Test-Spike.ps1`は通常実行時だけこの診断Hostをビルドしてbroker-testを実行し、
 `-SkipDesktop`ではbroker-testも明示的に省略する。
+
+## Broker接続の再利用を検証する
+
+通常ユーザーのPowerShellで、リポジトリのフォルダから実行する。
+
+```powershell
+cargo build --workspace --locked --offline
+./target/debug/sumibi-setup.exe broker-channel-denied-test
+cargo build -p sumibi-host --features spike --locked --offline
+./target/debug/sumibi-setup.exe broker-channel-test
+```
+
+前者は通常Hostの拒否2項目、後者は実子processで14項目を自動検証する。専用workerで同じ
+起動processへ連続変換し、Reply保持中の拒否、取消、期限、64要求上限、共通4枠、子と親handleの解放を確認する。
+原文は合成文字列だけで、ユーザー文書・HTTP・既定IMEを使用しない。既存デモは単発Brokerのまま。
+Channelはblockingのworker専用APIで、TSF/window callbackから直接呼ばない。
+所有STAへの結果配送と製品の常駐探索は次段階（[ADR 0016](adr/0016-authenticated-reusable-broker-channel.md)）。
+2026-10-22のTest-Spike.ps1全回帰はworkspace 61件を含め成功。ログはtarget/issue-4-broker-channel-regression.log。
 
 ## 実DLLのキーから非同期変換を試す
 

@@ -215,7 +215,7 @@ fn run(executable: PathBuf, request: Request, stop: &Stop) -> Result<String> {
         _ => Err(Error::InvalidMessage),
     }
 }
-fn read_event(
+pub(crate) fn read_event(
     pipe: &mut Pipe,
     client: &mut ClientSession,
     stop: &Stop,

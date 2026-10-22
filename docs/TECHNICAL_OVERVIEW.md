@@ -138,7 +138,7 @@ flowchart TB
 | --- | --- |
 | sumibi-core | OS非依存のイベントと効果、手動／自動の状態、候補、上限判定。将来もunsafe禁止 |
 | sumibi-protocol | 4バイト長＋最大256KiBのUTF-8フレーム、版付きの単一結果JSON、要求・接続世代・取消・期限・再接続。COM・HTTP・OS認証は含めない |
-| sumibi-ipc | Windowsの固定process handle・token照合、合計8 endpoint、overlapped pipe・停止・期限。単発起動と容量4のworker。診断EXE bridge経由で実DLLキーとも接続。製品の一般アプリ内配置は未実装 |
+| sumibi-ipc | Windowsの固定process handle・token照合、合計8 endpoint、overlapped pipe・停止・期限。単発起動と容量4のworker。worker専用Channelで認証済み子の連続要求を検証（[ADR 0016](adr/0016-authenticated-reusable-broker-channel.md)）。診断EXE bridge経由で実DLLキーとも接続。製品の一般アプリ内配置は未実装 |
 | sumibi-tip | TSFキー、composition、範囲取得、保護判定、書込、候補表示、IPCの所有スレッドへの復帰 |
 | sumibi-host | 現在は明示起動の単発server、既定で変換拒否。製品では設定・同意・辞書の一貫した版、資格情報、HTTP、全体の自動要求制限を担当予定 |
 | sumibi-setup | 現在は開発検証のみ。製品の登録・更新ツールと共用するかは配布ADRで決める |
