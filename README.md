@@ -29,7 +29,7 @@ Brokerの予約は未受取・受取済み結果も含め合計4件に制限し�
 F6プレビューは選択範囲をSumibi自身のcompositionとして保持し、確定・取消時に終了します。`owned-composition-test`で18ケースを検証できます（[所有と制限](docs/adr/0008-owned-selection-composition.md)）。
 `tracking-demo`では実際に入力した範囲だけをF7で変換できます。移動・外部編集等で追跡が無効なら変換を見送り、全文を推測しません。`tracking-input-test`で25ケースを検証できます（[操作手順](docs/DEVELOPMENT.md#通常入力の範囲だけを変換する)、[条件と制限](docs/adr/0009-cooperating-host-input-run.md)）。
 `composing-demo`では同じ入力を実DLLのcompositionと下線で追跡し、文字入力で広げ、Backspaceで縮めます。`composing-input-test`で29ケースを検証できます（[操作手順](docs/DEVELOPMENT.md#入力compositionの伸縮を試す)、[条件と制限](docs/adr/0010-cooperating-host-composition-growth.md)）。本文はホストで反映する診断経路で、一般アプリへの統合は未実装です。
-外部編集や保護状態の通知では、次の打鍵を待たず所有ループで古い追跡を解除します。`input-notify-test`で通知20ケースを検証できます（[条件と制限](docs/adr/0011-owner-loop-input-invalidation.md)）。
+外部編集や保護状態の通知では、次の打鍵を待たず所有ループで古い追跡を解除します。所有ホストのフォーカス境界も明示転送し、`input-notify-test`で24ケースを検証できます（[通知の条件](docs/adr/0011-owner-loop-input-invalidation.md)、[明示境界と制限](docs/adr/0020-owner-cancellation-and-shared-tsf-pump.md)）。
 `transaction-demo`のBackspaceは記録末尾だけを同じ同期writeで削除し、repeatも一括更新します。全削除でcompositionを終了し、失敗時には再削除しません。`backspace-input-test`で27ケースを検証できます（[条件と制限](docs/adr/0013-synchronous-tracked-backspace.md)）。
 Notepad等の実アプリでの表示と実打鍵は未確認です。
 `recovery-demo`では固定の入力失敗を再現し、F8で未確認入力を確認できます。1件・最大1024 UTF-16単位を最大10分だけ保持し、明示コピー／破棄を提供します。自動再入力はしません。`recovery-input-test`で25ケースを検証できます（[起動と操作](docs/DEVELOPMENT.md#未確認入力の救済を試す)、[保護と保持の契約](docs/adr/0014-bounded-input-recovery.md)）。
@@ -65,6 +65,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [選択変換の保持rangeと送信前の失効検査](docs/adr/0018-retained-manual-range-and-source-validation.md)
 - [Issue #1の受入記録](docs/ISSUE_1_ACCEPTANCE.md)
 - [標準RichEditでの拒否検証と状態診断](docs/adr/0019-native-richedit-status-diagnostics.md)
+- [所有ホストの明示取消と共通TSFメッセージ処理](docs/adr/0020-owner-cancellation-and-shared-tsf-pump.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 
 設計基準はSumibi-mac main `553c69021eda7a8a5944d8748357f3790cc2f45c`。

@@ -27,6 +27,7 @@ pub(crate) fn exercise_owned_composition(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Failure> {
+    let messages: ITfMessagePump = manager.cast()?;
     let cases = [
         "cancel",
         "commit",
@@ -78,7 +79,7 @@ pub(crate) fn exercise_owned_composition(
             let mut association =
                 crate::window_host::Association::new(manager, &window, &document.0)?;
             manager.SetFocus(&document.0)?;
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             let provider = manager.GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)?;
             let control: ISpikeControl = provider
                 .GetFunction(&FUNCTION_TEST_CONTROL, &ISpikeControl::IID)?
@@ -202,7 +203,7 @@ pub(crate) fn exercise_owned_composition(
                 "forced" | "forced-restart" => {
                     let owner: ITfContextOwnerCompositionServices = context.cast()?;
                     owner.TerminateComposition(&current[0])?;
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                     assert!(views(&context)?.is_empty());
                     if case == "forced-restart" {
                         delayed.BeginRequest(request + 1, 2000).ok()?;
@@ -226,7 +227,7 @@ pub(crate) fn exercise_owned_composition(
                     // Headless focus need not deliver a desktop notification.
                     // Call the same actual DLL focus callback explicitly.
                     manager_sink.OnSetFocus(other, &document.0)?;
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                     manager.SetFocus(&document.0)?;
                 }
                 "external-restored" => {
@@ -236,7 +237,7 @@ pub(crate) fn exercise_owned_composition(
                     store
                         .get()
                         .external_text("prefix nihongo suffix".encode_utf16().collect())?;
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                     assert!(delayed.CompleteRequest(request).is_err());
                 }
                 "cleanup-denied" | "readonly-cleanup" => {
@@ -257,7 +258,7 @@ pub(crate) fn exercise_owned_composition(
                     foreign = Some(composition_host::Composition::start(
                         &context, client, 0, 2,
                     )?);
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                     control.CancelPreview().ok()?;
                     let remaining = views(&context)?;
                     assert_eq!(remaining.len(), 1);
@@ -277,7 +278,7 @@ pub(crate) fn exercise_owned_composition(
                         .clone()
                         .ok_or_else(|| windows::core::Error::from(E_FAIL))?;
                     sink.OnAttrsChange(0, 21, &[GUID_PROP_INPUTSCOPE])?;
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                     assert!(delayed.CompleteRequest(request).is_err());
                     *store.get().scopes.borrow_mut() = ScopeSpec::List(vec![IS_TEXT]);
                 }
@@ -285,7 +286,7 @@ pub(crate) fn exercise_owned_composition(
                     control.CancelPreview().ok()?;
                 }
             }
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             if let Some(foreign) = &mut foreign {
                 foreign.end()?;
             }

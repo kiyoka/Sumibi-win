@@ -97,6 +97,10 @@ focus以外の通知エラーにもケース名とevent待機段階を付け、�
 target/issue-4-native-edit-notify-check.log、修正後20件はtarget/issue-4-native-edit-notify-fixed.log。
 他の試験のcleanup用SetFocus(None)まで置換した変更ではない。
 
+後続の[ADR 0020](0020-owner-cancellation-and-shared-tsf-pump.md)ではfocus待機の再発を確認した。
+本ADRの成功は記載した実行の観測で、pump変更による全focus履歴の通知保証ではない。
+後続は所有ホストの明示境界を追加し、自然通知のみの試験と区別している。
+
 ## 残る作業
 
 この結果は自作メモリーstoreから標準コントロールへ検証を広げた段階で、変換・標準Undoの成功ではない。

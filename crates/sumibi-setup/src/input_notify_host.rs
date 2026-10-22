@@ -23,7 +23,11 @@ pub(crate) fn exercise_notifications(
         "foreign",
         "empty-cycle",
         "forced",
-        "focus",
+        "owner-focus",
+        "owner-focus-restored",
+        "owner-focus-burst",
+        "owner-ready-restored",
+        "owner-boundary-denied",
         "burst",
         "reattach",
         "late-close",
@@ -47,7 +51,7 @@ pub(in crate::edit_host::input_host) fn test_notifications(
     let (broker, bridge) = editor.broker.as_ref().ok_or(E_FAIL)?;
     // Create the alternate document before settling the tracked input, so its
     // OnInitDocumentMgr cannot masquerade as the later focus-change wake.
-    let focus_target = if case == "focus" {
+    let focus_target = if case.starts_with("owner-focus") {
         let manager: ITfThreadMgr = editor.keys.cast()?;
         Some(scope_fixture::other_document(&manager, client)?)
     } else {
@@ -70,6 +74,62 @@ pub(in crate::edit_host::input_host) fn test_notifications(
     let original = store.text.borrow().clone();
     store.undo.borrow_mut().clear();
     let body_before = body_reads()?;
+    if case == "owner-ready-restored" {
+        assert!(composing.prepare(editor, bridge)?);
+        composing.owner_boundary()?;
+        assert!(!composing.prepare(editor, bridge)?);
+        assert!(drain(window, editor)? <= 3);
+        let transport = bridge.to_interface::<ISpikeBrokerTransport>();
+        let units: Vec<u16> = "nihongo".encode_utf16().collect();
+        let mut id = 0;
+        unsafe {
+            transport.Reserve(&mut id).ok()?;
+            assert!(transport
+                .Start(id, 1, 1, 1, 3000, units.as_ptr(), units.len() as u32)
+                .is_err());
+        }
+        assert!(!bridge.get().active());
+        assert!(no_composition(&editor.context)?);
+        assert_eq!(body_reads()?, body_before);
+        assert_eq!(*store.text.borrow(), original);
+        assert!(store.undo.borrow().is_empty());
+        println!("Input owner wake / {case}: OK");
+        return Ok(());
+    }
+    if case == "owner-boundary-denied" {
+        store.deny_lock.set(true);
+        composing.owner_boundary()?;
+        assert!(drain(window, editor)? <= 3);
+        assert!(composing.boundary_blocked.get());
+        assert!(!composing.prepare(editor, bridge)?);
+        let locks = store.lock_requests.get();
+        for _ in 0..1000 {
+            composing.signal.get().notify()?;
+        }
+        assert!(composing.poll(editor)?);
+        assert!(!composing.poll(editor)?);
+        assert_eq!(store.lock_requests.get(), locks);
+        store.deny_lock.set(false);
+        notify_status(editor, 0)?;
+        drain(window, editor)?;
+        assert!(no_composition(&editor.context)?);
+        assert_eq!(body_reads()?, body_before);
+        assert_eq!(*store.text.borrow(), original);
+        assert!(store.undo.borrow().is_empty());
+        assert!(!composing.prepare(editor, bridge)?);
+        editor.input(WM_CHAR, WPARAM('x' as usize), LPARAM(1))?;
+        pump(window)?;
+        drain(window, editor)?;
+        assert_eq!(live.scene()?.underlines, vec![14..15]);
+        assert_eq!(
+            *store.text.borrow(),
+            "prefix nihongox suffix".encode_utf16().collect::<Vec<_>>()
+        );
+        assert_eq!(store.undo.borrow().len(), 1);
+        assert_eq!(body_reads()?, body_before);
+        println!("Input owner wake / {case}: OK");
+        return Ok(());
+    }
     if case == "pending-status-restored" {
         editor.input(WM_KEYDOWN, WPARAM(0x76), LPARAM(1))?;
         assert!(bridge.get().active());
@@ -218,7 +278,7 @@ pub(in crate::edit_host::input_host) fn test_notifications(
                 .cast::<ITfContextOwnerCompositionServices>()?
                 .TerminateComposition(&owned_view(&editor.context)?)?;
         },
-        "focus" => {
+        "owner-focus" | "owner-focus-restored" | "owner-focus-burst" => {
             let manager: ITfThreadMgr = editor.keys.cast()?;
             let document = unsafe { editor.context.GetDocumentMgr()? };
             assert!(
@@ -235,7 +295,22 @@ pub(in crate::edit_host::input_host) fn test_notifications(
                 unsafe { manager.GetFocus()? }.cast::<IUnknown>()?
                     == alternate.cast::<IUnknown>()?
             );
-            previous_document = Some((manager, document));
+            composing.owner_boundary()?;
+            if case == "owner-focus-burst" {
+                for _ in 0..1000 {
+                    composing.owner_boundary()?;
+                }
+            }
+            assert_eq!(body_reads()?, body_before);
+            assert!(store.undo.borrow().is_empty());
+            assert!(!composing.prepare(editor, bridge)?);
+            if case == "owner-focus-restored" {
+                unsafe {
+                    manager.SetFocus(&document)?;
+                }
+            } else {
+                previous_document = Some((manager, document));
+            }
         }
         "burst" => {
             for _ in 0..1000 {
@@ -281,7 +356,7 @@ pub(in crate::edit_host::input_host) fn test_notifications(
         eprintln!("Input owner wake / {case}: notification event wait failed: {error}");
     })?;
     // Merely receiving a notification must not synchronously edit the document.
-    if !matches!(case, "forced" | "focus") {
+    if case != "forced" && !case.starts_with("owner-focus") {
         assert!(
             !no_composition(&editor.context)?,
             "cleanup runs only after returning to owner loop"

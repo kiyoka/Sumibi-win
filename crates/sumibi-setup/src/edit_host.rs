@@ -1085,6 +1085,7 @@ fn exercise_rendering(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let messages: ITfMessagePump = manager.cast()?;
     use sumibi_tip::spike::{ISpikeControl, COMMAND_CONVERT, FUNCTION_TEST_CONTROL};
     let directory = std::env::current_dir()?.join("target/window-test");
     std::fs::create_dir_all(&directory)?;
@@ -1112,7 +1113,7 @@ fn exercise_rendering(
         scope_fixture::initialise_context(&context, client)?;
         let mut association = crate::window_host::Association::new(manager, &window, &document.0)?;
         window.focus()?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         manager.SetFocus(&document.0)?;
         let control: ISpikeControl = manager
             .GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)?
@@ -1126,7 +1127,7 @@ fn exercise_rendering(
                        expected: &str,
                        underline: bool|
          -> std::result::Result<(), Box<dyn std::error::Error>> {
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             assert!(
                 live.updates() > last_update.get(),
                 "notification must update the cache"
@@ -1179,9 +1180,9 @@ fn exercise_rendering(
         live.request()?;
         live.request()?;
         live.request()?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert_eq!(live.updates(), before + 1);
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert_eq!(
             live.updates(),
             before + 1,
@@ -1191,7 +1192,7 @@ fn exercise_rendering(
         control.BeginPreview().ok()?;
         store.get().deny_lock.set(true);
         let before_failed_paint = window.painted();
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert!(live.scene().is_err());
         assert!(
             window.frame().is_err(),
@@ -1207,7 +1208,7 @@ fn exercise_rendering(
         let retired_updates = live.updates();
         live.close()?;
         let mut replacement = crate::live_render::Binding::attach(&window, &context, client)?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert_eq!(live.updates(), retired_updates);
         assert_eq!(
             replacement.updates(),
@@ -1217,7 +1218,7 @@ fn exercise_rendering(
         assert!(replacement.scene()?.underlines.is_empty());
         assert_eq!(window.frame()?.ink(0..crate::render::WIDTH), 0);
         replacement.close()?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert!(window.frame().is_err());
         assert!(window.is_blank());
         println!("Rebinding and detach discard stale queued render requests: OK");
@@ -1227,7 +1228,7 @@ fn exercise_rendering(
         let successor = crate::window_host::Window::new(manager)?;
         let mut successor_binding =
             crate::live_render::Binding::attach(&successor, &context, client)?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert_eq!(doomed_binding.updates(), 0);
         assert_eq!(successor_binding.updates(), 1);
         assert!(doomed_binding.request().is_err());
@@ -1247,6 +1248,7 @@ fn exercise_key_host(
     client: u32,
     windowed: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let messages: ITfMessagePump = manager.cast()?;
     use sumibi_tip::spike::{
         ISpikeControl, COMMAND_CONVERT, FUNCTION_TEST_CONTROL, FUNCTION_TEST_KEY_SINK,
         FUNCTION_TEST_MANAGER_SINK,
@@ -1280,7 +1282,7 @@ fn exercise_key_host(
         let mut association = if let Some(window) = &window {
             let association = crate::window_host::Association::new(manager, window, &document.0)?;
             window.focus()?;
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             Some(association)
         } else {
             None
@@ -1370,6 +1372,14 @@ fn exercise_key_host(
         assert!(store.get().undo.borrow().is_empty());
         println!("Dedicated host one-step undo: OK");
         for key in [0x1b, 0x0d] {
+            if let Some(window) = &window {
+                // Native key routing requires foreground focus, which may have
+                // changed while the preceding edit/Undo checks were running.
+                window.focus()?;
+                window.require_foreground().map_err(|error| format!("window-test requires foreground activation; Windows did not activate the owned diagnostic window: {error}"))?;
+                pump_tsf_messages(&messages)?;
+                control.GrantContext(context.as_raw()).ok()?;
+            }
             control.BeginPreview().ok()?;
             assert!(!callback
                 .OnTestKeyDown(&context, WPARAM(key), LPARAM(1 << 29))?
@@ -1394,7 +1404,9 @@ fn exercise_key_host(
                 let active = window.as_ref().is_some_and(|window| {
                     windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() == window.hwnd()
                 });
-                return Err(format!("preview key routing failed: direct={direct}, modifiers={modified:?}, service={service}, context={focused}, active={active}").into());
+                let foreground_present =
+                    !windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().is_invalid();
+                return Err(format!("preview key routing failed: direct={direct}, modifiers={modified:?}, service={service}, context={focused}, active={active}, foreground_present={foreground_present}").into());
             }
             control.VerifyPreview().ok()?;
             let handled = if windowed {
@@ -1425,14 +1437,14 @@ fn exercise_key_host(
         store
             .get()
             .external_text("NIHONGO".encode_utf16().collect())?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert!(control.VerifyPreview().is_err());
         control.BeginPreview().ok()?;
         control.CancelPreview().ok()?;
         store
             .get()
             .external_text("nihongo".encode_utf16().collect())?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         println!("DLL external text notification cancels preview: OK");
         control.BeginPreview().ok()?;
         let original_selection = store.get().selection.get();
@@ -1446,7 +1458,7 @@ fn exercise_key_host(
             .clone()
             .unwrap()
             .OnSelectionChange()?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert!(control.VerifyPreview().is_err());
         // A successful new preview also proves old underline cleanup completed.
         control.BeginPreview().ok()?;
@@ -1459,7 +1471,7 @@ fn exercise_key_host(
             .clone()
             .unwrap()
             .OnSelectionChange()?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         println!("DLL external selection notification cancels preview: OK");
         // Schedule cleanup, then start a new preview before pumping messages.
         // A callback for the old generation must never erase the new underline.
@@ -1473,7 +1485,7 @@ fn exercise_key_host(
             .unwrap()
             .OnSelectionChange()?;
         control.BeginPreview().ok()?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         control.VerifyPreview().ok()?;
         control.CancelPreview().ok()?;
         store.get().selection.set(original_selection);
@@ -1484,7 +1496,7 @@ fn exercise_key_host(
             .clone()
             .unwrap()
             .OnSelectionChange()?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         println!("Old cleanup does not remove a new preview: OK");
         control.BeginPreview().ok()?;
         store.get().deny_lock.set(true);
@@ -1499,7 +1511,7 @@ fn exercise_key_host(
             .OnTestKeyDown(&context, WPARAM(0x1b), LPARAM(0))?
             .as_bool());
         store.get().deny_lock.set(false);
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         control.CancelPreview().ok()?;
         assert!(store.get().undo.borrow().is_empty());
         println!("Esc cancels immediately even when cleanup lock is denied: OK");
@@ -1551,7 +1563,7 @@ fn exercise_key_host(
             // Creating the second native window can temporarily move focus
             // and revoke the first grant. Restore the first view explicitly.
             window.focus()?;
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             control.GrantContext(context.as_raw()).ok()?;
         }
         control.BeginPreview().ok()?;
@@ -1570,7 +1582,7 @@ fn exercise_key_host(
             manager.SetFocus(&other_document.0)?;
             focus_callback.OnSetFocus(&other_document.0, &document.0)?;
         }
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert!(control.VerifyPreview().is_err());
         assert!(control.BeginPreview().is_err());
         assert_eq!(
@@ -1623,16 +1635,26 @@ fn exercise_key_host(
     Ok(())
 }
 
-fn pump_tsf_messages() -> Result<()> {
-    use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, PeekMessageW, MSG, PM_REMOVE};
+fn pump_tsf_messages(pump: &ITfMessagePump) -> Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
+    };
     // SAFETY: dedicated disposable STA process; deliver its own TSF messages.
     // Bound processing to expose a notification loop instead of hanging a test.
     unsafe {
         let mut message = MSG::default();
         for _ in 0..256 {
-            if !PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+            let mut found = BOOL(0);
+            // TSF must run its pre/post processing even when no ordinary
+            // message is returned, including during worker completion waits.
+            pump.PeekMessageW(&mut message, HWND::default(), 0, 0, PM_REMOVE.0, &mut found)?;
+            if !found.as_bool() {
                 return Ok(());
             }
+            if message.message == WM_QUIT {
+                return Err(windows::Win32::Foundation::E_ABORT.into());
+            }
+            let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }
     }

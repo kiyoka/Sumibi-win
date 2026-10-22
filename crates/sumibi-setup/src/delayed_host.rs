@@ -11,6 +11,7 @@ pub(crate) fn exercise_delayed(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let messages: ITfMessagePump = manager.cast()?;
     // SAFETY: every COM object and synthetic document remains on this STA.
     unsafe {
         for (index, case) in [
@@ -88,10 +89,12 @@ pub(crate) fn exercise_delayed(
                             );
                         }
                     });
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                     control.VerifyPreview().ok()?;
                     match case {
                         "escape" | "enter" => {
+                            window.focus()?;
+                            window.require_foreground()?;
                             let key = WPARAM(if case == "escape" { 0x1b } else { 0x0d });
                             let keys: ITfKeystrokeMgr = manager.cast()?;
                             assert!(keys.TestKeyDown(key, LPARAM(1))?.as_bool());
@@ -148,7 +151,7 @@ pub(crate) fn exercise_delayed(
                     release.send(())?;
                     let deadline = Instant::now() + Duration::from_secs(2);
                     let bytes = loop {
-                        pump_tsf_messages()?;
+                        pump_tsf_messages(&messages)?;
                         match receive.try_recv() {
                             Ok(bytes) => break bytes,
                             Err(TryRecvError::Empty) if Instant::now() < deadline => {
@@ -204,7 +207,7 @@ pub(crate) fn exercise_delayed(
             store.get().readonly.set(false);
             store.get().deny_lock.set(false);
             control.RevokeContext().ok()?;
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             association.close()?;
             manager.SetFocus(None)?;
             drop(other);

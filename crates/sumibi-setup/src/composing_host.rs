@@ -25,10 +25,16 @@ pub(super) struct Composing {
     monitor: ISpikeInputMonitor,
     signal: ComObject<crate::input_signal::Signal>,
     uncertain: Cell<bool>,
+    boundary_pending: Cell<bool>,
+    boundary_blocked: Cell<bool>,
+    boundary_generation: Rc<Cell<Option<u64>>>,
 }
 impl Composing {
     pub(super) fn backspace(&self, editor: &Editor, count: u32) -> Result<u32> {
-        if self.uncertain.get() {
+        if self.boundary_blocked.get() {
+            self.cancel(editor, false);
+        }
+        if self.uncertain.get() || self.boundary_blocked.get() {
             return Ok(INPUT_NOT_ATTEMPTED);
         }
         if self.settled_composition.get() != editor.store.get().composition_events.get() {
@@ -55,7 +61,10 @@ impl Composing {
         }
     }
     pub(super) fn insert(&self, editor: &Editor, units: &[u16]) -> Result<u32> {
-        if self.uncertain.get() {
+        if self.boundary_blocked.get() {
+            self.cancel(editor, false);
+        }
+        if self.uncertain.get() || self.boundary_blocked.get() {
             return Ok(INPUT_NOT_ATTEMPTED);
         }
         if self.settled_composition.get() != editor.store.get().composition_events.get() {
@@ -99,6 +108,9 @@ impl Composing {
             monitor,
             signal,
             uncertain: Cell::new(false),
+            boundary_pending: Cell::new(false),
+            boundary_blocked: Cell::new(false),
+            boundary_generation: Rc::new(Cell::new(Some(0))),
         })
     }
     pub(super) fn connect(&self, editor: &Editor) {
@@ -107,16 +119,36 @@ impl Composing {
     pub(super) fn wait_handle(&self) -> Option<HANDLE> {
         self.signal.get().handle()
     }
+    /// The cooperating owner observed a boundary. No COM, text read or edit
+    /// here: block reuse now and coalesce cleanup into the existing owner event.
+    pub(super) fn owner_boundary(&self) -> Result<()> {
+        self.boundary_generation.set(
+            self.boundary_generation
+                .get()
+                .and_then(|epoch| epoch.checked_add(1)),
+        );
+        self.boundary_blocked.set(true);
+        self.boundary_pending.set(true);
+        self.signal.get().notify()
+    }
     pub(super) fn poll(&self, editor: &Editor) -> Result<bool> {
         if !self.signal.get().drain()? {
             return Ok(false);
         }
         let composition = editor.store.get().composition_events.get();
-        let result = if composition == u32::MAX || composition != self.settled_composition.get() {
-            unsafe { self.control.Cancel(0).ok() }
-        } else {
-            unsafe { self.monitor.Poll().ok() }
-        };
+        let epoch = self.boundary_generation.get();
+        let boundary = self.boundary_pending.replace(false);
+        let result =
+            if boundary || composition == u32::MAX || composition != self.settled_composition.get()
+            {
+                unsafe { self.control.Cancel(0).ok() }
+            } else {
+                unsafe { self.monitor.Poll().ok() }
+            };
+        if boundary && result.is_ok() && epoch.is_some() && self.boundary_generation.get() == epoch
+        {
+            self.boundary_blocked.set(false);
+        }
         self.settled_composition
             .set(editor.store.get().composition_events.get());
         // A denied cleanup stays logically cancelled. Wait for another status
@@ -133,10 +165,12 @@ impl Composing {
         }
     }
     pub(super) fn before(&self, editor: &Editor, backspace: bool) -> bool {
-        if self.settled_composition.get() != editor.store.get().composition_events.get() {
+        if self.boundary_blocked.get()
+            || self.settled_composition.get() != editor.store.get().composition_events.get()
+        {
             self.cancel(editor, false);
         }
-        if editor.store.get().composition_events.get() == u32::MAX {
+        if self.boundary_blocked.get() || editor.store.get().composition_events.get() == u32::MAX {
             return false;
         }
         unsafe {
@@ -161,16 +195,23 @@ impl Composing {
             self.uncertain.set(false);
             editor.store.get().input_problem.set(false);
         }
-        unsafe {
-            let _ = self.control.Cancel(user_boundary.into());
+        let epoch = self.boundary_generation.get();
+        let cancelled = unsafe { self.control.Cancel(user_boundary.into()).is_ok() };
+        if cancelled && epoch.is_some() && self.boundary_generation.get() == epoch {
+            self.boundary_pending.set(false);
+            self.boundary_blocked.set(false);
         }
         self.settled_composition
             .set(editor.store.get().composition_events.get());
     }
     pub(super) fn prepare(&self, editor: &Editor, bridge: &ComObject<Bridge>) -> Result<bool> {
-        if self.uncertain.get() {
+        if self.uncertain.get() || self.boundary_blocked.get() {
             return Ok(false);
         }
+        let generation = self.boundary_generation.clone();
+        let Some(epoch) = generation.get() else {
+            return Ok(false);
+        };
         if self.settled_composition.get() != editor.store.get().composition_events.get() {
             self.cancel(editor, false);
             return Ok(false);
@@ -178,12 +219,18 @@ impl Composing {
         if unsafe { self.control.PrepareConversion().is_err() } {
             return Ok(false);
         }
+        if self.boundary_blocked.get() || generation.get() != Some(epoch) {
+            return Ok(false);
+        }
         let composition = editor.store.get().composition_events.get();
         self.settled_composition.set(composition);
         let control = self.control.clone();
         let store = editor.store.clone();
         bridge.get().check_next_input(Box::new(move |units| {
-            if composition == u32::MAX || store.get().composition_events.get() != composition {
+            if generation.get() != Some(epoch)
+                || composition == u32::MAX
+                || store.get().composition_events.get() != composition
+            {
                 return Err(windows::Win32::Foundation::E_ABORT.into());
             }
             unsafe {
@@ -191,7 +238,9 @@ impl Composing {
                     .CheckSource(units.as_ptr(), units.len() as u32)
                     .ok()?;
             }
-            if store.get().composition_events.get() != composition {
+            if generation.get() != Some(epoch)
+                || store.get().composition_events.get() != composition
+            {
                 return Err(windows::Win32::Foundation::E_ABORT.into());
             }
             Ok(())

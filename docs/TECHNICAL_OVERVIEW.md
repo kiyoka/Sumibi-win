@@ -219,6 +219,9 @@ source前のmetadata検査で失敗した要求は復元後も再利用できな
 非ACPアプリの互換性は未検証で、実入力追跡はACP方式を維持する
 （[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md)）。
 同じ要求の応答は照合失敗でも消費するが、別要求の古い応答で現在の要求を消さない。
+ManualEdit.cancelは所有ホストの明示境界で保留要求と原文bufferを解放する。
+source/finishを永久に拒否し、再開には新IDでcaptureする。通信停止は別に所有側で行う
+（[ADR 0020](adr/0020-owner-cancellation-and-shared-tsf-pump.md)）。
 ManualConversionのTargetには独立の容量制限を設けず、呼出し側が上限を担う。
 追加のCore InputSessionは所有ホストの入力範囲を1024 UTF-16単位に制限する。
 製品の追跡入力全体や待機・救済の処理ではない。

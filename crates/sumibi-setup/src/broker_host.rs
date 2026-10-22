@@ -17,6 +17,7 @@ pub(crate) fn exercise_broker(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Failure> {
+    let messages: ITfMessagePump = manager.cast()?;
     let executable = std::env::current_exe()?
         .parent()
         .ok_or("missing host directory")?
@@ -74,13 +75,14 @@ pub(crate) fn exercise_broker(
             let mut association =
                 crate::window_host::Association::new(manager, &window, &document.0)?;
             manager.SetFocus(&document.0)?;
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             let other = if case == "focus-restored" {
                 Some(scope_fixture::other_document(manager, client)?)
             } else {
                 None
             };
             manager.SetFocus(&document.0)?;
+            pump_tsf_messages(&messages)?;
             let policy = Rc::new(Cell::new(EditPolicy {
                 revision: Revision {
                     input: 1,
@@ -147,12 +149,12 @@ pub(crate) fn exercise_broker(
                     store
                         .get()
                         .external_text("prefix NIHONGO suffix".encode_utf16().collect())?;
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                     if case == "text-restored" {
                         store
                             .get()
                             .external_text("prefix nihongo suffix".encode_utf16().collect())?;
-                        pump_tsf_messages()?;
+                        pump_tsf_messages(&messages)?;
                     }
                 }
                 "selection" | "selection-restored" => {
@@ -167,24 +169,31 @@ pub(crate) fn exercise_broker(
                         .clone()
                         .ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
                     sink.OnSelectionChange()?;
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                     if case == "selection-restored" {
                         store.get().selection.set(original);
                         sink.OnSelectionChange()?;
-                        pump_tsf_messages()?;
+                        pump_tsf_messages(&messages)?;
                     }
                 }
                 "focus-restored" => {
                     let next = other.as_ref().ok_or("missing second input field")?;
-                    // This direct-adapter harness owns the focus transition;
-                    // retire before leaving, independently of sink delivery.
-                    drop(ticket.take());
+                    // The cooperating owner explicitly reports the boundary.
+                    // Retain the ticket to prove restored focus cannot revive it.
+                    ticket.as_mut().ok_or("missing request")?.cancel()?;
                     job.cancel()?;
                     manager.SetFocus(&next.0)?;
                     assert!(manager.GetFocus()? == next.0);
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                     manager.SetFocus(&document.0)?;
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
+                    let reads = sumibi_tip::spike::SumibiSpikeBodyReadCount();
+                    assert!(ticket
+                        .as_ref()
+                        .ok_or("missing original request")?
+                        .source()
+                        .is_err());
+                    assert_eq!(sumibi_tip::spike::SumibiSpikeBodyReadCount(), reads);
                 }
                 "revoke" => {
                     let mut changed = policy.get();
@@ -216,7 +225,7 @@ pub(crate) fn exercise_broker(
                 _ => {}
             }
             let before = store.get().text.borrow().clone();
-            let completion = wait_completion(&job)?;
+            let completion = wait_completion(&messages, &job)?;
             let result = match completion.outcome() {
                 Ok(text) => {
                     let reply_id = if case == "wrong-request" {
@@ -306,13 +315,16 @@ pub(crate) fn exercise_broker(
             println!("Broker / protocol / Core / TSF / {case}: OK");
         }
     }
-    exercise_job_capacity()?;
+    exercise_job_capacity(&messages)?;
     Ok(())
 }
 
 /// Real child processes have finished and joined, but no result was received.
 /// Used by both the worker lifetime and DLL pre-capture admission checks.
-pub(super) fn completed_jobs(mode: Mode) -> std::result::Result<Vec<BrokerJob>, Failure> {
+pub(super) fn completed_jobs(
+    messages: &ITfMessagePump,
+    mode: Mode,
+) -> std::result::Result<Vec<BrokerJob>, Failure> {
     let executable = std::env::current_exe()?
         .parent()
         .ok_or("missing host directory")?
@@ -337,7 +349,7 @@ pub(super) fn completed_jobs(mode: Mode) -> std::result::Result<Vec<BrokerJob>, 
     for job in &mut jobs {
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {
-            pump_tsf_messages()?;
+            pump_tsf_messages(messages)?;
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err("undrained job completion timed out".into());
@@ -362,13 +374,13 @@ pub(super) fn completed_jobs(mode: Mode) -> std::result::Result<Vec<BrokerJob>, 
     Ok(jobs)
 }
 
-fn exercise_job_capacity() -> std::result::Result<(), Failure> {
+fn exercise_job_capacity(messages: &ITfMessagePump) -> std::result::Result<(), Failure> {
     for mode in [Mode::DiagnosticFixed { delay_ms: 0 }, Mode::Disabled] {
         let label = match mode {
             Mode::DiagnosticFixed { .. } => "success",
             Mode::Disabled => "policy-denied",
         };
-        let jobs = completed_jobs(mode)?;
+        let jobs = completed_jobs(messages, mode)?;
         assert!(matches!(
             Reservation::acquire(),
             Err(sumibi_ipc::Error::Capacity)
@@ -428,10 +440,13 @@ fn exercise_job_capacity() -> std::result::Result<(), Failure> {
     Ok(())
 }
 
-fn wait_completion(job: &BrokerJob) -> std::result::Result<Completion, Failure> {
+fn wait_completion(
+    messages: &ITfMessagePump,
+    job: &BrokerJob,
+) -> std::result::Result<Completion, Failure> {
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
-        pump_tsf_messages()?;
+        pump_tsf_messages(messages)?;
         if let Some(completion) = job.try_result() {
             return Ok(completion);
         }

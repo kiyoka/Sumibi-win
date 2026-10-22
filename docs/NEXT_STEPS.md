@@ -76,6 +76,15 @@ RichEditはTS_SS_REGIONSを報告し、TS_SS_NOHIDDENTEXTを報告しないた�
 一般アプリの範囲・隠し文字・領域境界と欠損metadataをどう肯定的に検証するかが次の課題である。
 標準Undoの成立、所有compositionの寿命、配置/認証・非同期配送も残る。
 
+続いて共通の選択編集/Broker待機helperも保持済みITfMessagePumpへ接続し、ManualEdit.cancelを追加した。
+所有ホストが境界を検出した時点で本文取得やCOM呼出しなしに旧要求と原文bufferを退役できる。
+取消4ケースを加えrange-target-testは16件。自然通知の配送に頼れないfixtureも観測し、
+明示取消・実DLL callback試験・実event待機を区別して記録する
+（[ADR 0020](adr/0020-owner-cancellation-and-shared-tsf-pump.md)）。一般アプリでの通知履歴・保護情報の保証は残る。
+入力ホストにも明示境界を追加し、WM_KILLFOCUSで即時に旧入力を再利用禁止にしてcleanupを所有loopへ送る。
+通知試験はowner-focus等の24件へ拡張した。前段階の自然focus待機が再発した結果も記録し、
+一般アプリの自然通知だけを保証する意味ではない。
+
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。
 - named pipeの非同期I/Oと停止伝播、偽server・PID再利用・容量超過・終了待機を試験。

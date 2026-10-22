@@ -283,13 +283,20 @@ impl Editor {
         }
         if message == WM_KILLFOCUS {
             self.rescue.invalidate();
-            self.clear_tracking();
+            let boundary = self
+                .composing
+                .as_ref()
+                .map_or(Ok(()), |composing| composing.owner_boundary());
+            if let Some(tracking) = &self.tracking {
+                tracking.clear();
+            }
             self.high.set(None);
             if self.broker.is_some() {
                 unsafe {
                     self.control.RevokeContext().ok()?;
                 }
             }
+            boundary?;
             return Ok(false);
         }
         if message == WM_KEYUP {
@@ -1162,6 +1169,7 @@ fn test_input(
     editor: &Editor,
     live: &crate::live_render::Binding,
 ) -> Result<()> {
+    window.require_foreground()?;
     // SAFETY: fixture messages go only to our own window. No SendInput, global
     // keyboard-state changes, or messages to another application are used.
     let post = |message, key| unsafe {

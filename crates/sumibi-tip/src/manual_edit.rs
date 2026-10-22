@@ -260,6 +260,19 @@ pub struct ManualEdit {
     deadline: Instant,
 }
 impl ManualEdit {
+    /// Permanently revoke this ticket when the cooperating owner observes a
+    /// focus/input/lifecycle boundary. No COM call, edit session or body read.
+    /// Idempotent on the capturing thread; restoring visible state cannot
+    /// revive this request. Transport cancellation remains the owner's job.
+    pub fn cancel(&mut self) -> Result<()> {
+        if self.snapshot.owner != thread::current().id() {
+            return Err(RPC_E_WRONG_THREAD.into());
+        }
+        self.guard.state.invalid.set(true);
+        self.core.cancel();
+        self.snapshot.original = Vec::new();
+        Ok(())
+    }
     /// Call only for a diagnostic context whose text store the caller owns.
     /// The selection uses generic TSF ranges; non-ACP hosts remain unverified.
     /// `identity` is a fresh opaque snapshot registration, never a COM address.

@@ -31,6 +31,7 @@
 - [ADR 0018](adr/0018-retained-manual-range-and-source-validation.md)：generic保持rangeの選択変換と、本文を再取得しない送信前検査・観測した失敗の永久失効。
 - [Mac版移植範囲](MAC_PARITY.md)：共通契約とOS固有の再設計。
 - [ADR 0019](adr/0019-native-richedit-status-diagnostics.md)：標準RichEditのnative TSFでの拒否7構成と、本文を持たないstatus診断。
+- [ADR 0020](adr/0020-owner-cancellation-and-shared-tsf-pump.md)：所有ホストの明示取消、原文bufferの解放と共通TSF pump・通知検証の境界。
 
 ## 更新の規則
 

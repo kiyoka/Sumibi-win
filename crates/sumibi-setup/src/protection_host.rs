@@ -75,6 +75,7 @@ pub(crate) fn exercise_protection(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Failure> {
+    let messages: ITfMessagePump = manager.cast()?;
     let cases = cases();
     let total = cases.len();
     // Probe owns this module. Count DLL calls separately from MSCTF's own
@@ -126,7 +127,7 @@ pub(crate) fn exercise_protection(
             let mut association =
                 crate::window_host::Association::new(manager, &window, &document.0)?;
             manager.SetFocus(&document.0)?;
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             let compartments: ITfCompartmentMgr = context.cast()?;
             match case {
                 "keyboard-disabled" => compartments
@@ -261,11 +262,11 @@ pub(crate) fn exercise_protection(
                             IS_PRIVATE
                         }]);
                     notify_scope(&store)?;
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                     if case == "private-restored" {
                         *store.get().scopes.borrow_mut() = ScopeSpec::List(vec![IS_TEXT]);
                         notify_scope(&store)?;
-                        pump_tsf_messages()?;
+                        pump_tsf_messages(&messages)?;
                     }
                 }
                 if matches!(case, "keyboard-restored" | "empty-restored") {
@@ -279,7 +280,7 @@ pub(crate) fn exercise_protection(
                     compartment.SetValue(client, &VARIANT::from(0i32))?;
                 }
                 assert_eq!(
-                    wait(&bridge, &broker)?,
+                    wait(&messages, &bridge, &broker)?,
                     if allowed {
                         Delivery::Applied
                     } else {
@@ -321,12 +322,13 @@ fn notify_scope(store: &ComObject<TextStore>) -> Result<()> {
     Ok(())
 }
 fn wait(
+    messages: &ITfMessagePump,
     bridge: &ComObject<Bridge>,
     broker: &ISpikeBroker,
 ) -> std::result::Result<Delivery, Failure> {
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
-        pump_tsf_messages()?;
+        pump_tsf_messages(messages)?;
         if let Some(delivery) = bridge.get().drain(broker)? {
             return Ok(delivery);
         }

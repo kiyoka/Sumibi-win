@@ -8,6 +8,7 @@ pub(crate) fn exercise_ranges(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let messages: ITfMessagePump = manager.cast()?;
     unsafe {
         for (index, case) in [
             "apply",
@@ -22,6 +23,10 @@ pub(crate) fn exercise_ranges(
             "apply-selection",
             "apply-direction",
             "apply-text",
+            "cancel-before-source",
+            "cancel-after-source",
+            "cancel-repeat",
+            "cancel-new-ticket",
         ]
         .into_iter()
         .enumerate()
@@ -60,7 +65,7 @@ pub(crate) fn exercise_ranges(
             let mut association =
                 crate::window_host::Association::new(manager, &window, &document.0)?;
             manager.SetFocus(&document.0)?;
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             let policy = Rc::new(Cell::new(EditPolicy {
                 allowed: true,
                 revision: Revision {
@@ -70,7 +75,7 @@ pub(crate) fn exercise_ranges(
                 },
             }));
             let id = sumibi_core::RequestId(index as u128 + 1);
-            let ticket = ManualEdit::capture(
+            let mut ticket = ManualEdit::capture(
                 manager,
                 &context,
                 client,
@@ -88,7 +93,58 @@ pub(crate) fn exercise_ranges(
             } else {
                 changed.acpEnd = changed.acpStart;
             }
-            if case.starts_with("source-") {
+            if case.starts_with("cancel-") {
+                if case == "cancel-after-source" {
+                    assert_eq!(ticket.source()?, source);
+                }
+                ticket.cancel()?;
+                if case == "cancel-repeat" {
+                    ticket.cancel()?;
+                }
+                assert!(ticket.source().is_err(), "{case}: source revoked");
+                assert_eq!(sumibi_tip::spike::SumibiSpikeBodyReadCount(), before);
+                assert_eq!(store.get().set_text_calls.get(), 0);
+                assert!(store.get().undo.borrow().is_empty());
+                let next = if case == "cancel-new-ticket" {
+                    Some(ManualEdit::capture(
+                        manager,
+                        &context,
+                        client,
+                        policy.clone(),
+                        sumibi_core::RequestId(1000),
+                        1000,
+                        Instant::now() + Duration::from_secs(5),
+                    )?)
+                } else {
+                    None
+                };
+                let after_capture = sumibi_tip::spike::SumibiSpikeBodyReadCount();
+                assert!(ticket
+                    .finish(
+                        manager,
+                        client,
+                        id,
+                        policy.get().revision,
+                        "古い結果".into()
+                    )
+                    .is_err());
+                assert_eq!(sumibi_tip::spike::SumibiSpikeBodyReadCount(), after_capture);
+                assert_eq!(store.get().set_text_calls.get(), 0);
+                assert!(store.get().undo.borrow().is_empty());
+                if let Some(next) = next {
+                    assert_eq!(next.source()?, source);
+                    next.finish(
+                        manager,
+                        client,
+                        sumibi_core::RequestId(1000),
+                        policy.get().revision,
+                        "日本語".into(),
+                    )?;
+                    assert_eq!(store.get().set_text_calls.get(), 1);
+                    assert_eq!(store.get().undo.borrow().len(), 1);
+                    store.get().undo_once()?;
+                }
+            } else if case.starts_with("source-") {
                 match case {
                     "source-lock" => store.get().deny_lock.set(true),
                     "source-policy" => {

@@ -8,7 +8,8 @@ use std::sync::OnceLock;
 use std::thread::{self, ThreadId};
 use windows::core::{Interface, Result, HRESULT};
 use windows::Win32::Foundation::{
-    E_ABORT, E_FAIL, E_UNEXPECTED, HWND, LPARAM, LRESULT, RPC_E_WRONG_THREAD, WPARAM,
+    E_ABORT, E_ACCESSDENIED, E_FAIL, E_UNEXPECTED, HWND, LPARAM, LRESULT, RPC_E_WRONG_THREAD,
+    WPARAM,
 };
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -419,6 +420,15 @@ impl Window {
             if GetFocus() != self.hwnd {
                 return Err(E_FAIL.into());
             }
+        }
+        Ok(())
+    }
+    /// Native TSF key routing requires foreground activation in addition to
+    /// thread focus. Tests must report this restriction instead of substituting
+    /// a direct DLL callback and claiming native key-manager coverage.
+    pub(crate) fn require_foreground(&self) -> Result<()> {
+        if unsafe { GetForegroundWindow() } != self.hwnd {
+            return Err(E_ACCESSDENIED.into());
         }
         Ok(())
     }

@@ -45,12 +45,22 @@ cargo build --workspace --features sumibi-host/spike --locked --offline
 ```
 
 ManualEditはITfRangeACPの絶対座標を要求せず、保持rangeの端点・向き・本文を照合する。
-2026-10-22、通常ユーザーのWindows 11 x64 build 26300 / Rust 1.99.1で12ケース成功。
+2026-10-22、通常ユーザーのWindows 11 x64 build 26300 / Rust 1.99.1で16ケース成功。
 送信前の選択/保護状態の検査と、拒否後に状態を戻しても再利用できないことも確認した。
 fixtureは専用ACP storeで、非ACPアプリの互換性は未検証。実入力追跡は従来のACP方式のまま。
 workspace 65件を含むTest-Spike.ps1の全検査も省略なしで成功した。
 ログはtarget/issue-4-retained-range.logとtarget/issue-4-retained-range-regression.log。
 詳細と本文cacheの制限は[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md)を参照。
+追加4ケースは所有ホストのManualEdit.cancelを扱う。原文返却前後・重複取消・新旧要求の分離を確認し、
+旧要求の拒否で本文取得・SetText・Undoを増やさない。新要求だけを正常に適用し1回Undoで戻す。
+共通helperも保持したITfMessagePumpを使うが、全focus履歴の自然通知を保証する変更ではない。
+最新の個別ログはtarget/issue-4-owner-boundary-final-range-target-test.log、全回帰試行はtarget/issue-4-owner-boundary-regression.log。
+所有・通信取消との分担と検証の境界は[ADR 0020](adr/0020-owner-cancellation-and-shared-tsf-pump.md)を参照。
+最新の最終版ではRust 66件・fmt・各構成Clippy・build・load_smoke・self/edit/keyと範囲16・通知24が成功。
+window/input/delayedの3検査は、所有windowの前面化が拒否されたため未通過。
+入力と焦点のassertionは維持し、直接DLL callbackの成功へ読み替えない。
+通常の対話desktopでTest-Spike.ps1を省略なしで再実行する必要がある。
+制約を除いた静的検査ログはtarget/issue-4-owner-boundary-static.log。
 
 ## 同期入力取引を試す
 
@@ -307,7 +317,7 @@ Test-Spike.ps1の全検査が省略なしで成功。workspace 47件、解除と
 ./target/debug/sumibi-setup.exe input-notify-test --dll ./target/debug/sumibi_tip.dll
 ```
 
-専用ホスト20ケース。composing-demoの所有ループはメタデータのeventも待ち、外部の本文・選択・
+専用ホスト24ケース。composing-demoの所有ループはメタデータのeventも待ち、外部の本文・選択・
 scope・compartment・status・focusやcompositionの変更で古い追跡を解除する。
 通知自体では編集せず、本文を読まず、次の打鍵やF7も必要としない。
 変更後に元へ戻しても旧追跡を復活させない。変換待ちのreadonly復元も適用を拒否する。
@@ -319,6 +329,11 @@ eventの切断/再接続、終了後通知、signal失敗でも通常入力を�
 Test-Spike.ps1も省略なしで成功し、workspace 47件、全構成Clippy、既存TSF・Broker・IPC検査、
 TSF/COM解除・DLLアンロードを再確認した。
 詳細は[ADR 0011](adr/0011-owner-loop-input-invalidation.md)、ログは `target/issue-4-input-notify*.log`。
+現在のfocusは所有ホストが境界を転送するowner-focusで検証し、自然通知だけを保証しない。
+WM_KILLFOCUSで旧入力を即時に再利用禁止にし、本文取得・編集を行わずeventへ集約する。
+owner loopでcleanupし、focus復元・古い送信前checker・cleanup拒否/回復後も旧入力を再利用しない。
+追加した4件を含む24ケースの結果と前段階のfocus失敗の記録は
+[ADR 0020](adr/0020-owner-cancellation-and-shared-tsf-pump.md)を参照。
 
 ## 初期環境の記録（2026-10-20）
 

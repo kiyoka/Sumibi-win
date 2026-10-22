@@ -131,6 +131,12 @@ fixtureは依然ACP方式で、非ACPアプリの互換性や未通知本文変�
 
 ## 3. アプリ互換表の記録形式
 
+2026-10-22、所有ホストのManualEdit.cancelと入力境界の即時禁止・所有loop cleanupを追加した。
+共通TSF pumpを選択編集/Broker待機等にも接続した。範囲16・通知24とRust 66件、各構成Clippy等が成功。
+全回帰試行はwindow-testで前面化できず停止し、window/input/delayedは最終版でも前面化拒否を明示して未通過。
+全回帰成功には含めず、close 4件とpipe/peerの独立成功と区別する。
+自然focus待機の再発、所有者転送への変更、最新ログは[ADR 0020](adr/0020-owner-cancellation-and-shared-tsf-pump.md)を参照。
+
 2026-10-22、標準RichEditのnative contextで拒否7構成と本文を持たないstatus診断を追加した。
 初回全回帰で既存focus通知待機が再現性をもって失敗し、入力デモの有限/待機loopをITfMessagePumpへ変更。
 別文書への実切替を検査するfocus試験と通知20ケース、workspace 66件を含む全回帰が省略なしで成功した。

@@ -68,6 +68,14 @@ TSF/COMの操作は生成時のスレッドに限定し、別スレッドは固�
 観測した失敗は復元後も失効し、finishは新しいwriteで全文も再照合する。
 Coreへは絶対座標と区別した長さstampだけを渡す（[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md)）。
 実入力追跡はACP方式のままで、非ACPアプリの互換性は未検証。
+協調する所有ホストは境界検出時にManualEdit.cancelで要求を明示失効できる。
+所有threadだけの操作でCore保留と原文bufferを解放し、旧source/finishを永久に拒否する。
+通信取消・予約/結果の解放は別に行い、callbackから待たない。
+共通helperも保持したITfMessagePumpを受け取り、所有loopでだけ配送を進める
+（[ADR 0020](adr/0020-owner-cancellation-and-shared-tsf-pump.md)）。
+入力ホストもWM_KILLFOCUSでComposing.owner_boundaryを呼び、再利用禁止と有限eventへの集約だけを行う。
+所有loopでDLLへ取消を渡す。境界前の送信前checkerは世代の前後照合で拒否し、
+復元・cleanup後も旧checkerを再利用しない。自然なOS通知だけの成立保証とは分ける。
 実DLLのキー・Core・編集から診断用EXE bridgeを通す非同期経路も追加した
 （[ADR 0005](adr/0005-dll-key-broker-bridge.md)）。workerはDLLへの参照やcallbackを保持しない。
 単発ジョブの予約はworker・job・結果が共有し、最後の解放までprocess内4件に数える。

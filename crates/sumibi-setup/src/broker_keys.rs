@@ -17,6 +17,7 @@ pub(crate) fn exercise_broker_keys(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Failure> {
+    let messages: ITfMessagePump = manager.cast()?;
     unsafe {
         for case in [
             "apply",
@@ -68,7 +69,7 @@ pub(crate) fn exercise_broker_keys(
             let mut association =
                 crate::window_host::Association::new(manager, &window, &document.0)?;
             manager.SetFocus(&document.0)?;
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             let other = if case == "focus-restored" {
                 Some(scope_fixture::other_document(manager, client)?)
             } else {
@@ -122,7 +123,10 @@ pub(crate) fn exercise_broker_keys(
                 Vec::new()
             };
             let completed_jobs = if matches!(case, "capacity-completed" | "capacity-result") {
-                super::broker_host::completed_jobs(Mode::DiagnosticFixed { delay_ms: 0 })?
+                super::broker_host::completed_jobs(
+                    &messages,
+                    Mode::DiagnosticFixed { delay_ms: 0 },
+                )?
             } else {
                 Vec::new()
             };
@@ -158,7 +162,7 @@ pub(crate) fn exercise_broker_keys(
                 // Releasing the retained work permits the same key exactly
                 // once without reattaching or changing the input selection.
                 assert!(sink.OnPreservedKey(&context, &COMMAND_CONVERT)?.as_bool());
-                assert_eq!(wait_bridge(&bridge, &broker)?, Delivery::Applied);
+                assert_eq!(wait_bridge(&messages, &bridge, &broker)?, Delivery::Applied);
                 assert_eq!(store.get().undo.borrow().len(), 1);
                 store.get().undo_once()?;
                 bridge.get().shutdown()?;
@@ -200,11 +204,11 @@ pub(crate) fn exercise_broker_keys(
                     store
                         .get()
                         .external_text("prefix NIHONGO suffix".encode_utf16().collect())?;
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                     store
                         .get()
                         .external_text("prefix nihongo suffix".encode_utf16().collect())?;
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                 }
                 "selection-restored" => {
                     let original = store.get().selection.get();
@@ -218,10 +222,10 @@ pub(crate) fn exercise_broker_keys(
                         .ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
                     store.get().selection.set(changed);
                     sink.OnSelectionChange()?;
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                     store.get().selection.set(original);
                     sink.OnSelectionChange()?;
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                 }
                 "focus-restored" => {
                     let next = other.as_ref().ok_or("missing second input field")?;
@@ -234,9 +238,9 @@ pub(crate) fn exercise_broker_keys(
                         .GetFunction(&FUNCTION_TEST_MANAGER_SINK, &ITfThreadMgrEventSink::IID)?
                         .cast()?;
                     focus_sink.OnSetFocus(&next.0, &document.0)?;
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                     manager.SetFocus(&document.0)?;
-                    pump_tsf_messages()?;
+                    pump_tsf_messages(&messages)?;
                 }
                 "readonly" => store.get().readonly.set(true),
                 "write-denied" => store.get().deny_lock.set(true),
@@ -268,7 +272,10 @@ pub(crate) fn exercise_broker_keys(
                     broker.Pending(&mut current).ok()?;
                     assert!(current > id, "reattach must not reuse a request ID");
                     assert!(broker.Complete(id, 1, 1, 1, std::ptr::null(), 0).is_err());
-                    assert_eq!(wait_bridge(&bridge, &broker)?, Delivery::Discarded);
+                    assert_eq!(
+                        wait_bridge(&messages, &bridge, &broker)?,
+                        Delivery::Discarded
+                    );
                     let mut still_current = 0;
                     broker.Pending(&mut still_current).ok()?;
                     assert_eq!(
@@ -290,7 +297,8 @@ pub(crate) fn exercise_broker_keys(
                 }
                 _ => {}
             }
-            let delivery = wait_bridge(replacement.as_ref().unwrap_or(&bridge), &broker)?;
+            let delivery =
+                wait_bridge(&messages, replacement.as_ref().unwrap_or(&bridge), &broker)?;
             if case == "reuse-delivery-reentry" {
                 assert!(reentry.get());
             }
@@ -341,17 +349,17 @@ pub(crate) fn exercise_broker_keys(
                         store
                             .get()
                             .external_text("prefix NIHONGO suffix".encode_utf16().collect())?;
-                        pump_tsf_messages()?;
+                        pump_tsf_messages(&messages)?;
                         store
                             .get()
                             .external_text("prefix nihongo suffix".encode_utf16().collect())?;
-                        pump_tsf_messages()?;
+                        pump_tsf_messages(&messages)?;
                     }
                     _ => {}
                 }
                 let second_applied = !matches!(case, "reuse-escape" | "reuse-text-restored");
                 assert_eq!(
-                    wait_bridge(&bridge, &broker)?,
+                    wait_bridge(&messages, &bridge, &broker)?,
                     if second_applied {
                         Delivery::Applied
                     } else {
@@ -400,12 +408,13 @@ pub(crate) fn exercise_broker_keys(
     Ok(())
 }
 fn wait_bridge(
+    messages: &ITfMessagePump,
     bridge: &ComObject<Bridge>,
     control: &ISpikeBroker,
 ) -> std::result::Result<Delivery, Failure> {
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
-        pump_tsf_messages()?;
+        pump_tsf_messages(messages)?;
         if let Some(delivery) = bridge.get().drain(control)? {
             return Ok(delivery);
         }

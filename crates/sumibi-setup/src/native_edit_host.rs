@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 use sumibi_core::{RequestId, Revision};
 use sumibi_tip::edit::{input_status_denial, manual::ManualEdit, EditPolicy, InputStatusDenial};
-use windows::core::{s, w, Result, HRESULT, PCWSTR};
+use windows::core::{s, w, Interface, Result, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{
     FreeLibrary, E_ABORT, E_ACCESSDENIED, E_NOINTERFACE, HMODULE, HWND, LPARAM, WPARAM,
 };
@@ -71,6 +71,7 @@ pub(crate) fn exercise_native_edit(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let messages: ITfMessagePump = manager.cast()?;
     // The stock RichEdit context reports possible hidden text/regions on the
     // tested Windows. This is a rejection test, never a conversion/Undo claim.
     for (index, case) in [
@@ -142,7 +143,7 @@ pub(crate) fn exercise_native_edit(
             SetWindowTextW(hwnd, PCWSTR(text.as_ptr()))?;
             SendMessageW(hwnd, EM_EMPTYUNDOBUFFER, None, None);
             let _ = SetFocus(Some(hwnd));
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             assert_eq!(GetFocus(), hwnd);
             // Do not CreateContext, AssociateFocus, supply a TextStore, or
             // initialize compartments: inspect RichEdit's actual native context.
@@ -168,7 +169,7 @@ pub(crate) fn exercise_native_edit(
                     0
                 );
             }
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             let status = match context.GetStatus() {
                 Err(error) if case == "password" && error.code() == TF_E_EMPTYCONTEXT => None,
                 result => Some(result.map_err(|e| format!("{case}: native GetStatus: {e}"))?),
@@ -232,7 +233,7 @@ pub(crate) fn exercise_native_edit(
                     SendMessageW(hwnd, EM_SETREADONLY, Some(WPARAM(0)), None).0,
                     0
                 );
-                pump_tsf_messages()?;
+                pump_tsf_messages(&messages)?;
                 assert_eq!(
                     input_status_denial(context.GetStatus()?),
                     Some(InputStatusDenial::HiddenTextPossible)
@@ -253,7 +254,7 @@ pub(crate) fn exercise_native_edit(
             drop(context);
             drop(document);
             edit.close()?;
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             if let Some(status) = status {
                 println!("Native RichEdit / {case}: denied ({:?}, dynamic={:#x}, static={:#x}), adapter body reads=0, native Undo=0: OK",input_status_denial(status),status.dwDynamicFlags,status.dwStaticFlags);
             } else {

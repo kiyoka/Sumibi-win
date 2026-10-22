@@ -146,6 +146,7 @@ pub(crate) fn exercise_composition(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Failure> {
+    let messages: ITfMessagePump = manager.cast()?;
     let cases = [
         "idle",
         "active-whole",
@@ -211,7 +212,7 @@ pub(crate) fn exercise_composition(
             let mut association =
                 crate::window_host::Association::new(manager, &window, &document.0)?;
             manager.SetFocus(&document.0)?;
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             let mut compositions = Vec::new();
             match case {
                 "active-whole" | "ended-before-request" => {
@@ -335,7 +336,7 @@ pub(crate) fn exercise_composition(
                         if case.ends_with("start-end-while-waiting") {
                             compositions.last_mut().unwrap().end()?;
                         }
-                        pump_tsf_messages()?;
+                        pump_tsf_messages(&messages)?;
                         let mut pending = 1;
                         broker.Pending(&mut pending).ok()?;
                         if case == "empty-start-unassisted" {
@@ -355,7 +356,7 @@ pub(crate) fn exercise_composition(
                         );
                     }
                     assert_eq!(
-                        wait(&bridge, &broker)?,
+                        wait(&messages, &bridge, &broker)?,
                         if changing {
                             Delivery::Discarded
                         } else {
@@ -400,12 +401,13 @@ pub(crate) fn exercise_composition(
     Ok(())
 }
 fn wait(
+    messages: &ITfMessagePump,
     bridge: &ComObject<Bridge>,
     broker: &ISpikeBroker,
 ) -> std::result::Result<Delivery, Failure> {
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
-        pump_tsf_messages()?;
+        pump_tsf_messages(messages)?;
         if let Some(delivery) = bridge.get().drain(broker)? {
             return Ok(delivery);
         }
