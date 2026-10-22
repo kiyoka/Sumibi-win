@@ -42,7 +42,7 @@ impl Tracker {
         if forward {
             session.deleted_forward(before.point, after, count as usize);
         } else {
-            session.backspaced(before.point, after);
+            session.deleted_backward(before.point, after, count as usize);
         }
         let range = session.range(after);
         let end = previous

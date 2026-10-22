@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 51件（応答照合9・入力範囲追跡/削除/caret計画23・書記素移動/削除境界7・救済12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計91件。
+現時点はCore 56件（応答照合9・入力範囲追跡/削除/caret計画28・書記素移動/削除境界7・救済12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計96件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -76,10 +76,11 @@ cargo build -p sumibi-host --features spike --locked --offline
 
 デモは専用の空の合成入力欄を開く。通常文字を入力すると実DLLが本文・caret・composition・下線を
 同じ同期write cookieで更新する。F7で入力範囲を固定の「日本語」へ変換し、Ctrl+Zで戻せる。
-Escは追跡を解除する。Backspaceは記録末尾を同じwrite内で削除・縮小し、全削除でcompositionを終了する。
+Escは追跡を解除する。Backspaceは記録内を同じwrite内で削除・縮小し、全削除でcompositionを終了する。
 repeatは記録内の拡張書記素クラスタ単位で数え、追跡範囲を越える要求は全体を元のホスト操作へ返す。
 通常の左右移動が記録内なら同じcompositionを保持し、移動先からの前方Deleteも実DLLで処理する。
-境界越え、Shift/Home/End、内部への文字挿入や内部Backspaceは追跡を退役して通常ホストへ戻す。
+内部Backspaceも削除前後に残った記録を同じcompositionで保持する。
+境界越え、Shift/Home/End、内部への文字挿入は追跡を退役して通常ホストへ戻す。
 内部caretのF7も現在の記録全体だけを変換する。移動は本文/Undoを増やさず、削除は1回Undoで戻せる。
 unicode-segmentation 1.13.3 / Unicode 17.0.0に固定し、通常ホストのBackspaceも同じ分割を使う。
 記録外の既存本文へクラスタを広げず、正規化もしない。
@@ -101,12 +102,15 @@ Backspaceの27ケースも成功。ログはtarget/issue-4-backspace-transaction
 [ADR 0013](adr/0013-synchronous-tracked-backspace.md)を参照。
 最終版はTest-Spike.ps1を省略なしで実行し、workspace 50件・Clippy 3構成と既存native検査も成功した。
 全回帰ログはtarget/issue-4-backspace-transaction-regression.log。
-最新のbackspace-input-testは書記素10件を加え37ケースが成功。Core 5件追加でworkspaceは76件。
+書記素追加時のbackspace-input-testは10件を加え37ケースが成功。Core 5件追加でworkspaceは76件。
 選択Delete追加時はtransaction-input-testが42ケース、recovery-input-testが35件成功した。
 削除後の新規追跡、保留変換の失効、書込後の再削除禁止、救済満杯での1回Undo/Redoも検査する。
 Rust83件と関連回帰・検証範囲・ログは[ADR 0025](adr/0025-synchronous-selected-delete.md)を参照。
-最新は記録内の移動/前方Delete26件を加えて同期入力68件、共有満杯時の移動/削除を加えて救済37件。
+記録内の移動/前方Delete追加時は26件を加えて同期入力68件、共有満杯時の移動/削除を加えて救済37件。
 Rust91件と関連回帰が成功した。操作規則と検証範囲は[ADR 0027](adr/0027-tracked-caret-and-forward-delete.md)を参照。
+最新は内部Backspace18件を加えて55件、共有満杯の内部削除を加えて救済38件、Core5件追加でRust96件。
+同期入力68・書記素ホスト22・composition46・通知30・追跡25・broker入力11・close4と静的検査も成功した。
+契約とログは[ADR 0028](adr/0028-tracked-internal-backspace.md)を参照。以下の記録は以前の段階の検証結果である。
 fmt・Clippy 3構成・build・基本DLL検査も成功した。一括scriptはkey-testのShift押下状態で停止し、
 その後の単独key-testが成功した。script全体の成功とは区別する。
 救済34・同期入力22・追跡25・composition伸縮29・通知30・broker入力11・close 4も再確認した。

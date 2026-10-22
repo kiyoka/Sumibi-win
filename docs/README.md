@@ -39,6 +39,7 @@
 - [ADR 0025](adr/0025-synchronous-selected-delete.md)：明示選択Deleteを実DLLの同期writeへ接続し、二重削除と削除本文の取得/救済コピーを防ぐ。
 - [ADR 0026](adr/0026-initialize-explicit-selection-with-context.md)：初回文字入力なしで明示選択をF7へ接続し、選択方向と原文準備の一度だけの寿命を維持する。
 - [ADR 0027](adr/0027-tracked-caret-and-forward-delete.md)：記録範囲内の左右移動と前方Delete、記録全体の変換継続、試行後の再操作禁止と共有救済枠。
+- [ADR 0028](adr/0028-tracked-internal-backspace.md)：内部caretからのBackspace、前後の記録保持、共有削除計画と全repeatの境界検査。
 
 ## 更新の規則
 

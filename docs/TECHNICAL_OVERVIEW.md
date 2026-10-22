@@ -23,7 +23,7 @@ Mac技術解説自身の実装照合基準 `d2b96fc` と区別する。Macの機
 | TIPのCOM・キー・表示属性・編集 | 専用ホストで実装済み。通常アプリへの常設登録なし |
 | 入力保護 | scope/status/compartmentと取得・送信前・適用時の検査を実装。専用ACPで39ケース。status診断と標準RichEditの拒否7構成を確認（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)）。一般アプリの全機密欄の識別は未検証 |
 | 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。実キーボードの手動確認は未実施 |
-| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮/初回選択46・選択composition 18・他サービス拒否16・同期入力取引68（選択Delete20・記録内移動/前方Delete26を含む）・書記素Backspace 37ケースを確認。所有editorの救済37ケースとEXE共有4枠、window境界を含む通知30ケースも確認。専用ホストの書記素移動/削除22ケースも確認。内部挿入/Backspaceの追跡継続・待機・製品統合・候補UIは未実装 |
+| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮/初回選択46・選択composition 18・他サービス拒否16・同期入力取引68（選択Delete20・記録内移動/前方Delete26を含む）・書記素Backspace 55（内部caret18を含む）ケースを確認。所有editorの救済38ケースとEXE共有4枠、window境界を含む通知30ケースも確認。専用ホストの書記素移動/削除22ケースも確認。内部挿入の追跡継続・待機・製品統合・候補UIは未実装 |
 | Protocol / IPC | 有限フレーム・版付きJSON・client状態、固定process相互検査・overlapped pipe。実DLLのキー・Core・所有TSFから診断用EXE bridge経由で再利用Brokerへ接続。一般アプリは未接続 |
 | Host・HTTP・キー保存・設定UI | 単発/有限連続要求の診断Host EXEを実装。既定では変換拒否。常駐Host・HTTP・キー保存・設定UIは未実装 |
 | Decisions・辞書・署名付き配布 | 未実装。後続段階 |
@@ -191,7 +191,7 @@ transaction-demoでは供給された文字の挿入・caret・composition更新
 書込前拒否と書込後の未確認状態を分け、後者では二重入力を防ぐため再入力せず、変換を停止して
 確認を表示する。rollback・入力救済・製品の削除取引や一般アプリ対応の完成ではない
 （[ADR 0012](adr/0012-synchronous-input-transaction.md)）。
-記録末尾のBackspaceも、削除・caret・composition縮小を同じwriteで処理する。
+記録内のBackspaceも、削除・caret・composition縮小を同じwriteで処理する。
 記録済みUTF-16だけから拡張書記素単位で削除範囲を決め、全削除では自己compositionを終了する。
 範囲越え等は部分削除せず書込前にホストへ返し、試行後の失敗では再削除しない。
 明示選択のDeleteも独立ABIで実DLLの同期writeへ接続し、本文・caret・一時composition終了を処理する。
@@ -201,7 +201,9 @@ transaction-demoでは供給された文字の挿入・caret・composition更新
 記録全体だけを変換する。移動は本文/Undoを増やさず、削除は同じcompositionを縮める。
 境界越えや未知の追跡は退役し、試行後の失敗では元の操作を重ねない
 （[ADR 0027](adr/0027-tracked-caret-and-forward-delete.md)）。
-内部挿入/Backspace・任意選択編集の追跡継続と一般アプリ対応は未完了。同期取引は[ADR 0013](adr/0013-synchronous-tracked-backspace.md)、
+内部Backspaceは前方Deleteと方向付き計画を共有し、削除前後に残る記録を同じcompositionで保持する。
+旧ホスト観測用の末尾限定APIとは分離する（[ADR 0028](adr/0028-tracked-internal-backspace.md)）。
+内部挿入・任意選択編集の追跡継続と一般アプリ対応は未完了。同期取引は[ADR 0013](adr/0013-synchronous-tracked-backspace.md)、
 分割版・記録境界とfallbackは[ADR 0023](adr/0023-grapheme-backspace-within-recorded-input.md)を参照。
 
 ### 5.2 製品の追跡入力（未実装）

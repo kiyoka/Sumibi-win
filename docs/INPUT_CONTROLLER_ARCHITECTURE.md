@@ -124,7 +124,7 @@ F7の準備は独立ISpikeInputPreparer::Prepare(context)で初回のowner/conte
 保護境界世代とReadyの通知世代を照合し、CheckSourceで一度だけ消費する。準備では本文を取得しない。
 初回の選択準備はcompositionを開始せず、診断sink欠損でも成立する。入力compositionの製品寿命とは区別する
 （[ADR 0026](adr/0026-initialize-explicit-selection-with-context.md)）。
-transaction-demoのBackspaceは、Coreの記録末尾だけから削除範囲を計算し、実DLLの独立
+transaction-demoのBackspaceは、Coreの記録範囲内だけから削除範囲を計算し、実DLLの独立
 ISpikeInputEraserで削除・caret・composition縮小を同じwriteに接続する。全削除では自己objectを終了する。
 現在の削除計画はUnicode 17.0.0の拡張書記素単位。Coreは記録UTF-16を固定scratchで分割し、
 結合文字や複合絵文字をまとめて削除する。記録外の前後本文は取得・推測しない
@@ -146,8 +146,10 @@ DLLの書込前拒否/救済枠不足からのfallbackと旧composition観測経
 移動は同期SetSelectionだけ、削除はBackspaceと共通のerase/write_bodyで本文・caret・compositionを更新する。
 移動/削除前に共有Recovery枠を予約し、試行後の失敗では元の操作を再送しない。救済は操作情報だけでコピー不可。
 記録内repeatを全体として処理できない場合は退役して通常ホストへ戻す。内部caretのF7は記録全体だけを使う。
-内部挿入/Backspaceや任意選択の追跡継続、一般アプリと製品の待機/救済統合は残る
-（[ADR 0027](adr/0027-tracked-caret-and-forward-delete.md)）。
+内部Backspaceも同じeraseで処理し、削除前後に残る記録を保持する。Coreは方向付きの計画/完了を共有し、
+再結合した書記素を内部caretから削除する場合も全体を対象にする。旧Before/After観測のbackspacedは末尾限定のまま。
+内部挿入や任意選択の追跡継続、一般アプリと製品の待機/救済統合は残る
+（[ADR 0027](adr/0027-tracked-caret-and-forward-delete.md)、[ADR 0028](adr/0028-tracked-internal-backspace.md)）。
 所有editorの救済はCoreの1件・最大1024単位のslotを取引前に予約し、未確認結果だけを有限期限で保持する。
 診断EXEは全Rescueへ同じBudgetを渡し、別STAも含む予約中/確認待ちを合計4件に制限する。
 redactや画面の開閉では返さず、レコードの破棄・期限切れcleanup・所有者Dropで共有枠を戻す

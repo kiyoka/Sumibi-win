@@ -163,16 +163,49 @@ impl InputSession {
         self.run = Some(run);
     }
     pub fn forward_delete_range(&self, current: InputPoint, count: usize) -> Option<(i32, i32)> {
-        let end = self.move_range(current, Direction::Forward, count)?;
+        self.deletion_range(current, Direction::Forward, count)
+    }
+    fn deletion_range(
+        &self,
+        current: InputPoint,
+        direction: Direction,
+        count: usize,
+    ) -> Option<(i32, i32)> {
         let run = self.run.as_ref()?;
+        self.range(current)?;
+        if current.selection.0 != current.selection.1 {
+            return None;
+        }
         let offset = usize::try_from(current.selection.0.checked_sub(run.start)?).ok()?;
-        let start = Boundaries::new(&run.text)?.snap(offset, Direction::Backward)?;
-        Some((run.start.checked_add(start as i32)?, end))
+        let map = Boundaries::new(&run.text)?;
+        let moved = map.move_within(offset, direction, count)?;
+        let (start, end) = match direction {
+            Direction::Backward => (moved, map.snap(offset, Direction::Forward)?),
+            Direction::Forward => (map.snap(offset, Direction::Backward)?, moved),
+        };
+        Some((
+            run.start.checked_add(start as i32)?,
+            run.start.checked_add(end as i32)?,
+        ))
     }
     /// Build a candidate after exactly the planned deletion. Text before/after
     /// the run is never inferred; newly adjacent clusters are rebuilt later.
     pub fn deleted_forward(&mut self, before: InputPoint, after: InputPoint, count: usize) {
-        let planned = self.forward_delete_range(before, count);
+        self.deleted(before, after, Direction::Forward, count);
+    }
+    /// Verified backward deletion may preserve text after an internal caret.
+    /// The observed host suffix-only API remains separate (`backspaced`).
+    pub fn deleted_backward(&mut self, before: InputPoint, after: InputPoint, count: usize) {
+        self.deleted(before, after, Direction::Backward, count);
+    }
+    fn deleted(
+        &mut self,
+        before: InputPoint,
+        after: InputPoint,
+        direction: Direction,
+        count: usize,
+    ) {
+        let planned = self.deletion_range(before, direction, count);
         let Some(mut run) = self.run.take() else {
             return;
         };
@@ -195,24 +228,11 @@ impl InputSession {
         run.point = after;
         self.run = Some(run);
     }
-    /// Plan a suffix deletion from recorded input only, without reading the
-    /// document or consuming the record. Counts extended grapheme clusters
-    /// within this recorded run only. No surrounding document is inferred;
-    /// the tracked start remains a hard boundary. Oversized repeats are refused.
+    /// Plan backward deletion within recorded input only, without reading the
+    /// document or consuming the record. Hard record boundaries and complete
+    /// repeat admission apply even when the caret is inside the run.
     pub fn backspace_range(&self, current: InputPoint, count: usize) -> Option<(i32, i32)> {
-        let run = self.run.as_ref()?;
-        if self.range(current).is_none()
-            || run.end() != Some(current.selection.0)
-            || current.selection.0 != current.selection.1
-            || !(1..=MAX_TRACKED_UNITS).contains(&count)
-        {
-            return None;
-        }
-        let remaining = suffix_grapheme_boundary(&run.text, count)?;
-        Some((
-            run.start.checked_add(remaining as i32)?,
-            current.selection.0,
-        ))
+        self.deletion_range(current, Direction::Backward, count)
     }
     /// Record a successful insertion. A write transaction may first build a
     /// private candidate, publishing it only after the write is verified.

@@ -129,7 +129,11 @@ workspace83件を維持する（[ADR 0025](adr/0025-synchronous-selected-delete.
 試行後の失敗では元の移動/削除を重ねず、共有救済は操作情報だけを持つ。
 Core8件追加でworkspace91件、同期入力68・救済37と関連回帰が成功した
 （[ADR 0027](adr/0027-tracked-caret-and-forward-delete.md)）。
-一般アプリの入力adapter・通知/保護情報・sink寿命・標準Undo、内部挿入/Backspace等の継続と製品統合は残る。
+続いて記録内の内部Backspaceも同期writeへ接続し、削除前後に残る記録と同じcompositionを保持する。
+Coreの方向付き計画と完了検査を共有し、旧ホスト観測経路は末尾限定のまま維持した。
+Core5件追加でworkspace96件、Backspace18件追加で55件、共有満杯の内部削除を加えて救済38件と関連回帰が成功した
+（[ADR 0028](adr/0028-tracked-internal-backspace.md)）。
+一般アプリの入力adapter・通知/保護情報・sink寿命・標準Undo、内部挿入等の継続と製品統合は残る。
 
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。

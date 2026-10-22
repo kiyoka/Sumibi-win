@@ -3,6 +3,9 @@
 状態：Core・診断DLL・専用ACPホストで実装・検証。一般アプリの任意位置編集の完成ではない。
 Issue #4 / draft PR #10。ADR 0013・0024〜0026の後続。
 
+後続の[ADR 0028](0028-tracked-internal-backspace.md)で内部Backspaceも追跡継続へ進めた。
+以下の件数と末尾限定の記述は、このADRの実装段階の記録である。
+
 ## 決定
 
 transaction-demoの通常の左右移動を、実際に挿入して記録した範囲内なら追跡を保って処理する。

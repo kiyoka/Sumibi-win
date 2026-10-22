@@ -69,6 +69,7 @@ pub(crate) fn exercise_recovery(
         "rescue/process-delete",
         "rescue/process-forward",
         "rescue/process-move",
+        "rescue/process-internal-backspace",
         "rescue/process-discard",
         "rescue/process-expire",
         "rescue/process-close",
@@ -458,7 +459,10 @@ fn test_process_budget(
     let store = editor.store.get();
     let reads = super::super::composing_host::input_notify_host::body_reads()?;
     let mut peers = Vec::new();
-    if matches!(case, "process-forward" | "process-move") {
+    if matches!(
+        case,
+        "process-forward" | "process-move" | "process-internal-backspace"
+    ) {
         editor.insert(&"a👨‍👩‍👧‍👦b".encode_utf16().collect::<Vec<_>>())?;
         assert_eq!(
             editor.input_disposition.get(),
@@ -466,6 +470,8 @@ fn test_process_budget(
         );
         if case == "process-forward" {
             editor.navigate(0x25, false, 2)?;
+        } else if case == "process-internal-backspace" {
+            editor.navigate(0x25, false, 1)?;
         }
     }
     for _ in 0..sumibi_core::recovery::MAX_RECORDS {
@@ -499,12 +505,17 @@ fn test_process_budget(
         editor.delete_forward(1)?;
     } else if case == "process-move" {
         editor.navigate(0x25, false, 2)?;
+    } else if case == "process-internal-backspace" {
+        editor.input(WM_CHAR, WPARAM(8), LPARAM(1))?;
     } else {
         editor.insert(&['z' as u16])?;
     }
     let expected: Vec<_> = if case == "process-backspace" {
         "a"
-    } else if matches!(case, "process-delete" | "process-forward") {
+    } else if matches!(
+        case,
+        "process-delete" | "process-forward" | "process-internal-backspace"
+    ) {
         "ab"
     } else if case == "process-move" {
         "a👨‍👩‍👧‍👦b"
@@ -526,7 +537,7 @@ fn test_process_budget(
     );
     if matches!(
         case,
-        "process-backspace" | "process-delete" | "process-forward"
+        "process-backspace" | "process-delete" | "process-forward" | "process-internal-backspace"
     ) {
         store.undo_once()?;
         assert_eq!(*store.text.borrow(), original);
@@ -575,6 +586,7 @@ fn test_process_budget(
             | "process-delete"
             | "process-forward"
             | "process-move"
+            | "process-internal-backspace"
     ) {
         // Releasing one owner's record lets a different owner reserve before a
         // failed DLL write. It neither replays the old input nor reads the body.

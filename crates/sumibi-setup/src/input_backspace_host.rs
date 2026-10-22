@@ -1,6 +1,8 @@
-//! Real DLL suffix deletion. All data belongs to this diagnostic ACP store.
+//! Real DLL recorded deletion. All data belongs to this diagnostic ACP store.
 use super::*;
 use sumibi_tip::spike::{INPUT_APPLIED, INPUT_APPLIED_UNTRACKED};
+#[path = "input_backward_cursor_host.rs"]
+mod backward_cursor;
 
 pub(crate) fn exercise_backspace(
     manager: &ITfThreadMgr,
@@ -44,6 +46,24 @@ pub(crate) fn exercise_backspace(
         "erase/grapheme-uncertain",
         "erase/grapheme-run-start",
         "erase/grapheme-host-fallback",
+        "erase/cursor-partial",
+        "erase/cursor-repeat",
+        "erase/cursor-to-start",
+        "erase/cursor-all",
+        "erase/cursor-convert",
+        "erase/cursor-start-boundary",
+        "erase/cursor-cross-start",
+        "erase/cursor-budget",
+        "erase/cursor-text-fail-before",
+        "erase/cursor-text-fail-after",
+        "erase/cursor-caret-fail",
+        "erase/cursor-status-restored",
+        "erase/cursor-scope-restored",
+        "erase/cursor-compartment-restored",
+        "erase/cursor-private",
+        "erase/cursor-readonly",
+        "erase/cursor-foreign",
+        "erase/cursor-rejoin",
     ] {
         run(manager, client, RunMode::TransactionTest(case))?;
     }
@@ -56,6 +76,9 @@ pub(in crate::edit_host::input_host) fn test_backspace(
     client: u32,
     case: &str,
 ) -> Result<()> {
+    if let Some(case) = case.strip_prefix("cursor-") {
+        return backward_cursor::test(window, editor, live, client, case);
+    }
     if let Some(kind) = case.strip_prefix("grapheme-") {
         return test_graphemes(window, editor, live, kind);
     }
