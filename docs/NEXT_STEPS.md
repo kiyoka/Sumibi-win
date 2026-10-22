@@ -50,6 +50,9 @@ status変更後の復元、cleanup拒否からの回復、有限event、終了�
 明示確認・コピー・破棄、保護変更での本文除去、容量超過時の通常入力、期限によるowner wakeを25ケースで確認した
 （[ADR 0014](adr/0014-bounded-input-recovery.md)）。Core救済7件を加えworkspaceは57件。
 次は製品のプロセス全体の待機容量・キー配送、一般アプリ内での入力・寿命・Undoと常駐Brokerを進める。
+単発Brokerの容量予約を補強し、完了済みjob・取り出した結果の保持中も合計4件へ数える。
+容量6ケースと実DLLキー19ケース、同時予約・所有者先行破棄を確認しworkspaceは59件
+（[ADR 0015](adr/0015-broker-admission-through-delivery.md)）。製品の遅延キー待機行列や常駐dispatchは引き続き未実装。
 
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。

@@ -14,18 +14,20 @@ use sumibi_protocol::session::{ClientSession, Event, Outcome};
 use windows::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
 
+/// Includes reservations, running workers, retained jobs and delivered results.
 pub const MAX_JOBS: usize = 4;
 static JOBS: AtomicUsize = AtomicUsize::new(0);
 
 /// Reserve before capturing a target or consuming a conversion key.
-pub struct Reservation;
+/// The private field prevents callers from constructing an uncounted slot.
+pub struct Reservation(());
 impl Reservation {
     pub fn acquire() -> Result<Self> {
         JOBS.try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
             (count < MAX_JOBS).then_some(count + 1)
         })
         .map_err(|_| Error::Capacity)?;
-        Ok(Self)
+        Ok(Self(()))
     }
     pub fn start(self, executable: PathBuf, request: Request) -> Result<BrokerJob> {
         request.validate()?;
@@ -37,13 +39,18 @@ impl Reservation {
         let wake = Arc::new(unsafe { own(CreateEventW(None, false, false, None)?) });
         let done = Arc::new(unsafe { own(CreateEventW(None, true, false, None)?) });
         let (send, receive) = mpsc::sync_channel(1);
+        // Both the facade and worker own the same admission. Abandoning the
+        // facade cannot free a running worker's slot; finishing the worker
+        // cannot free an undrained result's slot either.
+        let reservation = Arc::new(self);
+        let worker_reservation = reservation.clone();
         let worker_stop = stop.clone();
         let worker_wake = wake.clone();
         let worker_done = done.clone();
         let worker = std::thread::Builder::new()
             .name("sumibi-broker".into())
             .spawn(move || {
-                let _reservation = self;
+                let reservation = worker_reservation;
                 let id = request.id;
                 let revision = request.revision;
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -55,6 +62,7 @@ impl Reservation {
                     id,
                     revision,
                     outcome,
+                    _reservation: reservation.clone(),
                 });
                 unsafe {
                     let _ = SetEvent(raw(&worker_wake));
@@ -68,6 +76,7 @@ impl Reservation {
             done,
             receive,
             worker: Some(worker),
+            _reservation: reservation,
         })
     }
 }
@@ -105,7 +114,16 @@ impl Request {
 pub struct Completion {
     pub id: u64,
     pub revision: Revision,
-    pub outcome: Result<String>,
+    outcome: Result<String>,
+    // Moving the completion out of BrokerJob does not release its admission.
+    // Keep the original allocation with its lease; adapters only borrow it.
+    // No COM or callback enters this lease.
+    _reservation: Arc<Reservation>,
+}
+impl Completion {
+    pub fn outcome(&self) -> Result<&str> {
+        self.outcome.as_deref().map_err(|error| *error)
+    }
 }
 pub struct BrokerJob {
     stop: Stop,
@@ -113,11 +131,15 @@ pub struct BrokerJob {
     done: Arc<OwnedHandle>,
     receive: mpsc::Receiver<Completion>,
     worker: Option<JoinHandle<()>>,
+    // Last field: release after the buffered completion and OS handles.
+    _reservation: Arc<Reservation>,
 }
 impl BrokerJob {
     pub fn completion_handle(&self) -> BorrowedHandle<'_> {
         self.wake.as_handle()
     }
+    /// Consumes the single result. Drop the job and completion after handling
+    /// it to release capacity; shutdown alone only joins the worker.
     pub fn try_result(&self) -> Option<Completion> {
         self.receive.try_recv().ok()
     }
@@ -216,14 +238,71 @@ fn read_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Barrier, Mutex};
+    static ADMISSION_TEST: Mutex<()> = Mutex::new(());
     #[test]
     fn reservations_are_bounded_and_released_without_starting_workers() {
+        let _serial = ADMISSION_TEST.lock().unwrap();
         let slots = (0..MAX_JOBS)
             .map(|_| Reservation::acquire().unwrap())
             .collect::<Vec<_>>();
         assert!(matches!(Reservation::acquire(), Err(Error::Capacity)));
         drop(slots);
         assert!(Reservation::acquire().is_ok());
+    }
+    #[test]
+    fn simultaneous_threads_share_one_admission_limit() {
+        let _serial = ADMISSION_TEST.lock().unwrap();
+        let ready = Arc::new(Barrier::new(17));
+        let release = Arc::new(Barrier::new(17));
+        let admitted = Arc::new(AtomicUsize::new(0));
+        std::thread::scope(|scope| {
+            for _ in 0..16 {
+                let (ready, release, admitted) = (ready.clone(), release.clone(), admitted.clone());
+                scope.spawn(move || {
+                    let slot = Reservation::acquire();
+                    if slot.is_ok() {
+                        admitted.fetch_add(1, Ordering::AcqRel);
+                    }
+                    ready.wait();
+                    release.wait();
+                    drop(slot);
+                });
+            }
+            ready.wait();
+            let count = admitted.load(Ordering::Acquire);
+            let at_capacity = matches!(Reservation::acquire(), Err(Error::Capacity));
+            release.wait();
+            assert_eq!(count, MAX_JOBS);
+            assert!(at_capacity);
+        });
+        let slots = (0..MAX_JOBS)
+            .map(|_| Reservation::acquire().unwrap())
+            .collect::<Vec<_>>();
+        drop(slots);
+    }
+    #[test]
+    fn abandoned_owner_keeps_capacity_until_the_worker_releases_it() {
+        let _serial = ADMISSION_TEST.lock().unwrap();
+        let owner = Arc::new(Reservation::acquire().unwrap());
+        let worker = owner.clone();
+        let release = Arc::new(Barrier::new(2));
+        let worker_release = release.clone();
+        let worker = std::thread::spawn(move || {
+            worker_release.wait();
+            drop(worker);
+        });
+        drop(owner);
+        let slots = (1..MAX_JOBS)
+            .map(|_| Reservation::acquire().unwrap())
+            .collect::<Vec<_>>();
+        let at_capacity = matches!(Reservation::acquire(), Err(Error::Capacity));
+        release.wait();
+        worker.join().unwrap();
+        assert!(at_capacity);
+        let last = Reservation::acquire().unwrap();
+        assert!(matches!(Reservation::acquire(), Err(Error::Capacity)));
+        drop((slots, last));
     }
     #[test]
     fn invalid_requests_are_rejected_before_launch() {

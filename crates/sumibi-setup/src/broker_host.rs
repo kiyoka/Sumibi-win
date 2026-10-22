@@ -217,7 +217,7 @@ pub(crate) fn exercise_broker(
             }
             let before = store.get().text.borrow().clone();
             let completion = wait_completion(&job)?;
-            let result = match completion.outcome {
+            let result = match completion.outcome() {
                 Ok(text) => {
                     let reply_id = if case == "wrong-request" {
                         completion.id + 1
@@ -241,7 +241,13 @@ pub(crate) fn exercise_broker(
                         ticket
                             .take()
                             .ok_or("missing request")?
-                            .finish(manager, client, RequestId(reply_id.into()), revision, text)
+                            .finish(
+                                manager,
+                                client,
+                                RequestId(reply_id.into()),
+                                revision,
+                                text.into(),
+                            )
                             .map_err(|_| "target rejected result")
                     } else {
                         Err("unmatched completion")
@@ -299,6 +305,125 @@ pub(crate) fn exercise_broker(
             drop(other);
             println!("Broker / protocol / Core / TSF / {case}: OK");
         }
+    }
+    exercise_job_capacity()?;
+    Ok(())
+}
+
+/// Real child processes have finished and joined, but no result was received.
+/// Used by both the worker lifetime and DLL pre-capture admission checks.
+pub(super) fn completed_jobs(mode: Mode) -> std::result::Result<Vec<BrokerJob>, Failure> {
+    let executable = std::env::current_exe()?
+        .parent()
+        .ok_or("missing host directory")?
+        .join("sumibi-host.exe");
+    let mut jobs = Vec::new();
+    for index in 0..sumibi_ipc::job::MAX_JOBS {
+        jobs.push(Reservation::acquire()?.start(
+            executable.clone(),
+            Request {
+                id: index as u64 + 1,
+                revision: sumibi_protocol::message::Revision {
+                    input: 1,
+                    settings: 1,
+                    authorization: 1,
+                },
+                text: "fixed diagnostic source".into(),
+                deadline: Instant::now() + Duration::from_secs(8),
+                mode,
+            },
+        )?);
+    }
+    for job in &mut jobs {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            pump_tsf_messages()?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("undrained job completion timed out".into());
+            }
+            let wait = unsafe {
+                MsgWaitForMultipleObjectsEx(
+                    Some(&[HANDLE(job.completion_handle().as_raw_handle())]),
+                    remaining.as_millis() as u32,
+                    QS_ALLINPUT,
+                    MWMO_INPUTAVAILABLE,
+                )
+            };
+            if wait == WAIT_OBJECT_0 {
+                break;
+            }
+            if wait.0 != WAIT_OBJECT_0.0 + 1 {
+                return Err("undrained job completion wait failed".into());
+            }
+        }
+        job.shutdown(Duration::from_secs(3))?;
+    }
+    Ok(jobs)
+}
+
+fn exercise_job_capacity() -> std::result::Result<(), Failure> {
+    for mode in [Mode::DiagnosticFixed { delay_ms: 0 }, Mode::Disabled] {
+        let label = match mode {
+            Mode::DiagnosticFixed { .. } => "success",
+            Mode::Disabled => "policy-denied",
+        };
+        let jobs = completed_jobs(mode)?;
+        assert!(matches!(
+            Reservation::acquire(),
+            Err(sumibi_ipc::Error::Capacity)
+        ));
+        println!("Broker / admission / completed-undrained / {label}: OK");
+        let mut replies = Vec::new();
+        for job in &jobs {
+            let reply = job.try_result().ok_or("missing retained completion")?;
+            match mode {
+                Mode::DiagnosticFixed { .. } => assert_eq!(reply.outcome(), Ok("日本語")),
+                Mode::Disabled => assert_eq!(reply.outcome(), Err(sumibi_ipc::Error::PolicyDenied)),
+            }
+            assert!(job.try_result().is_none());
+            replies.push(reply);
+        }
+        drop(jobs);
+        assert!(matches!(
+            Reservation::acquire(),
+            Err(sumibi_ipc::Error::Capacity)
+        ));
+        println!("Broker / admission / received-result-retained / {label}: OK");
+        drop(replies.pop());
+        let slot = Reservation::acquire()?;
+        assert!(matches!(
+            Reservation::acquire(),
+            Err(sumibi_ipc::Error::Capacity)
+        ));
+        // A failed start also releases exactly its own reservation.
+        assert!(slot
+            .start(
+                std::path::PathBuf::from("relative-host.exe"),
+                Request {
+                    id: 100,
+                    revision: sumibi_protocol::message::Revision {
+                        input: 1,
+                        settings: 1,
+                        authorization: 1
+                    },
+                    text: "fixed".into(),
+                    deadline: Instant::now() + Duration::from_secs(2),
+                    mode,
+                },
+            )
+            .is_err());
+        let slot = Reservation::acquire()?;
+        assert!(matches!(
+            Reservation::acquire(),
+            Err(sumibi_ipc::Error::Capacity)
+        ));
+        drop((slot, replies));
+        let slots = (0..sumibi_ipc::job::MAX_JOBS)
+            .map(|_| Reservation::acquire())
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(slots);
+        println!("Broker / admission / release-and-failed-start / {label}: OK");
     }
     Ok(())
 }

@@ -22,6 +22,8 @@ pub(crate) fn exercise_broker_keys(
             "apply",
             "double-key",
             "capacity",
+            "capacity-completed",
+            "capacity-result",
             "escape",
             "enter",
             "text-restored",
@@ -92,24 +94,51 @@ pub(crate) fn exercise_broker_keys(
             } else {
                 Vec::new()
             };
+            let completed_jobs = if matches!(case, "capacity-completed" | "capacity-result") {
+                super::broker_host::completed_jobs(Mode::DiagnosticFixed { delay_ms: 0 })?
+            } else {
+                Vec::new()
+            };
+            let mut retained_results = Vec::new();
+            let completed_jobs = if case == "capacity-result" {
+                for job in &completed_jobs {
+                    retained_results.push(job.try_result().ok_or("missing retained result")?);
+                }
+                drop(completed_jobs);
+                Vec::new()
+            } else {
+                completed_jobs
+            };
+            let at_capacity = matches!(case, "capacity" | "capacity-completed" | "capacity-result");
             let before_reads = store.get().reads.get();
             // SimulatePreservedKey itself may ask the store for TSF metadata.
             // Isolate the DLL callback when measuring its pre-capture reads.
-            let eaten = if case == "capacity" {
+            let eaten = if at_capacity {
                 sink.OnPreservedKey(&context, &COMMAND_CONVERT)?.as_bool()
             } else {
                 keys.SimulatePreservedKey(&context, &COMMAND_CONVERT)?
                     .as_bool()
             };
-            if case == "capacity" {
+            if at_capacity {
                 assert!(!eaten);
                 assert_eq!(store.get().reads.get(), before_reads);
                 assert!(!bridge.get().active());
-                drop(capacity);
+                assert!(store.get().undo.borrow().is_empty());
+                let mut pending = u64::MAX;
+                broker.Pending(&mut pending).ok()?;
+                assert_eq!(pending, 0);
+                drop((capacity, completed_jobs, retained_results));
+                // Releasing the retained work permits the same key exactly
+                // once without reattaching or changing the input selection.
+                assert!(sink.OnPreservedKey(&context, &COMMAND_CONVERT)?.as_bool());
+                assert_eq!(wait_bridge(&bridge, &broker)?, Delivery::Applied);
+                assert_eq!(store.get().undo.borrow().len(), 1);
+                store.get().undo_once()?;
+                bridge.get().shutdown()?;
                 control.RevokeContext().ok()?;
                 association.close()?;
                 manager.SetFocus(None)?;
-                println!("DLL key / broker / capacity before capture: OK");
+                println!("DLL key / broker / {case} before capture and reuse: OK");
                 continue;
             }
             assert!(eaten, "{case}");

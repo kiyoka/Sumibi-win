@@ -91,7 +91,7 @@ impl Bridge {
         };
         let job = self.job.borrow_mut().take();
         drop(job);
-        let result = match completion.outcome {
+        let result = match completion.outcome() {
             Ok(text) => {
                 let text: Vec<u16> = text.encode_utf16().collect();
                 // SAFETY: owner STA, valid independently counted DLL control,

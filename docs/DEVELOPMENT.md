@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 24件（応答照合7・入力範囲追跡/削除計画10・救済7）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 6件、TIP 5件を含めworkspace合計57件。
+現時点はCore 24件（応答照合7・入力範囲追跡/削除計画10・救済7）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker 8件、TIP 5件を含めworkspace合計59件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -93,7 +93,10 @@ DLLアンロード検査が成功。合成データのみのログは `target/is
 正常部分置換とUndo、取消・終了・旧要求、変更後の原文／選択／フォーカス復元、設定・認可、
 ロック／読取拒否、期限・ID・版不一致、Readyによる送信前拒否を確認した。
 
-ジョブ予約はprocess内4件、結果channelは各1件。I/O・子processの回収はworkerで行い、
+ジョブ予約はprocess内4件、結果channelは各1件。完了済みjob・受取済み結果も予約を保持する。
+worker・job・結果の全所有者の解放後に枠を返す（[ADR 0015](adr/0015-broker-admission-through-delivery.md)）。
+broker-testに容量6ケースを追加し、正常・拒否結果の保持中も4件の上限が効くことを確認した。
+I/O・子processの回収はworkerで行い、
 TSFの所有loopがeventを受けて新しい同期write内でCore.finishとSetTextを行う。
 詳細な所有・失効・起動の限定条件は[ADR 0004](adr/0004-one-shot-broker-and-owner-edit.md)を参照。
 このbroker-testの編集アダプターはsetupへRustライブラリとしてリンクする。
@@ -119,9 +122,11 @@ broker-demoは手動操作用。文字を入力し、F7で選択部分（未選�
 ×で閉じると許可取消・worker停止・TSF/COM解除を行う。このデモでF6の下線プレビューは使用しない。
 本文は専用入力欄と別Hostのメモリーだけで扱い、外部APIへ送信・保存しない。
 
-broker-key-testは実DLLの予約キーから17ケース、broker-input-testは描画・Undo・Enter・編集・
+broker-key-testは実DLLの予約キーから19ケース、broker-input-testは描画・Undo・Enter・編集・
 同期SC_CLOSE・WM_KILLFOCUS・空composition開始終了を含む8ケースが成功。いずれも自動終了する。前者のcapacity/Esc/Enterは
 前面化に依存しない同じDLL callbackで確認し、物理キーボード操作の手動確認は含めない。
+容量検査には未起動予約に加え、完了済みjob・受取済み結果を保持した満杯と、解放後の同じ入力欄での再利用を含む。
+2026-10-22の全回帰はworkspace 59件を含め成功。ログはtarget/issue-4-job-admission-regression.log。
 同日の通常ユーザー/Windows 11 x64 build 26300/Rust 1.99.1で解除とDLLアンロードも確認した。
 ログは `target/issue-4-dll-broker-key-checks.log`、`target/issue-4-dll-broker-input-checks.log`。
 

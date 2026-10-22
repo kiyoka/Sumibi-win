@@ -145,7 +145,9 @@ Protocolは22テスト（既存frame 6、session 8、JSON 4、Core模擬接続4�
 プロセス合計8 endpoint、overlapped I/Oと停止伝播を実装し、2プロセスの合成Core接続で検証した。
 次段階では単発Hostの起動、認証済み接続の取得、容量4のworkerと各1結果、所有TSFへの配送を
 専用ACP storeで接続し19ケースを確認した。既定Hostは変換を許可せず、固定結果はspike限定。
-実DLLキー・Core・TSFからも診断用bridgeへ接続し17ケースと非同期入力・終了6ケースを確認した。
+実DLLキー・Core・TSFからも診断用bridgeへ接続し19ケースと非同期入力・終了8ケースを確認した。
+完了済みjob・受取済み結果の保持中も予約を維持し、worker・job・結果の最後の解放後に枠を返す
+（[ADR 0015](adr/0015-broker-admission-through-delivery.md)）。満杯時は本文取得前にキーを通過させる。
 scope/status/compartmentの保護検査を追加し、実DLLで39ケースを確認した
 （[ADR 0006](adr/0006-input-protection-metadata.md)）。
 同一contextのcompositionを拒否し、実DLL/TSFで16ケースを確認した

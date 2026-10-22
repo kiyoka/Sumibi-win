@@ -63,7 +63,7 @@ user/logon SID・Windows session・medium integrity等を照合する。PID引�
 | 資源 | 上限と所有 |
 | --- | --- |
 | 単発ジョブ | 呼出しprocess内で合計4。未起動のReservationも数える |
-| ジョブの子process・worker | 各最大1。予約をworker終了まで保持 |
+| ジョブの子process・worker | 各最大1。予約はworker・job・結果の最後の解放まで保持（[ADR 0015](0015-broker-admission-through-delivery.md)で補強） |
 | pipe | 従来どおりprocess合計8 endpoint。各pipeで同時I/O最大1 |
 | 要求・結果 | 各ジョブ1要求・結果channel容量1。結果にDebugを実装しない |
 | 本文 | 原文・結果とも1024 UTF-16単位。JSON外枠は256KiB |

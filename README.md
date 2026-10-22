@@ -17,6 +17,7 @@
 Issue #4では版付きJSONとclient接続状態を追加し、取消・切断・再接続・期限切れをCoreと模擬通信で検証しています。
 `ipc-peer-test`では起動した別プロセスとの相互照合・非同期pipe・取消を検証できます。
 `broker-test`では別Host EXE→版付きIPC→Core→実TSF編集を専用入力欄で検証します。通常ビルドは変換を許可せず、固定結果は開発用feature限定です。
+Brokerの予約は未受取・受取済み結果も含め合計4件に制限し、解放後に枠を戻します（[容量と寿命](docs/adr/0015-broker-admission-through-delivery.md)）。
 `broker-key-test`は実DLLのキーから、`broker-input-test`は非同期デモの入力と終了まで検証します。
 `broker-demo`では同じ非同期の固定変換を手動で試せます（[起動と操作](docs/DEVELOPMENT.md#実dllのキーから非同期変換を試す)）。
 常駐Broker、一般アプリの入力基盤、HTTP通信はまだありません。
@@ -56,6 +57,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [同期入力取引と二重入力の防止](docs/adr/0012-synchronous-input-transaction.md)
 - [記録済み入力末尾の同期Backspace](docs/adr/0013-synchronous-tracked-backspace.md)
 - [未確認入力の有限救済と明示コピー](docs/adr/0014-bounded-input-recovery.md)
+- [Brokerの受取・破棄まで保持する容量予約](docs/adr/0015-broker-admission-through-delivery.md)
 - [Issue #1の受入記録](docs/ISSUE_1_ACCEPTANCE.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 
