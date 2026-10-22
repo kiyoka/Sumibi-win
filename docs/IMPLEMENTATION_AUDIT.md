@@ -11,7 +11,7 @@
 | COMとDLL | tip/com.rs、build.rs。factory・独立lease・所有thread・解除再試行 | 一般アプリにロードされる常設登録と更新時の寿命 |
 | TSF編集 | tip/edit.rsとmanual_edit.rs。generic保持range、同期read/write、全文照合、Core gate、IPC結果の一度だけ適用。専用所有contextで検証。[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md) | 非ACP入力先の実検証、製品キーとの統合、一般アプリの対象分類と編集 |
 | 保護入力 | protection.rs。scope/status/compartmentの肯定検査、取得・source・適用時の再検査。実DLLで39ケース。statusの固定診断コードと標準RichEditの拒否7構成を追加（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)） | 一般アプリの実スコープ・独自機密欄・判定不能時の動作確認 |
-| 追跡composition | 選択composition 18・所有ホストの入力範囲25・実DLLのcomposition伸縮29・同期入力取引22・Backspace 27・他サービス拒否16ケースを確認 | 前方Delete・待機・製品全体の救済・製品InputSession・一般アプリの他IMEとの競合と寿命 |
+| 追跡composition | 選択composition 18・所有ホストの入力範囲25・実DLLのcomposition伸縮29・同期入力取引22・書記素Backspace 37・他サービス拒否16ケースを確認 | 前方Delete・待機・製品全体の救済・製品InputSession・一般アプリの他IMEとの競合と寿命 |
 | 表示属性 | display.rs / preview.rs。点線、原文保持、属性だけ遅延解除 | 通常アプリでの下線、アクセシビリティ、既存属性との共存 |
 | 変更通知 | notifications.rs。本文・選択・scope・compartment・composition属性・フォーカスで失効。空compositionは所有ホストから取消を転送 | 製品追跡・IPC・候補との統合、一般アプリの未通知履歴 |
 | キー配送 | keys.rs / input_host.rs。専用windowで実TSF経路 | US/JIS配列・変換キー・Terminal・実打鍵 |
@@ -131,6 +131,14 @@ fixtureは依然ACP方式で、非ACPアプリの互換性や未通知本文変�
 
 ## 3. アプリ互換表の記録形式
 
+2026-10-22、記録末尾と専用ホストのBackspaceを拡張書記素単位へ変更した。
+unicode-segmentation 1.13.3 / Unicode 17.0.0を固定し、Core 5件追加でworkspaceは76件。
+Backspace 37・救済34・同期入力22・追跡25・composition伸縮29・通知30・broker入力11・close 4が成功。
+一括scriptはkey-testのShift押下状態で停止した。Rust/fmt/Clippy/build等は成功し、key-test単独実行も成功。
+一括成功には数えず、前面化で未通過のwindow/input/delayedも維持する。
+開始点と終了点は硬い境界であり、前後本文を読み足す一般アプリの書記素編集ではない。
+詳細とログは[ADR 0023](adr/0023-grapheme-backspace-within-recorded-input.md)を参照。
+
 2026-10-22、所有WndProcで無効化・非アクティブ化・モード取消を失効へ接続した。
 通知30・broker入力11・救済34、追跡25・composition伸縮29・同期入力22・Backspace 27・close 4が成功。
 Rust 71件とfmt・各構成Clippy・基本DLL/TSF検査も成功した。省略なし全回帰は今回は再実行していない。
@@ -182,7 +190,7 @@ Mac参照はmain `553c69021eda7a8a5944d8748357f3790cc2f45c`。資料内のmain/P
 | WINDOWS_HANDOFF：共通契約・Windows再設計 | [MAC_PARITY](MAC_PARITY.md)。固定コミットから独立実装 |
 | 追加候補12件と追加10件要件の差 | Windowsも未決。辞書追加枠10件と混同しない |
 | 待機中の制御キー・容量 | 遅延再送なし案。超過時の安全な切替と救済期限を決定するまで有効化しない |
-| String.count・Unicode比較 | 書記素分割依存を未選定。照合はUTF-16完全一致で、正準等価を自動許可しない |
+| String.count・Unicode比較 | 編集用の書記素分割をUnicode 17.0.0に固定。送信上限への接続は未実装。照合はUTF-16完全一致で、正準等価を自動許可しない |
 | AppKit / Keychain / 単一プロセス / 公証 | TSF UIElement / Credential Manager案 / 別Broker / Windows署名へ再設計 |
 
 更新時は製品仕様の変更、コードの変更、実機の観測を別々に記録する。

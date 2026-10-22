@@ -23,7 +23,7 @@ Mac技術解説自身の実装照合基準 `d2b96fc` と区別する。Macの機
 | TIPのCOM・キー・表示属性・編集 | 専用ホストで実装済み。通常アプリへの常設登録なし |
 | 入力保護 | scope/status/compartmentと取得・送信前・適用時の検査を実装。専用ACPで39ケース。status診断と標準RichEditの拒否7構成を確認（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)）。一般アプリの全機密欄の識別は未検証 |
 | 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。実キーボードの手動確認は未実施 |
-| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮29・選択composition 18・他サービス拒否16・同期入力取引22・Backspace 27ケースを確認。所有editorの救済34ケースとEXE共有4枠、window境界を含む通知30ケースも確認。前方Delete・待機・製品統合・候補UIは未実装 |
+| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮29・選択composition 18・他サービス拒否16・同期入力取引22・書記素Backspace 37ケースを確認。所有editorの救済34ケースとEXE共有4枠、window境界を含む通知30ケースも確認。前方Delete・待機・製品統合・候補UIは未実装 |
 | Protocol / IPC | 有限フレーム・版付きJSON・client状態、固定process相互検査・overlapped pipe。実DLLのキー・Core・所有TSFから診断用EXE bridge経由で再利用Brokerへ接続。一般アプリは未接続 |
 | Host・HTTP・キー保存・設定UI | 単発/有限連続要求の診断Host EXEを実装。既定では変換拒否。常駐Host・HTTP・キー保存・設定UIは未実装 |
 | Decisions・辞書・署名付き配布 | 未実装。後続段階 |
@@ -159,10 +159,11 @@ F7または許可された予約キーは固定の「日本語」へ変換する
 修飾なしEscは有効なプレビューを取り消して消費する。Enterは取消後に未消費で返し、
 専用1行ホストが原文確認を一度だけ処理する。一般アプリの改行・送信を保証した検証ではない。
 
-ホストの左右移動、Shift選択、Home/End、Backspace、DeleteはUnicodeスカラーの境界を守る。
+ホストの左右移動、Shift選択、Home/End、DeleteはUnicodeスカラーの境界を守る。
+Backspaceはcaret左側の本文に対しUnicode 17.0.0の拡張書記素を使う。
 選択の始点と移動端を区別し、`TS_AE_START/END`で向きを保存する。入力と削除後はカーソルを閉じる。
 UTF-16上位サロゲートは下位が揃うまで保留し、不正な組合せは挿入しない。
-1行・1024 UTF-16単位・固定サイズの表示に限定し、書記素クラスタ削除・マウス選択・スクロールは未対応。
+1行・1024 UTF-16単位・固定サイズの表示に限定し、任意位置の完全な書記素編集・マウス選択・スクロールは未対応。
 
 追加のtracking-demoは所有ホストが実際に挿入した文字だけをCoreで記録する。
 カーソルが有効な入力範囲の末尾にある場合だけ、F7でその範囲を選択して既存の非同期変換へ渡す。
@@ -183,9 +184,10 @@ transaction-demoでは供給された文字の挿入・caret・composition更新
 確認を表示する。rollback・入力救済・製品の削除取引や一般アプリ対応の完成ではない
 （[ADR 0012](adr/0012-synchronous-input-transaction.md)）。
 記録末尾のBackspaceも、削除・caret・composition縮小を同じwriteで処理する。
-記録済みUTF-16だけからscalar単位で削除範囲を決め、全削除では自己compositionを終了する。
+記録済みUTF-16だけから拡張書記素単位で削除範囲を決め、全削除では自己compositionを終了する。
 範囲越え等は部分削除せず書込前にホストへ返し、試行後の失敗では再削除しない。
-前方Deleteや書記素単位の編集仕様は未完了（[ADR 0013](adr/0013-synchronous-tracked-backspace.md)）。
+前方Deleteと任意位置の書記素編集は未完了。同期取引は[ADR 0013](adr/0013-synchronous-tracked-backspace.md)、
+分割版・記録境界とfallbackは[ADR 0023](adr/0023-grapheme-backspace-within-recorded-input.md)を参照。
 
 ### 5.2 製品の追跡入力（未実装）
 
@@ -450,7 +452,8 @@ MacのChat Completions形式・プロンプトを参照するが、モデル名�
 
 送信の可変部分は原文＋現在結果＋登録辞書で合計1000拡張書記素クラスタを初期案とする。
 UTF-8バイト長、UTF-16単位数、Unicodeスカラー数をこの文字数と混同しない。
-分割ライブラリとUnicode版は未選定で、結合文字・異体字セレクター・ZWJ絵文字を受入ケースにする。
+編集用はunicode-segmentation 1.13.3 / Unicode 17.0.0を選定し、結合文字・VS・ZWJ等を検証した。
+送信1000書記素の制限への接続とbyte/UTF-16上限の整合はIssue #5で実装する。
 対象原文の照合はUTF-16単位の完全一致とし、正規化・大文字化・空白差を許容しない。
 TSFアダプターの1024単位制限が先に効く場合がある。長文対応を増やすときは両上限を別々に再評価する。
 周辺文脈・文体・クリップボード取得は初期範囲に含めず、黙って送信対象へ追加しない。
@@ -525,7 +528,7 @@ Notepad、VS Code、Chromium、Windows Terminalの標準Undo、実打鍵、機�
 | F：公開準備 | アプリ互換表、署名・導入／更新／削除・復旧・プライバシー表示・第三者ライセンス |
 
 未決事項はIPC認証の具体方式、AppContainer仲介、製品キー割当、候補件数、待機超過と救済期限、
-書記素分割依存、HTTPとUIの依存、導入権限・登録範囲・署名・更新方式である。
+送信上限への書記素分割の接続、HTTPとUIの依存、導入権限・登録範囲・署名・更新方式である。
 各実装前にADRと受入ケースを追加する。文書変更で未決の判断を実装済みに変更しない。
 
 ## 16. 資料の保守

@@ -469,7 +469,7 @@ fn test_process_budget(
     }
     let old_tickets: Vec<_> = peers.iter().map(|p| p.metadata().unwrap().ticket).collect();
     if case == "process-backspace" {
-        store.type_text(&"a😀b".encode_utf16().collect::<Vec<_>>())?;
+        store.type_text(&"a👨‍👩‍👧‍👦b".encode_utf16().collect::<Vec<_>>())?;
     }
     let writes = store.set_text_calls.get();
     let history = store.undo.borrow().len();

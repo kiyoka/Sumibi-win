@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 31件（応答照合9・入力範囲追跡/削除計画10・救済12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計71件。
+現時点はCore 36件（応答照合9・入力範囲追跡/削除計画15・救済12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計76件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -77,8 +77,9 @@ cargo build -p sumibi-host --features spike --locked --offline
 デモは専用の空の合成入力欄を開く。通常文字を入力すると実DLLが本文・caret・composition・下線を
 同じ同期write cookieで更新する。F7で入力範囲を固定の「日本語」へ変換し、Ctrl+Zで戻せる。
 Escは追跡を解除する。Backspaceは記録末尾を同じwrite内で削除・縮小し、全削除でcompositionを終了する。
-repeatはUnicode scalar単位で数え、追跡範囲を越える要求は全体を元のホスト操作へ返す。
-前方Delete・Undoは既存ホスト操作を使う。書記素cluster単位の削除仕様は未確定。
+repeatは記録内の拡張書記素クラスタ単位で数え、追跡範囲を越える要求は全体を元のホスト操作へ返す。
+unicode-segmentation 1.13.3 / Unicode 17.0.0に固定し、通常ホストのBackspaceも同じ分割を使う。
+記録外の既存本文へクラスタを広げず、正規化もしない。前方Delete・Undoは既存ホスト操作を使う。
 終了は×ボタン。既定IME・ユーザー文書・HTTP・資格情報は使用しない。
 
 書き込み前拒否ではホストが元の入力を一度だけ反映する。書き込みを試みた後の失敗では、
@@ -95,6 +96,12 @@ Backspaceの27ケースも成功。ログはtarget/issue-4-backspace-transaction
 [ADR 0013](adr/0013-synchronous-tracked-backspace.md)を参照。
 最終版はTest-Spike.ps1を省略なしで実行し、workspace 50件・Clippy 3構成と既存native検査も成功した。
 全回帰ログはtarget/issue-4-backspace-transaction-regression.log。
+最新のbackspace-input-testは書記素10件を加え37ケースが成功。Core 5件追加でworkspaceは76件。
+fmt・Clippy 3構成・build・基本DLL検査も成功した。一括scriptはkey-testのShift押下状態で停止し、
+その後の単独key-testが成功した。script全体の成功とは区別する。
+救済34・同期入力22・追跡25・composition伸縮29・通知30・broker入力11・close 4も再確認した。
+前面化で未通過のwindow/input/delayedは引き続き未確認。最新ログと境界の条件は
+[ADR 0023](adr/0023-grapheme-backspace-within-recorded-input.md)を参照。
 
 ## 未確認入力の救済を試す
 
@@ -460,7 +467,7 @@ cargo run -p sumibi-setup --locked --offline -- demo --dll target/debug/sumibi_t
 | 操作 | 動作 |
 | --- | --- |
 | 文字入力 | 選択部分を置換、またはカーソル位置へ挿入 |
-| Backspace | 選択部分、または直前のUnicodeスカラーを削除 |
+| Backspace | 選択部分、またはcaret左側の拡張書記素を削除（Unicode 17.0.0） |
 | Ctrl+A | 全文選択 |
 | Home / End | 文頭 / 文末へカーソル移動 |
 | ← / → | Unicodeスカラー単位で移動。選択中は選択の左端 / 右端へ移動 |
@@ -477,7 +484,8 @@ Undo/Redoは本文と選択範囲・選択の向きを一緒に復元する。Un
 古いRedo履歴を破棄する。カーソル移動とプレビューだけではRedo履歴を破棄しない。
 
 カーソルと選択範囲も描画する。1024 UTF-16単位を上限とする固定幅の1行デモであり、
-マウス選択・スクロール・クリップボード・書記素クラスタ単位の削除はまだ扱わない。
+マウス選択・スクロール・通常editorのクリップボード操作はまだ扱わない。
+Backspaceは書記素単位だが、左右移動・Delete・任意caret位置の完全な書記素編集は未対応。
 自動検証では所有ウィンドウへテスト用メッセージを送る。実キーボード操作の手動確認はまだ行っていない。
 
 2026-10-21、利用者のデモ試用で閉じるボタンによる停止が報告された。

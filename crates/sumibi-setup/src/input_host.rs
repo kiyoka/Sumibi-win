@@ -171,10 +171,10 @@ impl TextStore {
             if start == 0 {
                 return Ok(());
             }
-            start -= 1;
-            if !self.boundary(start) {
-                start -= 1;
-            }
+            // This synthetic host owns its body. Share the same pinned
+            // segmentation for its ordinary fallback; no DLL read is involved.
+            start = sumibi_core::input::suffix_grapheme_boundary(&self.text.borrow()[..end], 1)
+                .ok_or(E_INVALIDARG)?;
         }
         self.user_edit(start..end, &[])
     }
@@ -1304,7 +1304,7 @@ fn test_input(
     pump(window)?;
     assert_eq!(live.scene()?.text, "😀".encode_utf16().collect::<Vec<_>>());
     editor.store.get().readonly.set(false);
-    println!("Surrogate pair input / scalar Backspace / invalid low surrogate / read-only: OK");
+    println!("Surrogate pair input / grapheme Backspace / invalid low surrogate / read-only: OK");
     post(WM_KEYDOWN, 0x24)?;
     pump(window)?;
     assert_eq!(live.scene()?.caret, 0);

@@ -121,9 +121,12 @@ SetTextを試みた後の失敗ではHRESULTから再入力を推測せず、変
 （[ADR 0012](adr/0012-synchronous-input-transaction.md)）。
 transaction-demoのBackspaceは、Coreの記録末尾だけから削除範囲を計算し、実DLLの独立
 ISpikeInputEraserで削除・caret・composition縮小を同じwriteに接続する。全削除では自己objectを終了する。
+現在の削除計画はUnicode 17.0.0の拡張書記素単位。Coreは記録UTF-16を固定scratchで分割し、
+結合文字や複合絵文字をまとめて削除する。記録外の前後本文は取得・推測しない
+（[ADR 0023](adr/0023-grapheme-backspace-within-recorded-input.md)）。
 本文書込と確定処理は挿入と共有する。旧世代・追跡外・選択・他composition等では一部を先に消さず、
 書込前に元のホスト処理へ返す。試行後の失敗では再削除せず、明示boundaryまで変換を停止する。
-前方Delete・任意位置編集・待機・救済は未完了（[ADR 0013](adr/0013-synchronous-tracked-backspace.md)）。
+前方Delete・任意位置編集・製品の待機/救済統合は未完了（[ADR 0013](adr/0013-synchronous-tracked-backspace.md)）。
 所有editorの救済はCoreの1件・最大1024単位のslotを取引前に予約し、未確認結果だけを有限期限で保持する。
 診断EXEは全Rescueへ同じBudgetを渡し、別STAも含む予約中/確認待ちを合計4件に制限する。
 redactや画面の開閉では返さず、レコードの破棄・期限切れcleanup・所有者Dropで共有枠を戻す

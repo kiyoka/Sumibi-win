@@ -1,6 +1,10 @@
 //! Bounded tracking of text actually inserted by a cooperating host. This does
 //! not consume events, edit a document, or infer pre-existing text from a caret.
+use unicode_segmentation::UnicodeSegmentation;
+
 pub const MAX_TRACKED_UNITS: usize = 1024;
+/// Pinned segmentation data; not the compiler's possibly newer Unicode tables.
+pub const BACKSPACE_UNICODE_VERSION: (u64, u64, u64) = unicode_segmentation::UNICODE_VERSION;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct InputPoint {
@@ -44,6 +48,31 @@ fn valid(point: InputPoint) -> bool {
         && point.selection.0 >= 0
         && point.selection.1 >= point.selection.0
 }
+
+/// UTF-16 offset of the last `count` extended graphemes in supplied text.
+/// Bounded and allocation-free; never obtains surrounding document content.
+/// The supplied slice's start is a hard boundary, not a claim about prior text.
+pub fn suffix_grapheme_boundary(units: &[u16], count: usize) -> Option<usize> {
+    if units.is_empty()
+        || units.len() > MAX_TRACKED_UNITS
+        || !(1..=MAX_TRACKED_UNITS).contains(&count)
+    {
+        return None;
+    }
+    // One UTF-16 unit needs at most three UTF-8 bytes (a surrogate pair
+    // needs four). Fixed scratch avoids a heap allocation before deletion.
+    let mut utf8 = [0u8; MAX_TRACKED_UNITS * 3];
+    let mut length = 0usize;
+    for value in char::decode_utf16(units.iter().copied()) {
+        let value = value.ok()?;
+        let end = length.checked_add(value.len_utf8())?;
+        value.encode_utf8(utf8.get_mut(length..end)?);
+        length = end;
+    }
+    let text = std::str::from_utf8(&utf8[..length]).ok()?;
+    let (boundary, _) = text.grapheme_indices(true).rev().nth(count - 1)?;
+    Some(text[..boundary].encode_utf16().count())
+}
 impl InputSession {
     /// Metadata for an exact live observation, without consuming private text.
     pub fn range(&self, current: InputPoint) -> Option<(i32, i32)> {
@@ -54,8 +83,9 @@ impl InputSession {
         self.run = None;
     }
     /// Plan a suffix deletion from recorded input only, without reading the
-    /// document or consuming the record. Counts Unicode scalar values, not
-    /// grapheme clusters. An oversized repeat is refused as a whole.
+    /// document or consuming the record. Counts extended grapheme clusters
+    /// within this recorded run only. No surrounding document is inferred;
+    /// the tracked start remains a hard boundary. Oversized repeats are refused.
     pub fn backspace_range(&self, current: InputPoint, count: usize) -> Option<(i32, i32)> {
         let run = self.run.as_ref()?;
         if self.range(current).is_none()
@@ -64,18 +94,7 @@ impl InputSession {
         {
             return None;
         }
-        let mut remaining = run.text.len();
-        for _ in 0..count {
-            remaining = remaining.checked_sub(1)?;
-            if (0xdc00..=0xdfff).contains(&run.text[remaining]) {
-                remaining = remaining.checked_sub(1)?;
-                if !(0xd800..=0xdbff).contains(&run.text[remaining]) {
-                    return None;
-                }
-            } else if (0xd800..=0xdbff).contains(&run.text[remaining]) {
-                return None;
-            }
-        }
+        let remaining = suffix_grapheme_boundary(&run.text, count)?;
         Some((
             run.start.checked_add(remaining as i32)?,
             current.selection.0,
@@ -178,7 +197,113 @@ mod tests {
         }
     }
     #[test]
-    fn deletion_plan_counts_scalars_without_consuming_or_splitting_utf16() {
+    fn grapheme_deletion_keeps_combining_emoji_flags_hangul_and_indic_together() {
+        assert_eq!(BACKSPACE_UNICODE_VERSION, (17, 0, 0));
+        for cluster in ["e\u{301}", "👨‍👩‍👧‍👦", "👍🏽", "🇯🇵", "✈️", "각", "क्‍ष"]
+        {
+            let text: Vec<_> = format!("a{cluster}").encode_utf16().collect();
+            let end = 7 + text.len() as i32;
+            let mut session = InputSession::default();
+            session.inserted(point(7, 1), point(end, 2), &text);
+            assert_eq!(
+                session.backspace_range(point(end, 2), 1),
+                Some((8, end)),
+                "{cluster}"
+            );
+            assert_eq!(
+                session.backspace_range(point(end, 2), 2),
+                Some((7, end)),
+                "{cluster}"
+            );
+            assert!(session.take(point(end, 2)).unwrap().matches(&text));
+        }
+    }
+    #[test]
+    fn appended_input_recomputes_clusters_across_individual_insertions() {
+        for fragments in [
+            vec!["e", "\u{301}"],
+            vec!["🇯", "🇵"],
+            vec!["👩", "\u{200d}", "💻"],
+        ] {
+            let mut session = InputSession::default();
+            let mut current = point(7, 1);
+            for fragment in fragments {
+                let units: Vec<_> = fragment.encode_utf16().collect();
+                let next = point(
+                    current.selection.1 + units.len() as i32,
+                    current.generation + 1,
+                );
+                session.inserted(current, next, &units);
+                current = next;
+            }
+            assert_eq!(
+                session.backspace_range(current, 1),
+                Some((7, current.selection.1))
+            );
+            assert_eq!(session.backspace_range(current, 2), None);
+            assert!(session.range(current).is_some());
+        }
+    }
+    #[test]
+    fn repeated_grapheme_deletion_is_atomic_and_rejects_excess_before_consumption() {
+        let text: Vec<_> = "ae\u{301}🇯🇵👨‍👩‍👧‍👦".encode_utf16().collect();
+        let end = 7 + text.len() as i32;
+        let mut session = InputSession::default();
+        session.inserted(point(7, 1), point(end, 2), &text);
+        assert_eq!(session.backspace_range(point(end, 2), 3), Some((8, end)));
+        assert_eq!(session.backspace_range(point(end, 2), 4), Some((7, end)));
+        assert_eq!(session.backspace_range(point(end, 2), 5), None);
+        assert_eq!(session.backspace_range(point(end, 2), usize::MAX), None);
+        session.backspaced(point(end, 2), point(8, 3));
+        assert!(session.take(point(8, 3)).unwrap().matches(&['a' as u16]));
+    }
+    #[test]
+    fn grapheme_plan_handles_full_utf8_scratch_and_one_maximum_cluster() {
+        for units in [
+            vec![],
+            vec![0xd800],
+            vec![0xdc00],
+            vec!['x' as u16; MAX_TRACKED_UNITS + 1],
+        ] {
+            assert_eq!(suffix_grapheme_boundary(&units, 1), None);
+        }
+        for text in [
+            "漢".repeat(MAX_TRACKED_UNITS),
+            format!("e{}", "\u{301}".repeat(MAX_TRACKED_UNITS - 1)),
+        ] {
+            let units: Vec<_> = text.encode_utf16().collect();
+            let end = 7 + MAX_TRACKED_UNITS as i32;
+            let mut session = InputSession::default();
+            session.inserted(point(7, 1), point(end, 2), &units);
+            let count = if text.starts_with('漢') {
+                MAX_TRACKED_UNITS
+            } else {
+                1
+            };
+            assert_eq!(
+                session.backspace_range(point(end, 2), count),
+                Some((7, end))
+            );
+            assert_eq!(session.backspace_range(point(end, 2), count + 1), None);
+            assert!(session.take(point(end, 2)).unwrap().matches(&units));
+        }
+    }
+    #[test]
+    fn run_start_is_a_hard_boundary_even_for_leading_marks_or_regional_indicators() {
+        for (text, count) in [("\u{301}", 1), ("🇵", 1), ("\u{200d}💻", 2)] {
+            let units: Vec<_> = text.encode_utf16().collect();
+            let end = 7 + units.len() as i32;
+            let mut session = InputSession::default();
+            session.inserted(point(7, 1), point(end, 2), &units);
+            assert_eq!(
+                session.backspace_range(point(end, 2), count),
+                Some((7, end))
+            );
+            assert_eq!(session.backspace_range(point(end, 2), count + 1), None);
+        }
+    }
+    #[test]
+    fn deletion_plan_counts_simple_graphemes_without_consuming_or_splitting_utf16() {
         let mut session = InputSession::default();
         let units: Vec<_> = "a😀b".encode_utf16().collect();
         session.inserted(point(7, 1), point(11, 2), &units);

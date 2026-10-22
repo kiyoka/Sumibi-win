@@ -30,7 +30,7 @@ F6プレビューは選択範囲をSumibi自身のcompositionとして保持し�
 `tracking-demo`では実際に入力した範囲だけをF7で変換できます。移動・外部編集等で追跡が無効なら変換を見送り、全文を推測しません。`tracking-input-test`で25ケースを検証できます（[操作手順](docs/DEVELOPMENT.md#通常入力の範囲だけを変換する)、[条件と制限](docs/adr/0009-cooperating-host-input-run.md)）。
 `composing-demo`では同じ入力を実DLLのcompositionと下線で追跡し、文字入力で広げ、Backspaceで縮めます。`composing-input-test`で29ケースを検証できます（[操作手順](docs/DEVELOPMENT.md#入力compositionの伸縮を試す)、[条件と制限](docs/adr/0010-cooperating-host-composition-growth.md)）。本文はホストで反映する診断経路で、一般アプリへの統合は未実装です。
 外部編集や保護状態の通知では、次の打鍵を待たず所有ループで古い追跡を解除します。所有ホストのフォーカス喪失・非アクティブ化・無効化・モード取消も転送し、`input-notify-test`で30ケースを検証できます（[通知の条件](docs/adr/0011-owner-loop-input-invalidation.md)、[明示境界と制限](docs/adr/0020-owner-cancellation-and-shared-tsf-pump.md)、[ウィンドウ通知](docs/adr/0022-native-owner-window-boundaries.md)）。
-`transaction-demo`のBackspaceは記録末尾だけを同じ同期writeで削除し、repeatも一括更新します。全削除でcompositionを終了し、失敗時には再削除しません。`backspace-input-test`で27ケースを検証できます（[条件と制限](docs/adr/0013-synchronous-tracked-backspace.md)）。
+`transaction-demo`のBackspaceは記録末尾の拡張書記素を同じ同期writeで削除し、結合文字・複合絵文字とrepeatもまとめて扱います。全削除でcompositionを終了し、失敗時には再削除しません。`backspace-input-test`で37ケースを検証できます（[入力取引の条件](docs/adr/0013-synchronous-tracked-backspace.md)、[書記素の版と範囲](docs/adr/0023-grapheme-backspace-within-recorded-input.md)）。
 Notepad等の実アプリでの表示と実打鍵は未確認です。
 `recovery-demo`では固定の入力失敗を再現し、F8で未確認入力を確認できます。editorごとに1件・最大1024 UTF-16単位を最大10分だけ保持し、診断EXE全体では予約中も含め合計4件に制限します。明示コピー／破棄を提供し、自動再入力はしません。`recovery-input-test`で34ケースを検証できます（[起動と操作](docs/DEVELOPMENT.md#未確認入力の救済を試す)、[保護と保持の契約](docs/adr/0014-bounded-input-recovery.md)、[共有容量](docs/adr/0021-shared-input-recovery-budget.md)）。
 `transaction-demo`では文字入力・caret・compositionを同じ同期writeで更新します。書込後の失敗では自動再入力せず、確認を表示します。`transaction-input-test`で22ケースを検証できます（[起動と操作](docs/DEVELOPMENT.md#同期入力取引を試す)、[範囲と失敗時の契約](docs/adr/0012-synchronous-input-transaction.md)）。
@@ -68,6 +68,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [所有ホストの明示取消と共通TSFメッセージ処理](docs/adr/0020-owner-cancellation-and-shared-tsf-pump.md)
 - [所有者間で共有する救済枠](docs/adr/0021-shared-input-recovery-budget.md)
 - [所有ウィンドウの無効化・非アクティブ化による失効](docs/adr/0022-native-owner-window-boundaries.md)
+- [記録範囲内の拡張書記素Backspace](docs/adr/0023-grapheme-backspace-within-recorded-input.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 
 設計基準はSumibi-mac main `553c69021eda7a8a5944d8748357f3790cc2f45c`。

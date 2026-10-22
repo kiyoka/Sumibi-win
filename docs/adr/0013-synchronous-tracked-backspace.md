@@ -3,6 +3,9 @@
 状態：診断経路の実装と専用ホストでの検証。製品キー配送や一般アプリ対応の完了ではない。
 2026-10-22。Issue #4 / draft PR #10。ADR 0012の後続。
 
+削除単位は後続の[ADR 0023](0023-grapheme-backspace-within-recorded-input.md)で拡張書記素へ更新した。
+以下のscalar単位・27ケースは、この段階の履歴である。
+
 ## 背景
 
 transaction-demoの文字挿入は本文・caret・compositionを同じwrite cookieで更新するが、

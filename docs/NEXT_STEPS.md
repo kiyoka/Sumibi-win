@@ -96,6 +96,11 @@ Core 5件追加でworkspace 71件、救済31ケースと同期入力/削除/通�
 通知30・broker入力11・救済34と関連回帰を確認した（[ADR 0022](adr/0022-native-owner-window-boundaries.md)）。
 一般アプリの通知保証・保護情報・composition寿命・標準Undoと製品の配置/認証を引き続き進める。
 
+記録末尾のBackspaceはUnicode 17.0.0の拡張書記素へ進め、結合文字・複合絵文字とrepeatを一括削除する。
+通常ホストも同じ分割を使い、追跡外・救済満杯での削除単位を合わせた。記録外の本文へは拡張しない。
+Core 5件追加でworkspace 76件、Backspace 37件と関連回帰が成功した
+（[ADR 0023](adr/0023-grapheme-backspace-within-recorded-input.md)）。一般アプリと任意位置編集は残る。
+
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。
 - named pipeの非同期I/Oと停止伝播、偽server・PID再利用・容量超過・終了待機を試験。
@@ -110,7 +115,7 @@ Core 5件追加でworkspace 71件、救済31ケースと同期入力/削除/通�
 登録済み: [Issue #5](https://github.com/kiyoka/Sumibi-win/issues/5)。前提はIssue #4。
 
 - Host EXE、送信先別同意、設定形式版・原子的保存、Credential Managerのキー保存と削除。
-- 書記素分割の依存とUnicode版、1000書記素とバイト／UTF-16上限の検査。
+- 編集用で採用した書記素分割とUnicode版を送信制限へ接続し、1000書記素とバイト／UTF-16上限を検査。
 - 模擬HTTP、転送拒否・再送なし・60秒・応答上限・固定エラー。実通信は明示操作の別検証。
 - 初回1候補と選択変換、取消・設定変更・同意取消・応答後の対象再検査。
 

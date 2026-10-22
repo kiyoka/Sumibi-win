@@ -34,6 +34,16 @@ pub(crate) fn exercise_backspace(
         "erase/compartment-restored",
         "erase/invalid-count",
         "erase/capacity",
+        "erase/grapheme-combining",
+        "erase/grapheme-family",
+        "erase/grapheme-modifier",
+        "erase/grapheme-flag",
+        "erase/grapheme-repeat",
+        "erase/grapheme-all",
+        "erase/grapheme-fragments",
+        "erase/grapheme-uncertain",
+        "erase/grapheme-run-start",
+        "erase/grapheme-host-fallback",
     ] {
         run(manager, client, RunMode::TransactionTest(case))?;
     }
@@ -46,6 +56,9 @@ pub(in crate::edit_host::input_host) fn test_backspace(
     client: u32,
     case: &str,
 ) -> Result<()> {
+    if let Some(kind) = case.strip_prefix("grapheme-") {
+        return test_graphemes(window, editor, live, kind);
+    }
     let store = editor.store.get();
     let composing = editor.composing.as_ref().ok_or(E_FAIL)?;
     let eraser: ISpikeInputEraser = composing.control.cast()?;
@@ -361,5 +374,112 @@ pub(in crate::edit_host::input_host) fn test_backspace(
         assert!(live.scene()?.underlines.is_empty());
     }
     println!("Backspace transaction / {case}: OK");
+    Ok(())
+}
+
+fn test_graphemes(
+    window: &crate::window_host::Window,
+    editor: &Editor,
+    live: &crate::live_render::Binding,
+    kind: &str,
+) -> Result<()> {
+    let (prefix, fragments, remaining, count): (&str, &[&str], &str, isize) = match kind {
+        "combining" => ("prefix ", &["ae\u{301}"], "a", 1),
+        "family" | "uncertain" | "host-fallback" => ("prefix ", &["a👨‍👩‍👧‍👦"], "a", 1),
+        "modifier" => ("prefix ", &["a👍🏽"], "a", 1),
+        "flag" => ("prefix ", &["a🇯🇵"], "a", 1),
+        "repeat" => ("prefix ", &["ae\u{301}🇯🇵👨‍👩‍👧‍👦"], "a", 3),
+        "all" => ("prefix ", &["e\u{301}🇯🇵"], "", 2),
+        "fragments" => ("prefix ", &["a", "e", "\u{301}"], "a", 1),
+        "run-start" => ("prefix e", &["\u{301}"], "", 1),
+        _ => return Err(E_INVALIDARG.into()),
+    };
+    let store = editor.store.get();
+    let start = prefix.encode_utf16().count();
+    store.external_text(format!("{prefix} suffix").encode_utf16().collect())?;
+    store.host_selection(start, start)?;
+    pump(window)?;
+    for fragment in fragments {
+        editor.insert(&fragment.encode_utf16().collect::<Vec<_>>())?;
+        assert_eq!(editor.input_disposition.get(), INPUT_APPLIED);
+    }
+    pump(window)?;
+    let identity = owned_view(&editor.context)?.cast::<IUnknown>()?;
+    if kind == "host-fallback" {
+        editor.clear_tracking();
+        pump(window)?;
+        assert!(no_composition(&editor.context)?);
+    }
+    let original = store.text.borrow().clone();
+    store.undo.borrow_mut().clear();
+    store.redo.borrow_mut().clear();
+    store.set_text_calls.set(0);
+    let reads = super::input_notify_host::body_reads()?;
+    store.fail_text_after.set(kind == "uncertain");
+    editor.input(WM_CHAR, WPARAM(8), LPARAM(count))?;
+    let expected: Vec<_> = format!("{prefix}{remaining} suffix")
+        .encode_utf16()
+        .collect();
+    assert_eq!(*store.text.borrow(), expected);
+    let dll_writes = usize::from(kind != "host-fallback");
+    assert_eq!(
+        store.set_text_calls.get(),
+        dll_writes,
+        "whole deletion once; untracked input stays with host"
+    );
+    assert_eq!(store.undo.borrow().len(), 1);
+    if kind == "uncertain" {
+        assert_eq!(editor.input_disposition.get(), INPUT_UNCERTAIN);
+        let eraser: ISpikeInputEraser = editor.composing.as_ref().ok_or(E_FAIL)?.control.cast()?;
+        let mut disposition = INPUT_UNCERTAIN;
+        unsafe {
+            assert!(eraser
+                .Backspace(editor.context.as_raw(), 1, &mut disposition)
+                .is_err());
+        }
+        assert_eq!(disposition, INPUT_NOT_ATTEMPTED);
+        assert_eq!(
+            store.set_text_calls.get(),
+            1,
+            "no repeat after uncertain grapheme write"
+        );
+        assert_eq!(*store.text.borrow(), expected);
+    } else if kind == "host-fallback" {
+        assert_eq!(editor.input_disposition.get(), INPUT_NOT_ATTEMPTED);
+        assert!(no_composition(&editor.context)?);
+        assert!(live.scene()?.underlines.is_empty());
+    } else {
+        assert_eq!(editor.input_disposition.get(), INPUT_APPLIED);
+        assert_eq!(
+            store.last_text_lock.get(),
+            store.last_composition_lock.get()
+        );
+        pump(window)?;
+        let end = start + remaining.encode_utf16().count();
+        assert_eq!(store.selection.get().acpStart, end as i32);
+        assert_eq!(store.selection.get().acpEnd, end as i32);
+        if remaining.is_empty() {
+            assert!(no_composition(&editor.context)?);
+            assert!(live.scene()?.underlines.is_empty());
+        } else {
+            assert_eq!(live.scene()?.underlines, vec![start..end]);
+            assert!(owned_view(&editor.context)?.cast::<IUnknown>()? == identity);
+        }
+    }
+    assert_eq!(super::input_notify_host::body_reads()?, reads);
+    store.fail_text_after.set(false);
+    editor.input(WM_CHAR, WPARAM(0x1a), LPARAM(1))?;
+    assert_eq!(
+        *store.text.borrow(),
+        original,
+        "one Undo restores the entire cluster deletion"
+    );
+    assert_eq!(store.set_text_calls.get(), dll_writes);
+    editor.clear_tracking();
+    pump(window)?;
+    assert!(no_composition(&editor.context)?);
+    assert!(live.scene()?.underlines.is_empty());
+    assert_eq!(super::input_notify_host::body_reads()?, reads);
+    println!("Backspace transaction / grapheme-{kind}: OK");
     Ok(())
 }
