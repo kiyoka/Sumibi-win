@@ -61,6 +61,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [Brokerの受取・破棄まで保持する容量予約](docs/adr/0015-broker-admission-through-delivery.md)
 - [認証済み子Brokerを再利用する有限接続](docs/adr/0016-authenticated-reusable-broker-channel.md)
 - [再利用Broker workerと所有STAへの結果配送](docs/adr/0017-reusable-worker-and-owner-delivery.md)
+- [選択変換の保持rangeと送信前の失効検査](docs/adr/0018-retained-manual-range-and-source-validation.md)
 - [Issue #1の受入記録](docs/ISSUE_1_ACCEPTANCE.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 

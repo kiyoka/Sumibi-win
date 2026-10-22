@@ -348,6 +348,29 @@ pub fn replace_selection(
     )
 }
 
+/// Metadata-only selection revalidation. Generic TSF endpoints/direction, no
+/// ACP query or body read; the retained native range stays on this thread.
+fn checked_selection(
+    context: &ITfContext,
+    expected: &ITfRange,
+    expected_style: TF_SELECTIONSTYLE,
+    cookie: u32,
+) -> Result<ITfRange> {
+    let (range, style) = selection(context, cookie)?;
+    unsafe {
+        if !same_context(&range.GetContext()?, context)?
+            || style != expected_style
+            || !range
+                .IsEqualStart(cookie, expected, TF_ANCHOR_START)?
+                .as_bool()
+            || !range.IsEqualEnd(cookie, expected, TF_ANCHOR_END)?.as_bool()
+        {
+            return Err(E_ABORT.into());
+        }
+    }
+    Ok(range)
+}
+
 fn validate_snapshot(
     manager: &ITfThreadMgr,
     snapshot: &SelectionSnapshot,
@@ -357,21 +380,10 @@ fn validate_snapshot(
         return Err(E_ABORT.into());
     }
     ensure_target(manager, &snapshot.context)?;
-    let (range, style) = selection(&snapshot.context, cookie)?;
+    let range = checked_selection(&snapshot.context, &snapshot.range, snapshot.style, cookie)?;
     crate::protection::validate(&snapshot.context, &range, cookie, snapshot.protection)?;
-    // SAFETY: endpoint comparisons and reads use this fresh edit cookie.
-    unsafe {
-        if style != snapshot.style
-            || !range
-                .IsEqualStart(cookie, &snapshot.range, TF_ANCHOR_START)?
-                .as_bool()
-            || !range
-                .IsEqualEnd(cookie, &snapshot.range, TF_ANCHOR_END)?
-                .as_bool()
-            || read_all(&range, cookie)? != snapshot.original
-        {
-            return Err(E_ABORT.into());
-        }
+    if read_all(&range, cookie)? != snapshot.original {
+        return Err(E_ABORT.into());
     }
     ensure_target(manager, &snapshot.context)?;
     if snapshot.policy.get() != snapshot.captured_policy {

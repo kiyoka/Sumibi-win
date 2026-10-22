@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | OS非依存Core | core/lib.rsのManualConversionとinput.rsの有限InputSession。所有ホストの実入力を1024 UTF-16単位まで記録。recovery.rsに有限救済 | 製品追跡・待機・候補・手動／自動の状態と効果を追加 |
 | COMとDLL | tip/com.rs、build.rs。factory・独立lease・所有thread・解除再試行 | 一般アプリにロードされる常設登録と更新時の寿命 |
-| TSF編集 | tip/edit.rsとmanual_edit.rs。同期read/write、全文照合、Core gate、IPC結果の一度だけ適用。所有ACP context限定 | 製品キーとの統合、一般アプリの対象分類と編集 |
+| TSF編集 | tip/edit.rsとmanual_edit.rs。generic保持range、同期read/write、全文照合、Core gate、IPC結果の一度だけ適用。専用所有contextで検証。[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md) | 非ACP入力先の実検証、製品キーとの統合、一般アプリの対象分類と編集 |
 | 保護入力 | protection.rs。scope/status/compartmentの肯定検査、取得・source・適用時の再検査。実DLLで39ケース | 一般アプリの実スコープ・独自機密欄・判定不能時の動作確認 |
 | 追跡composition | 選択composition 18・所有ホストの入力範囲25・実DLLのcomposition伸縮29・同期入力取引22・Backspace 27・他サービス拒否16ケースを確認 | 前方Delete・待機・製品全体の救済・製品InputSession・一般アプリの他IMEとの競合と寿命 |
 | 表示属性 | display.rs / preview.rs。点線、原文保持、属性だけ遅延解除 | 通常アプリでの下線、アクセシビリティ、既存属性との共存 |
@@ -121,6 +121,13 @@ Coreに救済7件を追加してworkspaceは57件。コピー試験は差替え�
 詳細は[ADR 0014](adr/0014-bounded-input-recovery.md)を参照。製品の待機行列・全体容量と一般アプリは未完了。
 Test-Spike.ps1の全検査を省略なしで実行し、57件と既存native/pipe/peerも成功した。
 ログはtarget/issue-4-input-recovery-regression.log。TSF/COM解除・DLLアンロード、診断process残留なしも確認。
+
+同日、ManualEditからITfRangeACPの必須問い合わせを除き、Coreに明示的な保持rangeの長さstampを追加した。
+source前には本文を再取得せずcontext・選択端点・向き・保護状態を再検査し、観測した失敗を復元後も拒否する。
+range-target-testの12ケースとCore追加2件、workspace 65件を含むTest-Spike.ps1全回帰が省略なしで成功。
+ログはtarget/issue-4-retained-range-regression.log。解除・DLLアンロードを確認した。
+fixtureは依然ACP方式で、非ACPアプリの互換性や未通知本文変更の検出は未検証。
+詳細は[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md)を参照。
 
 ## 3. アプリ互換表の記録形式
 

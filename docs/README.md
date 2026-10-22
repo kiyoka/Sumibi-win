@@ -28,6 +28,7 @@
 - [ADR 0015](adr/0015-broker-admission-through-delivery.md)：完了・受取済み結果も含めたBrokerの容量予約と解放。
 - [ADR 0016](adr/0016-authenticated-reusable-broker-channel.md)：認証済み子Brokerの連続要求、worker専用の有限接続と取消。
 - [ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)：EXE再利用worker、キー消費前のPermitと所有STA配送・取消・終了。
+- [ADR 0018](adr/0018-retained-manual-range-and-source-validation.md)：generic保持rangeの選択変換と、本文を再取得しない送信前検査・観測した失敗の永久失効。
 - [Mac版移植範囲](MAC_PARITY.md)：共通契約とOS固有の再設計。
 
 ## 更新の規則

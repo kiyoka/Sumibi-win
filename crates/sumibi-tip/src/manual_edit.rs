@@ -1,7 +1,7 @@
 //! Owner-thread Core gate, immediately followed by one guarded TSF write.
 //! The caller must classify input scopes before supplying an allowed policy.
-//! This adapter is currently restricted to caller-owned ACP contexts. It uses
-//! ITfRangeACP coordinates and is not an arbitrary application integration.
+//! Uses generic retained TSF ranges; it never requires ITfRangeACP coordinates.
+//! Compatibility has only been exercised in caller-owned diagnostic contexts.
 //! No communication, COM pointer, edit cookie or target coordinate leaves here.
 use super::*;
 use std::rc::Weak;
@@ -260,7 +260,8 @@ pub struct ManualEdit {
     deadline: Instant,
 }
 impl ManualEdit {
-    /// Call only for an ACP context whose text store the caller owns.
+    /// Call only for a diagnostic context whose text store the caller owns.
+    /// The selection uses generic TSF ranges; non-ACP hosts remain unverified.
     /// `identity` is a fresh opaque snapshot registration, never a COM address.
     /// It must not be reused for another context/range or later request.
     pub fn capture(
@@ -321,12 +322,22 @@ impl ManualEdit {
     }
     pub fn source(&self) -> Result<String> {
         self.guard.check()?;
+        let result = self.checked_source();
+        // Once this owner observes a bad selection/protection/lock/policy,
+        // restoring the visible state is not permission to reuse the ticket.
+        if result.is_err() {
+            self.guard.state.invalid.set(true);
+        }
+        result
+    }
+    fn checked_source(&self) -> Result<String> {
         // A ticket can be held before transport submission. Recheck metadata
         // without rereading the body, even when a host omitted change notices.
         let manager = self.manager.clone();
         let context = self.snapshot.context.clone();
         let target = context.clone();
         let range = self.snapshot.range.clone();
+        let style = self.snapshot.style;
         let expected = self.snapshot.protection;
         let observation = self.guard.state.clone();
         run(
@@ -335,7 +346,8 @@ impl ManualEdit {
             false,
             Box::new(move |cookie| {
                 ensure_target(&manager, &target)?;
-                crate::protection::validate(&target, &range, cookie, expected)?;
+                let current = checked_selection(&target, &range, style, cookie)?;
+                crate::protection::validate(&target, &current, cookie, expected)?;
                 ensure_target(&manager, &target)?;
                 if observation.invalid.get() {
                     return Err(E_ABORT.into());
@@ -422,23 +434,18 @@ fn fresh_target(
     cookie: u32,
     identity: u128,
 ) -> Result<Target> {
-    let range_acp: ITfRangeACP = range.cast()?;
-    let mut start = 0i32;
-    let mut length = 0i32;
-    // SAFETY: ACP extent is queried only in the currently owning edit session.
-    unsafe {
-        range_acp.GetExtent(&mut start, &mut length)?;
-    }
-    let end = start.checked_add(length).ok_or(E_ABORT)?;
-    if start < 0 || length < 0 {
-        return Err(E_ABORT.into());
-    }
+    // validate_snapshot already checked native endpoints, direction, context,
+    // source and protection. Keep the native range local; Core needs only this
+    // explicit retained-range stamp, never invented document coordinates.
+    let text = read_all(range, cookie)?;
     let policy = snapshot.policy.get();
     Ok(Target {
         context: identity,
         range: identity,
-        selection: (start, end),
-        text: read_all(range, cookie)?,
+        selection: sumibi_core::Selection::RetainedRange {
+            utf16_units: text.len(),
+        },
+        text,
         revision: policy.revision,
         allowed: policy.allowed,
     })

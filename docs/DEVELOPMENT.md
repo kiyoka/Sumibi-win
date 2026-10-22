@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 24件（応答照合7・入力範囲追跡/削除計画10・救済7）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 5件を含めworkspace合計63件。
+現時点はCore 26件（応答照合9・入力範囲追跡/削除計画10・救済7）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 5件を含めworkspace合計65件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -15,6 +15,21 @@ JSON構造・固定エラー・世代・取消・再接続・期限・対象照�
 固定ハンドルへ相手を結び付け、トークン・PID・作成時刻を相互検査した後で模擬結果をCoreへ返す。
 停止・期限・偽の相手・drop・容量・handle解放を確認する。起動方式と限界は[ADR 0003](adr/0003-pinned-desktop-peers.md)。
 通常のデスクトップmedium integrity限定で、サンドボックスや昇格環境で拒否されてもACLを拡張しない。
+
+## 選択変換の保持rangeを検証する
+
+```powershell
+cargo build --workspace --features sumibi-host/spike --locked --offline
+./target/debug/sumibi-setup.exe range-target-test --dll ./target/debug/sumibi_tip.dll
+```
+
+ManualEditはITfRangeACPの絶対座標を要求せず、保持rangeの端点・向き・本文を照合する。
+2026-10-22、通常ユーザーのWindows 11 x64 build 26300 / Rust 1.99.1で12ケース成功。
+送信前の選択/保護状態の検査と、拒否後に状態を戻しても再利用できないことも確認した。
+fixtureは専用ACP storeで、非ACPアプリの互換性は未検証。実入力追跡は従来のACP方式のまま。
+workspace 65件を含むTest-Spike.ps1の全検査も省略なしで成功した。
+ログはtarget/issue-4-retained-range.logとtarget/issue-4-retained-range-regression.log。
+詳細と本文cacheの制限は[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md)を参照。
 
 ## 同期入力取引を試す
 

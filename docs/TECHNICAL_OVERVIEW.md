@@ -213,6 +213,11 @@ APIの同期／非同期指定は[Microsoftの契約](https://learn.microsoft.co
 
 現在の1024 UTF-16単位はアダプターの技術上限で、後述する送信1000書記素の上限と別である。
 Coreの`Target`はcontext/rangeの不透明ID、選択、UTF-16全文、入力・設定・認可の版、allowedを持つ。
+選択は絶対ACP座標と保持rangeの長さstampを明示的に区別する。
+ManualEditはgeneric ITfRangeのcontext・端点・向きを所有STAで検査し、長さstampを使う。
+source前のmetadata検査で失敗した要求は復元後も再利用できない。
+非ACPアプリの互換性は未検証で、実入力追跡はACP方式を維持する
+（[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md)）。
 同じ要求の応答は照合失敗でも消費するが、別要求の古い応答で現在の要求を消さない。
 ManualConversionのTargetには独立の容量制限を設けず、呼出し側が上限を担う。
 追加のCore InputSessionは所有ホストの入力範囲を1024 UTF-16単位に制限する。

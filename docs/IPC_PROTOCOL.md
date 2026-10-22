@@ -179,6 +179,9 @@ Coreの計画と実DLLの削除だけで処理し、削除本文・COM range・c
 保護履歴・期限を検査し、救済本文・操作ticket・コピー先をwire/workerへ渡さない。本文をBrokerから復旧しない。
 製品の常駐Broker、前方Delete等のキー配送・救済・一般アプリでの判定はIssue #4で引き続き実装する。
 Protocol自体がOS認証する責務には変更しない。
+ManualEditの選択はgeneric保持rangeの長さstampへ変更したが、これは所有STAとCoreの内部契約である。
+native range・stamp・cookieをwireへ追加せず、JSON版1を維持する
+（[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md)）。
 
 型付き変換は純粋なRustの模擬通信だけで検証するため、前面ウィンドウや実API・資格情報を必要としない。
 既存のデスクトップ試験で前面化できない場合でも、その失敗をProtocol成功で置き換えない。

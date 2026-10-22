@@ -28,6 +28,9 @@ pub(super) use delayed_host::exercise_delayed;
 #[path = "broker_host.rs"]
 mod broker_host;
 pub(super) use broker_host::exercise_broker;
+#[path = "range_host.rs"]
+mod range_host;
+pub(super) use range_host::exercise_ranges;
 #[path = "broker_keys.rs"]
 mod broker_keys;
 pub(super) use broker_keys::exercise_broker_keys;

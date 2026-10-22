@@ -18,7 +18,7 @@ fn target() -> Target {
     Target {
         context: 10,
         range: 20,
-        selection: (7, 14),
+        selection: sumibi_core::Selection::Acp(7, 14),
         text: "nihongo".encode_utf16().collect(),
         revision: sumibi_core::Revision {
             input: 1,
@@ -182,7 +182,7 @@ fn core_checks_every_fresh_target_even_after_a_valid_framed_reply() {
     changed.range += 1;
     changes.push(changed);
     let mut changed = target();
-    changed.selection = (8, 14);
+    changed.selection = sumibi_core::Selection::Acp(8, 14);
     changes.push(changed);
     let mut changed = target();
     changed.text = "NIHONGO".encode_utf16().collect();

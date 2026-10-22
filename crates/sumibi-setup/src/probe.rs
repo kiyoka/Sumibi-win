@@ -125,6 +125,7 @@ enum Exercise {
     Close,
     Delayed,
     Broker,
+    Ranges,
     BrokerKeys,
     BrokerInput,
     Protection,
@@ -197,6 +198,7 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "close-test"
             && args[0] != "delayed-test"
             && args[0] != "broker-test"
+            && args[0] != "range-target-test"
             && args[0] != "broker-key-test"
             && args[0] != "broker-input-test"
             && args[0] != "protection-test"
@@ -216,7 +218,7 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "demo")
     {
         return Err(
-            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|close-test|delayed-test|broker-test|broker-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|composing-input-test|composing-demo|input-notify-test|transaction-input-test|backspace-input-test|recovery-input-test|recovery-demo|transaction-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
+            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|close-test|delayed-test|broker-test|range-target-test|broker-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|composing-input-test|composing-demo|input-notify-test|transaction-input-test|backspace-input-test|recovery-input-test|recovery-demo|transaction-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
                 .into(),
         );
     }
@@ -272,6 +274,7 @@ pub(super) fn run() -> Result<(), Failure> {
                 Some("close-test") => Exercise::Close,
                 Some("delayed-test") => Exercise::Delayed,
                 Some("broker-test") => Exercise::Broker,
+                Some("range-target-test") => Exercise::Ranges,
                 Some("broker-key-test") => Exercise::BrokerKeys,
                 Some("broker-input-test") => Exercise::BrokerInput,
                 Some("protection-test") => Exercise::Protection,
@@ -398,6 +401,7 @@ fn registered_probe(
             Exercise::Close => crate::edit_host::exercise_close(&manager.0, app_client)?,
             Exercise::Delayed => crate::edit_host::exercise_delayed(&manager.0, app_client)?,
             Exercise::Broker => crate::edit_host::exercise_broker(&manager.0, app_client)?,
+            Exercise::Ranges => crate::edit_host::exercise_ranges(&manager.0, app_client)?,
             Exercise::BrokerKeys => crate::edit_host::exercise_broker_keys(&manager.0, app_client)?,
             Exercise::BrokerInput => {
                 crate::edit_host::exercise_broker_input(&manager.0, app_client)?

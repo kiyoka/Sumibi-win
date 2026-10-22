@@ -533,7 +533,7 @@ pub(super) fn child(args: &[OsString]) -> Result<()> {
     let target = Target {
         context: 1,
         range: 1,
-        selection: (0, 7),
+        selection: sumibi_core::Selection::Acp(0, 7),
         text: "nihongo".encode_utf16().collect(),
         revision: CoreRevision {
             input: 1,

@@ -62,6 +62,12 @@ worker 11項目・実DLLキー25ケースと全回帰を確認しworkspaceは63�
 （[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)）。次は一般アプリの入力adapter・所有compositionの
 寿命・保護情報・標準Undo、常駐共有探索と製品の配置/認証を進める。
 
+続いてManualEditの選択変換からITfRangeACP依存を除き、generic保持rangeと明示的なCoreの長さstampを使う。
+送信前の選択/保護検査と観測した失敗の永久失効を追加し、12ケースと全回帰、workspace 65件を確認した
+（[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md)）。実入力追跡はACP方式を維持する。
+次は非ACP入力先を含む一般アプリの検証と、診断sinkに頼らない所有compositionの寿命、標準Undo、
+製品の配置/認証・非同期実行を進める。今回の変更で一般アプリを対応済みとはしない。
+
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。
 - named pipeの非同期I/Oと停止伝播、偽server・PID再利用・容量超過・終了待機を試験。
