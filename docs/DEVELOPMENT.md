@@ -7,9 +7,17 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 80件（応答照合9・入力範囲追跡/削除/caret計画52・書記素移動/削除境界7・救済12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計120件。
+現時点はCore 92件（応答照合9・入力範囲追跡/削除/caret計画52・書記素移動/削除境界7・救済12・待機入力12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計132件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
+
+手動変換の待機入力Coreは`cargo test -p sumibi-core waiting_input --locked --offline`で12件を検証できる。
+既存ManualConversionとの模擬順序、消費前の容量確保、FIFO/新要求での停止、Enterの非配送、
+試行ticketの非再利用、不明結果と適用済み先頭の区別、境界での失効/本文除去を扱う。
+Test-Spike.ps1 -SkipDesktopでRust132件・静的検査・基本DLL検査も成功した。
+同期入力174・救済47等の拡張native検査は前段階の結果で、今回は再実行していない。
+製品キーや診断editorへの接続はなく、実打鍵・実TSF待機・共有救済統合の成功を表さない
+（[ADR 0033](adr/0033-bounded-core-waiting-input.md)）。
 
 通常ユーザーの別プロセス・非同期I/O検証は `target/debug/sumibi-setup.exe ipc-peer-test`。
 固定ハンドルへ相手を結び付け、トークン・PID・作成時刻を相互検査した後で模擬結果をCoreへ返す。
@@ -127,7 +135,7 @@ Backspace55・書記素ホスト22・composition46・通知30・追跡25・broke
 記録内の選択編集追加時は33件を加えて同期入力148件、共有満杯の3操作と断片コピーを加えて救済45件、Core6件追加でRust114件。
 Backspace55・書記素ホスト22・composition46・通知30・追跡25・broker入力11・close4と静的検査が成功した。
 追跡継続と失効後の非採用は[ADR 0031](adr/0031-recorded-selection-replacement.md)を参照。
-最新は文書端の移動/選択26件を加えて同期入力174件、共有満杯のHome/Shift＋Endを加えて救済47件、Core6件追加でRust120件。
+文書端の移動/選択追加時は26件を加えて同期入力174件、共有満杯のHome/Shift＋Endを加えて救済47件、Core6件追加でRust120件。
 Backspace55・書記素ホスト22・composition46・通知30・追跡25・broker入力11・close4とTest-Spike.ps1 -SkipDesktopが成功した。
 文書端の照合、二重移動のcounter、物理打鍵と一般アプリの未確認範囲は[ADR 0032](adr/0032-recorded-document-edge-navigation.md)を参照。
 以下は以前の段階の検証結果である。

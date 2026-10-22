@@ -8,6 +8,7 @@
 pub mod grapheme;
 pub mod input;
 pub mod recovery;
+pub mod waiting_input;
 
 /// Opaque, globally unique request identity supplied by the future adapter.
 /// Never reuse an identity, including after cancellation or reconnection.

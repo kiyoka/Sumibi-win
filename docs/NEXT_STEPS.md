@@ -151,6 +151,13 @@ Core6件追加でworkspace114件、同期入力33件追加で148件、共有満�
 （[ADR 0032](adr/0032-recorded-document-edge-navigation.md)）。
 一般アプリの行端/折り返し・入力adapter・通知/保護情報・sink寿命・標準Undoと製品統合は残る。
 
+次に手動変換待機入力の実験的なCoreを追加した。1024イベント・本文16384単位、消費前admit、
+FIFO先頭の一度だけの完了、次のConvert要求での停止、Enterの非配送、境界/不明結果の不可逆失効を扱う。
+Core12件追加で92件・workspace132件と静的/基本DLL検査が成功した
+（[ADR 0033](adr/0033-bounded-core-waiting-input.md)）。
+次は専用adapterで取得前の共有容量/救済先・要求取消との整合を証明し、実DLL/workerで順序を検証する。
+製品キーはまだ接続せず、全体予算/期限/超過時政策と一般アプリの残範囲も維持する。
+
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。
 - named pipeの非同期I/Oと停止伝播、偽server・PID再利用・容量超過・終了待機を試験。

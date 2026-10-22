@@ -136,7 +136,7 @@ flowchart TB
 
 | crate / 所有者 | 契約 |
 | --- | --- |
-| sumibi-core | OS非依存のイベントと効果、手動／自動の状態、候補、上限判定。将来もunsafe禁止 |
+| sumibi-core | OS非依存の状態と上限判定。実装済みの手動応答照合・入力追跡・救済に、実験的な手動待機入力の有限FIFOを追加。製品キーは未接続。自動/候補全体は将来範囲。unsafe禁止 |
 | sumibi-protocol | 4バイト長＋最大256KiBのUTF-8フレーム、版付きの単一結果JSON、要求・接続世代・取消・期限・再接続。COM・HTTP・OS認証は含めない |
 | sumibi-ipc | Windowsの固定process handle・token照合、合計8 endpoint、overlapped pipe・停止・期限。単発起動と容量4のworker。EXE再利用workerから認証済み子の連続要求と所有STA配送を検証（[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)）。診断EXE bridge経由で実DLLキーとも接続。製品の一般アプリ内配置は未実装 |
 | sumibi-tip | TSFキー、composition、範囲取得、保護判定、書込、候補表示、IPCの所有スレッドへの復帰 |
@@ -326,6 +326,11 @@ Mac実装の最大12候補とSPECの追加10件の差は[移植表](MAC_PARITY.m
 製品の期限切れ破棄の事前表示と明示操作の関係は未決で、製品の待機入力へ自動破棄を有効にしない。
 容量超過では要求を取消し、安全に元欄へ原文を反映するか、消費前に通過へ切り替える必要がある。
 この切替と容量確保を証明できるまで、製品用の待機キー消費を有効化しない。
+実験的なCoreモデルはwaiting_input::WaitingInputに実装した。1 queueの上記イベント/本文上限を守り、
+消費前admit、先頭だけの試行ticket、確認済み適用後だけの除去、新しいConvert要求での排出停止を扱う。
+Enterと不明完了は自動配送不能な救済状態へ移し、focus/保護境界ではpayloadを除去する。
+Core12件で検証済みだが、native adapter・診断editor・製品キー・全体予算/期限/救済先は未接続である
+（[ADR 0033](adr/0033-bounded-core-waiting-input.md)）。
 救済はメモリーに限定し、明示コピー・破棄だけを提供する。クラッシュ後の本文復元は保証しない。
 
 診断editorでは上記の製品提案と分けて、1件・1024 UTF-16単位・10分の救済を実装した
