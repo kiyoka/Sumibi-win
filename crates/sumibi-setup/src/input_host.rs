@@ -2,6 +2,7 @@
 use super::*;
 use crate::broker_bridge::Bridge;
 use std::ops::Range;
+use sumibi_core::grapheme::{Boundaries, Direction};
 use sumibi_tip::spike::{ISpikeBroker, ISpikeBrokerTransport, FUNCTION_TEST_BROKER};
 use sumibi_tip::spike::{ISpikeControl, COMMAND_CONVERT, FUNCTION_TEST_CONTROL};
 use windows::Win32::Foundation::{E_ACCESSDENIED, LPARAM, WPARAM};
@@ -19,6 +20,9 @@ pub(crate) use composing_host::{exercise_transactions, run_transaction_demo};
 #[path = "input_recovery_host.rs"]
 mod input_recovery_host;
 pub(crate) use input_recovery_host::{exercise_recovery, run_recovery_demo};
+#[path = "grapheme_host.rs"]
+mod grapheme_host;
+pub(crate) use grapheme_host::exercise_graphemes;
 
 impl TextStore {
     fn boundary(&self, position: usize) -> bool {
@@ -62,50 +66,50 @@ impl TextStore {
         let start = selected.acpStart as usize;
         let end = selected.acpEnd as usize;
         let backwards = selected.style.ase == TS_AE_START;
-        let mut caret = if backwards { start } else { end };
+        let caret = if backwards { start } else { end };
         let anchor = if backwards { end } else { start };
-        let length = self.text.borrow().len();
-        for step in 0..repeats.min(MAX_SELECTION_UNITS) {
-            caret = match key {
-                0x24 => 0,
-                0x23 => length,
-                0x25 if !extend && start != end && step == 0 => start,
-                0x27 if !extend && start != end && step == 0 => end,
-                0x25 => {
-                    let mut next = caret.saturating_sub(1);
-                    if !self.boundary(next) {
-                        next -= 1;
-                    }
-                    next
-                }
-                0x27 => {
-                    let mut next = (caret + 1).min(length);
-                    if !self.boundary(next) {
-                        next += 1;
-                    }
-                    next
-                }
-                _ => return Err(E_INVALIDARG.into()),
-            };
+        let map = Boundaries::new(&self.text.borrow()).ok_or(E_INVALIDARG)?;
+        let repeats = repeats.min(MAX_SELECTION_UNITS);
+        if repeats == 0 {
+            return Err(E_INVALIDARG.into());
         }
+        let caret = match key {
+            0x24 => 0,
+            0x23 => map.end(),
+            0x25 | 0x27 => {
+                let direction = if key == 0x25 {
+                    Direction::Backward
+                } else {
+                    Direction::Forward
+                };
+                if !extend && start != end {
+                    let edge = if key == 0x25 { start } else { end };
+                    let snapped = map.snap(edge, direction).ok_or(E_INVALIDARG)?;
+                    if repeats == 1 {
+                        snapped
+                    } else {
+                        map.move_caret(snapped, direction, repeats - 1)
+                            .ok_or(E_INVALIDARG)?
+                    }
+                } else {
+                    map.move_caret(caret, direction, repeats)
+                        .ok_or(E_INVALIDARG)?
+                }
+            }
+            _ => return Err(E_INVALIDARG.into()),
+        };
         self.select_caret(if extend { anchor } else { caret }, caret)
     }
     fn delete_forward(&self, repeats: usize) -> Result<()> {
         let selected = self.selection.get();
-        let start = selected.acpStart as usize;
-        let mut end = selected.acpEnd as usize;
-        if start == end {
-            let length = self.text.borrow().len();
-            for _ in 0..repeats.min(MAX_SELECTION_UNITS) {
-                if end == length {
-                    break;
-                }
-                end += 1;
-                if !self.boundary(end) {
-                    end += 1;
-                }
-            }
-        }
+        let map = Boundaries::new(&self.text.borrow()).ok_or(E_INVALIDARG)?;
+        let (start, end) = map
+            .deletion(
+                (selected.acpStart as usize, selected.acpEnd as usize),
+                Direction::Forward,
+                repeats.min(MAX_SELECTION_UNITS),
+            )
+            .ok_or(E_INVALIDARG)?;
         if start == end {
             return Ok(());
         }
@@ -165,16 +169,18 @@ impl TextStore {
     }
     fn backspace(&self) -> Result<()> {
         let selected = self.selection.get();
-        let end = selected.acpEnd as usize;
-        let mut start = selected.acpStart as usize;
+        // This host owns the complete body. Planning retains offsets only and
+        // releases the text borrow before user_edit can notify external COM.
+        let map = Boundaries::new(&self.text.borrow()).ok_or(E_INVALIDARG)?;
+        let (start, end) = map
+            .deletion(
+                (selected.acpStart as usize, selected.acpEnd as usize),
+                Direction::Backward,
+                1,
+            )
+            .ok_or(E_INVALIDARG)?;
         if start == end {
-            if start == 0 {
-                return Ok(());
-            }
-            // This synthetic host owns its body. Share the same pinned
-            // segmentation for its ordinary fallback; no DLL read is involved.
-            start = sumibi_core::input::suffix_grapheme_boundary(&self.text.borrow()[..end], 1)
-                .ok_or(E_INVALIDARG)?;
+            return Ok(());
         }
         self.user_edit(start..end, &[])
     }
@@ -789,7 +795,9 @@ fn run(
         } else if let RunMode::NotificationTest(case) = mode {
             composing_host::test_notifications(&window, &editor, &live, client, case)
         } else if let RunMode::TransactionTest(case) = mode {
-            if let Some(case) = case.strip_prefix("erase/") {
+            if let Some(case) = case.strip_prefix("grapheme/") {
+                grapheme_host::test_graphemes(&window, &editor, &live, case)
+            } else if let Some(case) = case.strip_prefix("erase/") {
                 composing_host::test_backspace(&window, &editor, &live, client, case)
             } else if let Some(case) = case.strip_prefix("rescue/") {
                 input_recovery_host::test_recovery(&window, &editor, &live, client, case)

@@ -101,6 +101,11 @@ Core 5件追加でworkspace 71件、救済31ケースと同期入力/削除/通�
 Core 5件追加でworkspace 76件、Backspace 37件と関連回帰が成功した
 （[ADR 0023](adr/0023-grapheme-backspace-within-recorded-input.md)）。一般アプリと任意位置編集は残る。
 
+専用ホストの左右移動・Shift選択・Deleteも書記素へ接続し、境界表のCore7件と実TSF上のホスト編集12件を追加した。
+workspace83件と関連回帰が成功。保留中の編集は旧結果を拒否し、明示選択は拡張しない
+（[ADR 0024](adr/0024-grapheme-navigation-in-owned-host.md)）。
+製品DLLの前方削除取引・任意位置のcomposition継続、一般アプリの保護情報・寿命・標準Undoは引き続き残る。
+
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
 - fake peerと模擬トランスポートから開始し、別プロセスのユーザー／logon SID／PID／起動世代を照合。
 - named pipeの非同期I/Oと停止伝播、偽server・PID再利用・容量超過・終了待機を試験。

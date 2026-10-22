@@ -59,6 +59,21 @@ pub fn suffix_grapheme_boundary(units: &[u16], count: usize) -> Option<usize> {
     {
         return None;
     }
+    with_utf16_text(units, |text| {
+        let (boundary, _) = text.grapheme_indices(true).rev().nth(count - 1)?;
+        Some(text[..boundary].encode_utf16().count())
+    })
+}
+
+/// Borrow fixed, bounded scratch only while computing metadata. The callback
+/// cannot return a reference into this temporary UTF-8 buffer.
+pub(crate) fn with_utf16_text<T>(
+    units: &[u16],
+    action: impl FnOnce(&str) -> Option<T>,
+) -> Option<T> {
+    if units.len() > MAX_TRACKED_UNITS {
+        return None;
+    }
     // One UTF-16 unit needs at most three UTF-8 bytes (a surrogate pair
     // needs four). Fixed scratch avoids a heap allocation before deletion.
     let mut utf8 = [0u8; MAX_TRACKED_UNITS * 3];
@@ -70,8 +85,7 @@ pub fn suffix_grapheme_boundary(units: &[u16], count: usize) -> Option<usize> {
         length = end;
     }
     let text = std::str::from_utf8(&utf8[..length]).ok()?;
-    let (boundary, _) = text.grapheme_indices(true).rev().nth(count - 1)?;
-    Some(text[..boundary].encode_utf16().count())
+    action(text)
 }
 impl InputSession {
     /// Metadata for an exact live observation, without consuming private text.

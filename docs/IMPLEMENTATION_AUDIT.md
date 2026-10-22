@@ -131,6 +131,11 @@ fixtureは依然ACP方式で、非ACPアプリの互換性や未通知本文変�
 
 ## 3. アプリ互換表の記録形式
 
+2026-10-22、Coreに書記素境界の7件を追加し、workspaceは83件。専用ホストの移動/Shift選択/Deleteへ接続した。
+grapheme-input-testの12ケースはホストの編集処理と実TSF通知・旧結果拒否・Undo/Redoを確認し、通常キー配送とは分ける。
+Test-Spike.ps1 -SkipDesktopとBackspace37・救済34・同期入力22・追跡25・composition29・通知30・broker入力11・close4が成功。
+前面化で未確認の3検査と一般アプリ対応は維持する。詳細とログは[ADR 0024](adr/0024-grapheme-navigation-in-owned-host.md)を参照。
+
 2026-10-22、記録末尾と専用ホストのBackspaceを拡張書記素単位へ変更した。
 unicode-segmentation 1.13.3 / Unicode 17.0.0を固定し、Core 5件追加でworkspaceは76件。
 Backspace 37・救済34・同期入力22・追跡25・composition伸縮29・通知30・broker入力11・close 4が成功。

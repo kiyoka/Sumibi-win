@@ -140,6 +140,7 @@ enum Exercise {
     Notifications,
     Transactions,
     Backspace,
+    GraphemeInput,
     Recovery,
     RecoveryDemo,
     TransactionDemo,
@@ -214,13 +215,14 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "input-notify-test"
             && args[0] != "transaction-input-test"
             && args[0] != "backspace-input-test"
+            && args[0] != "grapheme-input-test"
             && args[0] != "recovery-input-test"
             && args[0] != "recovery-demo"
             && args[0] != "transaction-demo"
             && args[0] != "demo")
     {
         return Err(
-            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|close-test|delayed-test|broker-test|range-target-test|native-edit-test|broker-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|composing-input-test|composing-demo|input-notify-test|transaction-input-test|backspace-input-test|recovery-input-test|recovery-demo|transaction-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
+            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|close-test|delayed-test|broker-test|range-target-test|native-edit-test|broker-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|composing-input-test|composing-demo|input-notify-test|transaction-input-test|backspace-input-test|grapheme-input-test|recovery-input-test|recovery-demo|transaction-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
                 .into(),
         );
     }
@@ -291,6 +293,7 @@ pub(super) fn run() -> Result<(), Failure> {
                 Some("input-notify-test") => Exercise::Notifications,
                 Some("transaction-input-test") => Exercise::Transactions,
                 Some("backspace-input-test") => Exercise::Backspace,
+                Some("grapheme-input-test") => Exercise::GraphemeInput,
                 Some("recovery-input-test") => Exercise::Recovery,
                 Some("recovery-demo") => Exercise::RecoveryDemo,
                 Some("transaction-demo") => Exercise::TransactionDemo,
@@ -421,6 +424,9 @@ fn registered_probe(
                 crate::edit_host::exercise_transactions(&manager.0, app_client)?
             }
             Exercise::Backspace => crate::edit_host::exercise_backspace(&manager.0, app_client)?,
+            Exercise::GraphemeInput => {
+                crate::edit_host::exercise_graphemes(&manager.0, app_client)?
+            }
             Exercise::Recovery => crate::edit_host::exercise_recovery(&manager.0, app_client)?,
             Exercise::RecoveryDemo => crate::edit_host::run_recovery_demo(&manager.0, app_client)?,
             Exercise::TransactionDemo => {

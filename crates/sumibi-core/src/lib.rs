@@ -5,6 +5,7 @@
 //! that session. Context/range identifiers must never be reused within a session.
 #![forbid(unsafe_code)]
 
+pub mod grapheme;
 pub mod input;
 pub mod recovery;
 

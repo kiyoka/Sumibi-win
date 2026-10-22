@@ -124,6 +124,9 @@ ISpikeInputEraserで削除・caret・composition縮小を同じwriteに接続す
 現在の削除計画はUnicode 17.0.0の拡張書記素単位。Coreは記録UTF-16を固定scratchで分割し、
 結合文字や複合絵文字をまとめて削除する。記録外の前後本文は取得・推測しない
 （[ADR 0023](adr/0023-grapheme-backspace-within-recorded-input.md)）。
+別途、ホストは自身の全本文からCore Boundariesを操作ごとに作り、左右/Shift移動とDeleteを計画する。
+本文の借用は通知前に解放し、境界表は位置だけを保持する。ホストの編集と正式な通知で旧追跡/変換を失効させ、
+DLLの本文取得範囲は広げない（[ADR 0024](adr/0024-grapheme-navigation-in-owned-host.md)）。
 本文書込と確定処理は挿入と共有する。旧世代・追跡外・選択・他composition等では一部を先に消さず、
 書込前に元のホスト処理へ返す。試行後の失敗では再削除せず、明示boundaryまで変換を停止する。
 前方Delete・任意位置編集・製品の待機/救済統合は未完了（[ADR 0013](adr/0013-synchronous-tracked-backspace.md)）。

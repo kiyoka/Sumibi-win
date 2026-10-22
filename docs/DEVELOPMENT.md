@@ -7,7 +7,7 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 36件（応答照合9・入力範囲追跡/削除計画15・救済12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計76件。
+現時点はCore 43件（応答照合9・入力範囲追跡/削除計画15・書記素移動/削除境界7・救済12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計83件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
@@ -102,6 +102,20 @@ fmt・Clippy 3構成・build・基本DLL検査も成功した。一括scriptはk
 救済34・同期入力22・追跡25・composition伸縮29・通知30・broker入力11・close 4も再確認した。
 前面化で未通過のwindow/input/delayedは引き続き未確認。最新ログと境界の条件は
 [ADR 0023](adr/0023-grapheme-backspace-within-recorded-input.md)を参照。
+
+## 専用ホストの書記素移動・選択・削除を検証する
+
+専用editorの書記素移動・Shift選択・ホストDeleteは次で検証できる。
+
+```powershell
+cargo build --workspace --features sumibi-host/spike --locked --offline
+./target/debug/sumibi-setup.exe grapheme-input-test --dll ./target/debug/sumibi_tip.dll
+```
+
+実TSF contextでホストの編集処理を直接呼ぶ12ケースが成功。新しいCore境界7件を加えworkspaceは83件。
+Test-Spike.ps1 -SkipDesktopと、関連するBackspace37・救済34・同期入力22・追跡25・composition29・通知30・broker入力11・close4も成功。
+前面化が必要なwindow/input/delayedは未確認のままで、通常キー配送の成功に読み替えない。
+操作規則とログは[ADR 0024](adr/0024-grapheme-navigation-in-owned-host.md)を参照。
 
 ## 未確認入力の救済を試す
 
@@ -467,12 +481,12 @@ cargo run -p sumibi-setup --locked --offline -- demo --dll target/debug/sumibi_t
 | 操作 | 動作 |
 | --- | --- |
 | 文字入力 | 選択部分を置換、またはカーソル位置へ挿入 |
-| Backspace | 選択部分、またはcaret左側の拡張書記素を削除（Unicode 17.0.0） |
+| Backspace | 明示選択、または書記素を削除。ホストの内部caretは含まれる書記素全体を対象（Unicode 17.0.0） |
 | Ctrl+A | 全文選択 |
 | Home / End | 文頭 / 文末へカーソル移動 |
-| ← / → | Unicodeスカラー単位で移動。選択中は選択の左端 / 右端へ移動 |
+| ← / → | 書記素単位で移動。選択中は該当方向の端へ寄せ、残りrepeat分だけ移動 |
 | Shift + ← / → / Home / End | 選択の始点を保持して範囲を伸縮 |
-| Delete | 選択部分、または直後のUnicodeスカラーを削除 |
+| Delete | 明示選択、または直後の書記素を削除。内部caretは含まれる書記素全体を対象 |
 | F6 | この入力欄を明示許可し、選択範囲を下線と自己所有compositionで保持。未選択なら全文を選択 |
 | F7 | 固定文字列「日本語」へ変換 |
 | Esc | 下線プレビューを取消 |
@@ -485,7 +499,8 @@ Undo/Redoは本文と選択範囲・選択の向きを一緒に復元する。Un
 
 カーソルと選択範囲も描画する。1024 UTF-16単位を上限とする固定幅の1行デモであり、
 マウス選択・スクロール・通常editorのクリップボード操作はまだ扱わない。
-Backspaceは書記素単位だが、左右移動・Delete・任意caret位置の完全な書記素編集は未対応。
+専用ホストは左右移動・Shift選択・Backspace/Deleteを書記素単位で扱う。明示部分選択は勝手に拡張しない。
+製品DLLの前方削除取引・任意位置でのcomposition継続・一般アプリの同じ動作は未対応。
 自動検証では所有ウィンドウへテスト用メッセージを送る。実キーボード操作の手動確認はまだ行っていない。
 
 2026-10-21、利用者のデモ試用で閉じるボタンによる停止が報告された。

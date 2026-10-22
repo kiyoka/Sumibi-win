@@ -3,6 +3,9 @@
 状態：Coreと専用ホストの実DLL入力で検証。一般アプリの任意位置編集は未対応。
 2026-10-22。Issue #4 / draft PR #10。ADR 0013の削除単位を更新する。
 
+専用ホストの左右移動・Shift選択・前方削除と内部caretの扱いは、後続の
+[ADR 0024](0024-grapheme-navigation-in-owned-host.md)で更新した。DLLの記録範囲の境界は維持する。
+
 ## 決定
 
 記録末尾のBackspaceをUnicode scalar単位から拡張書記素クラスタ単位へ変更する。

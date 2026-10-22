@@ -35,6 +35,7 @@
 - [ADR 0021](adr/0021-shared-input-recovery-budget.md)：EXEの共有救済4枠、消費前予約・レコード破棄までの保持と複数所有者のfallback。
 - [ADR 0022](adr/0022-native-owner-window-boundaries.md)：所有windowの無効化・非アクティブ化・モード取消による追跡/変換/救済の失効と標準処理の維持。
 - [ADR 0023](adr/0023-grapheme-backspace-within-recorded-input.md)：Unicode版を固定した記録内の書記素Backspace、通常ホストfallbackと範囲の限界。
+- [ADR 0024](adr/0024-grapheme-navigation-in-owned-host.md)：専用ホストの書記素移動/Shift選択/Delete、本文を持たない境界表と保留結果の拒否。
 
 ## 更新の規則
 

@@ -648,7 +648,7 @@ fn owned_view(context: &ITfContext) -> Result<ITfCompositionView> {
     }
     slot[0].take().ok_or_else(|| E_FAIL.into())
 }
-fn no_composition(context: &ITfContext) -> Result<bool> {
+pub(super) fn no_composition(context: &ITfContext) -> Result<bool> {
     let service: ITfContextComposition = context.cast()?;
     let enumerator = unsafe { service.EnumCompositions()? };
     let mut slot = [None];
