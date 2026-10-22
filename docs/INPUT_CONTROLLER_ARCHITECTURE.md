@@ -181,9 +181,12 @@ Convertの新要求で排出を停止し、Enterは明示確認へ移す。対�
 後続の専用Waiting adapterはこのCoreと既存EXE共有Recovery予算を接続し、元入力の受入れ前に救済枠を確保する。
 自己compositionは独立ISpikeInputState::Validateで実DLLの記録/identity/保護/通知と照合し、idle条件を緩めない。
 確認済み変換後に所有caretを結果末尾へ移してから排出し、停止時は未適用tailと不明な先頭を区別する。
-所有者Dropと取消は正確な要求IDを使う。通常キー受付・複数救済UI・window通知との統合は未接続である
+所有者Dropと取消は正確な要求IDを使う。waiting-demoのOwnerが専用の受付・複数救済UI・window通知を接続する
 （[ADR 0033](adr/0033-bounded-core-waiting-input.md)）。
 専用fixtureと寿命/容量の詳細は[ADR 0034](adr/0034-shared-recovery-waiting-adapter.md)を参照。
+OwnerはSession/ViewをRefCellから取り出して外部処理を行い、再入境界はepoch/closedで公開と復元を止める。
+UI操作はSession ID・固定index・slot ticketを照合し、旧行/旧Sessionを新しいレコードへ適用しない。
+F8巡回と表示中の1件のコピー/破棄、Clipboard公開前の境界照合は[ADR 0035](adr/0035-waiting-demo-and-record-recovery-ui.md)を参照。
 TSFを呼ぶ前にRefCellの借用を解放し、通知やウィンドウ破棄が再入しても借用違反を起こさないようにする。
 
 本文置換と属性解除の延期は区別する。属性解除は弱参照・世代一致を検査した上で非同期化できる。

@@ -143,6 +143,8 @@ enum Exercise {
     GraphemeInput,
     Recovery,
     WaitingInput,
+    WaitingDemo,
+    WaitingDemoTest,
     RecoveryDemo,
     TransactionDemo,
     Demo,
@@ -219,12 +221,14 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "grapheme-input-test"
             && args[0] != "recovery-input-test"
             && args[0] != "waiting-input-test"
+            && args[0] != "waiting-demo"
+            && args[0] != "waiting-demo-test"
             && args[0] != "recovery-demo"
             && args[0] != "transaction-demo"
             && args[0] != "demo")
     {
         return Err(
-            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|close-test|delayed-test|broker-test|range-target-test|native-edit-test|broker-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|composing-input-test|composing-demo|input-notify-test|transaction-input-test|backspace-input-test|grapheme-input-test|recovery-input-test|waiting-input-test|recovery-demo|transaction-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
+            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|close-test|delayed-test|broker-test|range-target-test|native-edit-test|broker-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|composing-input-test|composing-demo|input-notify-test|transaction-input-test|backspace-input-test|grapheme-input-test|recovery-input-test|waiting-input-test|waiting-demo|waiting-demo-test|recovery-demo|transaction-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
                 .into(),
         );
     }
@@ -298,6 +302,8 @@ pub(super) fn run() -> Result<(), Failure> {
                 Some("grapheme-input-test") => Exercise::GraphemeInput,
                 Some("recovery-input-test") => Exercise::Recovery,
                 Some("waiting-input-test") => Exercise::WaitingInput,
+                Some("waiting-demo") => Exercise::WaitingDemo,
+                Some("waiting-demo-test") => Exercise::WaitingDemoTest,
                 Some("recovery-demo") => Exercise::RecoveryDemo,
                 Some("transaction-demo") => Exercise::TransactionDemo,
                 Some("demo") => Exercise::Demo,
@@ -432,6 +438,10 @@ fn registered_probe(
             }
             Exercise::Recovery => crate::edit_host::exercise_recovery(&manager.0, app_client)?,
             Exercise::WaitingInput => crate::edit_host::exercise_waiting(&manager.0, app_client)?,
+            Exercise::WaitingDemo => crate::edit_host::run_waiting_demo(&manager.0, app_client)?,
+            Exercise::WaitingDemoTest => {
+                crate::edit_host::exercise_waiting_demo(&manager.0, app_client)?
+            }
             Exercise::RecoveryDemo => crate::edit_host::run_recovery_demo(&manager.0, app_client)?,
             Exercise::TransactionDemo => {
                 crate::edit_host::run_transaction_demo(&manager.0, app_client)?

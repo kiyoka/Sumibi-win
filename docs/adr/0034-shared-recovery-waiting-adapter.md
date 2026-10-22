@@ -74,3 +74,6 @@ fixtureは専用storeへの明示helper呼出しで、物理打鍵・自然な�
 前面化で未通過のwindow/input/delayedの3検査は維持する。
 後続は通常デモの明示モードと複数救済レコードの確認UI、所有window通知との接続、製品の容量/期限政策。
 一般アプリの保護情報・composition sink寿命・標準Undo・常駐Broker/配置/認証も残る。
+
+後続の[ADR 0035](0035-waiting-demo-and-record-recovery-ui.md)で、明示的なwaiting-demoの受付・複数確認UI・window境界を接続した。
+上記件数と未接続範囲は本ADRの実装時点の記録。製品キーと一般アプリへの接続は引き続き未完了である。

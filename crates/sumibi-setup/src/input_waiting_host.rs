@@ -1,4 +1,5 @@
-//! Diagnostic owner-STA adapter only. Not connected to WndProc/native keys.
+//! Diagnostic owner-STA adapter. Semantic admission also serves waiting-demo;
+//! worker I/O and recovery UI actions stay outside the window callback.
 //! Each admitted event holds one existing EXE-wide recovery slot before input
 //! could be consumed. No worker receives this object or any of its COM state.
 use super::*;
@@ -15,6 +16,11 @@ use sumibi_tip::spike::{INPUT_APPLIED, INPUT_APPLIED_UNTRACKED, INPUT_NOT_ATTEMP
 mod tests;
 pub(crate) use tests::exercise_waiting;
 pub(super) use tests::test_waiting;
+#[path = "input_waiting_owner.rs"]
+mod owner;
+pub(super) use owner::test_waiting_demo;
+pub(super) use owner::Owner;
+pub(crate) use owner::{exercise_waiting_demo, run_waiting_demo};
 
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(0);
 struct Slot {

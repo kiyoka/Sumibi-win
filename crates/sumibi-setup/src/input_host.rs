@@ -26,6 +26,7 @@ pub(crate) use grapheme_host::exercise_graphemes;
 #[path = "input_waiting_host.rs"]
 mod waiting_host;
 pub(crate) use waiting_host::exercise_waiting;
+pub(crate) use waiting_host::{exercise_waiting_demo, run_waiting_demo};
 
 impl TextStore {
     fn boundary(&self, position: usize) -> bool {
@@ -196,6 +197,7 @@ struct Editor {
     transaction: bool,
     input_disposition: Cell<u32>,
     rescue: input_recovery_host::Rescue,
+    waiting: Option<waiting_host::Owner>,
 }
 impl Editor {
     fn navigation_boundary(&self) {
@@ -312,6 +314,11 @@ impl Editor {
         }
     }
     fn insert(&self, text: &[u16]) -> Result<()> {
+        if let Some(owner) = &self.waiting {
+            if owner.admit(self, sumibi_core::waiting_input::Input::Text(text))? {
+                return Ok(());
+            }
+        }
         if self.transaction {
             let Some(ticket) = self
                 .rescue
@@ -369,6 +376,9 @@ impl Editor {
     }
     fn input(&self, message: u32, key: WPARAM, flags: LPARAM) -> Result<bool> {
         if message == WM_CLOSE {
+            if let Some(owner) = &self.waiting {
+                owner.close();
+            }
             self.rescue.close();
             self.clear_tracking();
             self.high.set(None);
@@ -380,6 +390,9 @@ impl Editor {
             return Ok(false);
         }
         if crate::window_host::input_boundary(message, key) {
+            if let Some(owner) = &self.waiting {
+                owner.boundary();
+            }
             self.rescue.invalidate();
             let boundary = self
                 .composing
@@ -412,6 +425,11 @@ impl Editor {
             .unwrap_or(false));
         }
         if message == WM_KEYDOWN {
+            if let Some(owner) = &self.waiting {
+                if owner.key(self, key.0, (flags.0 as usize & 0xffff).max(1))? {
+                    return Ok(true);
+                }
+            }
             if self.transaction && matches!(key.0, 0x77..=0x79) {
                 self.rescue.request(key.0);
                 return Ok(true);
@@ -551,6 +569,9 @@ impl Editor {
                         composing.cancel(self, false);
                     }
                     let _ = result?;
+                    if let Some(owner) = &self.waiting {
+                        owner.started(self)?;
+                    }
                     return Ok(true);
                 }
                 _ => return Ok(false),
@@ -559,9 +580,11 @@ impl Editor {
         if message != WM_CHAR {
             return Ok(false);
         }
-        if let Some((broker, _)) = &self.broker {
-            unsafe {
-                let _ = broker.Cancel(0);
+        if self.waiting.as_ref().is_none_or(|owner| !owner.active()) {
+            if let Some((broker, _)) = &self.broker {
+                unsafe {
+                    let _ = broker.Cancel(0);
+                }
             }
         }
         let Ok(unit) = u16::try_from(key.0) else {
@@ -574,6 +597,22 @@ impl Editor {
             self.clear_tracking();
             self.high.set(None);
             return Ok(true);
+        }
+        if let Some(owner) = &self.waiting {
+            if owner.active() && (unit < 0x20 || unit == 0x7f) {
+                let input = match unit {
+                    8 => Some(sumibi_core::waiting_input::Input::Backspace(repeats as u32)),
+                    13 => Some(sumibi_core::waiting_input::Input::Enter),
+                    _ => None,
+                };
+                if let Some(input) = input {
+                    if owner.admit(self, input)? {
+                        return Ok(true);
+                    }
+                } else {
+                    owner.stop(self)?;
+                }
+            }
         }
         if (0xd800..=0xdbff).contains(&unit) {
             if self.high.get().is_some() {
@@ -735,6 +774,8 @@ enum RunMode {
     NotificationTest(&'static str),
     TransactionDemo,
     TransactionTest(&'static str),
+    WaitingDemo,
+    WaitingTest(&'static str),
 }
 
 fn run(
@@ -787,6 +828,8 @@ fn run(
                 | RunMode::NotificationTest(_)
                 | RunMode::TransactionDemo
                 | RunMode::TransactionTest(_)
+                | RunMode::WaitingDemo
+                | RunMode::WaitingTest(_)
         ) {
             window.set_title("Sumibi 非同期変換デモ（固定結果） | F7 変換 | Esc 取消 | Enter 原文確定 | Ctrl+Z Undo")?;
             let broker: ISpikeBroker = manager
@@ -811,13 +854,30 @@ fn run(
             submits: Cell::new(0),
             broker,
             tracking,
-            transaction: matches!(mode, RunMode::TransactionDemo | RunMode::TransactionTest(_)),
+            transaction: matches!(
+                mode,
+                RunMode::TransactionDemo
+                    | RunMode::TransactionTest(_)
+                    | RunMode::WaitingDemo
+                    | RunMode::WaitingTest(_)
+            ),
+            waiting: if matches!(mode, RunMode::WaitingDemo | RunMode::WaitingTest(_)) {
+                Some(waiting_host::Owner::new(manager, client))
+            } else {
+                None
+            },
             input_disposition: Cell::new(sumibi_tip::spike::INPUT_NOT_ATTEMPTED),
             rescue: input_recovery_host::Rescue::new(
                 manager,
                 &context,
                 client,
-                matches!(mode, RunMode::TransactionDemo | RunMode::TransactionTest(_)),
+                matches!(
+                    mode,
+                    RunMode::TransactionDemo
+                        | RunMode::TransactionTest(_)
+                        | RunMode::WaitingDemo
+                        | RunMode::WaitingTest(_)
+                ),
                 matches!(mode, RunMode::TransactionTest("rescue/expire-wake")),
             )?,
             composing: if matches!(
@@ -827,6 +887,8 @@ fn run(
                     | RunMode::NotificationTest(_)
                     | RunMode::TransactionDemo
                     | RunMode::TransactionTest(_)
+                    | RunMode::WaitingDemo
+                    | RunMode::WaitingTest(_)
             ) {
                 Some(composing_host::Composing::new(manager)?)
             } else {
@@ -850,7 +912,11 @@ fn run(
                 | RunMode::TrackingDemo
                 | RunMode::ComposingDemo
                 | RunMode::TransactionDemo
+                | RunMode::WaitingDemo
         ) {
+            if matches!(mode, RunMode::WaitingDemo) {
+                window.set_title("Sumibi 待機入力デモ（固定結果） | F7変換 | Enterは救済へ | F8順に確認 | 最大4件・10分救済")?;
+            }
             if matches!(mode, RunMode::TrackingDemo) {
                 window.set_title(
                     "Sumibi 入力範囲の変換デモ | F7 入力範囲を変換 | 範囲選択可 | Ctrl+Z Undo",
@@ -864,12 +930,16 @@ fn run(
             if matches!(mode, RunMode::TransactionDemo) {
                 window.set_title("Sumibi 同期入力取引 | F7 変換 | Esc 取消 | Ctrl+Z Undo")?;
             }
-            if matches!(mode, RunMode::TrackingDemo | RunMode::ComposingDemo) {
+            if matches!(mode, RunMode::WaitingDemo) {
+                println!("Waiting fixed-result demo: type, then F7. Waiting stops after 8 seconds or at 4 events; Enter is saved without submission. F8 cycles recovery, F9 discards the displayed record, F10 copies it. Recovery expires after 10 minutes. Close to exit.");
+            } else if matches!(mode, RunMode::TrackingDemo | RunMode::ComposingDemo) {
                 println!("Tracked input demo: F7 converts the recent typed run or an explicit selection. Esc cancels; Enter confirms the original. Close to exit.");
             } else {
                 println!("Async fixed-result demo: F7 converts the selection (or all text), Esc cancels, Enter confirms the original. Close to exit.");
             }
             broker_message_loop(&window, &editor)
+        } else if let RunMode::WaitingTest(case) = mode {
+            waiting_host::test_waiting_demo(&window, &editor, case)
         } else if let RunMode::BrokerInputTest(case) = mode {
             test_broker_input(&window, &editor, &live, client, case)
         } else if let RunMode::TrackingTest(case) = mode {
@@ -900,6 +970,9 @@ fn run(
             test_input(&window, &editor, &live)
         };
         window.clear_input();
+        if let Some(owner) = &editor.waiting {
+            owner.close();
+        }
         editor.rescue.close();
         editor.clear_tracking();
         if let Some(composing) = &editor.composing {
@@ -941,23 +1014,34 @@ fn broker_message_loop(window: &crate::window_host::Window, editor: &Editor) -> 
         if let Some(composing) = &editor.composing {
             composing.poll(editor)?;
         }
-        if let Some(delivery) = bridge.get().drain(control)? {
-            window.set_title(if delivery == crate::broker_bridge::Delivery::Applied {
-                "Sumibi 変換完了（固定結果） | F7 変換 | Ctrl+Z Undo"
-            } else {
-                "Sumibi 原文を保持しました | F7 変換 | Esc 取消"
-            })?;
-            pending = false;
+        if let Some(owner) = &editor.waiting {
+            owner.service(window, editor, &crate::recovery_view::SystemClipboard)?;
+        }
+        if editor.waiting.as_ref().is_none_or(|owner| !owner.active()) {
+            if let Some(delivery) = bridge.get().drain(control)? {
+                window.set_title(if delivery == crate::broker_bridge::Delivery::Applied {
+                    "Sumibi 変換完了（固定結果） | F7 変換 | Ctrl+Z Undo"
+                } else {
+                    "Sumibi 原文を保持しました | F7 変換 | Esc 取消"
+                })?;
+                pending = false;
+            }
         }
         let active = bridge.get().active();
-        if active && !pending {
+        if active && !pending && editor.waiting.is_none() {
             window.set_title("Sumibi 変換中（固定結果） | Esc 取消 | Enter 原文確定")?;
         }
         pending = active;
         if editor.store.get().input_problem.get() {
-            window.set_title(
-                "Sumibi 入力取引に失敗しました。入力結果を確認してください（自動再入力なし）",
-            )?;
+            if editor.waiting.is_some() {
+                window.set_title(
+                    "Sumibi 入力結果を確認してください | F8 救済を順に確認 | 自動再入力なし",
+                )?;
+            } else {
+                window.set_title(
+                    "Sumibi 入力取引に失敗しました。入力結果を確認してください（自動再入力なし）",
+                )?;
+            }
         }
         editor.service_recovery(window, &crate::recovery_view::SystemClipboard)?;
         let handles: Vec<_> = bridge
@@ -976,7 +1060,12 @@ fn broker_message_loop(window: &crate::window_host::Window, editor: &Editor) -> 
         let wait = unsafe {
             MsgWaitForMultipleObjectsEx(
                 Some(&handles),
-                editor.rescue.wait_ms(),
+                editor.rescue.wait_ms().min(
+                    editor
+                        .waiting
+                        .as_ref()
+                        .map_or(u32::MAX, |owner| owner.wait_ms(editor)),
+                ),
                 QS_ALLINPUT,
                 MWMO_INPUTAVAILABLE,
             )

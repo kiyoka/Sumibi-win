@@ -15,7 +15,7 @@ JSON構造・固定エラー・世代・取消・再接続・期限・対象照�
 既存ManualConversionとの模擬順序、消費前の容量確保、FIFO/新要求での停止、Enterの非配送、
 試行ticketの非再利用、不明結果と適用済み先頭の区別、境界での失効/本文除去を扱う。
 Coreモデル単独の追加時はTest-Spike.ps1 -SkipDesktopでRust132件・静的検査・基本DLL検査が成功した。
-後続の専用adapterでは共有救済を予約して実DLL/workerへ接続する。通常デモ・製品キーや実打鍵は未対応
+後続の専用adapterでは共有救済を予約して実DLL/workerへ接続し、専用waiting-demoからも利用できる。製品キー・実打鍵の受入は未完了
 （[ADR 0033](adr/0033-bounded-core-waiting-input.md)）。
 
 ## 手動変換待機adapterを検証する
@@ -31,6 +31,26 @@ cargo build --workspace --features sumibi-host/spike --locked --offline
 これは通常デモのキー受付を変更する機能ではない。8秒の停止期限はfixture専用で、製品の期限政策は未決。
 Rust134件・静的検査・基本DLL検査と、同期入力174・救済47・Backspace55・composition46・通知30・broker入力11・追跡25・close4も成功。
 条件と制限は[ADR 0034](adr/0034-shared-recovery-waiting-adapter.md)を参照。
+
+## 待機入力デモを試す
+
+リポジトリのフォルダで次を実行する。
+
+```powershell
+cargo build --workspace --features sumibi-host/spike --locked --offline
+.\target\debug\sumibi-setup.exe waiting-demo --dll .\target\debug\sumibi_tip.dll
+```
+
+文字を入力してF7を押すと、約400ms後に固定の「日本語」へ変換する。その間の文字・Backspace・F7は順に待機し、
+Enterは送信せず救済へ移す。Escで取消。待機は最大4件・8秒で、満杯ではそれまでの入力を救済に保存して今回の入力を通常経路へ返す。
+F8で救済画面を開き、さらにF8で次のレコードを確認する。captionの位置/件数を確認して、表示中の1件だけをF9で破棄・F10で全文コピーする。
+×は画面だけを閉じ、救済は最大10分保持する。未確認レコードが残る間のF7は確認画面へ案内する。
+既存transaction-demoや他アプリの入力には待機を有効化しない。
+
+`waiting-demo-test --dll target/debug/sumibi_tip.dll`で同じ配送/確認UIの22ケースを自動検証できる。
+合成MSGを使い、コピーは試験用Clipboardへ差し替える。物理キーの受入とは区別する。
+待機adapter25・同期入力174・救済47・Backspace55・書記素ホスト22・composition46・通知30・broker入力11・追跡25・close4と、Rust134件・静的/基本DLL検査も成功。
+通知・救済の結付けと制限は[ADR 0035](adr/0035-waiting-demo-and-record-recovery-ui.md)を参照。
 
 通常ユーザーの別プロセス・非同期I/O検証は `target/debug/sumibi-setup.exe ipc-peer-test`。
 固定ハンドルへ相手を結び付け、トークン・PID・作成時刻を相互検査した後で模擬結果をCoreへ返す。
@@ -610,7 +630,7 @@ context・範囲の識別子と要求IDの一意性はアダプターの責務�
 
 専用ホストで実APIなしの登録・表示・キー配送・期限付き遅延・Undoを検証した。
 一般アプリでの打鍵・composition・標準Undo・保護入力判定の完了を意味しない。
-待機Coreと専用adapterは実装済み。候補、通常キー受付/複数救済UIとの統合、製品用の常駐Host・発見は未実装。
+待機Core・専用adapterとwaiting-demoの受付/複数救済UIは実装済み。候補、製品キーとの統合、製品用の常駐Host・発見は未実装。
 型付きJSON・固定process認証・overlapped pipeと単発Hostを追加し、専用ACP storeへの配送まで検証した。
 形式と異常系は[IPCフレーム層](IPC_PROTOCOL.md)を参照。
 次の製品用実装は[後続作業](NEXT_STEPS.md)に分割する。実API通信はまだ導入しない。

@@ -74,6 +74,12 @@ unsafe extern "system" fn procedure(
     .unwrap_or(LRESULT(0))
 }
 impl View {
+    pub(crate) fn position(&self, position: usize, total: usize) -> Result<()> {
+        set_text(
+            self.hwnd,
+            &format!("Sumibi 救済 {position}/{total} | F8 次の救済 | 本文へ自動適用しません"),
+        )
+    }
     pub(crate) fn new(owner: HWND, metadata: Metadata, units: &[u16]) -> Result<Self> {
         unsafe {
             let instance = GetModuleHandleW(None)?;

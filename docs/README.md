@@ -45,7 +45,8 @@
 - [ADR 0031](adr/0031-recorded-selection-replacement.md)：記録内の選択置換/Delete/Backspaceで前後の入力を保持し、失効後に既存本文を採用しない条件。
 - [ADR 0032](adr/0032-recorded-document-edge-navigation.md)：専用単一行ホストの文書端が記録内にある場合のHome/End・Shift選択と、位置だけを使う照合・二重移動の防止。
 - [ADR 0033](adr/0033-bounded-core-waiting-input.md)：手動変換待機入力のCore上限・FIFO・試行ticket・Enter停止。専用adapterへの後続接続はADR 0034。
-- [ADR 0034](adr/0034-shared-recovery-waiting-adapter.md)：専用adapterでの共有枠の取得前予約・実DLL/workerの順序・未適用救済と自己状態の照合。通常キーと複数確認UIは未接続。
+- [ADR 0034](adr/0034-shared-recovery-waiting-adapter.md)：専用adapterでの共有枠の取得前予約・実DLL/workerの順序・未適用救済と自己状態の照合。専用デモへの後続接続はADR 0035。
+- [ADR 0035](adr/0035-waiting-demo-and-record-recovery-ui.md)：明示的なwaiting-demoの受付・複数救済の巡回/1件確認・window境界と公開直前の取消。製品キーは未接続。
 
 ## 更新の規則
 

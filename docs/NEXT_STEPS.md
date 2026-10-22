@@ -158,7 +158,9 @@ Core12件追加で92件・workspace132件と静的/基本DLL検査が成功し�
 後続の専用adapterは受入れ前に既存EXE共有4枠を確保し、実DLL/workerへの順序と未適用救済を25ケースで検証した。
 CoreのDeferred救済2件を加えworkspace134件と関連native回帰が成功した
 （[ADR 0034](adr/0034-shared-recovery-waiting-adapter.md)）。
-次は通常デモの明示モードと複数救済レコードの確認UI、所有window通知との接続を進める。
+後続のwaiting-demoでは専用受付とF8巡回・1件コピー/破棄、所有window通知を接続した。
+配送/確認UIの22ケースと関連回帰が成功した（[ADR 0035](adr/0035-waiting-demo-and-record-recovery-ui.md)）。
+次は専用デモの対話操作を確認し、製品の待機/救済容量・期限・超過時動作を確定する。
 製品キーはまだ接続せず、全体予算/期限/超過時政策と一般アプリの残範囲も維持する。
 
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。
