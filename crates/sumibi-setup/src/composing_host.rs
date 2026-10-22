@@ -32,6 +32,9 @@ pub(super) struct Composing {
     boundary_generation: Rc<Cell<Option<u64>>>,
 }
 impl Composing {
+    pub(super) fn state_probe(&self) -> Result<sumibi_tip::spike::ISpikeInputState> {
+        self.control.cast()
+    }
     pub(super) fn edit_tracked(&self, editor: &Editor, action: u32, count: u32) -> Result<u32> {
         self.navigate_tracked(editor, action, count, false, false)
     }

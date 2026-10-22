@@ -13,6 +13,9 @@ mod tests;
 // One EXE-wide admission pool, including owners on different STAs. It never
 // owns COM, payloads or editor state, and reserves no slot merely for an editor.
 static RECOVERY_BUDGET: OnceLock<Budget> = OnceLock::new();
+pub(super) fn shared_budget() -> Budget {
+    RECOVERY_BUDGET.get_or_init(Budget::default).clone()
+}
 
 pub(super) struct Rescue {
     slot: RefCell<Recovery>,
@@ -45,7 +48,7 @@ impl Rescue {
         enabled: bool,
         short: bool,
     ) -> Result<Self> {
-        let budget = RECOVERY_BUDGET.get_or_init(Budget::default).clone();
+        let budget = shared_budget();
         Ok(Self {
             slot: RefCell::new(if short {
                 Recovery::with_retention_and_budget(Duration::from_millis(500), budget).unwrap()

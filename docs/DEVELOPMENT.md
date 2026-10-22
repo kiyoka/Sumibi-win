@@ -7,17 +7,30 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 92件（応答照合9・入力範囲追跡/削除/caret計画52・書記素移動/削除境界7・救済12・待機入力12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計132件。
+現時点はCore 94件（応答照合9・入力範囲追跡/削除/caret計画52・書記素移動/削除境界7・救済14・待機入力12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計134件。
 JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
 手動変換の待機入力Coreは`cargo test -p sumibi-core waiting_input --locked --offline`で12件を検証できる。
 既存ManualConversionとの模擬順序、消費前の容量確保、FIFO/新要求での停止、Enterの非配送、
 試行ticketの非再利用、不明結果と適用済み先頭の区別、境界での失効/本文除去を扱う。
-Test-Spike.ps1 -SkipDesktopでRust132件・静的検査・基本DLL検査も成功した。
-同期入力174・救済47等の拡張native検査は前段階の結果で、今回は再実行していない。
-製品キーや診断editorへの接続はなく、実打鍵・実TSF待機・共有救済統合の成功を表さない
+Coreモデル単独の追加時はTest-Spike.ps1 -SkipDesktopでRust132件・静的検査・基本DLL検査が成功した。
+後続の専用adapterでは共有救済を予約して実DLL/workerへ接続する。通常デモ・製品キーや実打鍵は未対応
 （[ADR 0033](adr/0033-bounded-core-waiting-input.md)）。
+
+## 手動変換待機adapterを検証する
+
+```powershell
+cargo build --workspace --features sumibi-host/spike --locked --offline
+.\target\debug\sumibi-setup.exe waiting-input-test --dll .\target\debug\sumibi_tip.dll
+```
+
+専用の合成ACP入力欄で25ケースを自動実行し、変換結果の後に待機文字・Backspaceを順に実DLLへ渡す。
+受入れ前にEXE共有4枠を確保し、未適用/結果不明/追跡失敗を区別する。Enterを自動配送しない。
+複数レコードの明示コピーは試験用Clipboardで検証し、利用者のClipboardを変更しない。
+これは通常デモのキー受付を変更する機能ではない。8秒の停止期限はfixture専用で、製品の期限政策は未決。
+Rust134件・静的検査・基本DLL検査と、同期入力174・救済47・Backspace55・composition46・通知30・broker入力11・追跡25・close4も成功。
+条件と制限は[ADR 0034](adr/0034-shared-recovery-waiting-adapter.md)を参照。
 
 通常ユーザーの別プロセス・非同期I/O検証は `target/debug/sumibi-setup.exe ipc-peer-test`。
 固定ハンドルへ相手を結び付け、トークン・PID・作成時刻を相互検査した後で模擬結果をCoreへ返す。
@@ -597,7 +610,7 @@ context・範囲の識別子と要求IDの一意性はアダプターの責務�
 
 専用ホストで実APIなしの登録・表示・キー配送・期限付き遅延・Undoを検証した。
 一般アプリでの打鍵・composition・標準Undo・保護入力判定の完了を意味しない。
-Coreの待機入力行列・候補、TIPの通常入力との統合、製品用の常駐Host・発見は未実装。
+待機Coreと専用adapterは実装済み。候補、通常キー受付/複数救済UIとの統合、製品用の常駐Host・発見は未実装。
 型付きJSON・固定process認証・overlapped pipeと単発Hostを追加し、専用ACP storeへの配送まで検証した。
 形式と異常系は[IPCフレーム層](IPC_PROTOCOL.md)を参照。
 次の製品用実装は[後続作業](NEXT_STEPS.md)に分割する。実API通信はまだ導入しない。

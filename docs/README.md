@@ -44,7 +44,8 @@
 - [ADR 0030](adr/0030-tracked-shift-selection.md)：記録内のShift選択、選択方向の照合、選択解除後の入力継続と明示選択の変換。
 - [ADR 0031](adr/0031-recorded-selection-replacement.md)：記録内の選択置換/Delete/Backspaceで前後の入力を保持し、失効後に既存本文を採用しない条件。
 - [ADR 0032](adr/0032-recorded-document-edge-navigation.md)：専用単一行ホストの文書端が記録内にある場合のHome/End・Shift選択と、位置だけを使う照合・二重移動の防止。
-- [ADR 0033](adr/0033-bounded-core-waiting-input.md)：手動変換待機入力のCore上限・FIFO・試行ticket・Enter停止。製品キーとnative adapterは未接続。
+- [ADR 0033](adr/0033-bounded-core-waiting-input.md)：手動変換待機入力のCore上限・FIFO・試行ticket・Enter停止。専用adapterへの後続接続はADR 0034。
+- [ADR 0034](adr/0034-shared-recovery-waiting-adapter.md)：専用adapterでの共有枠の取得前予約・実DLL/workerの順序・未適用救済と自己状態の照合。通常キーと複数確認UIは未接続。
 
 ## 更新の規則
 

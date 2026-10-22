@@ -7,7 +7,7 @@
 
 | 領域 | 現在のコード・状態 | 次の受入条件 |
 | --- | --- | --- |
-| OS非依存Core | core/lib.rsのManualConversionとinput.rsの有限InputSession。所有ホストの実入力を1024 UTF-16単位まで記録。recovery.rsに有限救済。waiting_input.rsに待機FIFOと試行完了の実験モデル、12件で確認 | 待機のnative adapter・共有容量/救済先、製品追跡・候補・手動／自動の統合 |
+| OS非依存Core | core/lib.rsのManualConversionとinput.rsの有限InputSession。所有ホストの実入力を1024 UTF-16単位まで記録。recovery.rsに有限救済とDeferred。waiting_input.rsに待機FIFOと試行完了の実験モデル、専用adapterへ接続 | 通常キーと複数救済UI、製品の容量/期限、追跡・候補・手動／自動の統合 |
 | COMとDLL | tip/com.rs、build.rs。factory・独立lease・所有thread・解除再試行 | 一般アプリにロードされる常設登録と更新時の寿命 |
 | TSF編集 | tip/edit.rsとmanual_edit.rs。generic保持range、同期read/write、全文照合、Core gate、IPC結果の一度だけ適用。専用所有contextで検証。[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md) | 非ACP入力先の実検証、製品キーとの統合、一般アプリの対象分類と編集 |
 | 保護入力 | protection.rs。scope/status/compartmentの肯定検査、取得・source・適用時の再検査。実DLLで39ケース。statusの固定診断コードと標準RichEditの拒否7構成を追加（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)） | 一般アプリの実スコープ・独自機密欄・判定不能時の動作確認 |
@@ -17,7 +17,7 @@
 | キー配送 | keys.rs / input_host.rs。専用windowで実TSF経路 | US/JIS配列・変換キー・Terminal・実打鍵 |
 | Undo/Redo | TextStoreに本文・選択・向きの履歴。固定変換含む | 一般アプリの標準履歴で変換が1回のUndoにまとまる |
 | 描画 | live_render / render / window_host。通知→WM_APP→Frame | 製品候補UIのUIElement、DPI、高コントラスト、読み上げ |
-| 手動待機と救済 | 所有editorの救済1件・1024単位・10分とEXE共有4枠・明示コピー/破棄を47ケースで確認。待機行列はCoreだけ実験モデルを追加。キー/実DLLには未接続 | nativeでの順序・取得前の全体容量・超過・対象変更・期限/明示破棄、プロセス間の政策 |
+| 手動待機と救済 | 所有editor救済47ケースと、取得前に同じEXE共有4枠を確保する専用待機adapter25ケースを確認。実DLL/workerへ接続。通常キーは未接続 | 通常デモ・複数確認UI・window通知、製品の超過/期限/明示破棄とプロセス間政策 |
 | Protocol / Broker | 有限フレーム・JSON・client状態、固定process相互検査・8 endpoint・overlapped pipe。単発Host・容量4（完了済みjob・受取済み結果も含む）・各1結果。[ADR 0015](adr/0015-broker-admission-through-delivery.md)。実DLLキー・Core・実TSFから診断用EXE bridgeを通す経路も検証。EXE再利用workerへ実DLLキー・所有STA配送を接続し、25ケースを検証（[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)） | 製品Broker発見・常駐dispatch、一般アプリ内の配置と入力統合。AppContainerは初期非対応 |
 | HTTP | 未実装。固定文字列で検証 | 模擬HTTPで認証・同意・転送拒否・上限・取消・エラー分類 |
 | 設定・資格情報 | 未実装。LocalAppData / Credential Manager案 | 形式版・原子的保存・秘密分離・認可取消・破損回復 |
@@ -174,6 +174,11 @@ FIFO・試行ticket・Convertによる再待機・Enterの非配送・不明結�
 Core92件・workspace132件とTest-Spike.ps1 -SkipDesktopが成功。native拡張検査は前段階の結果を維持する。
 製品キー/診断editorへの接続、共有予算/救済先とnativeの順序検証は未完了
 （[ADR 0033](adr/0033-bounded-core-waiting-input.md)）。
+
+専用Waiting adapterでは取得前に既存共有救済枠を確保し、実DLL/workerでFIFOと再変換・取消を接続した。
+待機入力25ケースと関連native回帰が成功。Deferred救済2件を追加してCore94件・workspace134件。
+独立した自己状態検査ABI、確認済み変換後のcaret、失敗後の未適用tail、正確な要求IDのDrop取消を検証した。
+通常デモのキー受付・複数確認UI・一般アプリには未接続（[ADR 0034](adr/0034-shared-recovery-waiting-adapter.md)）。
 
 2026-10-22、context付きF7準備を追加し、文字入力前の明示選択を変換できるようにした。
 初回選択17件を加えてcomposing-input-testは46件。逆向き選択と1回Undo、sink欠損時の成功、

@@ -329,8 +329,11 @@ Mac実装の最大12候補とSPECの追加10件の差は[移植表](MAC_PARITY.m
 実験的なCoreモデルはwaiting_input::WaitingInputに実装した。1 queueの上記イベント/本文上限を守り、
 消費前admit、先頭だけの試行ticket、確認済み適用後だけの除去、新しいConvert要求での排出停止を扱う。
 Enterと不明完了は自動配送不能な救済状態へ移し、focus/保護境界ではpayloadを除去する。
-Core12件で検証済みだが、native adapter・診断editor・製品キー・全体予算/期限/救済先は未接続である
+Core12件で検証し、後続の専用adapterはイベントごとに既存EXE共有救済枠を確保して実DLL/workerへ接続する。
+25ケースで順序・容量・未適用救済・取消を検証した。通常キー・複数確認UI・製品の全体予算/期限政策は未接続である
 （[ADR 0033](adr/0033-bounded-core-waiting-input.md)）。
+専用adapterの4件/4096単位、自己状態検査ABI、変換後のcaretとDeferredの契約は
+[ADR 0034](adr/0034-shared-recovery-waiting-adapter.md)を参照。
 救済はメモリーに限定し、明示コピー・破棄だけを提供する。クラッシュ後の本文復元は保証しない。
 
 診断editorでは上記の製品提案と分けて、1件・1024 UTF-16単位・10分の救済を実装した

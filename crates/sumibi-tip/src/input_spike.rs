@@ -100,6 +100,18 @@ pub unsafe trait ISpikeDocumentNavigator: IUnknown {
         disposition: *mut u32,
     ) -> HRESULT;
 }
+/// Metadata-only check against the exact live tracked composition. Never a
+/// caller-supplied exception to the idle/foreign-composition protection gate.
+#[interface("66fa2057-bc80-4a1a-9d06-ac37be693e1a")]
+pub unsafe trait ISpikeInputState: IUnknown {
+    pub fn Validate(
+        &self,
+        context: *mut c_void,
+        start: i32,
+        end: i32,
+        active_start: u32,
+    ) -> HRESULT;
+}
 #[implement(
     ISpikeInput,
     ISpikeInputMonitor,
@@ -109,7 +121,8 @@ pub unsafe trait ISpikeDocumentNavigator: IUnknown {
     ISpikeInputPreparer,
     ISpikeTrackedEditor,
     ISpikeTrackedSelector,
-    ISpikeDocumentNavigator
+    ISpikeDocumentNavigator,
+    ISpikeInputState
 )]
 struct Control {
     state: Weak<Controller>,
@@ -405,6 +418,25 @@ impl ISpikeDocumentNavigator_Impl for Control_Impl {
             unsafe { disposition.write(outcome.get()) };
         }
         result.into()
+    }
+}
+impl ISpikeInputState_Impl for Control_Impl {
+    unsafe fn Validate(
+        &self,
+        context: *mut c_void,
+        start: i32,
+        end: i32,
+        active_start: u32,
+    ) -> HRESULT {
+        boundary(|| {
+            if start < 0 || end < start || active_start > 1 {
+                return Err(E_INVALIDARG.into());
+            }
+            self.in_context(context, |tracker| {
+                tracker.validate_state((start, end), active_start != 0)
+            })
+        })
+        .into()
     }
 }
 impl ISpikeInputPreparer_Impl for Control_Impl {

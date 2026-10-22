@@ -155,7 +155,10 @@ Core6件追加でworkspace114件、同期入力33件追加で148件、共有満�
 FIFO先頭の一度だけの完了、次のConvert要求での停止、Enterの非配送、境界/不明結果の不可逆失効を扱う。
 Core12件追加で92件・workspace132件と静的/基本DLL検査が成功した
 （[ADR 0033](adr/0033-bounded-core-waiting-input.md)）。
-次は専用adapterで取得前の共有容量/救済先・要求取消との整合を証明し、実DLL/workerで順序を検証する。
+後続の専用adapterは受入れ前に既存EXE共有4枠を確保し、実DLL/workerへの順序と未適用救済を25ケースで検証した。
+CoreのDeferred救済2件を加えworkspace134件と関連native回帰が成功した
+（[ADR 0034](adr/0034-shared-recovery-waiting-adapter.md)）。
+次は通常デモの明示モードと複数救済レコードの確認UI、所有window通知との接続を進める。
 製品キーはまだ接続せず、全体予算/期限/超過時政策と一般アプリの残範囲も維持する。
 
 - 版付きJSONメッセージ、有限接続・未完了集合、ID・世代・取消・切断・重複・再接続を定義。

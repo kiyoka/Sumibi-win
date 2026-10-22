@@ -23,6 +23,9 @@ pub(crate) use input_recovery_host::{exercise_recovery, run_recovery_demo};
 #[path = "grapheme_host.rs"]
 mod grapheme_host;
 pub(crate) use grapheme_host::exercise_graphemes;
+#[path = "input_waiting_host.rs"]
+mod waiting_host;
+pub(crate) use waiting_host::exercise_waiting;
 
 impl TextStore {
     fn boundary(&self, position: usize) -> bool {
@@ -880,7 +883,9 @@ fn run(
         } else if let RunMode::NotificationTest(case) = mode {
             composing_host::test_notifications(&window, &editor, &live, client, case)
         } else if let RunMode::TransactionTest(case) = mode {
-            if let Some(case) = case.strip_prefix("grapheme/") {
+            if let Some(case) = case.strip_prefix("waiting/") {
+                waiting_host::test_waiting(manager, &window, &editor, &live, client, case)
+            } else if let Some(case) = case.strip_prefix("grapheme/") {
                 grapheme_host::test_graphemes(&window, &editor, &live, case)
             } else if let Some(case) = case.strip_prefix("erase/") {
                 composing_host::test_backspace(&window, &editor, &live, client, case)

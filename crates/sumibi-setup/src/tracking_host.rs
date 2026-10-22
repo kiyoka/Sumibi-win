@@ -472,7 +472,7 @@ pub(super) fn test_tracking(
     Ok(())
 }
 
-fn set_scope(editor: &Editor, scope: InputScope) -> Result<()> {
+pub(super) fn set_scope(editor: &Editor, scope: InputScope) -> Result<()> {
     *editor.store.get().scopes.borrow_mut() = ScopeSpec::List(vec![scope]);
     let sink = editor.store.get().sink.borrow().clone().ok_or(E_FAIL)?;
     let length = editor.store.get().text.borrow().len() as i32;

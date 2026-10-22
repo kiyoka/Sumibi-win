@@ -178,8 +178,12 @@ TSF対象・cookieを救済へ保存せず、workerやIPCにも渡さない。�
 Controllerのbusyガードにより操作中の再入を拒否し、自分の書込で生じる通知を外部編集と誤認しない。
 実験的なwaiting_input::WaitingInputはCOMを持たず、消費前admit・FIFO先頭の試行ticket・一度だけの完了を扱う。
 Convertの新要求で排出を停止し、Enterは明示確認へ移す。対象/保護境界や不明完了からは再開しない。
-このCoreをControllerや診断editorへまだ接続しない。共有救済容量・取消・nativeの範囲/通知照合は後続adapterの責任である
+後続の専用Waiting adapterはこのCoreと既存EXE共有Recovery予算を接続し、元入力の受入れ前に救済枠を確保する。
+自己compositionは独立ISpikeInputState::Validateで実DLLの記録/identity/保護/通知と照合し、idle条件を緩めない。
+確認済み変換後に所有caretを結果末尾へ移してから排出し、停止時は未適用tailと不明な先頭を区別する。
+所有者Dropと取消は正確な要求IDを使う。通常キー受付・複数救済UI・window通知との統合は未接続である
 （[ADR 0033](adr/0033-bounded-core-waiting-input.md)）。
+専用fixtureと寿命/容量の詳細は[ADR 0034](adr/0034-shared-recovery-waiting-adapter.md)を参照。
 TSFを呼ぶ前にRefCellの借用を解放し、通知やウィンドウ破棄が再入しても借用違反を起こさないようにする。
 
 本文置換と属性解除の延期は区別する。属性解除は弱参照・世代一致を検査した上で非同期化できる。

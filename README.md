@@ -23,6 +23,7 @@ Brokerの予約は未受取・受取済み結果も含め合計4件に制限し�
 起動したBrokerを連続要求で再利用するworker専用APIも追加しています。`broker-channel-test`で同じ子process・取消・期限・容量・終了を検証できます（[起動手順](docs/DEVELOPMENT.md#broker接続の再利用を検証する)、[契約](docs/adr/0016-authenticated-reusable-broker-channel.md)）。既存デモもEXE workerを通して同じBrokerを再利用し、取消・失敗後は次の明示操作で新しい接続を使います。`broker-worker-test`でworkerの容量・配送・終了を検証できます（[所有と寿命](docs/adr/0017-reusable-worker-and-owner-delivery.md)）。
 常駐Broker、一般アプリの入力基盤、HTTP通信はまだありません。
 手動変換待ちの文字・Backspace・Enter・Convertを有限に保持するCoreを追加しました。FIFO順序、消費前の容量確保、結果不明時の停止を検証し、Enterは自動配送しません。デモや製品キーへの接続はまだありません（[設計と検証範囲](docs/adr/0033-bounded-core-waiting-input.md)）。
+`waiting-input-test`で専用adapterから実DLL・非同期workerへ接続し、25ケースを検証できます。受入れ前に既存の共有救済枠を予約し、未適用の入力と結果不明を区別します（[起動手順](docs/DEVELOPMENT.md#手動変換待機adapterを検証する)、[共有枠と順序](docs/adr/0034-shared-recovery-waiting-adapter.md)）。通常デモへのキー接続はまだありません。
 `native-edit-test`で標準RichEditの実TSF contextと拒否理由を検証できます。現在のRichEditは保護条件を満たさず、変換は未対応です（[手順と実測](docs/adr/0019-native-richedit-status-diagnostics.md)）。
 入力保護の検査を追加し、通常テキストと確認できないscope・状態ではDLLの本文取得と要求送信を拒否します。
 `protection-test`で実DLL/TSFの39ケースを検証できます（[境界と制限](docs/adr/0006-input-protection-metadata.md)）。
@@ -81,6 +82,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [記録内の選択置換・削除後の追跡継続](docs/adr/0031-recorded-selection-replacement.md)
 - [記録内にある文書端への移動・選択](docs/adr/0032-recorded-document-edge-navigation.md)
 - [手動変換待機入力の有限Coreモデル](docs/adr/0033-bounded-core-waiting-input.md)
+- [共有救済枠を先に確保する専用待機adapter](docs/adr/0034-shared-recovery-waiting-adapter.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 
 設計基準はSumibi-mac main `553c69021eda7a8a5944d8748357f3790cc2f45c`。

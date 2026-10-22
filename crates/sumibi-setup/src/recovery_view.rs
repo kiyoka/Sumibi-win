@@ -209,6 +209,8 @@ impl View {
             Operation::Insert(_) => "文字入力".into(),
             Operation::Backspace(count) => format!("Backspace × {count}"),
             Operation::DeleteSelection => "選択範囲の削除".into(),
+            Operation::DeferredEnter => "待機中のEnter".into(),
+            Operation::DeferredConvert => "待機中の変換操作".into(),
             Operation::ForwardDelete(count) => format!("Delete × {count}"),
             Operation::MoveToEdge {
                 to_end,
@@ -226,7 +228,9 @@ impl View {
                 format!("{} × {count}", if backward { "←" } else { "→" })
             }
         };
-        let result = if metadata.outcome == Outcome::AppliedUntracked {
+        let result = if metadata.outcome == Outcome::Deferred {
+            "操作は未適用です"
+        } else if metadata.outcome == Outcome::AppliedUntracked {
             "操作は成功。追跡を停止しました"
         } else {
             "操作の結果は不明です"

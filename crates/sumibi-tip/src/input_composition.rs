@@ -42,6 +42,21 @@ pub(crate) struct Tracker {
     cleanup_retry: Option<CleanupRetry>,
 }
 impl Tracker {
+    pub(crate) fn validate_state(&self, selection: (i32, i32), active_start: bool) -> Result<()> {
+        if self.ready.is_some() || self.before.is_some() || self.cleanup_pending {
+            return Err(E_ABORT.into());
+        }
+        let observed = self.observe()?;
+        if !self.owned.can_commit()
+            || self.session.range(observed.point) != self.extent
+            || self.extent.is_none()
+            || observed.metadata.selection != selection
+            || observed.metadata.active_start != active_start
+        {
+            return Err(E_ABORT.into());
+        }
+        Ok(())
+    }
     pub(crate) fn set_wake(&self, wake: Option<Rc<dyn Fn()>>) -> Result<()> {
         self.watch.set_wake(wake)
     }

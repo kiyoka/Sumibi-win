@@ -19,8 +19,8 @@ mod input_host;
 pub(super) use input_host::{
     exercise_backspace, exercise_broker_input, exercise_close, exercise_composing,
     exercise_graphemes, exercise_input, exercise_notifications, exercise_recovery,
-    exercise_tracking, exercise_transactions, run_broker_demo, run_composing_demo, run_demo,
-    run_recovery_demo, run_tracking_demo, run_transaction_demo,
+    exercise_tracking, exercise_transactions, exercise_waiting, run_broker_demo,
+    run_composing_demo, run_demo, run_recovery_demo, run_tracking_demo, run_transaction_demo,
 };
 #[path = "delayed_host.rs"]
 mod delayed_host;

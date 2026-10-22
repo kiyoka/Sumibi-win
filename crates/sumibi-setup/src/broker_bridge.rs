@@ -81,6 +81,9 @@ impl Bridge {
     pub(crate) fn last_exchange(&self) -> Option<(u32, u64)> {
         self.exchange.get()
     }
+    pub(crate) fn pending_id(&self) -> Option<u64> {
+        self.pending.get()
+    }
     /// Owner-only, one synchronous attempt. Drop all captured targets before a
     /// broker I/O can start; no checker or COM reference enters Request/Worker.
     pub(crate) fn check_next_input(&self, check: InputCheck) -> Result<()> {

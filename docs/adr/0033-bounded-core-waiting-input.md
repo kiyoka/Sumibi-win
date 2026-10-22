@@ -84,3 +84,6 @@ Test-Spike.ps1 -SkipDesktopでRust132件・fmt・Clippy 3構成・build・load_s
 前面化で未通過のwindow/input/delayedの3検査、一般アプリ・物理打鍵の制限も維持する。
 次は専用adapterで取得前の共有容量・救済先・要求取消との整合を証明し、実DLL/workerで順序を検証する。
 製品キー接続、全体予算と期限政策、一般アプリの保護情報・composition寿命・標準Undo・配置/認証は残る。
+
+後続の[ADR 0034](0034-shared-recovery-waiting-adapter.md)で、既存共有救済枠を先に確保する専用adapterを実DLL/workerへ接続した。
+上記件数と未接続範囲は本ADRの実装時点の記録であり、通常デモ・製品キーは引き続き未接続である。

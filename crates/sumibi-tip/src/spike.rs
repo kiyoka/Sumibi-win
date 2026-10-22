@@ -9,6 +9,7 @@ pub use crate::broker_spike::{
 use crate::com::{boundary, ObjectLease};
 use crate::edit::preview::Preview;
 use crate::edit::{capture_selection, replace_selection, EditPolicy};
+pub use crate::input_spike::ISpikeInputState;
 pub use crate::input_spike::{
     ISpikeDocumentNavigator, ISpikeInput, ISpikeInputEraser, ISpikeInputMonitor,
     ISpikeInputPreparer, ISpikeInputSignal, ISpikeInputSignal_Impl, ISpikeInputWriter,

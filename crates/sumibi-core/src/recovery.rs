@@ -43,6 +43,8 @@ pub enum Operation {
     Insert(usize),
     Backspace(u32),
     DeleteSelection,
+    DeferredEnter,
+    DeferredConvert,
     ForwardDelete(u32),
     MoveCaret {
         backward: bool,
@@ -64,6 +66,8 @@ pub enum Outcome {
     Applied,
     AppliedUntracked,
     Uncertain,
+    /// Accepted while waiting, but never attempted in the native document.
+    Deferred,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ReserveError {
@@ -127,7 +131,7 @@ impl Recovery {
         let length = match operation {
             Operation::Insert(length) if (1..=MAX_UNITS).contains(&length) => length,
             Operation::Backspace(count) if (1..=MAX_UNITS as u32).contains(&count) => 0,
-            Operation::DeleteSelection => 0,
+            Operation::DeleteSelection | Operation::DeferredEnter | Operation::DeferredConvert => 0,
             Operation::ForwardDelete(count)
             | Operation::MoveCaret { count, .. }
             | Operation::ExtendSelection { count, .. }
@@ -158,8 +162,8 @@ impl Recovery {
         self.sequence = sequence;
         Ok(ticket)
     }
-    /// No allocation is needed after the body write. Only a failed write's
-    /// supplied insertion is copied; no document text is accepted or inferred.
+    /// No allocation is needed on completion. Only a reserved supplied insertion
+    /// is copied for an unconfirmed/deferred result; never inferred document text.
     pub fn finish(
         &mut self,
         ticket: Ticket,
@@ -592,5 +596,61 @@ mod tests {
         assert!(!recovery.finish(first, Outcome::Uncertain, &['x' as u16], now));
         recovery.finish(second, Outcome::Uncertain, &['y' as u16], now);
         assert!(recovery.metadata(now - Duration::from_millis(1)).is_none());
+    }
+    #[test]
+    fn deferred_input_is_distinct_from_uncertain_and_cannot_finish_twice() {
+        let now = Instant::now();
+        let mut recovery = Recovery::default();
+        let ticket = recovery.reserve(Operation::Insert(2), now).unwrap();
+        assert!(recovery.finish(ticket, Outcome::Deferred, &['a' as u16, 'b' as u16], now));
+        assert_eq!(recovery.metadata(now).unwrap().outcome, Outcome::Deferred);
+        assert_eq!(
+            recovery.text(ticket, now),
+            Some(&['a' as u16, 'b' as u16][..])
+        );
+        assert!(!recovery.finish(ticket, Outcome::Applied, &[], now));
+        assert!(recovery.metadata(now + RETENTION).is_none());
+        assert!(recovery.expire(now + RETENTION));
+        for operation in [Operation::DeferredEnter, Operation::DeferredConvert] {
+            let ticket = recovery.reserve(operation, now).unwrap();
+            assert!(recovery.finish(ticket, Outcome::Deferred, &['x' as u16], now));
+            assert!(!recovery.metadata(now).unwrap().copyable);
+            assert!(recovery.text(ticket, now).is_none());
+            assert!(recovery.discard(ticket));
+        }
+    }
+    #[test]
+    fn deferred_waiting_and_uncertain_writes_share_capacity_until_acknowledged() {
+        let now = Instant::now();
+        let budget = Budget::default();
+        let mut owners = Vec::new();
+        for index in 0..MAX_RECORDS {
+            let mut recovery = Recovery::with_budget(budget.clone());
+            let ticket = recovery.reserve(Operation::Insert(1), now).unwrap();
+            recovery.finish(
+                ticket,
+                if index == 0 {
+                    Outcome::Uncertain
+                } else {
+                    Outcome::Deferred
+                },
+                &['x' as u16],
+                now,
+            );
+            owners.push(recovery);
+        }
+        let mut waiting = Recovery::with_budget(budget);
+        assert_eq!(
+            waiting.reserve(Operation::DeferredEnter, now),
+            Err(ReserveError::Busy)
+        );
+        let ticket = owners[1].metadata(now).unwrap().ticket;
+        owners[1].redact(ticket);
+        assert_eq!(
+            waiting.reserve(Operation::DeferredEnter, now),
+            Err(ReserveError::Busy)
+        );
+        owners[1].discard(ticket);
+        assert!(waiting.reserve(Operation::DeferredEnter, now).is_ok());
     }
 }
