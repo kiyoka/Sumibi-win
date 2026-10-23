@@ -1,6 +1,6 @@
 # ADR 0043: 前面化が拒否された実TSFキー検証を対話操作で続ける
 
-状態：診断コマンドを追加。利用者の前面化後の成功は未確認。Issue #4 / draft PR #10。
+状態：診断コマンドを追加し、対話desktopで実TSFキー検査が成功。Issue #4 / draft PR #10。
 
 ## 問題
 
@@ -26,5 +26,12 @@ CLIとspike build、Rust workspace136件・Clippy 3構成・fmtを確認した�
 文書関連付け・下線・取消・専用ホストUndoまで通り、30秒後に専用の前面化失敗を返した。
 cleanupの失敗やDLL参照残りは検出されなかった。
 ログは`target/issue-4-interactive-window-*.log`。
-対話desktopで実際にクリックして通るかは別途検証が必要で、
-Notepadなど一般アプリの実打鍵や標準Undoの受入れではない。
+2026-10-23、利用者が診断windowのtitle barをクリックして前面化した後の対話desktopで
+`window-test-interactive`を再実行し、終了コード0を確認した。Esc/Enterは
+`ITfKeystrokeMgr::TestKeyDown/KeyDown`を通り、focus通知、5状態の描画、
+COM/TSF登録解除、DLLアンロードも成功した。続く通常の`window-test`、
+`input-test`、`delayed-test`もそれぞれ終了コード0で成功した。
+ログは`target/issue-4-user-click-window-test.log`と
+`target/issue-4-user-active-{window,input,delayed}-test.log`。
+これらは専用診断ホストの自動検査であり、物理キーボードからの打鍵、
+Notepadなど一般アプリの入力、標準Undoの受入れではない。
