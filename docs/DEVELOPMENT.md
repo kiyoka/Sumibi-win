@@ -23,9 +23,12 @@ Coreモデル単独の追加時はTest-Spike.ps1 -SkipDesktopでRust132件・静
 ```powershell
 cargo build --workspace --features sumibi-host/spike --locked --offline
 .\target\debug\sumibi-setup.exe waiting-input-test --dll .\target\debug\sumibi_tip.dll
+.\target\debug\sumibi-setup.exe waiting-input-test-interactive --dll .\target\debug\sumibi_tip.dll
 ```
 
 専用の合成ACP入力欄で26ケースを自動実行し、変換結果の後に待機文字・Backspaceを順に実DLLへ渡す。
+通常の検査が前面化拒否で止まるdesktopでは、対話版の最初のウィンドウを30秒以内に
+クリックする。キー入力は不要。時間切れは失敗として報告し、26ケースの成功とは扱わない。
 受入れ前にEXE共有4枠を確保し、未適用/結果不明/追跡失敗を区別する。Enterを自動配送しない。
 複数レコードの明示コピーは試験用Clipboardで検証し、利用者のClipboardを変更しない。
 これは通常デモのキー受付を変更する機能ではない。8秒の停止期限はfixture専用で、製品の期限政策は未決。

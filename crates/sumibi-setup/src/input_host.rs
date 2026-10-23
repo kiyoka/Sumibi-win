@@ -25,7 +25,7 @@ mod grapheme_host;
 pub(crate) use grapheme_host::exercise_graphemes;
 #[path = "input_waiting_host.rs"]
 mod waiting_host;
-pub(crate) use waiting_host::exercise_waiting;
+pub(crate) use waiting_host::{exercise_waiting, exercise_waiting_interactive};
 pub(crate) use waiting_host::{exercise_waiting_demo, run_waiting_demo};
 
 impl TextStore {
@@ -774,8 +774,31 @@ enum RunMode {
     NotificationTest(&'static str),
     TransactionDemo,
     TransactionTest(&'static str),
+    WaitingInteractiveTest(&'static str),
     WaitingDemo,
     WaitingTest(&'static str),
+}
+
+fn wait_for_waiting_foreground(
+    window: &crate::window_host::Window,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+    window.set_title("Sumibi waiting test: click this window to activate (30 seconds)")?;
+    println!("Click the waiting-test window within 30 seconds; no typing is needed.");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while window.require_foreground().is_err() && Instant::now() < deadline {
+        if !window.is_open() {
+            return Err("waiting-test window closed before activation".into());
+        }
+        let mut message = MSG::default();
+        while window.peek_message(&mut message)? {
+            window.route_message(&message)?;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    window.require_foreground().map_err(|error| {
+        format!("waiting-input-test-interactive: diagnostic window did not become foreground within 30 seconds: {error}").into()
+    })
 }
 
 fn run(
@@ -808,7 +831,13 @@ fn run(
             .focus()
             .map_err(|error| format!("input window focus: {error}"))?;
         manager.SetFocus(&document.0)?;
+        if matches!(&mode, RunMode::WaitingInteractiveTest(_))
+            && window.require_foreground().is_err()
+        {
+            wait_for_waiting_foreground(&window)?;
+        }
         if matches!(&mode, RunMode::TransactionTest(case) if case.starts_with("waiting/"))
+            || matches!(&mode, RunMode::WaitingInteractiveTest(_))
             || matches!(&mode, RunMode::WaitingTest(_))
         {
             // Waiting tests deliver a real TSF conversion before checking
@@ -840,6 +869,7 @@ fn run(
                 | RunMode::NotificationTest(_)
                 | RunMode::TransactionDemo
                 | RunMode::TransactionTest(_)
+                | RunMode::WaitingInteractiveTest(_)
                 | RunMode::WaitingDemo
                 | RunMode::WaitingTest(_)
         ) {
@@ -870,6 +900,7 @@ fn run(
                 mode,
                 RunMode::TransactionDemo
                     | RunMode::TransactionTest(_)
+                    | RunMode::WaitingInteractiveTest(_)
                     | RunMode::WaitingDemo
                     | RunMode::WaitingTest(_)
             ),
@@ -887,6 +918,7 @@ fn run(
                     mode,
                     RunMode::TransactionDemo
                         | RunMode::TransactionTest(_)
+                        | RunMode::WaitingInteractiveTest(_)
                         | RunMode::WaitingDemo
                         | RunMode::WaitingTest(_)
                 ),
@@ -899,6 +931,7 @@ fn run(
                     | RunMode::NotificationTest(_)
                     | RunMode::TransactionDemo
                     | RunMode::TransactionTest(_)
+                    | RunMode::WaitingInteractiveTest(_)
                     | RunMode::WaitingDemo
                     | RunMode::WaitingTest(_)
             ) {
@@ -964,7 +997,8 @@ fn run(
             }
         } else if let RunMode::NotificationTest(case) = mode {
             composing_host::test_notifications(&window, &editor, &live, client, case)
-        } else if let RunMode::TransactionTest(case) = mode {
+        } else if let RunMode::TransactionTest(case) | RunMode::WaitingInteractiveTest(case) = mode
+        {
             if let Some(case) = case.strip_prefix("waiting/") {
                 waiting_host::test_waiting(manager, &window, &editor, &live, client, case)
             } else if let Some(case) = case.strip_prefix("grapheme/") {

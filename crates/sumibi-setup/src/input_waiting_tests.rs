@@ -37,7 +37,20 @@ pub(crate) fn exercise_waiting(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    for case in [
+    exercise_waiting_with_activation(manager, client, false)
+}
+pub(crate) fn exercise_waiting_interactive(
+    manager: &ITfThreadMgr,
+    client: u32,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    exercise_waiting_with_activation(manager, client, true)
+}
+fn exercise_waiting_with_activation(
+    manager: &ITfThreadMgr,
+    client: u32,
+    interactive: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    for (index, case) in [
         "waiting/fifo",
         "waiting/unicode",
         "waiting/convert",
@@ -64,8 +77,19 @@ pub(crate) fn exercise_waiting(
         "waiting/expiry",
         "waiting/drop",
         "waiting/drop-newer",
-    ] {
-        run(manager, client, RunMode::TransactionTest(case))?;
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        run(
+            manager,
+            client,
+            if interactive && index == 0 {
+                RunMode::WaitingInteractiveTest(case)
+            } else {
+                RunMode::TransactionTest(case)
+            },
+        )?;
     }
     Ok(())
 }

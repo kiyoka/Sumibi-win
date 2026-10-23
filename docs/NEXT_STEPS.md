@@ -97,7 +97,8 @@ window-test-interactiveと通常のwindow-testは実TSFキーマネージャー�
 待機行列Coreの件数・本文量を有限に設定できるようにし、専用adapterでは既存の
 4件・4096 UTF-16単位を明示した（[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)）。
 製品の容量政策は未決。実DLLの待機回帰は前面化が拒否されたdesktopで未通過のため、
-対話desktopで再確認する。
+最初のwindowをクリックして続ける対話コマンドを追加した。今回の実行は30秒で失敗し、
+26ケースの完走は対話desktopで再確認する。
 
 所有windowの非アクティブ化・無効化・モード取消も実WndProcから失効経路へ接続した。
 復元後の保留変換・救済コピーを拒否し、Windows標準のモード取消は維持する。

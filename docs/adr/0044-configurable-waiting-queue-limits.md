@@ -34,8 +34,12 @@ load_smoke、self/edit/keyの基本検査が成功した（`target/issue-4-wait-
 変更前の保存済みEXE/DLLでも同じ入力・期待値で失敗し、同じdesktopでの
 `window-test`は前面化拒否`0x80070005`を報告した。待機検査の開始時にも
 前面化を明示検査するようにすると、本文比較より前に同じ`0x80070005`を返した。
+`waiting-input-test-interactive`も追加した。最初の専用ウィンドウで前面化が
+拒否された時だけ最大30秒、所有STAのTSFメッセージを処理しながら利用者の
+クリックを待つ。前面化できなければ明示的に失敗し、結果の成功には含めない。
+今回の実行では前面化できず30秒後の失敗を確認したが、26ケース完走は未確認。
 現時点で実DLL待機回帰を成功とは記録しない。
-ログは`target/issue-4-wait-limits-{input,input-retry,baseline,window,explicit-foreground}.log`。
+ログは`target/issue-4-wait-limits-{input,input-retry,baseline,window,explicit-foreground,interactive-waiting}.log`。
 最終静的検査は`target/issue-4-wait-limits-static-final.log`。
 対話desktopで前面化した状態で再実行し、容量境界まで通ることを確認する必要がある。
 一般アプリのキー配送・標準Undo・製品の全体予算も本変更の受入範囲外である。

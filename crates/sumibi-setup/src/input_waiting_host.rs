@@ -14,8 +14,8 @@ use sumibi_tip::spike::{INPUT_APPLIED, INPUT_APPLIED_UNTRACKED, INPUT_NOT_ATTEMP
 
 #[path = "input_waiting_tests.rs"]
 mod tests;
-pub(crate) use tests::exercise_waiting;
 pub(super) use tests::test_waiting;
+pub(crate) use tests::{exercise_waiting, exercise_waiting_interactive};
 #[path = "input_waiting_owner.rs"]
 mod owner;
 pub(super) use owner::test_waiting_demo;
