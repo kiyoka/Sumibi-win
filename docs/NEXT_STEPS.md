@@ -165,6 +165,8 @@ CoreのDeferred救済2件を加えworkspace134件と関連native回帰が成功�
 （[ADR 0036](adr/0036-unified-demo-recovery-and-copy-expiry.md)）。
 F7後の待機初期化失敗で捕捉した要求だけを取消し、重複通知で受入れ済み入力を上書きしない。
 デモ45ケースと関連回帰で確認した（[ADR 0037](adr/0037-cancel-failed-waiting-start.md)）。
+さらに通常救済だけが残る場合もOwnerが表示/保護を定期確認する。
+デモ47ケースで検証した（[ADR 0038](adr/0038-owner-wake-for-ordinary-recovery.md)）。
 次は専用デモの対話操作を確認し、製品の待機/救済容量・期限・超過時動作を確定する。
 製品キーはまだ接続せず、全体予算/期限/超過時政策と一般アプリの残範囲も維持する。
 

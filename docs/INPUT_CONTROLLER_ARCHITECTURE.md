@@ -195,6 +195,9 @@ Clipboard公開前の期限と境界epochも検査する（[ADR 0036](adr/0036-u
 F7要求の開始後にWaiting初期化が失敗した場合は捕捉した要求IDだけを取消し、
 候補の公開前にDLL/Bridge保留ID・保護/選択/通知・境界epoch・終了状態を再照合する。
 同一要求の重複通知はSessionを置換しない（[ADR 0037](adr/0037-cancel-failed-waiting-start.md)）。
+通常救済だけが残る間もwaiting-demoのOwnerが表示中は1秒、非表示中は250ms以内に起床する。
+本文の保護検査と残り時間の表示を更新し、記録がなくなれば周期起床を止める
+（[ADR 0038](adr/0038-owner-wake-for-ordinary-recovery.md)）。
 TSFを呼ぶ前にRefCellの借用を解放し、通知やウィンドウ破棄が再入しても借用違反を起こさないようにする。
 
 本文置換と属性解除の延期は区別する。属性解除は弱参照・世代一致を検査した上で非同期化できる。

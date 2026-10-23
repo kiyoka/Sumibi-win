@@ -495,7 +495,17 @@ impl Owner {
             .as_ref()
             .is_some_and(|s| !s.ready.is_empty())
         {
-            250
+            return 250;
+        }
+        // The legacy Rescue has no View of its own in waiting-demo. Its
+        // original timer can sleep until expiry, leaving the owner's preview
+        // and protection check stale for up to ten minutes.
+        if editor.rescue.metadata().is_some() {
+            if self.view.borrow().is_some() {
+                1000
+            } else {
+                250
+            }
         } else {
             u32::MAX
         }

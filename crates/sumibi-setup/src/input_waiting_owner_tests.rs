@@ -121,6 +121,8 @@ pub(crate) fn exercise_waiting_demo(
         "ordinary-expiry",
         "ordinary-copy-boundary",
         "ordinary-copy-close",
+        "ordinary-idle-protection",
+        "ordinary-visible-wake",
         "start-readonly",
         "start-private",
         "start-error",
@@ -754,6 +756,39 @@ fn test_mixed<'a>(
             assert!(owner.view.borrow().is_none());
             assert!(editor.rescue.metadata().is_none());
             assert!(store.input_problem.get(), "expiry is not acknowledgement");
+        }
+        "ordinary-idle-protection" => {
+            owner.view.borrow().as_ref().unwrap().view.close_request();
+            owner.service(window, editor, clipboard)?;
+            assert!(owner.view.borrow().is_none());
+            assert!(
+                owner.wait_ms(editor) <= 250,
+                "hidden rescue needs a protection check"
+            );
+            store.readonly.set(true);
+            owner.service(window, editor, clipboard)?;
+            assert!(!editor.rescue.metadata().unwrap().copyable);
+            route(window, WM_KEYDOWN, 0x77)?;
+            owner.service(window, editor, clipboard)?;
+            assert!(!owner.view.borrow().as_ref().unwrap().view.copyable);
+            route(window, WM_KEYDOWN, 0x79)?;
+            owner.service(window, editor, clipboard)?;
+            assert_eq!(clipboard.calls.get(), 0);
+            route(window, WM_KEYDOWN, 0x78)?;
+            owner.service(window, editor, clipboard)?;
+            assert!(editor.rescue.metadata().is_none());
+            store.readonly.set(false);
+        }
+        "ordinary-visible-wake" => {
+            assert!(
+                owner.wait_ms(editor) <= 1000,
+                "visible countdown needs a wake"
+            );
+            assert!(owner.wait_ms(editor) > 0);
+            route(window, WM_KEYDOWN, 0x78)?;
+            owner.service(window, editor, clipboard)?;
+            assert!(editor.rescue.metadata().is_none());
+            assert_eq!(owner.wait_ms(editor), u32::MAX);
         }
         "ordinary-copy-boundary" | "ordinary-copy-close" => {
             if case == "ordinary-copy-close" {
