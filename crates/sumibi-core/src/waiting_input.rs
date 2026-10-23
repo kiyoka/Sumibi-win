@@ -8,6 +8,38 @@ pub const MAX_EVENTS: usize = 1024;
 pub const MAX_TEXT_UNITS: usize = 16384;
 pub const MAX_EVENT_UNITS: usize = 1024;
 
+/// Per-queue admission ceiling. This does not reserve recovery capacity or
+/// establish a cross-owner/process policy; the native adapter must do that
+/// before acknowledging input consumption.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    max_events: usize,
+    max_text_units: usize,
+}
+impl Limits {
+    pub const fn new(max_events: usize, max_text_units: usize) -> Option<Self> {
+        if max_events == 0
+            || max_events > MAX_EVENTS
+            || max_text_units == 0
+            || max_text_units > MAX_TEXT_UNITS
+        {
+            return None;
+        }
+        Some(Self {
+            max_events,
+            max_text_units,
+        })
+    }
+}
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_events: MAX_EVENTS,
+            max_text_units: MAX_TEXT_UNITS,
+        }
+    }
+}
+
 /// A cooperating adapter's logical input target, not a native range or cookie.
 /// `target` must change on focus/document/selection boundaries, even if restored.
 /// `generation` advances exactly once after each confirmed body transaction.
@@ -128,6 +160,7 @@ pub struct Recovery {
 /// Text-bearing types intentionally omit Debug. No timer, persistence, worker,
 /// automatic recovery/copy, or cross-owner/process budget is provided here.
 pub struct WaitingInput {
+    limits: Limits,
     target: Target,
     phase: Phase,
     last_request: RequestId,
@@ -142,10 +175,16 @@ impl WaitingInput {
     /// later conversion IDs must also increase. IDs must not be reused after
     /// dropping/recreating a queue with the same target.
     pub fn new(request: RequestId, target: Target) -> Result<Self, Reject> {
+        Self::with_limits(request, target, Limits::default())
+    }
+    /// The adapter may choose smaller finite bounds, but still must reserve
+    /// its shared recovery budget before consuming each admitted event.
+    pub fn with_limits(request: RequestId, target: Target, limits: Limits) -> Result<Self, Reject> {
         if request.0 == 0 || request.0 == u128::MAX || !target.valid() {
             return Err(Reject::Invalid);
         }
         Ok(Self {
+            limits,
             target,
             phase: Phase::Waiting(request),
             last_request: request,
@@ -206,7 +245,9 @@ impl WaitingInput {
             Input::Enter | Input::Convert => 0,
             _ => return Err(Reject::Invalid),
         };
-        if self.entries.len() == MAX_EVENTS || self.units + units > MAX_TEXT_UNITS {
+        if self.entries.len() >= self.limits.max_events
+            || self.units + units > self.limits.max_text_units
+        {
             return Err(Reject::Capacity);
         }
         let sequence = self

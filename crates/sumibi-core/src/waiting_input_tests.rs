@@ -113,6 +113,48 @@ fn capacity_refusal_preserves_admitted_input_and_reuses_only_confirmed_space() {
 }
 
 #[test]
+fn configured_limits_reject_before_consumption_and_reopen_after_confirmed_delivery() {
+    assert_eq!(Limits::new(0, 1), None);
+    assert_eq!(Limits::new(1, 0), None);
+    assert_eq!(Limits::new(MAX_EVENTS + 1, 1), None);
+    assert_eq!(Limits::new(1, MAX_TEXT_UNITS + 1), None);
+
+    let mut pending =
+        WaitingInput::with_limits(RequestId(10), target(), Limits::new(2, 2).unwrap()).unwrap();
+    let emoji: Vec<_> = "😀".encode_utf16().collect();
+    pending.admit(target(), Input::Text(&emoji)).unwrap();
+    pending.admit(target(), Input::Backspace(1)).unwrap();
+    assert_eq!(pending.admit(target(), Input::Enter), Err(Reject::Capacity));
+    assert_eq!(
+        pending.admit(target(), Input::Text(&[b'a' as u16])),
+        Err(Reject::Capacity)
+    );
+    assert_eq!((pending.len(), pending.text_units()), (2, 2));
+
+    pending.settle(RequestId(10), target(), false).unwrap();
+    let ticket = pending.start_next(target()).unwrap().unwrap();
+    assert_eq!(text(pending.delivery(ticket)), emoji);
+    pending
+        .finish(ticket, Outcome::Applied(advanced(target())))
+        .unwrap();
+    pending
+        .admit(advanced(target()), Input::Text(&emoji))
+        .unwrap();
+    assert_eq!((pending.len(), pending.text_units()), (2, 2));
+
+    let mut text_limited =
+        WaitingInput::with_limits(RequestId(20), target(), Limits::new(3, 2).unwrap()).unwrap();
+    text_limited.admit(target(), Input::Text(&emoji)).unwrap();
+    assert_eq!(
+        text_limited.admit(target(), Input::Text(&[b'z' as u16])),
+        Err(Reject::Capacity)
+    );
+    assert_eq!((text_limited.len(), text_limited.text_units()), (1, 2));
+    text_limited.admit(target(), Input::Enter).unwrap();
+    assert_eq!((text_limited.len(), text_limited.text_units()), (2, 2));
+}
+
+#[test]
 fn invalid_text_repeat_and_identity_never_grant_input_consumption() {
     for request in [RequestId(0), RequestId(u128::MAX)] {
         assert!(matches!(

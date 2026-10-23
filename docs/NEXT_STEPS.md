@@ -94,6 +94,10 @@ window-test-interactiveと通常のwindow-testは実TSFキーマネージャー�
 （[ADR 0043](adr/0043-interactive-native-key-activation.md)）。
 専用transaction-demoでは、利用者の実打鍵による`nihongo`→F7で「日本語」→Ctrl+Zで原文復元と×終了を確認した。
 一般アプリの保護情報・sink寿命・標準Undoと実打鍵、専用ホストのShift選択・IME切替は次に進める。
+待機行列Coreの件数・本文量を有限に設定できるようにし、専用adapterでは既存の
+4件・4096 UTF-16単位を明示した（[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)）。
+製品の容量政策は未決。実DLLの待機回帰は前面化が拒否されたdesktopで未通過のため、
+対話desktopで再確認する。
 
 所有windowの非アクティブ化・無効化・モード取消も実WndProcから失効経路へ接続した。
 復元後の保留変換・救済コピーを拒否し、Windows標準のモード取消は維持する。

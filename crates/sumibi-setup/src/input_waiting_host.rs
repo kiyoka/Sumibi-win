@@ -97,7 +97,18 @@ impl Waiting {
             native_owned: false,
             target,
             request,
-            queue: Some(WaitingInput::new(RequestId(request as u128), target).map_err(|_| E_FAIL)?),
+            queue: Some(
+                WaitingInput::with_limits(
+                    RequestId(request as u128),
+                    target,
+                    core::Limits::new(
+                        sumibi_core::recovery::MAX_RECORDS,
+                        sumibi_core::recovery::MAX_RECORDS * sumibi_core::recovery::MAX_UNITS,
+                    )
+                    .ok_or(E_FAIL)?,
+                )
+                .map_err(|_| E_FAIL)?,
+            ),
             slots,
             ready,
             capacity_denied: false,
