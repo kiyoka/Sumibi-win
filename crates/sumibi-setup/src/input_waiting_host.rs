@@ -45,6 +45,8 @@ struct Waiting {
     slots: VecDeque<Slot>,
     ready: Vec<Slot>,
     capacity_denied: bool,
+    // Diagnostic outcome only; never contains admitted text or keys.
+    last_stop: Option<Boundary>,
     // Diagnostic only; production waiting/expiry policy remains undecided.
     deadline: Instant,
 }
@@ -112,6 +114,7 @@ impl Waiting {
             slots,
             ready,
             capacity_denied: false,
+            last_stop: None,
             deadline: Instant::now() + Duration::from_secs(8),
         })
     }
@@ -261,6 +264,7 @@ impl Waiting {
         Ok(())
     }
     fn stop(&mut self, editor: &Editor, reason: Boundary, head: Outcome) {
+        self.last_stop = Some(reason);
         if let Some((broker, _)) = &editor.broker {
             unsafe {
                 let _ = broker.Cancel(self.request);

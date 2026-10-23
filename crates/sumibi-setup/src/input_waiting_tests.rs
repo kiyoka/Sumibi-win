@@ -343,7 +343,17 @@ pub(in super::super) fn test_waiting(
         assert_eq!(
             *store.text.borrow(),
             expected.encode_utf16().collect::<Vec<_>>(),
-            "{case}"
+            "{case}: queue_active={}, stable={}, last_stop={:?}, broker_active={}, pending_id={:?}, ready_outcomes={:?}",
+            waiting.queue.is_some(),
+            waiting.stable(),
+            waiting.last_stop,
+            bridge.get().active(),
+            bridge.get().pending_id(),
+            waiting
+                .ready
+                .iter()
+                .map(|slot| slot.recovery.metadata(Instant::now()).map(|m| m.outcome))
+                .collect::<Vec<_>>()
         );
         assert_eq!(
             editor.submits.get(),
