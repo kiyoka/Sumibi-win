@@ -121,6 +121,17 @@ pub(crate) fn exercise_waiting_demo(
         "ordinary-expiry",
         "ordinary-copy-boundary",
         "ordinary-copy-close",
+        "start-readonly",
+        "start-private",
+        "start-error",
+        "start-boundary",
+        "start-close",
+        "start-cancel",
+        "start-newer",
+        "start-duplicate",
+        "start-retained",
+        "start-no-request",
+        "start-retry",
     ] {
         run(manager, client, RunMode::WaitingTest(case))?;
     }
@@ -134,6 +145,23 @@ pub(in super::super::super) fn test_waiting_demo(
     let owner = editor.waiting.as_ref().ok_or(E_FAIL)?;
     let store = editor.store.get();
     let clipboard = TestClipboard::new();
+    if case.starts_with("start-") {
+        test_start(window, editor, &clipboard, case)?;
+        owner.close();
+        editor.rescue.close();
+        assert!(!owner.active());
+        assert!(owner.session.borrow().is_none());
+        let mut reserved = Vec::new();
+        for _ in 0..sumibi_core::recovery::MAX_RECORDS {
+            let mut record = Recovery::with_budget(input_recovery_host::shared_budget());
+            record
+                .reserve(Operation::DeferredEnter, Instant::now())
+                .map_err(|_| E_FAIL)?;
+            reserved.push(record);
+        }
+        println!("Waiting demo / {case}: OK");
+        return Ok(());
+    }
     if case.starts_with("mixed-") || case.starts_with("ordinary-") {
         test_mixed(window, editor, &clipboard, case)?;
         owner.close();
@@ -414,6 +442,177 @@ pub(in super::super::super) fn test_waiting_demo(
         records.push(slot);
     }
     println!("Waiting demo / {case}: OK");
+    Ok(())
+}
+
+fn test_start(
+    window: &crate::window_host::Window,
+    editor: &Editor,
+    clipboard: &dyn Clipboard,
+    case: &str,
+) -> Result<()> {
+    let owner = editor.waiting.as_ref().ok_or(E_FAIL)?;
+    let store = editor.store.get();
+    let (broker, bridge) = editor.broker.as_ref().ok_or(E_FAIL)?;
+    editor.insert(&"nihongo".encode_utf16().collect::<Vec<_>>())?;
+    pump(window)?;
+    store.undo.borrow_mut().clear();
+    if case == "start-no-request" {
+        owner.started_with(editor, |_| panic!("initialise without a request"))?;
+        assert!(!owner.start_failed.get());
+        assert!(!bridge.get().active());
+        return Ok(());
+    }
+    if matches!(case, "start-duplicate" | "start-retained") {
+        route(window, WM_KEYDOWN, 0x76)?;
+        if case == "start-retained" {
+            route(window, WM_KEYDOWN, 0x0d)?;
+        }
+        route(window, WM_CHAR, 'a' as usize)?;
+        let identity = owner.session.borrow().as_ref().unwrap().target.target;
+        if case == "start-duplicate" {
+            owner.started_with(editor, |_| panic!("duplicate initialisation"))?;
+            assert_eq!(
+                owner
+                    .session
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .queue
+                    .as_ref()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(
+                owner.session.borrow().as_ref().unwrap().target.target,
+                identity
+            );
+            drive(window, editor, clipboard)?;
+            assert_eq!(
+                *store.text.borrow(),
+                "日本語a".encode_utf16().collect::<Vec<_>>()
+            );
+            return Ok(());
+        }
+        drive(window, editor, clipboard)?;
+        assert_eq!(owner.session.borrow().as_ref().unwrap().ready.len(), 2);
+        editor.navigation_boundary();
+        store.host_selection(0, store.text.borrow().len())?;
+        pump(window)?;
+        owner.state(editor, |_| {
+            editor.input(WM_KEYDOWN, WPARAM(0x76), LPARAM(1))?;
+            Ok(())
+        })?;
+        assert!(bridge.get().pending_id().is_some());
+        owner.started_with(editor, |_| panic!("unresolved recovery overwritten"))?;
+        assert!(owner.start_failed.get());
+        assert_eq!(
+            owner.session.borrow().as_ref().unwrap().target.target,
+            identity
+        );
+        assert_eq!(Owner::records(editor, &owner.session.borrow()).len(), 2);
+        let mut pending = 1;
+        unsafe {
+            broker.Pending(&mut pending).ok()?;
+        }
+        assert_eq!(pending, 0);
+        tracking_host::wait_result(window, broker, bridge, false)?;
+        return Ok(());
+    }
+    // Start the real DLL/worker under the existing owner busy guard, then
+    // interleave a controlled initialisation boundary before publication.
+    owner.state(editor, |_| {
+        editor.input(WM_KEYDOWN, WPARAM(0x76), LPARAM(1))?;
+        Ok(())
+    })?;
+    let request = bridge.get().pending_id().ok_or(E_FAIL)?;
+    let writes = store.set_text_calls.get();
+    let reads = composing_host::input_notify_host::body_reads()?;
+    let newer = Cell::new(None);
+    owner.started_with(editor, |expected| {
+        assert_eq!(expected, request);
+        if case == "start-error" {
+            return Err(E_FAIL.into());
+        }
+        if matches!(case, "start-readonly" | "start-retry") {
+            store.readonly.set(true);
+        }
+        if case == "start-private" {
+            tracking_host::set_scope(editor, windows::Win32::UI::TextServices::IS_PRIVATE)?;
+        }
+        let waiting = Waiting::begin(&owner.manager, editor, owner.client, expected)?;
+        match case {
+            "start-boundary" => owner.boundary(),
+            "start-close" => owner.close(),
+            "start-cancel" => unsafe {
+                broker.Cancel(expected).ok()?;
+            },
+            "start-newer" => {
+                unsafe {
+                    broker.Cancel(expected).ok()?;
+                }
+                tracking_host::wait_result(window, broker, bridge, false)?;
+                editor.navigation_boundary();
+                store.host_selection(0, store.text.borrow().len())?;
+                pump(window)?;
+                editor.input(WM_KEYDOWN, WPARAM(0x76), LPARAM(1))?;
+                newer.set(bridge.get().pending_id());
+            }
+            _ => return Err(E_FAIL.into()),
+        }
+        Ok(waiting)
+    })?;
+    store.readonly.set(false);
+    if case == "start-private" {
+        tracking_host::set_scope(editor, windows::Win32::UI::TextServices::IS_DEFAULT)?;
+    }
+    assert!(owner.start_failed.get());
+    assert!(!owner.active());
+    assert!(owner.session.borrow().is_none());
+    let mut pending = 0;
+    unsafe {
+        broker.Pending(&mut pending).ok()?;
+    }
+    if case == "start-newer" {
+        let newer = newer.get().ok_or(E_FAIL)?;
+        assert_ne!(newer, request);
+        assert_eq!(
+            pending, newer,
+            "failed old attempt cannot cancel the newer request"
+        );
+        tracking_host::wait_result(window, broker, bridge, true)?;
+        assert_eq!(
+            *store.text.borrow(),
+            "日本語".encode_utf16().collect::<Vec<_>>()
+        );
+        return Ok(());
+    }
+    assert_eq!(
+        pending, 0,
+        "failed initialisation cancels the captured request"
+    );
+    tracking_host::wait_result(window, broker, bridge, false)?;
+    assert_eq!(
+        *store.text.borrow(),
+        "nihongo".encode_utf16().collect::<Vec<_>>()
+    );
+    assert_eq!(store.set_text_calls.get(), writes);
+    assert_eq!(composing_host::input_notify_host::body_reads()?, reads);
+    assert!(store.undo.borrow().is_empty());
+    if case == "start-retry" {
+        editor.navigation_boundary();
+        store.host_selection(0, store.text.borrow().len())?;
+        pump(window)?;
+        route(window, WM_KEYDOWN, 0x76)?;
+        assert!(owner.active());
+        assert!(!owner.start_failed.get());
+        drive(window, editor, clipboard)?;
+        assert_eq!(
+            *store.text.borrow(),
+            "日本語".encode_utf16().collect::<Vec<_>>()
+        );
+    }
     Ok(())
 }
 

@@ -25,6 +25,7 @@ pub(in super::super) struct Owner {
     active: Cell<bool>,
     busy: Cell<bool>,
     closed: Cell<bool>,
+    start_failed: Cell<bool>,
     epoch: Cell<u64>,
     boundary: Cell<Option<Boundary>>,
     show: Cell<bool>,
@@ -37,6 +38,22 @@ impl Drop for Busy<'_> {
         self.0.set(false);
     }
 }
+// Every exit before publication cancels only the request captured at entry.
+// Cancel signals the worker; completion draining stays on the owner loop.
+struct Starting<'a> {
+    broker: &'a ISpikeBroker,
+    request: u64,
+    accepted: bool,
+}
+impl Drop for Starting<'_> {
+    fn drop(&mut self) {
+        if !self.accepted {
+            unsafe {
+                let _ = self.broker.Cancel(self.request);
+            }
+        }
+    }
+}
 impl Owner {
     pub(in super::super) fn new(manager: &ITfThreadMgr, client: u32) -> Self {
         Self {
@@ -47,6 +64,7 @@ impl Owner {
             active: Cell::new(false),
             busy: Cell::new(false),
             closed: Cell::new(false),
+            start_failed: Cell::new(false),
             epoch: Cell::new(0),
             boundary: Cell::new(None),
             show: Cell::new(false),
@@ -127,15 +145,75 @@ impl Owner {
             })
     }
     pub(in super::super) fn started(&self, editor: &Editor) -> Result<()> {
+        self.started_with(editor, |request| {
+            Waiting::begin(&self.manager, editor, self.client, request)
+        })
+    }
+    fn started_with(
+        &self,
+        editor: &Editor,
+        initialise: impl FnOnce(u64) -> Result<Waiting>,
+    ) -> Result<()> {
         if self.busy.get() {
             return Ok(());
         } // Core Convert is starting the next request.
+        let Some((broker, bridge)) = &editor.broker else {
+            return Ok(());
+        };
+        let Some(request) = bridge.get().pending_id() else {
+            return Ok(());
+        };
+        let epoch = self.epoch.get();
+        let eligible = !self.closed.get() && self.boundary.get().is_none();
         self.state(editor, |session| {
-            if let Some((_, bridge)) = &editor.broker {
-                if bridge.get().pending_id().is_some() {
-                    *session = Some(Waiting::begin(&self.manager, editor, self.client)?);
-                }
+            if session
+                .as_ref()
+                .is_some_and(|s| s.request == request && s.queue.is_some())
+            {
+                return Ok(()); // Duplicate notification must preserve accepted input.
             }
+            let mut attempt = Starting {
+                broker,
+                request,
+                accepted: false,
+            };
+            if !eligible
+                || session.as_ref().is_some_and(|s| {
+                    s.queue.is_some()
+                        || s.ready
+                            .iter()
+                            .any(|r| r.recovery.metadata(Instant::now()).is_some())
+                })
+                || editor.rescue.metadata().is_some()
+            {
+                self.start_failed.set(true);
+                return Ok(());
+            }
+            let candidate = match initialise(request) {
+                Ok(candidate) => candidate,
+                Err(_) => {
+                    self.start_failed.set(true);
+                    return Ok(());
+                }
+            };
+            let stable = candidate.stable();
+            let mut pending = 0;
+            let current = unsafe { broker.Pending(&mut pending).is_ok() };
+            if !current
+                || pending != request
+                || bridge.get().pending_id() != Some(request)
+                || candidate.request != request
+                || !stable
+                || self.epoch.get() != epoch
+                || self.boundary.get().is_some()
+                || self.closed.get()
+            {
+                self.start_failed.set(true);
+                return Ok(());
+            }
+            *session = Some(candidate);
+            attempt.accepted = true;
+            self.start_failed.set(false);
             Ok(())
         })
     }
@@ -386,9 +464,11 @@ impl Owner {
                         composing.cancel(editor, true);
                     }
                 }
-                window.set_title(
-                    "Sumibi 待機入力デモ（固定結果） | F7 変換 | F8 救済確認 | Ctrl+Z Undo",
-                )?;
+                window.set_title(if self.start_failed.get() {
+                    "Sumibi 待機入力を開始できず変換を取り消しました | 原文を保持 | F7 再試行"
+                } else {
+                    "Sumibi 待機入力デモ（固定結果） | F7 変換 | F8 救済確認 | Ctrl+Z Undo"
+                })?;
             }
             Ok(())
         })?;

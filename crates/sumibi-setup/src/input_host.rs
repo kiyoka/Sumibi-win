@@ -1019,11 +1019,13 @@ fn broker_message_loop(window: &crate::window_host::Window, editor: &Editor) -> 
         }
         if editor.waiting.as_ref().is_none_or(|owner| !owner.active()) {
             if let Some(delivery) = bridge.get().drain(control)? {
-                window.set_title(if delivery == crate::broker_bridge::Delivery::Applied {
-                    "Sumibi 変換完了（固定結果） | F7 変換 | Ctrl+Z Undo"
-                } else {
-                    "Sumibi 原文を保持しました | F7 変換 | Esc 取消"
-                })?;
+                if editor.waiting.is_none() {
+                    window.set_title(if delivery == crate::broker_bridge::Delivery::Applied {
+                        "Sumibi 変換完了（固定結果） | F7 変換 | Ctrl+Z Undo"
+                    } else {
+                        "Sumibi 原文を保持しました | F7 変換 | Esc 取消"
+                    })?;
+                }
                 pending = false;
             }
         }

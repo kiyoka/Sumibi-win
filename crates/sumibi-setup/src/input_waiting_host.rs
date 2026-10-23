@@ -48,9 +48,11 @@ struct Waiting {
     deadline: Instant,
 }
 impl Waiting {
-    fn begin(manager: &ITfThreadMgr, editor: &Editor, client: u32) -> Result<Self> {
+    fn begin(manager: &ITfThreadMgr, editor: &Editor, client: u32, request: u64) -> Result<Self> {
         let (_, bridge) = editor.broker.as_ref().ok_or(E_FAIL)?;
-        let request = bridge.get().pending_id().ok_or(E_FAIL)?;
+        if request == 0 || bridge.get().pending_id() != Some(request) {
+            return Err(E_FAIL.into());
+        }
         let watch = InputWatch::attach(manager, &editor.context)?;
         let notification = watch.generation()?;
         let boundary = watch.boundary_generation()?;

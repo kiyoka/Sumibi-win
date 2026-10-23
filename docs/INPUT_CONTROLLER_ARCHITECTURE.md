@@ -192,6 +192,9 @@ F8巡回と表示中の1件のコピー/破棄、Clipboard公開前の境界照�
 waiting-demoでは従来Rescueの独立UI serviceを実行せず、Ownerが保護/期限のmaintenanceと個別操作を呼ぶ。
 保護後の本文なしの操作情報も表示/破棄でき、両者の最後の明示確認だけで失敗警告を解除する。
 Clipboard公開前の期限と境界epochも検査する（[ADR 0036](adr/0036-unified-demo-recovery-and-copy-expiry.md)）。
+F7要求の開始後にWaiting初期化が失敗した場合は捕捉した要求IDだけを取消し、
+候補の公開前にDLL/Bridge保留ID・保護/選択/通知・境界epoch・終了状態を再照合する。
+同一要求の重複通知はSessionを置換しない（[ADR 0037](adr/0037-cancel-failed-waiting-start.md)）。
 TSFを呼ぶ前にRefCellの借用を解放し、通知やウィンドウ破棄が再入しても借用違反を起こさないようにする。
 
 本文置換と属性解除の延期は区別する。属性解除は弱参照・世代一致を検査した上で非同期化できる。

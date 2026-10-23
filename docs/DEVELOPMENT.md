@@ -48,11 +48,11 @@ F8で救済画面を開き、さらにF8で次のレコードを確認する。c
 ×は画面だけを閉じ、救済は最大10分保持する。未確認レコードが残る間のF7は確認画面へ案内する。
 既存transaction-demoや他アプリの入力には待機を有効化しない。
 
-`waiting-demo-test --dll target/debug/sumibi_tip.dll`で同じ配送/確認UIの34ケースを自動検証できる。
+`waiting-demo-test --dll target/debug/sumibi_tip.dll`で同じ配送/確認UIと開始失敗の45ケースを自動検証できる。
 合成MSGを使い、コピーは試験用Clipboardへ差し替える。物理キーの受入とは区別する。
 今回、待機adapter26・同期入力174・救済47・通知30・close4とRust134件・静的/基本DLL検査が成功。
 Backspace55・書記素ホスト22・composition46・broker入力11・追跡25は前段階の成功記録を維持する。
-通知・救済の結付けは[ADR 0035](adr/0035-waiting-demo-and-record-recovery-ui.md)、統合表示とコピー期限は[ADR 0036](adr/0036-unified-demo-recovery-and-copy-expiry.md)を参照。
+通知・救済の結付けは[ADR 0035](adr/0035-waiting-demo-and-record-recovery-ui.md)、統合表示とコピー期限は[ADR 0036](adr/0036-unified-demo-recovery-and-copy-expiry.md)、開始失敗の取消は[ADR 0037](adr/0037-cancel-failed-waiting-start.md)を参照。
 
 通常ユーザーの別プロセス・非同期I/O検証は `target/debug/sumibi-setup.exe ipc-peer-test`。
 固定ハンドルへ相手を結び付け、トークン・PID・作成時刻を相互検査した後で模擬結果をCoreへ返す。

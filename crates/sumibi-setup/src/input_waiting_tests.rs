@@ -143,7 +143,8 @@ pub(in super::super) fn test_waiting(
     }
     editor.input(WM_KEYDOWN, WPARAM(0x76), LPARAM(1))?;
     let (broker, bridge) = editor.broker.as_ref().ok_or(E_FAIL)?;
-    let mut waiting = Waiting::begin(manager, editor, client)?;
+    let request = bridge.get().pending_id().ok_or(E_FAIL)?;
+    let mut waiting = Waiting::begin(manager, editor, client, request)?;
     let initial = store.text.borrow().clone();
     let writes = store.set_text_calls.get();
     let reads = composing_host::input_notify_host::body_reads()?;
