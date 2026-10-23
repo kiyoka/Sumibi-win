@@ -65,6 +65,7 @@ pub(crate) fn exercise_recovery(
         "rescue/late-command",
         "rescue/copy-invalidated",
         "rescue/process-insert",
+        "rescue/text-budget",
         "rescue/process-backspace",
         "rescue/process-delete",
         "rescue/process-forward",
@@ -104,6 +105,9 @@ pub(in crate::edit_host::input_host) fn test_recovery(
     _client: u32,
     case: &str,
 ) -> Result<()> {
+    if case == "text-budget" {
+        return test_text_budget(editor);
+    }
     if case.starts_with("process-") {
         return test_process_budget(window, editor, case);
     }
@@ -455,6 +459,74 @@ pub(in crate::edit_host::input_host) fn test_recovery(
     assert!(editor.rescue.metadata().is_none());
     assert!(editor.rescue.view.borrow().is_none());
     println!("Input recovery / {case}: OK");
+    Ok(())
+}
+
+/// A configured text cap must reject the next real editor insertion before
+/// the DLL write, even while record capacity is still available.
+fn test_text_budget(editor: &Editor) -> Result<()> {
+    let store = editor.store.get();
+    let reads = super::super::composing_host::input_notify_host::body_reads()?;
+    let budget = Budget::with_limits(4, 2).ok_or(E_FAIL)?;
+    *editor.rescue.slot.borrow_mut() = Recovery::with_budget(budget.clone());
+    let mut peer = Recovery::with_budget(budget.clone());
+    let ticket = peer
+        .reserve(Operation::Insert(2), Instant::now())
+        .map_err(|_| E_FAIL)?;
+    assert!(peer.finish(
+        ticket,
+        Outcome::Deferred,
+        &['a' as u16, 'b' as u16],
+        Instant::now()
+    ));
+    let mut command = Recovery::with_budget(budget);
+    assert!(command
+        .reserve(Operation::DeferredEnter, Instant::now())
+        .is_ok());
+    let writes = store.set_text_calls.get();
+    let history = store.undo.borrow().len();
+
+    editor.insert(&['x' as u16])?;
+    assert_eq!(
+        editor.input_disposition.get(),
+        sumibi_tip::spike::INPUT_NOT_ATTEMPTED
+    );
+    assert_eq!(store.set_text_calls.get(), writes);
+    assert_eq!(*store.text.borrow(), vec!['x' as u16]);
+    assert_eq!(store.undo.borrow().len(), history + 1);
+    assert!(editor.rescue.metadata().is_none());
+    assert_eq!(peer.metadata(Instant::now()).ok_or(E_FAIL)?.ticket, ticket);
+    assert_eq!(
+        super::super::composing_host::input_notify_host::body_reads()?,
+        reads
+    );
+
+    assert!(peer.discard(ticket));
+    store.fail_text_before.set(true);
+    editor.insert(&['y' as u16])?;
+    assert_eq!(
+        editor.input_disposition.get(),
+        sumibi_tip::spike::INPUT_UNCERTAIN
+    );
+    assert_eq!(store.set_text_calls.get(), writes + 1);
+    assert_eq!(*store.text.borrow(), vec!['x' as u16]);
+    assert_eq!(store.undo.borrow().len(), history + 1);
+    let rescued = editor.rescue.metadata().ok_or(E_FAIL)?;
+    assert_eq!(rescued.operation, Operation::Insert(1));
+    assert_eq!(
+        editor
+            .rescue
+            .slot
+            .borrow()
+            .text(rescued.ticket, editor.rescue.now()),
+        Some(&['y' as u16][..])
+    );
+    assert_eq!(
+        super::super::composing_host::input_notify_host::body_reads()?,
+        reads
+    );
+    editor.rescue.close();
+    println!("Input recovery / text-budget: OK");
     Ok(())
 }
 

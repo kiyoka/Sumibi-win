@@ -58,7 +58,7 @@ Escで待機を明示取消した場合も、安定した原文の選択を解�
 合成MSGを使い、コピーは試験用Clipboardへ差し替える。物理キーの受入とは区別する。
 共有救済予算はレコード件数と本文総量を同時に予約し、診断EXEは4件・4096単位を維持する
 （[ADR 0041](adr/0041-configurable-shared-recovery-budget.md)）。
-待機adapter26・同期入力174・救済47・通知30・close4とRust136件・静的/基本DLL検査の成功記録がある。
+待機adapter26・同期入力174・救済48・通知30・close4とRust136件・静的/基本DLL検査の成功記録がある。
 Backspace55・書記素ホスト22・composition46・broker入力11・追跡25は前段階の成功記録を維持する。
 通知・救済の結付けは[ADR 0035](adr/0035-waiting-demo-and-record-recovery-ui.md)、統合表示とコピー期限は[ADR 0036](adr/0036-unified-demo-recovery-and-copy-expiry.md)、開始失敗の取消は[ADR 0037](adr/0037-cancel-failed-waiting-start.md)、通常救済だけの定期確認は[ADR 0038](adr/0038-owner-wake-for-ordinary-recovery.md)を参照。
 
