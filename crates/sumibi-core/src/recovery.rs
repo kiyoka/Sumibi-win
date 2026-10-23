@@ -1,39 +1,91 @@
 //! One bounded, memory-only rescue slot. Never authorizes document editing.
-use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 pub const MAX_UNITS: usize = 1024;
 pub const MAX_RECORDS: usize = 4;
+pub const MAX_POOL_RECORDS: usize = 1024;
+pub const MAX_POOL_TEXT_UNITS: usize = 16384;
 pub const RETENTION: Duration = Duration::from_secs(600);
-/// Share one budget across every owner in an EXE. Contains no text or callbacks.
-/// A standalone default Recovery has its own budget for library use.
-#[derive(Clone, Default)]
+/// Share one budget across cooperating owners. It holds counters only, never
+/// text or callbacks. Separate pools do not form a cross-process budget.
+#[derive(Clone)]
 pub struct Budget {
-    used: Arc<AtomicUsize>,
+    state: Arc<BudgetState>,
+}
+struct BudgetState {
+    // One CAS reserves both a record and its maximum text length. The upper
+    // and lower halves are u32 counts, bounded before arithmetic below.
+    used: AtomicU64,
+    max_records: u32,
+    max_text_units: u32,
+}
+impl Default for Budget {
+    fn default() -> Self {
+        Self::with_limits(MAX_RECORDS, MAX_RECORDS * MAX_UNITS).unwrap()
+    }
 }
 impl Budget {
-    fn reserve(&self) -> Result<Permit, ReserveError> {
-        let mut count = self.used.load(Ordering::Acquire);
+    /// A standalone pool may choose lower or higher bounds without changing
+    /// the diagnostic default. The caller must share clones with every owner
+    /// that should count against the same in-process limit.
+    pub fn with_limits(max_records: usize, max_text_units: usize) -> Option<Self> {
+        if !(1..=MAX_POOL_RECORDS).contains(&max_records)
+            || !(1..=MAX_POOL_TEXT_UNITS).contains(&max_text_units)
+        {
+            return None;
+        }
+        let max_records = u32::try_from(max_records).ok()?;
+        let max_text_units = u32::try_from(max_text_units).ok()?;
+        Some(Self {
+            state: Arc::new(BudgetState {
+                used: AtomicU64::new(0),
+                max_records,
+                max_text_units,
+            }),
+        })
+    }
+    fn reserve(&self, units: usize) -> Result<Permit, ReserveError> {
+        let units = u32::try_from(units).map_err(|_| ReserveError::Invalid)?;
+        let delta = (1u64 << 32) | u64::from(units);
+        let mut current = self.state.used.load(Ordering::Acquire);
         loop {
-            if count >= MAX_RECORDS {
+            let records = (current >> 32) as u32;
+            let text_units = current as u32;
+            if records >= self.state.max_records
+                || text_units
+                    .checked_add(units)
+                    .is_none_or(|total| total > self.state.max_text_units)
+            {
                 return Err(ReserveError::Busy);
             }
-            match self.used.compare_exchange_weak(
-                count,
-                count + 1,
+            match self.state.used.compare_exchange_weak(
+                current,
+                current + delta,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Ok(Permit(self.clone())),
-                Err(actual) => count = actual,
+                Ok(_) => {
+                    return Ok(Permit {
+                        budget: self.clone(),
+                        units,
+                    })
+                }
+                Err(actual) => current = actual,
             }
         }
     }
 }
-struct Permit(Budget);
+struct Permit {
+    budget: Budget,
+    units: u32,
+}
 impl Drop for Permit {
     fn drop(&mut self) {
-        self.0.used.fetch_sub(1, Ordering::AcqRel);
+        let delta = (1u64 << 32) | u64::from(self.units);
+        self.budget.state.used.fetch_sub(delta, Ordering::AcqRel);
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -147,7 +199,7 @@ impl Recovery {
             .checked_add(1)
             .ok_or(ReserveError::Exhausted)?;
         // Reserve shared capacity before allocation and before input is consumed.
-        let permit = self.budget.reserve()?;
+        let permit = self.budget.reserve(length)?;
         let mut text = Vec::new();
         text.try_reserve_exact(length)
             .map_err(|_| ReserveError::Allocation)?;
@@ -263,6 +315,69 @@ mod tests {
                 owner
             })
             .collect()
+    }
+    #[test]
+    fn configurable_budget_reserves_records_and_text_together_until_release() {
+        let now = Instant::now();
+        let budget = Budget::with_limits(3, 2).unwrap();
+        let mut text = Recovery::with_budget(budget.clone());
+        let ticket = text.reserve(Operation::Insert(2), now).unwrap();
+        let mut command = Recovery::with_budget(budget.clone());
+        command.reserve(Operation::Backspace(1), now).unwrap();
+        let mut next = Recovery::with_budget(budget.clone());
+        assert_eq!(
+            next.reserve(Operation::Insert(1), now),
+            Err(ReserveError::Busy)
+        );
+        assert_eq!(next.sequence, 0);
+        next.reserve(Operation::DeferredEnter, now).unwrap();
+        let mut overflow = Recovery::with_budget(budget.clone());
+        assert_eq!(
+            overflow.reserve(Operation::Backspace(1), now),
+            Err(ReserveError::Busy)
+        );
+
+        assert!(text.finish(ticket, Outcome::Deferred, &['a' as u16, 'b' as u16], now));
+        assert!(text.redact(ticket));
+        assert_eq!(
+            overflow.reserve(Operation::Insert(1), now),
+            Err(ReserveError::Busy)
+        );
+        assert!(text.discard(ticket));
+        assert!(overflow.reserve(Operation::Insert(1), now).is_ok());
+        assert!(Budget::with_limits(0, 1).is_none());
+        assert!(Budget::with_limits(1, 0).is_none());
+        assert!(Budget::with_limits(MAX_POOL_RECORDS + 1, 1).is_none());
+        assert!(Budget::with_limits(1, MAX_POOL_TEXT_UNITS + 1).is_none());
+    }
+    #[test]
+    fn concurrent_custom_budget_rejects_excess_text_before_consumption() {
+        use std::sync::Barrier;
+        const OWNERS: usize = 8;
+        let now = Instant::now();
+        let budget = Budget::with_limits(OWNERS, 2 * MAX_UNITS).unwrap();
+        let entered = Barrier::new(OWNERS + 1);
+        let release = Barrier::new(OWNERS + 1);
+        let accepted = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..OWNERS {
+                let budget = budget.clone();
+                let (entered, release, accepted) = (&entered, &release, &accepted);
+                scope.spawn(move || {
+                    let mut owner = Recovery::with_budget(budget);
+                    if owner.reserve(Operation::Insert(MAX_UNITS), now).is_ok() {
+                        accepted.fetch_add(1, Ordering::Relaxed);
+                    }
+                    entered.wait();
+                    release.wait();
+                });
+            }
+            entered.wait();
+            assert_eq!(accepted.load(Ordering::Relaxed), 2);
+            release.wait();
+        });
+        let mut next = Recovery::with_budget(budget);
+        assert!(next.reserve(Operation::Insert(MAX_UNITS), now).is_ok());
     }
     #[test]
     fn shared_budget_counts_pending_ready_and_redacted_records() {
