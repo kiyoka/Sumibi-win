@@ -26,24 +26,31 @@ Coreへ明示的に渡す。これまでどおり共有救済枠を先に予約�
 ## 検証と限界
 
 Coreへ1件を追加し、workspace Rust137件、fmt、Clippy 3構成、spike build、
-load_smoke、self/edit/keyの基本検査が成功した（`target/issue-4-wait-limits-static.log`）。
+load_smoke、self/edit/keyの基本検査が成功した（`target/issue-4-waiting-final-static.log`）。
 小さい件数上限と本文上限を独立に拒否し、補助面文字を2単位として数え、
 本文なし操作は件数だけを占有し、確認済み配送後だけ再受付することを確認した。
 
-実DLLの`waiting-input-test`は初回`fifo`で固定変換が適用されず失敗した。
-変更前の保存済みEXE/DLLでも同じ入力・期待値で失敗した。別の実行では
-`window-test`と待機検査の開始時に前面化拒否`0x80070005`が起きた。
-対話desktopで前面化後に待機検査の開始チェックを通過した実行も、
-初回`fifo`が原文のままで失敗しており、原因は未特定である。
-`waiting-input-test-interactive`も追加した。最初の専用ウィンドウで前面化が
-拒否された時だけ最大30秒、所有STAのTSFメッセージを処理しながら利用者の
-クリックを待つ。前面化できなければ明示的に失敗し、結果の成功には含めない。
-今回の対話コマンド実行では前面化できず30秒後の失敗を確認したが、26ケース完走は未確認。
-次回の失敗位置を絞るため、本文やキーを出さずに待機の停止理由、Brokerの状態、
-救済結果区分をassertionに添える。
-現時点で実DLL待機回帰を成功とは記録しない。
-ログは`target/issue-4-wait-limits-{input,input-retry,baseline,window,explicit-foreground,interactive-waiting}.log`。
-最終静的検査は`target/issue-4-wait-limits-static-interactive.log`。
-対話desktopで再実行し、初回`fifo`で変換が適用されない原因を特定してから、
-容量境界まで通ることを確認する必要がある。
+最初の通常テストは`fifo`で原文のまま失敗し、変更前の保存済みEXE/DLLでも再現した。
+前面化を確認しても失敗したため、入力本文・キーを記録せず、待機の停止理由、
+Broker状態、救済結果区分を検査失敗へ添えた。2件ともDeferredで配送前に停止し、
+Broker結果を確認すると`UnsupportedAppContainer`だった。診断CLIを起動した
+AppContainer環境は既存の相互認証が明示的に拒否する。前面化拒否`0x80070005`は
+別の条件で、変換失敗の原因ではなかった。
+
+Bridge生成時に`PinnedProcess::current()`で同じmedium・非昇格・非AppContainer条件を
+先に検査し、非対応環境では入力を受付ける前に`desktop IPC: UnsupportedAppContainer`
+として失敗する。IPC認証を緩めず、未適用入力を成功に読み替えない。
+`waiting-input-test-interactive`と`waiting-demo-test-interactive`は、最初のwindowが
+500ms連続で前面の状態になるまで、最大30秒、所有STAのTSF message pumpを回す。
+Windowsが前面化を拒否した場合は利用者がwindowをクリックでき、時間切れは失敗する。
+
+通常ユーザーのmedium・非AppContainer対話desktopで、最終版の実DLL
+`waiting-input-test-interactive`26ケースと`waiting-demo-test-interactive`59ケースが成功し、
+TSF/COMの登録解除とDLLアンロードまで確認した。ログは
+`target/issue-4-waiting-stable-foreground-input.log`と
+`target/issue-4-waiting-stable-foreground-demo.log`。通常の`waiting-demo-test`は
+同じ権限でも初回`fifo`の成否が変動した。対話版で最初のwindowの前面状態が
+安定するのを待って再確認したが、通常版の変動理由は未特定である。
+初期失敗の観測ログは
+`target/issue-4-waiting-interactive-diagnostic*.log`。
 一般アプリのキー配送・標準Undo・製品の全体予算も本変更の受入範囲外である。

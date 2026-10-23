@@ -92,7 +92,20 @@ pub(crate) fn exercise_waiting_demo(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    for case in [
+    exercise_waiting_demo_with_activation(manager, client, false)
+}
+pub(crate) fn exercise_waiting_demo_interactive(
+    manager: &ITfThreadMgr,
+    client: u32,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    exercise_waiting_demo_with_activation(manager, client, true)
+}
+fn exercise_waiting_demo_with_activation(
+    manager: &ITfThreadMgr,
+    client: u32,
+    interactive: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    for (index, case) in [
         "fifo",
         "enter",
         "capacity",
@@ -152,8 +165,19 @@ pub(crate) fn exercise_waiting_demo(
         "start-retained",
         "start-no-request",
         "start-retry",
-    ] {
-        run(manager, client, RunMode::WaitingTest(case))?;
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        run(
+            manager,
+            client,
+            if interactive && index == 0 {
+                RunMode::WaitingDemoInteractiveTest(case)
+            } else {
+                RunMode::WaitingTest(case)
+            },
+        )?;
     }
     Ok(())
 }

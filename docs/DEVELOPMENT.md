@@ -27,8 +27,13 @@ cargo build --workspace --features sumibi-host/spike --locked --offline
 ```
 
 専用の合成ACP入力欄で26ケースを自動実行し、変換結果の後に待機文字・Backspaceを順に実DLLへ渡す。
-通常の検査が前面化拒否で止まるdesktopでは、対話版の最初のウィンドウを30秒以内に
-クリックする。キー入力は不要。時間切れは失敗として報告し、26ケースの成功とは扱わない。
+対話版は最初のウィンドウが500ms連続で前面になるまで最大30秒待つ。
+自動で前面化しない場合はそのウィンドウをクリックする。キー入力は不要。
+時間切れは失敗として報告し、26ケースの成功とは扱わない。
+認証付きpipeは通常ユーザーのmedium・非昇格・非AppContainer tokenを要求する。
+AppContainer内から実行すると、変換入力を受け付ける前に
+`desktop IPC: UnsupportedAppContainer`で終了する。その環境では通常ユーザーの
+対話PowerShellから同じコマンドを実行する。管理者権限は不要。
 受入れ前にEXE共有4枠を確保し、未適用/結果不明/追跡失敗を区別する。Enterを自動配送しない。
 複数レコードの明示コピーは試験用Clipboardで検証し、利用者のClipboardを変更しない。
 これは通常デモのキー受付を変更する機能ではない。8秒の停止期限はfixture専用で、製品の期限政策は未決。
@@ -58,16 +63,18 @@ Escで待機を明示取消した場合も、安定した原文の選択を解�
 既存transaction-demoや他アプリの入力には待機を有効化しない。
 
 `waiting-demo-test --dll target/debug/sumibi_tip.dll`で同じ配送/確認UIと開始失敗・定期確認・期限/Esc後の通常入力・容量超過表示の59ケースを自動検証できる。
+最初のwindowが前面化しない場合は、`waiting-demo-test-interactive --dll target/debug/sumibi_tip.dll`
+を使い、必要なら30秒以内にそのwindowをクリックする。500ms連続で前面になってから
+検査を始める。通常ユーザーのmedium・非AppContainerで実行する。
 合成MSGを使い、コピーは試験用Clipboardへ差し替える。物理キーの受入とは区別する。
 共有救済予算はレコード件数と本文総量を同時に予約し、診断EXEは4件・4096単位を維持する
 （[ADR 0041](adr/0041-configurable-shared-recovery-budget.md)）。
 待機行列Coreにも件数・本文量の設定値を追加し、専用adapterへ同じ4件・4096単位を渡す。
 `cargo test -p sumibi-core waiting_input --locked --offline`は13件、workspaceは137件が成功した。
-今回の実DLL待機検査は初回`fifo`で未通過。変更前の保存済みビルドも同じ失敗で、
-前面化後に開始チェックを通過しても原文のまま失敗したため、原因は未特定。
-別の実行で前面化拒否`0x80070005`も確認した。現在の検査は開始時の前面化拒否と、
-本文比較失敗時の待機停止理由・Broker状態・救済結果区分を明示する。
-結果と再確認条件は[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)を参照。
+今回の初回`fifo`失敗はAppContainerから起動したworkerが認証で拒否されたため。
+通常ユーザーの対話desktopで最終版の実DLL待機26ケースと対話デモ59ケースが成功した。
+別の実行で前面化拒否`0x80070005`も確認したため、対話コマンドを利用できる。
+認証条件と検証ログは[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)を参照。
 待機adapter26・同期入力174・救済48・通知30・close4とRust136件・静的/基本DLL検査の成功記録がある。
 Backspace55・書記素ホスト22・composition46・broker入力11・追跡25は前段階の成功記録を維持する。
 通知・救済の結付けは[ADR 0035](adr/0035-waiting-demo-and-record-recovery-ui.md)、統合表示とコピー期限は[ADR 0036](adr/0036-unified-demo-recovery-and-copy-expiry.md)、開始失敗の取消は[ADR 0037](adr/0037-cancel-failed-waiting-start.md)、通常救済だけの定期確認は[ADR 0038](adr/0038-owner-wake-for-ordinary-recovery.md)を参照。

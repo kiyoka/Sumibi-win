@@ -96,10 +96,10 @@ window-test-interactiveと通常のwindow-testは実TSFキーマネージャー�
 一般アプリの保護情報・sink寿命・標準Undoと実打鍵、専用ホストのShift選択・IME切替は次に進める。
 待機行列Coreの件数・本文量を有限に設定できるようにし、専用adapterでは既存の
 4件・4096 UTF-16単位を明示した（[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)）。
-製品の容量政策は未決。実DLLの待機回帰は初回`fifo`で原文のまま失敗した。
-変更前ビルドでも再現し、前面化後に開始チェックを通過した実行でも失敗したため原因未特定。
-別の実行では前面化を拒否されたため、最初のwindowをクリックして続ける対話コマンドと
-本文を残さない失敗時の状態診断を追加した。26ケースの完走は再確認する。
+製品の容量政策は未決。初回`fifo`の失敗は診断CLIを起動したAppContainerが
+既存のIPC認証で拒否されていたことが原因と特定した。Bridge生成時の事前検査で
+`UnsupportedAppContainer`を入力受付前に報告する。通常ユーザーのmedium・非AppContainer
+対話desktopでは実DLL待機26ケースと対話デモ59ケースが成功した。
 
 所有windowの非アクティブ化・無効化・モード取消も実WndProcから失効経路へ接続した。
 復元後の保留変換・救済コピーを拒否し、Windows標準のモード取消は維持する。

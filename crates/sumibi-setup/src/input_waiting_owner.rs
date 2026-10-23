@@ -597,5 +597,5 @@ pub(crate) fn run_waiting_demo(
 }
 #[path = "input_waiting_owner_tests.rs"]
 mod tests;
-pub(crate) use tests::exercise_waiting_demo;
 pub(in super::super) use tests::test_waiting_demo;
+pub(crate) use tests::{exercise_waiting_demo, exercise_waiting_demo_interactive};

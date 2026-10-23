@@ -20,7 +20,9 @@ pub(crate) use tests::{exercise_waiting, exercise_waiting_interactive};
 mod owner;
 pub(super) use owner::test_waiting_demo;
 pub(super) use owner::Owner;
-pub(crate) use owner::{exercise_waiting_demo, run_waiting_demo};
+pub(crate) use owner::{
+    exercise_waiting_demo, exercise_waiting_demo_interactive, run_waiting_demo,
+};
 
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(0);
 struct Slot {

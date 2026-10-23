@@ -40,6 +40,11 @@ impl Bridge {
     pub(crate) fn new(
         mode: Mode,
     ) -> std::result::Result<ComObject<Self>, Box<dyn std::error::Error>> {
+        // This diagnostic bridge uses authenticated desktop IPC. Reject an
+        // unsupported caller before a TSF request can be accepted or a worker
+        // can be started, so AppContainer execution is not mistaken for a
+        // conversion or waiting-order failure.
+        let _ = sumibi_ipc::PinnedProcess::current()?;
         let executable = std::env::current_exe()?
             .parent()
             .ok_or("missing host directory")?

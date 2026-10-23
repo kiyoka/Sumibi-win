@@ -26,7 +26,9 @@ pub(crate) use grapheme_host::exercise_graphemes;
 #[path = "input_waiting_host.rs"]
 mod waiting_host;
 pub(crate) use waiting_host::{exercise_waiting, exercise_waiting_interactive};
-pub(crate) use waiting_host::{exercise_waiting_demo, run_waiting_demo};
+pub(crate) use waiting_host::{
+    exercise_waiting_demo, exercise_waiting_demo_interactive, run_waiting_demo,
+};
 
 impl TextStore {
     fn boundary(&self, position: usize) -> bool {
@@ -775,6 +777,7 @@ enum RunMode {
     TransactionDemo,
     TransactionTest(&'static str),
     WaitingInteractiveTest(&'static str),
+    WaitingDemoInteractiveTest(&'static str),
     WaitingDemo,
     WaitingTest(&'static str),
 }
@@ -784,9 +787,10 @@ fn wait_for_waiting_foreground(
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
     window.set_title("Sumibi waiting test: click this window to activate (30 seconds)")?;
-    println!("Click the waiting-test window within 30 seconds; no typing is needed.");
+    println!("Click the waiting-test window if needed; no typing is needed.");
     let deadline = Instant::now() + Duration::from_secs(30);
-    while window.require_foreground().is_err() && Instant::now() < deadline {
+    let mut foreground_since = None;
+    while Instant::now() < deadline {
         if !window.is_open() {
             return Err("waiting-test window closed before activation".into());
         }
@@ -794,11 +798,20 @@ fn wait_for_waiting_foreground(
         while window.peek_message(&mut message)? {
             window.route_message(&message)?;
         }
+        if window.require_foreground().is_ok() {
+            let since = foreground_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= Duration::from_millis(500) {
+                return Ok(());
+            }
+        } else {
+            foreground_since = None;
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
-    window.require_foreground().map_err(|error| {
-        format!("waiting-input-test-interactive: diagnostic window did not become foreground within 30 seconds: {error}").into()
-    })
+    Err(
+        "waiting interactive test: diagnostic window did not remain foreground within 30 seconds"
+            .into(),
+    )
 }
 
 fn run(
@@ -831,13 +844,15 @@ fn run(
             .focus()
             .map_err(|error| format!("input window focus: {error}"))?;
         manager.SetFocus(&document.0)?;
-        if matches!(&mode, RunMode::WaitingInteractiveTest(_))
-            && window.require_foreground().is_err()
-        {
+        if matches!(
+            &mode,
+            RunMode::WaitingInteractiveTest(_) | RunMode::WaitingDemoInteractiveTest(_)
+        ) {
             wait_for_waiting_foreground(&window)?;
         }
         if matches!(&mode, RunMode::TransactionTest(case) if case.starts_with("waiting/"))
             || matches!(&mode, RunMode::WaitingInteractiveTest(_))
+            || matches!(&mode, RunMode::WaitingDemoInteractiveTest(_))
             || matches!(&mode, RunMode::WaitingTest(_))
         {
             // Waiting tests deliver a real TSF conversion before checking
@@ -870,6 +885,7 @@ fn run(
                 | RunMode::TransactionDemo
                 | RunMode::TransactionTest(_)
                 | RunMode::WaitingInteractiveTest(_)
+                | RunMode::WaitingDemoInteractiveTest(_)
                 | RunMode::WaitingDemo
                 | RunMode::WaitingTest(_)
         ) {
@@ -901,10 +917,16 @@ fn run(
                 RunMode::TransactionDemo
                     | RunMode::TransactionTest(_)
                     | RunMode::WaitingInteractiveTest(_)
+                    | RunMode::WaitingDemoInteractiveTest(_)
                     | RunMode::WaitingDemo
                     | RunMode::WaitingTest(_)
             ),
-            waiting: if matches!(mode, RunMode::WaitingDemo | RunMode::WaitingTest(_)) {
+            waiting: if matches!(
+                mode,
+                RunMode::WaitingDemo
+                    | RunMode::WaitingTest(_)
+                    | RunMode::WaitingDemoInteractiveTest(_)
+            ) {
                 Some(waiting_host::Owner::new(manager, client))
             } else {
                 None
@@ -919,6 +941,7 @@ fn run(
                     RunMode::TransactionDemo
                         | RunMode::TransactionTest(_)
                         | RunMode::WaitingInteractiveTest(_)
+                        | RunMode::WaitingDemoInteractiveTest(_)
                         | RunMode::WaitingDemo
                         | RunMode::WaitingTest(_)
                 ),
@@ -932,6 +955,7 @@ fn run(
                     | RunMode::TransactionDemo
                     | RunMode::TransactionTest(_)
                     | RunMode::WaitingInteractiveTest(_)
+                    | RunMode::WaitingDemoInteractiveTest(_)
                     | RunMode::WaitingDemo
                     | RunMode::WaitingTest(_)
             ) {
@@ -983,7 +1007,8 @@ fn run(
                 println!("Async fixed-result demo: F7 converts the selection (or all text), Esc cancels, Enter confirms the original. Close to exit.");
             }
             broker_message_loop(&window, &editor)
-        } else if let RunMode::WaitingTest(case) = mode {
+        } else if let RunMode::WaitingTest(case) | RunMode::WaitingDemoInteractiveTest(case) = mode
+        {
             waiting_host::test_waiting_demo(&window, &editor, case)
         } else if let RunMode::BrokerInputTest(case) = mode {
             test_broker_input(&window, &editor, &live, client, case)
