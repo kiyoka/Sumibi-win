@@ -90,6 +90,8 @@ RichEditはTS_SS_REGIONSを報告し、TS_SS_NOHIDDENTEXTを報告しないた�
 Core 5件追加でworkspace 71件、救済31ケースと同期入力/削除/通知/終了の回帰が成功した
 （[ADR 0021](adr/0021-shared-input-recovery-budget.md)）。製品の待機行列・複数入力先UI・プロセス間政策は残る。
 前面化で未通過のwindow/input/delayedの3検査は維持し、一般アプリの保護情報・sink寿命・標準Undoを次に進める。
+window-testは対話クリックで前面化を待つ専用コマンドを追加したが、実キー検証の成功は未確認
+（[ADR 0043](adr/0043-interactive-native-key-activation.md)）。
 
 所有windowの非アクティブ化・無効化・モード取消も実WndProcから失効経路へ接続した。
 復元後の保留変換・救済コピーを拒否し、Windows標準のモード取消は維持する。

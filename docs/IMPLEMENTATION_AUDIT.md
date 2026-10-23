@@ -35,7 +35,7 @@
 | self-test | 各登録段階の意図的失敗・逆順解除・正常系 | プロセス内登録。インストーラーの試験ではない |
 | edit-test | 編集23＋属性3＋Preview 8ケース成功 | 一部の編集基盤はEXEにRustライブラリとしてリンク |
 | key-test | 実DLLから固定変換、取消・通知・別context拒否 | 画面なし通常キー配送は診断用コールバックで補う |
-| window-test | 実TSF通常キー・focus通知、描画5状態と失敗後回復、破棄・再接続 | 一時的に専用ウィンドウをアクティブにする |
+| window-test | 実TSF通常キー・focus通知、描画5状態と失敗後回復、破棄・再接続。前面化拒否時の対話クリック用コマンドも追加 | 対話desktopで一時的に専用ウィンドウをアクティブにし、実キー配送を再検証する |
 | input-test | 文字・絵文字・移動・選択・Delete・変換・Undo/Redo・終了解除 | 所有HWNDへのPostMessage。Shift選択は処理へ明示状態を渡す |
 | delayed-test | 実DLLで正常部分置換・1回Undoと失効条件を11ケース検証 | 有限channelの合成応答。製品Core/IPC/HTTP統合ではない |
 | ipc-test | ログオンSID限定DACL・remote拒否フラグ・先取り防止・OS peer PID・フレーム | 通常ユーザーの同一プロセスprobe。別プロセス認証やAppContainerは未検証 |

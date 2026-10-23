@@ -548,6 +548,11 @@ Esc取消／Enter原文通過とフォーカス通知の処理は、検証用API
 追加した `window-test` は一時ウィンドウを表示し、AssociateFocusとGetWndで文書を関連付ける。
 この構成ではTestKeyDown/KeyDownからの通常キー配送と、実ウィンドウのフォーカス移動通知が成功した。
 実行例: `cargo run -p sumibi-setup --locked -- window-test --dll target/debug/sumibi_tip.dll`。
+Windowsが診断windowの前面化を拒否する場合は、対話desktopで
+`cargo run -p sumibi-setup --locked -- window-test-interactive --dll target/debug/sumibi_tip.dll`
+を実行する。タイトルに案内が出たら30秒以内に診断windowをクリックする。
+キー入力は不要で、クリック後に同じTSFキーマネージャー検査が続く。
+時間切れは失敗として報告し、通常の検証成功へ読み替えない（[ADR 0043](adr/0043-interactive-native-key-activation.md)）。
 対話デスクトップを使用し、検証中は短時間だけウィンドウがアクティブになる。CIの画面なしテストには含めない。
 検証ホストの本文／下線描画も追加した。TSFの本文・属性を同期読取し、実DLLから取得した点線定義を
 メモリー上のDIBへ描いてWM_PAINTで表示する。原文・プレビュー・取消・確定・Undoの5状態を確認した。

@@ -121,6 +121,7 @@ enum Exercise {
     Edit,
     Key,
     Window,
+    WindowInteractive,
     Input,
     Close,
     Delayed,
@@ -199,6 +200,7 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "edit-test"
             && args[0] != "key-test"
             && args[0] != "window-test"
+            && args[0] != "window-test-interactive"
             && args[0] != "input-test"
             && args[0] != "close-test"
             && args[0] != "delayed-test"
@@ -228,7 +230,7 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "demo")
     {
         return Err(
-            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|close-test|delayed-test|broker-test|range-target-test|native-edit-test|broker-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|composing-input-test|composing-demo|input-notify-test|transaction-input-test|backspace-input-test|grapheme-input-test|recovery-input-test|waiting-input-test|waiting-demo|waiting-demo-test|recovery-demo|transaction-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
+            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|window-test-interactive|input-test|close-test|delayed-test|broker-test|range-target-test|native-edit-test|broker-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|composing-input-test|composing-demo|input-notify-test|transaction-input-test|backspace-input-test|grapheme-input-test|recovery-input-test|waiting-input-test|waiting-demo|waiting-demo-test|recovery-demo|transaction-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
                 .into(),
         );
     }
@@ -280,6 +282,7 @@ pub(super) fn run() -> Result<(), Failure> {
                 Some("edit-test") => Exercise::Edit,
                 Some("key-test") => Exercise::Key,
                 Some("window-test") => Exercise::Window,
+                Some("window-test-interactive") => Exercise::WindowInteractive,
                 Some("input-test") => Exercise::Input,
                 Some("close-test") => Exercise::Close,
                 Some("delayed-test") => Exercise::Delayed,
@@ -412,6 +415,9 @@ fn registered_probe(
             Exercise::Edit => crate::edit_host::exercise(&manager.0, app_client)?,
             Exercise::Key => crate::edit_host::exercise_keys(&manager.0, app_client)?,
             Exercise::Window => crate::edit_host::exercise_window_keys(&manager.0, app_client)?,
+            Exercise::WindowInteractive => {
+                crate::edit_host::exercise_window_keys_interactive(&manager.0, app_client)?
+            }
             Exercise::Input => crate::edit_host::exercise_input(&manager.0, app_client)?,
             Exercise::Close => crate::edit_host::exercise_close(&manager.0, app_client)?,
             Exercise::Delayed => crate::edit_host::exercise_delayed(&manager.0, app_client)?,

@@ -1082,14 +1082,22 @@ pub(super) fn exercise_keys(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    exercise_key_host(manager, client, false)
+    exercise_key_host(manager, client, false, false)
 }
 
 pub(super) fn exercise_window_keys(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    exercise_key_host(manager, client, true)?;
+    exercise_key_host(manager, client, true, false)?;
+    exercise_rendering(manager, client)
+}
+
+pub(super) fn exercise_window_keys_interactive(
+    manager: &ITfThreadMgr,
+    client: u32,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    exercise_key_host(manager, client, true, true)?;
     exercise_rendering(manager, client)
 }
 
@@ -1259,6 +1267,7 @@ fn exercise_key_host(
     manager: &ITfThreadMgr,
     client: u32,
     windowed: bool,
+    interactive: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let messages: ITfMessagePump = manager.cast()?;
     use sumibi_tip::spike::{
@@ -1388,6 +1397,26 @@ fn exercise_key_host(
                 // Native key routing requires foreground focus, which may have
                 // changed while the preceding edit/Undo checks were running.
                 window.focus()?;
+                if interactive && window.require_foreground().is_err() {
+                    use std::time::{Duration, Instant};
+                    window
+                        .set_title("Sumibi TSF test: click this window to activate (30 seconds)")?;
+                    println!("Click the diagnostic window to activate it within 30 seconds; no typing is needed.");
+                    let deadline = Instant::now() + Duration::from_secs(30);
+                    while window.require_foreground().is_err() && Instant::now() < deadline {
+                        if !window.is_open() {
+                            return Err(
+                                "diagnostic window closed while waiting for activation".into()
+                            );
+                        }
+                        pump_tsf_messages(&messages)?;
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    window.set_title("Sumibi TSF diagnostic (automatic test)")?;
+                    if window.require_foreground().is_err() {
+                        return Err("window-test-interactive: diagnostic window did not become foreground within 30 seconds".into());
+                    }
+                }
                 window.require_foreground().map_err(|error| format!("window-test requires foreground activation; Windows did not activate the owned diagnostic window: {error}"))?;
                 pump_tsf_messages(&messages)?;
                 control.GrantContext(context.as_raw()).ok()?;
