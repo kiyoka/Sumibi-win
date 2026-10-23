@@ -363,23 +363,36 @@ impl Waiting {
         index: usize,
         clipboard: &dyn crate::recovery_view::Clipboard,
     ) -> Result<()> {
+        self.copy_with_clock(editor, index, clipboard, &Instant::now)
+    }
+    fn copy_with_clock(
+        &mut self,
+        editor: &Editor,
+        index: usize,
+        clipboard: &dyn crate::recovery_view::Clipboard,
+        now: &dyn Fn() -> Instant,
+    ) -> Result<()> {
         if self.inspect().is_err() {
             self.redact();
             return Err(E_FAIL.into());
         }
         let slot = self.ready.get(index).ok_or(E_FAIL)?;
-        let text = slot
-            .recovery
-            .text(slot.ticket, Instant::now())
-            .ok_or(E_FAIL)?;
+        let text = slot.recovery.text(slot.ticket, now()).ok_or(E_FAIL)?;
         let copied = clipboard.write(editor.store.get().window.get(), text, &|| {
-            self.inspect().is_ok()
+            self.inspect().is_ok() && slot.recovery.text(slot.ticket, now()).is_some()
         });
         if self.inspect().is_err() {
             self.redact();
             return Err(E_FAIL.into());
         }
         copied?;
+        if self.ready[index]
+            .recovery
+            .text(self.ready[index].ticket, now())
+            .is_none()
+        {
+            return Err(E_FAIL.into());
+        }
         // Explicit copy acknowledges this record only; never resume the queue.
         let ticket = self.ready[index].ticket;
         self.ready[index].recovery.discard(ticket);

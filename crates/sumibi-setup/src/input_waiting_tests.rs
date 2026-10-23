@@ -4,23 +4,28 @@ use super::*;
 use crate::recovery_view::Clipboard;
 use windows::Win32::Foundation::HWND;
 
-struct TestClipboard {
+struct TestClipboard<'a> {
     calls: Cell<usize>,
     text: RefCell<Vec<u16>>,
     fail: Cell<bool>,
+    before: RefCell<Option<Box<dyn Fn() + 'a>>>,
 }
-impl TestClipboard {
+impl TestClipboard<'_> {
     fn new() -> Self {
         Self {
             calls: Cell::new(0),
             text: RefCell::new(Vec::new()),
             fail: Cell::new(false),
+            before: RefCell::new(None),
         }
     }
 }
-impl Clipboard for TestClipboard {
+impl Clipboard for TestClipboard<'_> {
     fn write(&self, _: HWND, text: &[u16], permitted: &dyn Fn() -> bool) -> Result<()> {
         self.calls.set(self.calls.get() + 1);
+        if let Some(before) = self.before.borrow_mut().take() {
+            before();
+        }
         if self.fail.get() || !permitted() {
             return Err(E_FAIL.into());
         }
@@ -55,6 +60,7 @@ pub(crate) fn exercise_waiting(
         "waiting/copy",
         "waiting/copy-failed",
         "waiting/copy-protected",
+        "waiting/copy-expired-during",
         "waiting/expiry",
         "waiting/drop",
         "waiting/drop-newer",
@@ -161,7 +167,13 @@ pub(in super::super) fn test_waiting(
     .collect();
     if matches!(
         case,
-        "enter" | "copy" | "copy-failed" | "copy-protected" | "expiry" | "drop"
+        "enter"
+            | "copy"
+            | "copy-failed"
+            | "copy-protected"
+            | "copy-expired-during"
+            | "expiry"
+            | "drop"
     ) {
         waiting.admit(editor, Input::Enter)?;
         waiting.admit(editor, Input::Text(&entered))?;
@@ -357,7 +369,7 @@ pub(in super::super) fn test_waiting(
         }
         if matches!(
             case,
-            "enter" | "copy" | "copy-failed" | "copy-protected" | "expiry"
+            "enter" | "copy" | "copy-failed" | "copy-protected" | "copy-expired-during" | "expiry"
         ) {
             assert_eq!(
                 waiting.metadata(0, Instant::now()).unwrap().operation,
@@ -372,6 +384,7 @@ pub(in super::super) fn test_waiting(
                 waiting.metadata(1, Instant::now()).unwrap().outcome,
                 Outcome::Deferred
             );
+            let copy_now = Cell::new(Instant::now());
             let clipboard = TestClipboard::new();
             let before_copy = store.set_text_calls.get();
             if case == "copy-protected" {
@@ -383,10 +396,18 @@ pub(in super::super) fn test_waiting(
             if case == "expiry" {
                 waiting.expire(Instant::now() + sumibi_core::recovery::RETENTION);
             }
-            let copied = waiting.copy(editor, 1, &clipboard);
+            if case == "copy-expired-during" {
+                *clipboard.before.borrow_mut() = Some(Box::new(|| {
+                    copy_now.set(copy_now.get() + sumibi_core::recovery::RETENTION);
+                }));
+            }
+            let copied = waiting.copy_with_clock(editor, 1, &clipboard, &|| copy_now.get());
             assert_eq!(
                 copied.is_ok(),
-                !matches!(case, "copy-protected" | "copy-failed" | "expiry")
+                !matches!(
+                    case,
+                    "copy-protected" | "copy-failed" | "copy-expired-during" | "expiry"
+                )
             );
             if copied.is_ok() {
                 assert_eq!(*clipboard.text.borrow(), entered);
@@ -396,6 +417,12 @@ pub(in super::super) fn test_waiting(
             }
             if case == "copy-failed" {
                 assert!(waiting.metadata(1, Instant::now()).unwrap().copyable);
+            }
+            if case == "copy-expired-during" {
+                assert_eq!(clipboard.calls.get(), 1);
+                assert!(clipboard.text.borrow().is_empty());
+                assert!(waiting.metadata(1, copy_now.get()).is_none());
+                waiting.expire(copy_now.get());
             }
             assert_eq!(store.set_text_calls.get(), before_copy);
         }

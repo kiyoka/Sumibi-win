@@ -4,9 +4,13 @@ use super::*;
 use crate::recovery_view::{Action, Clipboard, View};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+enum Source {
+    Waiting { session: u128, index: usize },
+    Ordinary,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Key {
-    session: u128,
-    index: usize,
+    source: Source,
     ticket: Ticket,
 }
 struct Shown {
@@ -64,6 +68,7 @@ impl Owner {
         let _busy = Busy(&self.busy);
         let mut session = self.session.borrow_mut().take();
         if let Some(reason) = self.boundary.take() {
+            editor.rescue.invalidate();
             if let Some(session) = &mut session {
                 session.stop(editor, reason, Outcome::Deferred);
                 session.redact();
@@ -71,6 +76,7 @@ impl Owner {
         }
         let result = action(&mut session);
         if let Some(reason) = self.boundary.take() {
+            editor.rescue.invalidate();
             if let Some(session) = &mut session {
                 session.stop(editor, reason, Outcome::Deferred);
                 session.redact();
@@ -78,6 +84,7 @@ impl Owner {
         }
         if self.closed.get() {
             session = None;
+            editor.rescue.close();
         }
         self.active
             .set(session.as_ref().is_some_and(|s| s.queue.is_some()));
@@ -161,9 +168,6 @@ impl Owner {
             return Ok(false);
         }
         if matches!(key, 0x77..=0x79) {
-            if self.session.borrow().is_none() {
-                return Ok(false);
-            }
             let key_view = self.view.borrow().as_ref().map(|v| v.key);
             match key {
                 0x77 => self.show.set(true),
@@ -172,7 +176,10 @@ impl Owner {
             }
             return Ok(true);
         }
-        if key == 0x76 && !self.active.get() && !self.can_start() {
+        if key == 0x76
+            && !self.active.get()
+            && (!self.can_start() || editor.rescue.metadata().is_some())
+        {
             self.show.set(true);
             return Ok(true);
         }
@@ -201,11 +208,50 @@ impl Owner {
         }
         Ok(false)
     }
-    fn key_valid(session: &Waiting, key: Key) -> bool {
-        session.target.target == key.session
-            && session
-                .metadata(key.index, Instant::now())
-                .is_some_and(|m| m.ticket == key.ticket)
+    fn metadata(editor: &Editor, session: &Option<Waiting>, key: Key) -> Option<Metadata> {
+        let metadata = match key.source {
+            Source::Waiting {
+                session: identity,
+                index,
+            } => {
+                let session = session.as_ref()?;
+                if session.target.target != identity {
+                    return None;
+                }
+                session.metadata(index, Instant::now())?
+            }
+            Source::Ordinary => editor.rescue.metadata()?,
+        };
+        (metadata.ticket == key.ticket).then_some(metadata)
+    }
+    fn records(editor: &Editor, session: &Option<Waiting>) -> Vec<(Key, Metadata)> {
+        let mut records = Vec::new();
+        if let Some(waiting) = session {
+            for (index, slot) in waiting.ready.iter().enumerate() {
+                if let Some(metadata) = slot.recovery.metadata(Instant::now()) {
+                    records.push((
+                        Key {
+                            source: Source::Waiting {
+                                session: waiting.target.target,
+                                index,
+                            },
+                            ticket: metadata.ticket,
+                        },
+                        metadata,
+                    ));
+                }
+            }
+        }
+        if let Some(metadata) = editor.rescue.metadata() {
+            records.push((
+                Key {
+                    source: Source::Ordinary,
+                    ticket: metadata.ticket,
+                },
+                metadata,
+            ));
+        }
+        records
     }
     pub(in super::super) fn service(
         &self,
@@ -225,26 +271,29 @@ impl Owner {
         }
         let next = self.show.replace(false);
         self.state(editor, |session| {
-            let Some(waiting) = session else {
-                shown = None;
-                return Ok(());
-            };
-            waiting.expire(Instant::now());
-            if waiting.queue.is_some() {
-                waiting.service(editor)?;
-            }
-            if waiting.inspect().is_err() {
-                waiting.redact();
-                shown = None;
+            editor.rescue.maintain();
+            if let Some(waiting) = session {
+                waiting.expire(Instant::now());
+                if waiting.queue.is_some() {
+                    waiting.service(editor)?;
+                }
+                if waiting.inspect().is_err() {
+                    waiting.redact();
+                }
             }
             let mut acknowledged = false;
             let mut failed = false;
             if let Some((key, command)) = action {
-                if Self::key_valid(waiting, key) && self.boundary.get().is_none() {
+                if Self::metadata(editor, session, key).is_some() && self.boundary.get().is_none() {
                     match command {
                         Action::Hide => shown = None,
                         Action::Discard => {
-                            acknowledged = waiting.ready[key.index].recovery.discard(key.ticket);
+                            acknowledged = match key.source {
+                                Source::Waiting { index, .. } => session
+                                    .as_mut()
+                                    .is_some_and(|s| s.ready[index].recovery.discard(key.ticket)),
+                                Source::Ordinary => editor.rescue.discard(key.ticket),
+                            };
                             shown = None;
                         }
                         Action::Copy => {
@@ -253,8 +302,16 @@ impl Owner {
                                 owner: self,
                                 epoch,
                             };
-                            failed = waiting.copy(editor, key.index, &guarded).is_err();
-                            acknowledged = !failed;
+                            acknowledged = match key.source {
+                                Source::Waiting { index, .. } => session
+                                    .as_mut()
+                                    .is_some_and(|s| s.copy(editor, index, &guarded).is_ok()),
+                                Source::Ordinary => editor
+                                    .rescue
+                                    .copy_to(window, key.ticket, &guarded)
+                                    .unwrap_or(false),
+                            };
+                            failed = !acknowledged;
                             if acknowledged {
                                 shown = None;
                             }
@@ -262,62 +319,64 @@ impl Owner {
                     }
                 }
             }
-            let records: Vec<_> = waiting
-                .ready
-                .iter()
-                .enumerate()
-                .filter_map(|(i, r)| r.recovery.metadata(Instant::now()).map(|m| (i, m)))
-                .collect();
+            editor.rescue.maintain();
+            let records = Self::records(editor, session);
             if shown.as_ref().is_some_and(|v| {
-                !Self::key_valid(waiting, v.key)
-                    || waiting
-                        .metadata(v.key.index, Instant::now())
-                        .is_none_or(|m| m.copyable != v.view.copyable)
+                Self::metadata(editor, session, v.key).is_none_or(|m| m.copyable != v.view.copyable)
             }) {
                 shown = None;
             }
             if next && !records.is_empty() && self.boundary.get().is_none() {
                 let ordinal = shown
                     .as_ref()
-                    .and_then(|v| records.iter().position(|(i, _)| *i == v.key.index))
+                    .and_then(|v| records.iter().position(|(key, _)| *key == v.key))
                     .map_or(0, |i| (i + 1) % records.len());
-                let (index, metadata) = records[ordinal];
+                let (key, metadata) = records[ordinal];
                 shown = None;
-                if waiting.inspect().is_ok() {
-                    let slot = &waiting.ready[index];
-                    let text = slot
-                        .recovery
-                        .text(slot.ticket, Instant::now())
-                        .unwrap_or(&[]);
-                    if let Ok(view) = View::new(window.hwnd(), metadata, text) {
+                let text = match key.source {
+                    Source::Waiting { index, .. } => session.as_ref().and_then(|waiting| {
+                        if !metadata.copyable {
+                            return Some(Vec::new());
+                        }
+                        waiting.inspect().ok()?;
+                        let slot = &waiting.ready[index];
+                        Some(
+                            slot.recovery
+                                .text(slot.ticket, Instant::now())
+                                .unwrap_or(&[])
+                                .to_vec(),
+                        )
+                    }),
+                    Source::Ordinary => editor.rescue.preview(key.ticket),
+                };
+                if let Some(text) = text {
+                    if let Ok(view) = View::new(window.hwnd(), metadata, &text) {
                         view.position(ordinal + 1, records.len())?;
-                        shown = Some(Shown {
-                            key: Key {
-                                session: waiting.target.target,
-                                index,
-                                ticket: metadata.ticket,
-                            },
-                            view,
-                        });
+                        shown = Some(Shown { key, view });
                     }
                 }
             }
             if let Some(view) = &shown {
-                if let Some(metadata) = waiting.metadata(view.key.index, Instant::now()) {
+                if let Some(metadata) = Self::metadata(editor, session, view.key) {
                     view.view.update(metadata, failed)?;
-                    if let Some(ordinal) = records
-                        .iter()
-                        .position(|(index, _)| *index == view.key.index)
-                    {
+                    if let Some(ordinal) = records.iter().position(|(key, _)| *key == view.key) {
                         view.view.position(ordinal + 1, records.len())?;
                     }
                 }
+            }
+            let queued = session.as_ref().is_some_and(|s| s.queue.is_some());
+            if !queued
+                && !records
+                    .iter()
+                    .any(|(key, _)| matches!(key.source, Source::Waiting { .. }))
+            {
+                *session = None;
             }
             if !records.is_empty() {
                 window.set_title(
                     "Sumibi 救済あり（最大10分） | F8 順に確認 | 表示中の1件をF9破棄 / F10コピー",
                 )?;
-            } else if waiting.queue.is_some() {
+            } else if queued {
                 window.set_title(
                     "Sumibi 待機入力デモ | 待機は最大8秒・4件 | F7再変換 | Enterは救済へ | Esc取消",
                 )?;
@@ -327,7 +386,6 @@ impl Owner {
                         composing.cancel(editor, true);
                     }
                 }
-                *session = None;
                 window.set_title(
                     "Sumibi 待機入力デモ（固定結果） | F7 変換 | F8 救済確認 | Ctrl+Z Undo",
                 )?;

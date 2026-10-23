@@ -109,6 +109,18 @@ pub(crate) fn exercise_waiting_demo(
         "stale-session",
         "copy-close",
         "ui-expire",
+        "mixed-cycle",
+        "mixed-copy",
+        "mixed-discard",
+        "mixed-stale",
+        "mixed-block",
+        "mixed-last-ack",
+        "mixed-native-failure",
+        "mixed-redacted-discard",
+        "ordinary-only",
+        "ordinary-expiry",
+        "ordinary-copy-boundary",
+        "ordinary-copy-close",
     ] {
         run(manager, client, RunMode::WaitingTest(case))?;
     }
@@ -122,6 +134,16 @@ pub(in super::super::super) fn test_waiting_demo(
     let owner = editor.waiting.as_ref().ok_or(E_FAIL)?;
     let store = editor.store.get();
     let clipboard = TestClipboard::new();
+    if case.starts_with("mixed-") || case.starts_with("ordinary-") {
+        test_mixed(window, editor, &clipboard, case)?;
+        owner.close();
+        editor.rescue.close();
+        assert!(owner.view.borrow().is_none());
+        assert!(owner.session.borrow().is_none());
+        assert!(editor.rescue.metadata().is_none());
+        println!("Waiting demo / {case}: OK");
+        return Ok(());
+    }
     editor.insert(&"nihongo".encode_utf16().collect::<Vec<_>>())?;
     pump(window)?;
     store.undo.borrow_mut().clear();
@@ -203,12 +225,17 @@ pub(in super::super::super) fn test_waiting_demo(
     if recovery_case {
         route(window, WM_KEYDOWN, 0x77)?;
         owner.service(window, editor, &clipboard)?;
-        assert_eq!(owner.view.borrow().as_ref().unwrap().key.index, 0);
+        assert!(matches!(
+            owner.view.borrow().as_ref().unwrap().key.source,
+            Source::Waiting { index: 0, .. }
+        ));
         if case == "cycle" {
             for index in [1, 2, 0] {
                 route(window, WM_KEYDOWN, 0x77)?;
                 owner.service(window, editor, &clipboard)?;
-                assert_eq!(owner.view.borrow().as_ref().unwrap().key.index, index);
+                assert!(
+                    matches!(owner.view.borrow().as_ref().unwrap().key.source, Source::Waiting { index: current, .. } if current == index)
+                );
             }
         }
         if case == "discard" {
@@ -251,7 +278,7 @@ pub(in super::super::super) fn test_waiting_demo(
             route(window, WM_KEYDOWN, 0x77)?;
             owner.service(window, editor, &clipboard)?;
             let old = owner.view.borrow().as_ref().unwrap().key;
-            assert_eq!(old.index, 1);
+            assert!(matches!(old.source, Source::Waiting { index: 1, .. }));
             if matches!(case, "ui-expire" | "stale-session") {
                 owner
                     .session
@@ -273,7 +300,9 @@ pub(in super::super::super) fn test_waiting_demo(
                     route(window, WM_CHAR, 'a' as usize)?;
                     drive(window, editor, &clipboard)?;
                     let current = owner.session.borrow().as_ref().unwrap().target.target;
-                    assert_ne!(current, old.session);
+                    assert!(
+                        matches!(old.source, Source::Waiting { session, .. } if session != current)
+                    );
                     owner.copy.set(Some(old));
                     owner.service(window, editor, &clipboard)?;
                     assert_eq!(clipboard.calls.get(), 0);
@@ -385,5 +414,197 @@ pub(in super::super::super) fn test_waiting_demo(
         records.push(slot);
     }
     println!("Waiting demo / {case}: OK");
+    Ok(())
+}
+
+fn test_mixed<'a>(
+    window: &crate::window_host::Window,
+    editor: &'a Editor,
+    clipboard: &TestClipboard<'a>,
+    case: &str,
+) -> Result<()> {
+    let owner = editor.waiting.as_ref().ok_or(E_FAIL)?;
+    let store = editor.store.get();
+    store.type_text(&"nihongo".encode_utf16().collect::<Vec<_>>())?;
+    store.host_selection(0, 7)?;
+    pump(window)?;
+    if case.starts_with("mixed-") {
+        route(window, WM_KEYDOWN, 0x76)?;
+        route(window, WM_KEYDOWN, 0x0d)?;
+        route(window, WM_CHAR, 'a' as usize)?;
+        route(window, WM_CHAR, 'b' as usize)?;
+        drive(window, editor, clipboard)?;
+    }
+    // The real failed insertion and a fixture completion both share the pool
+    // with deferred input. Neither injects desktop keys or uses the clipboard.
+    let ticket = if case == "mixed-native-failure" {
+        store.fail_text_after.set(true);
+        editor.insert(&['x' as u16])?;
+        store.fail_text_after.set(false);
+        assert!(store.text.borrow().ends_with(&['x' as u16]));
+        editor.rescue.metadata().ok_or(E_FAIL)?.ticket
+    } else {
+        let ticket = editor.rescue.reserve(Operation::Insert(1)).ok_or(E_FAIL)?;
+        editor
+            .rescue
+            .finish(ticket, sumibi_tip::spike::INPUT_UNCERTAIN, &['x' as u16]);
+        ticket
+    };
+    editor.handled_transaction(sumibi_tip::spike::INPUT_UNCERTAIN);
+    assert!(editor.rescue.metadata().ok_or(E_FAIL)?.copyable);
+    owner.service(window, editor, clipboard)?;
+    let initial = store.text.borrow().clone();
+    let writes = store.set_text_calls.get();
+    let count = if case.starts_with("mixed-") { 4 } else { 1 };
+    assert_eq!(Owner::records(editor, &owner.session.borrow()).len(), count);
+    route(window, WM_KEYDOWN, 0x77)?;
+    owner.service(window, editor, clipboard)?;
+    let first = owner.view.borrow().as_ref().unwrap().key;
+    if count == 4 {
+        assert!(matches!(first.source, Source::Waiting { index: 0, .. }));
+        for _ in 0..3 {
+            route(window, WM_KEYDOWN, 0x77)?;
+            owner.service(window, editor, clipboard)?;
+        }
+    }
+    let ordinary = owner.view.borrow().as_ref().unwrap().key;
+    assert!(matches!(ordinary.source, Source::Ordinary));
+    assert_eq!(ordinary.ticket, ticket);
+    match case {
+        "mixed-cycle" => {
+            assert_eq!(
+                first.ticket, ordinary.ticket,
+                "source distinguishes equal slot tickets"
+            );
+            route(window, WM_KEYDOWN, 0x77)?;
+            owner.service(window, editor, clipboard)?;
+            assert!(owner.view.borrow().as_ref().is_some_and(|v| v.key == first));
+        }
+        "mixed-block" => {
+            owner.view.borrow().as_ref().unwrap().view.close_request();
+            owner.service(window, editor, clipboard)?;
+            route(window, WM_KEYDOWN, 0x76)?;
+            owner.service(window, editor, clipboard)?;
+            assert!(!owner.active());
+            assert!(owner.view.borrow().is_some());
+            assert!(editor
+                .broker
+                .as_ref()
+                .unwrap()
+                .1
+                .get()
+                .pending_id()
+                .is_none());
+            assert_eq!(Owner::records(editor, &owner.session.borrow()).len(), 4);
+        }
+        "mixed-discard" => {
+            route(window, WM_KEYDOWN, 0x78)?;
+            owner.service(window, editor, clipboard)?;
+            assert!(editor.rescue.metadata().is_none());
+            assert_eq!(Owner::records(editor, &owner.session.borrow()).len(), 3);
+        }
+        "mixed-stale" => {
+            owner.discard.set(Some(ordinary));
+            owner.copy.set(Some(ordinary));
+            owner.service(window, editor, clipboard)?;
+            let next = editor.rescue.reserve(Operation::Insert(1)).ok_or(E_FAIL)?;
+            editor
+                .rescue
+                .finish(next, sumibi_tip::spike::INPUT_UNCERTAIN, &['y' as u16]);
+            owner.copy.set(Some(ordinary));
+            owner.service(window, editor, clipboard)?;
+            assert_eq!(clipboard.calls.get(), 0);
+            assert_eq!(editor.rescue.metadata().unwrap().ticket, next);
+            assert_ne!(next, ordinary.ticket);
+        }
+        "mixed-redacted-discard" => {
+            store.readonly.set(true);
+            owner.boundary();
+            owner.service(window, editor, clipboard)?;
+            assert!(owner.view.borrow().is_none());
+            assert!(Owner::records(editor, &owner.session.borrow())
+                .iter()
+                .all(|(_, m)| !m.copyable));
+            for remaining in (0..4).rev() {
+                route(window, WM_KEYDOWN, 0x77)?;
+                owner.service(window, editor, clipboard)?;
+                assert!(!owner.view.borrow().as_ref().unwrap().view.copyable);
+                owner.service(window, editor, clipboard)?;
+                assert!(
+                    owner.view.borrow().is_some(),
+                    "metadata-only view stays open"
+                );
+                route(window, WM_KEYDOWN, 0x79)?;
+                owner.service(window, editor, clipboard)?;
+                assert_eq!(clipboard.calls.get(), 0);
+                route(window, WM_KEYDOWN, 0x78)?;
+                owner.service(window, editor, clipboard)?;
+                assert_eq!(
+                    Owner::records(editor, &owner.session.borrow()).len(),
+                    remaining
+                );
+            }
+        }
+        "ordinary-expiry" => {
+            editor
+                .rescue
+                .expire(Instant::now() + sumibi_core::recovery::RETENTION);
+            route(window, WM_KEYDOWN, 0x79)?;
+            owner.service(window, editor, clipboard)?;
+            assert_eq!(clipboard.calls.get(), 0);
+            assert!(owner.view.borrow().is_none());
+            assert!(editor.rescue.metadata().is_none());
+            assert!(store.input_problem.get(), "expiry is not acknowledgement");
+        }
+        "ordinary-copy-boundary" | "ordinary-copy-close" => {
+            if case == "ordinary-copy-close" {
+                *clipboard.before.borrow_mut() = Some(Box::new(|| owner.close()));
+            } else {
+                *clipboard.before.borrow_mut() = Some(Box::new(|| owner.boundary()));
+            }
+            route(window, WM_KEYDOWN, 0x79)?;
+            owner.service(window, editor, clipboard)?;
+            assert!(clipboard.text.borrow().is_empty());
+            assert!(owner.view.borrow().is_none());
+            assert!(editor.rescue.metadata().is_none_or(|m| !m.copyable));
+        }
+        "mixed-copy" | "ordinary-only" | "mixed-last-ack" | "mixed-native-failure" => {
+            route(window, WM_KEYDOWN, 0x79)?;
+            owner.service(window, editor, clipboard)?;
+            assert_eq!(*clipboard.text.borrow(), vec!['x' as u16]);
+            assert!(editor.rescue.metadata().is_none());
+            assert_eq!(
+                Owner::records(editor, &owner.session.borrow()).len(),
+                count - 1
+            );
+            assert_eq!(store.input_problem.get(), count > 1);
+            if case == "mixed-last-ack" {
+                for remaining in (0..3).rev() {
+                    route(window, WM_KEYDOWN, 0x77)?;
+                    owner.service(window, editor, clipboard)?;
+                    route(window, WM_KEYDOWN, 0x78)?;
+                    owner.service(window, editor, clipboard)?;
+                    assert_eq!(
+                        Owner::records(editor, &owner.session.borrow()).len(),
+                        remaining
+                    );
+                }
+                store.readonly.set(false);
+                assert!(owner.session.borrow().is_none());
+                assert!(owner.can_start());
+                assert!(
+                    !store.input_problem.get(),
+                    "last explicit acknowledgement clears warning"
+                );
+            }
+        }
+        _ => return Err(E_FAIL.into()),
+    }
+    assert_eq!(
+        *store.text.borrow(),
+        initial,
+        "recovery never edits the document"
+    );
+    assert_eq!(store.set_text_calls.get(), writes);
     Ok(())
 }

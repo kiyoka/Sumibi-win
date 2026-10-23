@@ -187,6 +187,11 @@ Convertの新要求で排出を停止し、Enterは明示確認へ移す。対�
 OwnerはSession/ViewをRefCellから取り出して外部処理を行い、再入境界はepoch/closedで公開と復元を止める。
 UI操作はSession ID・固定index・slot ticketを照合し、旧行/旧Sessionを新しいレコードへ適用しない。
 F8巡回と表示中の1件のコピー/破棄、Clipboard公開前の境界照合は[ADR 0035](adr/0035-waiting-demo-and-record-recovery-ui.md)を参照。
+後続ではOwnerの1つのViewが待機レコードと通常Rescueをまとめて巡回する。
+操作KeyはSourceで両者を区別し、待機側はSession/index、通常側はそのeditorのticketを照合する。
+waiting-demoでは従来Rescueの独立UI serviceを実行せず、Ownerが保護/期限のmaintenanceと個別操作を呼ぶ。
+保護後の本文なしの操作情報も表示/破棄でき、両者の最後の明示確認だけで失敗警告を解除する。
+Clipboard公開前の期限と境界epochも検査する（[ADR 0036](adr/0036-unified-demo-recovery-and-copy-expiry.md)）。
 TSFを呼ぶ前にRefCellの借用を解放し、通知やウィンドウ破棄が再入しても借用違反を起こさないようにする。
 
 本文置換と属性解除の延期は区別する。属性解除は弱参照・世代一致を検査した上で非同期化できる。

@@ -337,6 +337,9 @@ Core12件で検証し、後続の専用adapterはイベントごとに既存EXE�
 waiting-demoでは受入れ後だけ元のキー/文字を消費し、F8巡回・表示中の1件のコピー/破棄を提供する。
 UI操作はSession/行/slotを照合し、window境界とClipboard公開前のepoch検査で失効させる。
 配送/確認の22ケースと未対応範囲は[ADR 0035](adr/0035-waiting-demo-and-record-recovery-ui.md)を参照。
+後続では待機と通常入力の救済を1つの確認画面にまとめ、同じticket値でもSourceを区別する。
+保護で本文を除去した後も操作情報を確認/破棄でき、コピー公開直前の期限も照合する。
+デモ34・待機adapter26ケースへの拡張は[ADR 0036](adr/0036-unified-demo-recovery-and-copy-expiry.md)を参照。
 救済はメモリーに限定し、明示コピー・破棄だけを提供する。クラッシュ後の本文復元は保証しない。
 
 診断editorでは上記の製品提案と分けて、1件・1024 UTF-16単位・10分の救済を実装した

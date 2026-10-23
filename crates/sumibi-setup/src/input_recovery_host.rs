@@ -134,6 +134,44 @@ impl Rescue {
             }
         }
     }
+    pub(super) fn maintain(&self) -> bool {
+        let expired = self.expire(self.now());
+        self.check_payload();
+        expired
+    }
+    pub(super) fn expire(&self, now: Instant) -> bool {
+        self.slot.borrow_mut().expire(now)
+    }
+    pub(super) fn preview(&self, ticket: Ticket) -> Option<Vec<u16>> {
+        let slot = self.slot.borrow();
+        let metadata = slot.metadata(self.now())?;
+        if metadata.ticket != ticket {
+            return None;
+        }
+        let text = slot.text(ticket, self.now()).unwrap_or(&[]);
+        let mut copy = Vec::new();
+        copy.try_reserve_exact(text.len()).ok()?;
+        copy.extend_from_slice(text);
+        Some(copy)
+    }
+    pub(super) fn discard(&self, ticket: Ticket) -> bool {
+        self.slot.borrow_mut().discard(ticket)
+    }
+    pub(super) fn copy_to(
+        &self,
+        window: &crate::window_host::Window,
+        ticket: Ticket,
+        clipboard: &dyn Clipboard,
+    ) -> Result<bool> {
+        let text = self
+            .preview(ticket)
+            .filter(|v| !v.is_empty())
+            .ok_or(E_FAIL)?;
+        let permitted =
+            || self.permitted(ticket) && self.slot.borrow().text(ticket, self.now()).is_some();
+        clipboard.write(window.hwnd(), &text, &permitted)?;
+        Ok(self.discard(ticket))
+    }
     pub(super) fn wait_ms(&self) -> u32 {
         self.metadata().map_or_else(
             || {
@@ -173,8 +211,7 @@ impl Rescue {
         window: &crate::window_host::Window,
         clipboard: &dyn Clipboard,
     ) -> Result<bool> {
-        let expired = self.slot.borrow_mut().expire(self.now());
-        self.check_payload();
+        let expired = self.maintain();
         let mut view = self.view.borrow_mut().take();
         let mut acknowledged = false;
         let metadata = self.metadata();
@@ -202,32 +239,16 @@ impl Rescue {
                     view = None;
                 }
                 Action::Copy => {
-                    let text = {
-                        let slot = self.slot.borrow();
-                        slot.text(ticket, self.now()).and_then(|text| {
-                            let mut copy = Vec::new();
-                            copy.try_reserve_exact(text.len()).ok()?;
-                            copy.extend_from_slice(text);
-                            Some(copy)
-                        })
-                    };
-                    if let Some(text) = text {
-                        let permitted = || {
-                            self.permitted(ticket)
-                                && self.slot.borrow().text(ticket, self.now()).is_some()
-                        };
-                        if clipboard.write(window.hwnd(), &text, &permitted).is_ok() {
-                            acknowledged = self.slot.borrow_mut().discard(ticket);
-                            view = None;
-                        } else {
-                            copy_failed = true;
-                        }
+                    if let Ok(true) = self.copy_to(window, ticket, clipboard) {
+                        acknowledged = true;
+                        view = None;
+                    } else {
+                        copy_failed = true;
                     }
                 }
             }
         }
-        self.slot.borrow_mut().expire(self.now());
-        self.check_payload();
+        self.maintain();
         let metadata = self.metadata();
         if view.as_ref().is_some_and(|v| {
             metadata.is_none_or(|m| m.ticket != v.ticket || m.copyable != v.copyable)
@@ -272,6 +293,11 @@ impl Editor {
         window: &crate::window_host::Window,
         clipboard: &dyn Clipboard,
     ) -> Result<()> {
+        // waiting-demo owns a single view over both ordinary and deferred
+        // records. Running the legacy service too would create a second UI.
+        if self.waiting.is_some() {
+            return Ok(());
+        }
         if self.rescue.service(window, clipboard)? {
             if let Some(composing) = &self.composing {
                 composing.cancel(self, true);

@@ -25,7 +25,7 @@ cargo build --workspace --features sumibi-host/spike --locked --offline
 .\target\debug\sumibi-setup.exe waiting-input-test --dll .\target\debug\sumibi_tip.dll
 ```
 
-専用の合成ACP入力欄で25ケースを自動実行し、変換結果の後に待機文字・Backspaceを順に実DLLへ渡す。
+専用の合成ACP入力欄で26ケースを自動実行し、変換結果の後に待機文字・Backspaceを順に実DLLへ渡す。
 受入れ前にEXE共有4枠を確保し、未適用/結果不明/追跡失敗を区別する。Enterを自動配送しない。
 複数レコードの明示コピーは試験用Clipboardで検証し、利用者のClipboardを変更しない。
 これは通常デモのキー受付を変更する機能ではない。8秒の停止期限はfixture専用で、製品の期限政策は未決。
@@ -44,13 +44,15 @@ cargo build --workspace --features sumibi-host/spike --locked --offline
 文字を入力してF7を押すと、約400ms後に固定の「日本語」へ変換する。その間の文字・Backspace・F7は順に待機し、
 Enterは送信せず救済へ移す。Escで取消。待機は最大4件・8秒で、満杯ではそれまでの入力を救済に保存して今回の入力を通常経路へ返す。
 F8で救済画面を開き、さらにF8で次のレコードを確認する。captionの位置/件数を確認して、表示中の1件だけをF9で破棄・F10で全文コピーする。
+待機レコードの後に通常入力の未確認レコードも巡回する。保護境界で本文が除去された場合も、操作情報を開いて破棄できる。
 ×は画面だけを閉じ、救済は最大10分保持する。未確認レコードが残る間のF7は確認画面へ案内する。
 既存transaction-demoや他アプリの入力には待機を有効化しない。
 
-`waiting-demo-test --dll target/debug/sumibi_tip.dll`で同じ配送/確認UIの22ケースを自動検証できる。
+`waiting-demo-test --dll target/debug/sumibi_tip.dll`で同じ配送/確認UIの34ケースを自動検証できる。
 合成MSGを使い、コピーは試験用Clipboardへ差し替える。物理キーの受入とは区別する。
-待機adapter25・同期入力174・救済47・Backspace55・書記素ホスト22・composition46・通知30・broker入力11・追跡25・close4と、Rust134件・静的/基本DLL検査も成功。
-通知・救済の結付けと制限は[ADR 0035](adr/0035-waiting-demo-and-record-recovery-ui.md)を参照。
+今回、待機adapter26・同期入力174・救済47・通知30・close4とRust134件・静的/基本DLL検査が成功。
+Backspace55・書記素ホスト22・composition46・broker入力11・追跡25は前段階の成功記録を維持する。
+通知・救済の結付けは[ADR 0035](adr/0035-waiting-demo-and-record-recovery-ui.md)、統合表示とコピー期限は[ADR 0036](adr/0036-unified-demo-recovery-and-copy-expiry.md)を参照。
 
 通常ユーザーの別プロセス・非同期I/O検証は `target/debug/sumibi-setup.exe ipc-peer-test`。
 固定ハンドルへ相手を結び付け、トークン・PID・作成時刻を相互検査した後で模擬結果をCoreへ返す。

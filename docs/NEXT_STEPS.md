@@ -160,6 +160,9 @@ CoreのDeferred救済2件を加えworkspace134件と関連native回帰が成功�
 （[ADR 0034](adr/0034-shared-recovery-waiting-adapter.md)）。
 後続のwaiting-demoでは専用受付とF8巡回・1件コピー/破棄、所有window通知を接続した。
 配送/確認UIの22ケースと関連回帰が成功した（[ADR 0035](adr/0035-waiting-demo-and-record-recovery-ui.md)）。
+さらに通常入力の救済も同じ画面へ接続し、本文除去後も操作情報を確認/破棄できるようにした。
+コピー公開前の期限照合を追加し、デモ34・待機adapter26ケースと関連回帰が成功した
+（[ADR 0036](adr/0036-unified-demo-recovery-and-copy-expiry.md)）。
 次は専用デモの対話操作を確認し、製品の待機/救済容量・期限・超過時動作を確定する。
 製品キーはまだ接続せず、全体予算/期限/超過時政策と一般アプリの残範囲も維持する。
 
