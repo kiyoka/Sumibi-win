@@ -30,6 +30,8 @@ cargo build --workspace --features sumibi-host/spike --locked --offline
 対話版は最初のウィンドウが500ms連続で前面になるまで最大30秒待つ。
 自動で前面化しない場合はそのウィンドウをクリックする。キー入力は不要。
 時間切れは失敗として報告し、26ケースの成功とは扱わない。
+通常版も初回windowについて同じ500msの前面安定を最大2秒確認し、
+満たせない場合は本文比較へ進まず明示して失敗する。
 認証付きpipeは通常ユーザーのmedium・非昇格・非AppContainer tokenを要求する。
 AppContainer内から実行すると、変換入力を受け付ける前に
 `desktop IPC: UnsupportedAppContainer`で終了する。その環境では通常ユーザーの
@@ -72,8 +74,10 @@ Escで待機を明示取消した場合も、安定した原文の選択を解�
 待機行列Coreにも件数・本文量の設定値を追加し、専用adapterへ同じ4件・4096単位を渡す。
 `cargo test -p sumibi-core waiting_input --locked --offline`は13件、workspaceは137件が成功した。
 今回の初回`fifo`失敗はAppContainerから起動したworkerが認証で拒否されたため。
-通常ユーザーの対話desktopで最終版の実DLL待機26ケースと対話デモ59ケースが成功した。
+通常ユーザーの対話desktopで直前版の実DLL待機26ケースと対話デモ59ケースが成功した。
 別の実行で前面化拒否`0x80070005`も確認したため、対話コマンドを利用できる。
+通常版デモの初回`fifo`は成否が変動したため、失敗時の前面・所有境界・Broker分類を
+本文やキーを残さず表示する。初回前面の安定待ち追加後の通常版59ケース完走は未確認。
 認証条件と検証ログは[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)を参照。
 待機adapter26・同期入力174・救済48・通知30・close4とRust136件・静的/基本DLL検査の成功記録がある。
 Backspace55・書記素ホスト22・composition46・broker入力11・追跡25は前段階の成功記録を維持する。

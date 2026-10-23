@@ -27,6 +27,9 @@ pub(crate) struct Bridge {
     input_check: RefCell<Option<InputCheck>>,
     checking_input: Cell<bool>,
     delivering: Cell<bool>,
+    // Scalar diagnostics for the owned test host; never store request text.
+    last_worker_error: Cell<Option<sumibi_ipc::Error>>,
+    last_dll_error: Cell<Option<HRESULT>>,
 }
 pub(crate) type InputCheck = Box<dyn FnOnce(&[u16]) -> Result<()>>;
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(0);
@@ -63,6 +66,8 @@ impl Bridge {
             input_check: RefCell::new(None),
             checking_input: Cell::new(false),
             delivering: Cell::new(false),
+            last_worker_error: Cell::new(None),
+            last_dll_error: Cell::new(None),
         }))
     }
     fn check(&self) -> Result<()> {
@@ -88,6 +93,9 @@ impl Bridge {
     }
     pub(crate) fn pending_id(&self) -> Option<u64> {
         self.pending.get()
+    }
+    pub(crate) fn last_failure(&self) -> (Option<sumibi_ipc::Error>, Option<HRESULT>) {
+        (self.last_worker_error.get(), self.last_dll_error.get())
     }
     /// Owner-only, one synchronous attempt. Drop all captured targets before a
     /// broker I/O can start; no checker or COM reference enters Request/Worker.
@@ -118,7 +126,8 @@ impl Bridge {
         let completion = match received {
             Ok(Some(completion)) => completion,
             Ok(None) => return Ok(None),
-            Err(_) => {
+            Err(error) => {
+                self.last_worker_error.set(Some(error));
                 self.pending.set(None);
                 unsafe {
                     let _ = control.Cancel(pending);
@@ -137,7 +146,7 @@ impl Bridge {
                 let text: Vec<u16> = text.encode_utf16().collect();
                 // SAFETY: owner STA, valid independently counted DLL control,
                 // borrowed bounded result; no EXE RefCell borrow across COM.
-                unsafe {
+                let result = unsafe {
                     control
                         .Complete(
                             completion.id,
@@ -148,9 +157,16 @@ impl Bridge {
                             text.len() as u32,
                         )
                         .ok()
+                };
+                if let Err(error) = &result {
+                    self.last_dll_error.set(Some(error.code()));
                 }
+                result
             }
-            Err(_) => Err(E_ABORT.into()),
+            Err(error) => {
+                self.last_worker_error.set(Some(error));
+                Err(E_ABORT.into())
+            }
         };
         if result.is_err() {
             unsafe {
@@ -303,6 +319,8 @@ impl ISpikeBrokerTransport_Impl for Bridge_Impl {
                     },
                 )
                 .map_err(|_| windows::core::Error::from(E_ABORT))?;
+            self.last_worker_error.set(None);
+            self.last_dll_error.set(None);
             self.pending.set(Some(request));
             Ok(())
         })

@@ -784,11 +784,17 @@ enum RunMode {
 
 fn wait_for_waiting_foreground(
     window: &crate::window_host::Window,
+    interactive: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
-    window.set_title("Sumibi waiting test: click this window to activate (30 seconds)")?;
-    println!("Click the waiting-test window if needed; no typing is needed.");
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let timeout = if interactive {
+        window.set_title("Sumibi waiting test: click this window to activate (30 seconds)")?;
+        println!("Click the waiting-test window if needed; no typing is needed.");
+        Duration::from_secs(30)
+    } else {
+        Duration::from_secs(2)
+    };
+    let deadline = Instant::now() + timeout;
     let mut foreground_since = None;
     while Instant::now() < deadline {
         if !window.is_open() {
@@ -808,10 +814,11 @@ fn wait_for_waiting_foreground(
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    Err(
-        "waiting interactive test: diagnostic window did not remain foreground within 30 seconds"
-            .into(),
+    Err(format!(
+        "waiting test: diagnostic window did not remain foreground within {} seconds",
+        timeout.as_secs()
     )
+    .into())
 }
 
 fn run(
@@ -848,7 +855,14 @@ fn run(
             &mode,
             RunMode::WaitingInteractiveTest(_) | RunMode::WaitingDemoInteractiveTest(_)
         ) {
-            wait_for_waiting_foreground(&window)?;
+            wait_for_waiting_foreground(&window, true)?;
+        } else if matches!(
+            &mode,
+            RunMode::TransactionTest("waiting/fifo") | RunMode::WaitingTest("fifo")
+        ) {
+            // The first window can receive queued activation messages after
+            // SetFocus. Drain them before starting the conversion fixture.
+            wait_for_waiting_foreground(&window, false)?;
         }
         if matches!(&mode, RunMode::TransactionTest(case) if case.starts_with("waiting/"))
             || matches!(&mode, RunMode::WaitingInteractiveTest(_))

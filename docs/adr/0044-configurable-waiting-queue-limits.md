@@ -26,7 +26,7 @@ Coreへ明示的に渡す。これまでどおり共有救済枠を先に予約�
 ## 検証と限界
 
 Coreへ1件を追加し、workspace Rust137件、fmt、Clippy 3構成、spike build、
-load_smoke、self/edit/keyの基本検査が成功した（`target/issue-4-waiting-final-static.log`）。
+load_smoke、self/edit/keyの基本検査が成功した（`target/issue-4-normal-waiting-diagnostic-static.log`）。
 小さい件数上限と本文上限を独立に拒否し、補助面文字を2単位として数え、
 本文なし操作は件数だけを占有し、確認済み配送後だけ再受付することを確認した。
 
@@ -44,13 +44,20 @@ Bridge生成時に`PinnedProcess::current()`で同じmedium・非昇格・非App
 500ms連続で前面の状態になるまで、最大30秒、所有STAのTSF message pumpを回す。
 Windowsが前面化を拒否した場合は利用者がwindowをクリックでき、時間切れは失敗する。
 
-通常ユーザーのmedium・非AppContainer対話desktopで、最終版の実DLL
+通常ユーザーのmedium・非AppContainer対話desktopで、直前版の実DLL
 `waiting-input-test-interactive`26ケースと`waiting-demo-test-interactive`59ケースが成功し、
 TSF/COMの登録解除とDLLアンロードまで確認した。ログは
 `target/issue-4-waiting-stable-foreground-input.log`と
 `target/issue-4-waiting-stable-foreground-demo.log`。通常の`waiting-demo-test`は
 同じ権限でも初回`fifo`の成否が変動した。対話版で最初のwindowの前面状態が
 安定するのを待って再確認したが、通常版の変動理由は未特定である。
+通常版の初回windowも、所有STAのmessageを処理しながら500msの連続前面状態を
+最大2秒待ち、成立しなければ変換前に明示して失敗するようにした。
+待機デモのassertionには、前面状態・所有境界・待機停止理由・Brokerの失敗区分を
+本文やキーなしで添えた。非前面での失敗は確認したが、この変更後の通常版59ケース
+完走は対話desktopで未確認である（`target/issue-4-normal-demo-stabilized.log`）。
+今回の対話版再実行も前面状態が成立せず30秒で停止した
+（`target/issue-4-normal-waiting-diagnostic-interactive.log`）。
 初期失敗の観測ログは
 `target/issue-4-waiting-interactive-diagnostic*.log`。
 一般アプリのキー配送・標準Undo・製品の全体予算も本変更の受入範囲外である。

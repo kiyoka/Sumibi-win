@@ -370,7 +370,16 @@ pub(in super::super::super) fn test_waiting_demo(
     assert_eq!(
         *store.text.borrow(),
         expected.encode_utf16().collect::<Vec<_>>(),
-        "{case}"
+        "{case}: foreground={}, owner_active={}, boundary={:?}, start_failed={}, queue_active={:?}, last_stop={:?}, broker_active={}, pending_id={:?}, broker_failure={:?}",
+        window.require_foreground().is_ok(),
+        owner.active(),
+        owner.boundary.get(),
+        owner.start_failed.get(),
+        owner.session.borrow().as_ref().map(|session| session.queue.is_some()),
+        owner.session.borrow().as_ref().and_then(|session| session.last_stop),
+        editor.broker.as_ref().ok_or(E_FAIL)?.1.get().active(),
+        editor.broker.as_ref().ok_or(E_FAIL)?.1.get().pending_id(),
+        editor.broker.as_ref().ok_or(E_FAIL)?.1.get().last_failure(),
     );
     assert_eq!(
         editor.submits.get(),
