@@ -61,6 +61,7 @@ Escで待機を明示取消した場合も、安定した原文の選択を解�
 待機行列Coreにも件数・本文量の設定値を追加し、専用adapterへ同じ4件・4096単位を渡す。
 `cargo test -p sumibi-core waiting_input --locked --offline`は13件、workspaceは137件が成功した。
 今回の実DLL待機検査は前面化が拒否されたdesktopで未通過。変更前の保存済みビルドも同じ失敗で、
+現在の検査は本文比較の前に前面化拒否`0x80070005`を明示する。
 結果と再確認条件は[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)を参照。
 待機adapter26・同期入力174・救済48・通知30・close4とRust136件・静的/基本DLL検査の成功記録がある。
 Backspace55・書記素ホスト22・composition46・broker入力11・追跡25は前段階の成功記録を維持する。

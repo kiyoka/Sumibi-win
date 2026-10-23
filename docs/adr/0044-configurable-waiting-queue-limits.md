@@ -32,7 +32,10 @@ load_smoke、self/edit/keyの基本検査が成功した（`target/issue-4-wait-
 
 実DLLの`waiting-input-test`は初回`fifo`で固定変換が適用されず失敗した。
 変更前の保存済みEXE/DLLでも同じ入力・期待値で失敗し、同じdesktopでの
-`window-test`は前面化拒否`0x80070005`を報告した。現時点で実DLL待機回帰を
-成功とは記録しない。ログは`target/issue-4-wait-limits-{input,input-retry,baseline,window}.log`。
+`window-test`は前面化拒否`0x80070005`を報告した。待機検査の開始時にも
+前面化を明示検査するようにすると、本文比較より前に同じ`0x80070005`を返した。
+現時点で実DLL待機回帰を成功とは記録しない。
+ログは`target/issue-4-wait-limits-{input,input-retry,baseline,window,explicit-foreground}.log`。
+最終静的検査は`target/issue-4-wait-limits-static-final.log`。
 対話desktopで前面化した状態で再実行し、容量境界まで通ることを確認する必要がある。
 一般アプリのキー配送・標準Undo・製品の全体予算も本変更の受入範囲外である。

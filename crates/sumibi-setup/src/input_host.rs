@@ -808,6 +808,18 @@ fn run(
             .focus()
             .map_err(|error| format!("input window focus: {error}"))?;
         manager.SetFocus(&document.0)?;
+        if matches!(&mode, RunMode::TransactionTest(case) if case.starts_with("waiting/"))
+            || matches!(&mode, RunMode::WaitingTest(_))
+        {
+            // Waiting tests deliver a real TSF conversion before checking
+            // queue order. Without foreground activation the original text
+            // remains, which looks like an admission/order regression.
+            window.require_foreground().map_err(|error| {
+                format!(
+                    "waiting test requires foreground activation of its diagnostic window: {error}"
+                )
+            })?;
+        }
         let control: ISpikeControl = manager
             .GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)?
             .GetFunction(&FUNCTION_TEST_CONTROL, &ISpikeControl::IID)?
