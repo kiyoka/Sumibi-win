@@ -361,15 +361,22 @@ fn run(
     }
     state.closed.store(true, Ordering::Release);
     // Stop can win over a just-enqueued command. Still deliver one terminal
-    // completion so the owner retires its pending target without waiting.
+    // completion and wake the owner before child/pipe cleanup can block.
     if let Ok(Command { request, permit }) = commands.try_recv() {
-        let _ = results.try_send(Completion {
-            id: request.id,
-            revision: request.revision,
-            outcome: Err(Error::Cancelled),
-            peer: 0,
-            _permit: permit,
-        });
+        if results
+            .try_send(Completion {
+                id: request.id,
+                revision: request.revision,
+                outcome: Err(Error::Cancelled),
+                peer: 0,
+                _permit: permit,
+            })
+            .is_ok()
+        {
+            unsafe {
+                let _ = SetEvent(raw(wake));
+            }
+        }
     }
     // Channel, pipe and child cleanup happens here, before Finished signals done.
 }
@@ -401,5 +408,59 @@ mod tests {
         assert_eq!(requests.reserve(12), Err(Error::Capacity));
         requests.release(11);
         assert_eq!(requests.reserve(12), Ok(()));
+    }
+
+    #[test]
+    fn stopped_worker_wakes_owner_for_queued_terminal_completion() {
+        let state = Arc::new(State {
+            stop: Stop::new().unwrap(),
+            requests: Requests::default(),
+            closed: AtomicBool::new(false),
+            cancelled: AtomicBool::new(true),
+        });
+        state.requests.reserve(1).unwrap();
+        let command = unsafe { own(CreateEventW(None, false, false, None).unwrap()) };
+        let wake = unsafe { own(CreateEventW(None, false, false, None).unwrap()) };
+        let reservation = Arc::new(Reservation::acquire().unwrap());
+        let (send, commands) = mpsc::sync_channel(1);
+        let (results, receive) = mpsc::sync_channel(1);
+        send.send(Command {
+            request: Request {
+                id: 1,
+                revision: Revision {
+                    input: 1,
+                    settings: 1,
+                    authorization: 1,
+                },
+                text: "synthetic".into(),
+                deadline: Instant::now() + Duration::from_secs(1),
+                mode: Mode::Disabled,
+            },
+            permit: Permit {
+                state: state.clone(),
+                id: 1,
+                _reservation: reservation.clone(),
+            },
+        })
+        .unwrap();
+        state.stop.cancel().unwrap();
+        run(
+            std::env::current_exe().unwrap(),
+            Mode::Disabled,
+            &state,
+            &command,
+            &wake,
+            &commands,
+            &results,
+            &reservation,
+        );
+        assert_eq!(
+            unsafe { WaitForSingleObject(raw(&wake), 0) },
+            WAIT_OBJECT_0,
+            "the owner must be notified when its queued request is retired"
+        );
+        let completion = receive.try_recv().unwrap();
+        assert_eq!(completion.id, 1);
+        assert!(matches!(completion.outcome(), Err(Error::Cancelled)));
     }
 }
