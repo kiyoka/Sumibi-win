@@ -58,6 +58,10 @@ TSF/COMの登録解除とDLLアンロードまで確認した。ログは
 完走は対話desktopで未確認である（`target/issue-4-normal-demo-stabilized.log`）。
 今回の対話版再実行も前面状態が成立せず30秒で停止した
 （`target/issue-4-normal-waiting-diagnostic-interactive.log`）。
+2026-10-24に通常ユーザーの対話desktopで再検証し、現版の通常
+`waiting-demo-test`59ケース、対話版59ケース、通常`waiting-input-test`26ケースが
+すべて成功した。各コマンドでTSF/COM登録解除とDLLアンロードも成功した。
+これは上記の未確認状態を解消する実行記録であり、一般アプリ・物理キーの受入ではない。
 初期失敗の観測ログは
 `target/issue-4-waiting-interactive-diagnostic*.log`。
 一般アプリのキー配送・標準Undo・製品の全体予算も本変更の受入範囲外である。

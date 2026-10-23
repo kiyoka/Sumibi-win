@@ -17,7 +17,7 @@
 | キー配送 | keys.rs / input_host.rs。専用windowで実TSF経路 | US/JIS配列・変換キー・Terminal・実打鍵 |
 | Undo/Redo | TextStoreに本文・選択・向きの履歴。固定変換含む | 一般アプリの標準履歴で変換が1回のUndoにまとまる |
 | 描画 | live_render / render / window_host。通知→WM_APP→Frame | 製品候補UIのUIElement、DPI、高コントラスト、読み上げ |
-| 手動待機と救済 | 所有editor救済48。待機Coreの件数/本文量を設定可能とし、専用adapterへ4枠・4096単位を明示。通常ユーザーの対話desktopで直前版の実DLL adapter26・waiting-demo59ケース成功。初回windowは対話版で前面化。現版は静的検査成功、native前面化で未確認。AppContainer起動は入力受付前に拒否。共有救済を取得前に予約し、待機/通常救済を1画面へ接続（[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)） | 一般アプリでの製品キー・容量/超過/期限/明示破棄とプロセス間政策 |
+| 手動待機と救済 | 所有editor救済48。待機Coreの件数/本文量を設定可能とし、専用adapterへ4枠・4096単位を明示。2026-10-24、通常ユーザーの対話desktopで現版の実DLL通常版adapter26・通常版/対話版waiting-demo各59ケース成功、TSF/COM解除・DLLアンロード確認。AppContainer起動は入力受付前に拒否。共有救済を取得前に予約し、待機/通常救済を1画面へ接続（[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)） | 一般アプリでの製品キー・容量/超過/期限/明示破棄とプロセス間政策 |
 | Protocol / Broker | 有限フレーム・JSON・client状態、固定process相互検査・8 endpoint・overlapped pipe。単発Host・容量4（完了済みjob・受取済み結果も含む）・各1結果。[ADR 0015](adr/0015-broker-admission-through-delivery.md)。実DLLキー・Core・実TSFから診断用EXE bridgeを通す経路も検証。EXE再利用workerへ実DLLキー・所有STA配送を接続し、25ケースを検証（[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)） | 製品Broker発見・常駐dispatch、一般アプリ内の配置と入力統合。AppContainerは初期非対応 |
 | HTTP | 未実装。固定文字列で検証 | 模擬HTTPで認証・同意・転送拒否・上限・取消・エラー分類 |
 | 設定・資格情報 | 未実装。LocalAppData / Credential Manager案 | 形式版・原子的保存・秘密分離・認可取消・破損回復 |

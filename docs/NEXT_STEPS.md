@@ -100,6 +100,8 @@ window-test-interactiveと通常のwindow-testは実TSFキーマネージャー�
 既存のIPC認証で拒否されていたことが原因と特定した。Bridge生成時の事前検査で
 `UnsupportedAppContainer`を入力受付前に報告する。通常ユーザーのmedium・非AppContainer
 対話desktopでは実DLL待機26ケースと対話デモ59ケースが成功した。
+2026-10-24には現版の通常版adapter26、通常版と対話版の待機デモ各59ケースも
+対話desktopで完走し、登録解除・DLLアンロードを確認した。一般アプリと物理打鍵は別の受入範囲。
 
 所有windowの非アクティブ化・無効化・モード取消も実WndProcから失効経路へ接続した。
 復元後の保留変換・救済コピーを拒否し、Windows標準のモード取消は維持する。
