@@ -50,6 +50,7 @@
 - [ADR 0036](adr/0036-unified-demo-recovery-and-copy-expiry.md)：待機/通常入力の救済UI統合、本文除去後の操作情報の確認/破棄、コピー公開直前の期限照合。
 - [ADR 0037](adr/0037-cancel-failed-waiting-start.md)：F7後の待機初期化失敗で捕捉した要求だけを取消し、重複通知と古い初期化の上書きを拒否する。
 - [ADR 0038](adr/0038-owner-wake-for-ordinary-recovery.md)：待機デモで通常救済だけが残る間も表示と保護状態を定期確認する。
+- [ADR 0039](adr/0039-waiting-demo-recovery-loss-warning.md)：救済がなくなっても未確認の入力結果が残る場合は文書確認を促す。
 
 ## 更新の規則
 

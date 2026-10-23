@@ -2,6 +2,7 @@
 //! physical modifier assertion, foreground bypass, or system clipboard writes.
 use super::*;
 use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::WindowsAndMessaging::GetWindowTextW;
 
 struct TestClipboard<'a> {
     calls: Cell<usize>,
@@ -40,6 +41,11 @@ fn route(window: &crate::window_host::Window, message: u32, key: usize) -> Resul
         lParam: LPARAM(1),
         ..Default::default()
     })
+}
+fn title(window: &crate::window_host::Window) -> String {
+    let mut units = [0u16; 256];
+    let length = unsafe { GetWindowTextW(window.hwnd(), &mut units) } as usize;
+    String::from_utf16_lossy(&units[..length])
 }
 fn drive(
     window: &crate::window_host::Window,
@@ -320,6 +326,20 @@ pub(in super::super::super) fn test_waiting_demo(
                 owner.service(window, editor, &clipboard)?;
                 assert!(owner.view.borrow().is_none());
                 assert_eq!(clipboard.calls.get(), 0);
+                if case == "ui-expire" {
+                    assert!(
+                        title(window).contains("救済は残っていません"),
+                        "expired waiting records need an explicit warning"
+                    );
+                    owner.service(window, editor, &clipboard)?;
+                    assert!(
+                        title(window).contains("救済は残っていません"),
+                        "warning must survive the next owner loop"
+                    );
+                    route(window, WM_KEYDOWN, 0x1b)?;
+                    owner.service(window, editor, &clipboard)?;
+                    assert!(!title(window).contains("救済は残っていません"));
+                }
                 if case == "stale-session" {
                     editor.navigation_boundary();
                     let end = store.text.borrow().len();
@@ -756,6 +776,15 @@ fn test_mixed<'a>(
             assert!(owner.view.borrow().is_none());
             assert!(editor.rescue.metadata().is_none());
             assert!(store.input_problem.get(), "expiry is not acknowledgement");
+            assert!(
+                title(window).contains("救済は残っていません"),
+                "expired ordinary rescue needs an explicit warning"
+            );
+            owner.service(window, editor, clipboard)?;
+            assert!(title(window).contains("救済は残っていません"));
+            route(window, WM_KEYDOWN, 0x1b)?;
+            owner.service(window, editor, clipboard)?;
+            assert!(!title(window).contains("救済は残っていません"));
         }
         "ordinary-idle-protection" => {
             owner.view.borrow().as_ref().unwrap().view.close_request();

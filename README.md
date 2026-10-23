@@ -88,6 +88,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [待機・通常入力の救済UI統合とコピー期限](docs/adr/0036-unified-demo-recovery-and-copy-expiry.md)
 - [待機入力の開始失敗と要求IDの取消](docs/adr/0037-cancel-failed-waiting-start.md)
 - [待機デモの通常救済を定期確認する](docs/adr/0038-owner-wake-for-ordinary-recovery.md)
+- [救済終了後の入力確認案内](docs/adr/0039-waiting-demo-recovery-loss-warning.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 
 設計基準はSumibi-mac main `553c69021eda7a8a5944d8748357f3790cc2f45c`。

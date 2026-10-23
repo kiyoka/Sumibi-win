@@ -26,6 +26,8 @@ pub(in super::super) struct Owner {
     busy: Cell<bool>,
     closed: Cell<bool>,
     start_failed: Cell<bool>,
+    // Expired waiting records must not silently return to the normal F7 title.
+    lost: Cell<bool>,
     epoch: Cell<u64>,
     boundary: Cell<Option<Boundary>>,
     show: Cell<bool>,
@@ -65,6 +67,7 @@ impl Owner {
             busy: Cell::new(false),
             closed: Cell::new(false),
             start_failed: Cell::new(false),
+            lost: Cell::new(false),
             epoch: Cell::new(0),
             boundary: Cell::new(None),
             show: Cell::new(false),
@@ -262,6 +265,9 @@ impl Owner {
             return Ok(true);
         }
         if !self.active.get() {
+            if key == 0x1b {
+                self.lost.set(false);
+            }
             return Ok(false);
         }
         if key == 0x1b {
@@ -349,6 +355,7 @@ impl Owner {
         }
         let next = self.show.replace(false);
         self.state(editor, |session| {
+            let had_waiting_records = session.as_ref().is_some_and(|s| !s.ready.is_empty());
             editor.rescue.maintain();
             if let Some(waiting) = session {
                 waiting.expire(Instant::now());
@@ -450,6 +457,9 @@ impl Owner {
             {
                 *session = None;
             }
+            if !queued && records.is_empty() && had_waiting_records && !acknowledged {
+                self.lost.set(true);
+            }
             if !records.is_empty() {
                 window.set_title(
                     "Sumibi 救済あり（最大10分） | F8 順に確認 | 表示中の1件をF9破棄 / F10コピー",
@@ -466,6 +476,9 @@ impl Owner {
                 }
                 window.set_title(if self.start_failed.get() {
                     "Sumibi 待機入力を開始できず変換を取り消しました | 原文を保持 | F7 再試行"
+                } else if self.lost.get() || (!acknowledged && editor.store.get().input_problem.get())
+                {
+                    "Sumibi 未確認入力の救済は残っていません。文書の結果を確認してください | Esc 追跡解除"
                 } else {
                     "Sumibi 待機入力デモ（固定結果） | F7 変換 | F8 救済確認 | Ctrl+Z Undo"
                 })?;

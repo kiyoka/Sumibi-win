@@ -345,6 +345,8 @@ F7開始後の初期化失敗では捕捉した要求IDだけを取消し、後�
 [ADR 0037](adr/0037-cancel-failed-waiting-start.md)を参照。
 通常救済だけが残る間もOwnerが期限表示と保護状態を定期確認する。
 デモ47ケースの検証は[ADR 0038](adr/0038-owner-wake-for-ordinary-recovery.md)を参照。
+待機/通常救済がなくなっても未確認の入力結果が残る場合は文書確認を案内する
+（[ADR 0039](adr/0039-waiting-demo-recovery-loss-warning.md)）。
 救済はメモリーに限定し、明示コピー・破棄だけを提供する。クラッシュ後の本文復元は保証しない。
 
 診断editorでは上記の製品提案と分けて、1件・1024 UTF-16単位・10分の救済を実装した
