@@ -352,6 +352,7 @@ F7開始後の初期化失敗では捕捉した要求IDだけを取消し、後�
 入力がないまま期限が切れた場合も、安定した原文の選択をその時点で解除する。
 Escで明示取消した場合も同じ安全条件で選択を解除する。
 デモ57ケースの検証は[ADR 0040](adr/0040-waiting-deadline-and-unadmitted-fallback.md)を参照。
+共有枠の容量超過表示と通常入力への切替、不正入力との区別を含む59ケースは[ADR 0042](adr/0042-waiting-capacity-fallback-feedback.md)を参照。
 共有Budgetは件数と本文総量を一度に予約する。診断経路は4件・4096単位を維持し、
 製品容量とプロセス間の所有方法は引き続き未決である
 （[ADR 0041](adr/0041-configurable-shared-recovery-budget.md)）。

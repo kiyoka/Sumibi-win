@@ -96,6 +96,8 @@ pub(crate) fn exercise_waiting_demo(
         "fifo",
         "enter",
         "capacity",
+        "shared-capacity",
+        "invalid-full",
         "copy",
         "discard",
         "cycle",
@@ -195,6 +197,20 @@ pub(in super::super::super) fn test_waiting_demo(
     store.undo.borrow_mut().clear();
     route(window, WM_KEYDOWN, 0x76)?;
     assert!(owner.active());
+    let mut peers = Vec::new();
+    if matches!(case, "shared-capacity" | "invalid-full") {
+        for _ in 0..sumibi_core::recovery::MAX_RECORDS {
+            let mut record = Recovery::with_budget(input_recovery_host::shared_budget());
+            record
+                .reserve(Operation::DeferredEnter, Instant::now())
+                .map_err(|_| E_FAIL)?;
+            peers.push(record);
+        }
+    }
+    if case == "invalid-full" {
+        assert!(!owner.admit(editor, Input::Text(&[]))?);
+        assert!(!owner.capacity_limited.get());
+    }
     let recovery_case = matches!(
         case,
         "enter"
@@ -234,6 +250,8 @@ pub(in super::super::super) fn test_waiting_demo(
     }
     let text = match case {
         "unicode" => "😀",
+        "shared-capacity" => "e",
+        "invalid-full" => "",
         "escape-empty-text" => "",
         "deadline-empty"
         | "deadline-idle-backspace"
@@ -306,6 +324,8 @@ pub(in super::super::super) fn test_waiting_demo(
         "fifo" => "日本語a",
         "unicode" => "日本語😀",
         "capacity" => "nihongoe",
+        "shared-capacity" => "nihongoe",
+        "invalid-full" => "nihongo",
         "convert" => "日本語日本語z",
         "focus"
         | "escape"
@@ -336,9 +356,28 @@ pub(in super::super::super) fn test_waiting_demo(
     if case == "capacity" {
         assert_eq!(store.undo.borrow().len(), 1, "unadmitted key edits once");
         assert_eq!(Owner::records(editor, &owner.session.borrow()).len(), 4);
+        assert!(owner.capacity_limited.get());
+        assert!(title(window).contains("容量上限で新しい入力は通常経路へ"));
         route(window, WM_KEYDOWN, 0x77)?;
         owner.service(window, editor, &clipboard)?;
         assert!(owner.view.borrow().as_ref().unwrap().view.copyable);
+    }
+    if case == "shared-capacity" {
+        assert_eq!(store.undo.borrow().len(), 1, "unadmitted key edits once");
+        assert!(Owner::records(editor, &owner.session.borrow()).is_empty());
+        assert!(owner.capacity_limited.get());
+        assert!(title(window).contains("容量上限で新しい入力は通常経路へ"));
+        owner.service(window, editor, &clipboard)?;
+        assert!(title(window).contains("容量上限で新しい入力は通常経路へ"));
+        route(window, WM_KEYDOWN, 0x1b)?;
+        owner.service(window, editor, &clipboard)?;
+        assert!(!title(window).contains("容量上限で新しい入力は通常経路へ"));
+    }
+    if case == "invalid-full" {
+        assert_eq!(store.undo.borrow().len(), 0);
+        assert!(Owner::records(editor, &owner.session.borrow()).is_empty());
+        assert!(!owner.capacity_limited.get());
+        assert!(!title(window).contains("容量上限で新しい入力は通常経路へ"));
     }
     if case == "deadline-queued-text" {
         assert_eq!(store.undo.borrow().len(), 1, "later key edits once");
@@ -364,6 +403,10 @@ pub(in super::super::super) fn test_waiting_demo(
             | "deadline-backspace"
             | "deadline-enter"
     ) {
+        assert!(
+            !owner.capacity_limited.get(),
+            "deadline is not capacity denial"
+        );
         assert!(Owner::records(editor, &owner.session.borrow()).is_empty());
         assert_eq!(
             store.undo.borrow().len(),
@@ -578,6 +621,7 @@ pub(in super::super::super) fn test_waiting_demo(
         );
     }
     owner.close();
+    drop(peers);
     assert!(owner.view.borrow().is_none());
     let mut records = Vec::new();
     for _ in 0..sumibi_core::recovery::MAX_RECORDS {

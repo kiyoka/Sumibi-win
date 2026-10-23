@@ -54,7 +54,7 @@ Escで待機を明示取消した場合も、安定した原文の選択を解�
 受入れ済みの待機入力は救済へ残り、後続の通常編集で保護履歴が変われば本文を除去する。
 既存transaction-demoや他アプリの入力には待機を有効化しない。
 
-`waiting-demo-test --dll target/debug/sumibi_tip.dll`で同じ配送/確認UIと開始失敗・定期確認・期限/Esc後の通常入力の57ケースを自動検証できる。
+`waiting-demo-test --dll target/debug/sumibi_tip.dll`で同じ配送/確認UIと開始失敗・定期確認・期限/Esc後の通常入力・容量超過表示の59ケースを自動検証できる。
 合成MSGを使い、コピーは試験用Clipboardへ差し替える。物理キーの受入とは区別する。
 共有救済予算はレコード件数と本文総量を同時に予約し、診断EXEは4件・4096単位を維持する
 （[ADR 0041](adr/0041-configurable-shared-recovery-budget.md)）。

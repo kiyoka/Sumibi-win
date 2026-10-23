@@ -27,6 +27,7 @@ pub(in super::super) struct Owner {
     closed: Cell<bool>,
     start_failed: Cell<bool>,
     timed_out: Cell<bool>,
+    capacity_limited: Cell<bool>,
     // Expired waiting records must not silently return to the normal F7 title.
     lost: Cell<bool>,
     epoch: Cell<u64>,
@@ -69,6 +70,7 @@ impl Owner {
             closed: Cell::new(false),
             start_failed: Cell::new(false),
             timed_out: Cell::new(false),
+            capacity_limited: Cell::new(false),
             lost: Cell::new(false),
             epoch: Cell::new(0),
             boundary: Cell::new(None),
@@ -231,6 +233,7 @@ impl Owner {
             attempt.accepted = true;
             self.start_failed.set(false);
             self.timed_out.set(false);
+            self.capacity_limited.set(false);
             Ok(())
         })
     }
@@ -245,6 +248,9 @@ impl Owner {
             match session.admit(editor, input) {
                 Ok(()) => Ok(true),
                 Err(_) => {
+                    if session.capacity_denied {
+                        self.capacity_limited.set(true);
+                    }
                     let fallback_caret = session.fallback_caret_end();
                     if Instant::now() >= session.deadline {
                         self.timed_out.set(true);
@@ -287,6 +293,7 @@ impl Owner {
             if key == 0x1b {
                 self.lost.set(false);
                 self.timed_out.set(false);
+                self.capacity_limited.set(false);
             }
             return Ok(false);
         }
@@ -492,9 +499,11 @@ impl Owner {
                 self.lost.set(true);
             }
             if !records.is_empty() {
-                window.set_title(
-                    "Sumibi 救済あり（最大10分） | F8 順に確認 | 表示中の1件をF9破棄 / F10コピー",
-                )?;
+                window.set_title(if self.capacity_limited.get() {
+                    "Sumibi 容量上限で新しい入力は通常経路へ | 救済あり | F8 順に確認 | F9破棄 / F10コピー"
+                } else {
+                    "Sumibi 救済あり（最大10分） | F8 順に確認 | 表示中の1件をF9破棄 / F10コピー"
+                })?;
             } else if queued {
                 window.set_title(
                     "Sumibi 待機入力デモ | 待機は最大8秒・4件 | F7再変換 | Enterは救済へ | Esc取消",
@@ -512,6 +521,8 @@ impl Owner {
                     "Sumibi 未確認入力の救済は残っていません。文書の結果を確認してください | Esc 追跡解除"
                 } else if self.timed_out.get() {
                     "Sumibi 変換待機が期限切れになりました | 文書の結果を確認 | F7 再試行 / Esc 解除"
+                } else if self.capacity_limited.get() {
+                    "Sumibi 容量上限で新しい入力は通常経路へ | 文書を確認 | F7 再試行 / Esc 解除"
                 } else {
                     "Sumibi 待機入力デモ（固定結果） | F7 変換 | F8 救済確認 | Ctrl+Z Undo"
                 })?;

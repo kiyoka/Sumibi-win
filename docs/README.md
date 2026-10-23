@@ -53,6 +53,7 @@
 - [ADR 0039](adr/0039-waiting-demo-recovery-loss-warning.md)：救済がなくなっても未確認の入力結果が残る場合は文書確認を促す。
 - [ADR 0040](adr/0040-waiting-deadline-and-unadmitted-fallback.md)：待機期限を表示し、未受入れ入力で選択中の原文を置換しない。
 - [ADR 0041](adr/0041-configurable-shared-recovery-budget.md)：共有救済の件数と本文総量を一度に予約し、既定の診断容量を維持する。
+- [ADR 0042](adr/0042-waiting-capacity-fallback-feedback.md)：待機容量超過による通常入力への切替を診断デモに表示する。
 
 ## 更新の規則
 

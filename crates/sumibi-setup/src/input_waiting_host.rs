@@ -6,7 +6,7 @@ use super::*;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use sumibi_core::recovery::{Metadata, Operation, Outcome, Recovery, Ticket};
+use sumibi_core::recovery::{Metadata, Operation, Outcome, Recovery, ReserveError, Ticket};
 use sumibi_core::waiting_input::{self as core, Boundary, Input, Target, WaitingInput};
 use sumibi_core::RequestId;
 use sumibi_tip::edit::{manual::InputWatch, InputMetadata};
@@ -44,6 +44,7 @@ struct Waiting {
     queue: Option<WaitingInput>,
     slots: VecDeque<Slot>,
     ready: Vec<Slot>,
+    capacity_denied: bool,
     // Diagnostic only; production waiting/expiry policy remains undecided.
     deadline: Instant,
 }
@@ -99,6 +100,7 @@ impl Waiting {
             queue: Some(WaitingInput::new(RequestId(request as u128), target).map_err(|_| E_FAIL)?),
             slots,
             ready,
+            capacity_denied: false,
             deadline: Instant::now() + Duration::from_secs(8),
         })
     }
@@ -194,6 +196,7 @@ impl Waiting {
             .map_err(|_| E_FAIL.into())
     }
     fn admit(&mut self, editor: &Editor, input: Input<'_>) -> Result<()> {
+        self.capacity_denied = false;
         if Instant::now() >= self.deadline {
             self.stop(editor, Boundary::Cancelled, Outcome::Deferred);
             return Err(E_FAIL.into());
@@ -202,25 +205,47 @@ impl Waiting {
             self.stop(editor, Boundary::ProtectionChanged, Outcome::Deferred);
             return Err(E_FAIL.into());
         }
+        // Validate before testing capacity so malformed input cannot be
+        // presented to the user as an ordinary capacity fallback.
         let operation = match &input {
-            Input::Text(text) if !text.contains(&0xfffc) => Operation::Insert(text.len()),
-            Input::Backspace(count) => Operation::Backspace(*count),
+            Input::Text(text)
+                if !text.is_empty()
+                    && text.len() <= core::MAX_EVENT_UNITS
+                    && !text.contains(&0xfffc)
+                    && char::decode_utf16(text.iter().copied())
+                        .all(|value| value.is_ok_and(|value| !value.is_control())) =>
+            {
+                Operation::Insert(text.len())
+            }
+            Input::Backspace(count) if (1..=core::MAX_EVENT_UNITS as u32).contains(count) => {
+                Operation::Backspace(*count)
+            }
             Input::Enter => Operation::DeferredEnter,
             Input::Convert => Operation::DeferredConvert,
             _ => return Err(E_INVALIDARG.into()),
         };
         if self.slots.len() + self.ready.len() == sumibi_core::recovery::MAX_RECORDS {
+            self.capacity_denied = true;
             return Err(E_FAIL.into());
         }
         let mut recovery = Recovery::with_budget(input_recovery_host::shared_budget());
-        let ticket = recovery
-            .reserve(operation, Instant::now())
-            .map_err(|_| E_FAIL)?;
-        self.queue
-            .as_mut()
-            .ok_or(E_FAIL)?
-            .admit(self.target, input)
-            .map_err(|_| E_INVALIDARG)?;
+        let ticket = match recovery.reserve(operation, Instant::now()) {
+            Ok(ticket) => ticket,
+            Err(ReserveError::Busy) => {
+                self.capacity_denied = true;
+                return Err(E_FAIL.into());
+            }
+            Err(_) => return Err(E_FAIL.into()),
+        };
+        let result = self.queue.as_mut().ok_or(E_FAIL)?.admit(self.target, input);
+        match result {
+            Ok(_) => {}
+            Err(core::Reject::Capacity) => {
+                self.capacity_denied = true;
+                return Err(E_FAIL.into());
+            }
+            Err(_) => return Err(E_INVALIDARG.into()),
+        }
         self.slots.push_back(Slot { recovery, ticket });
         Ok(())
     }
