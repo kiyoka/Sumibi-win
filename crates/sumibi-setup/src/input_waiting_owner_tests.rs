@@ -101,6 +101,8 @@ pub(crate) fn exercise_waiting_demo(
         "cycle",
         "focus",
         "escape",
+        "escape-empty-text",
+        "escape-queued-text",
         "unicode",
         "convert",
         "deadline",
@@ -232,6 +234,7 @@ pub(in super::super::super) fn test_waiting_demo(
     }
     let text = match case {
         "unicode" => "😀",
+        "escape-empty-text" => "",
         "deadline-empty"
         | "deadline-idle-backspace"
         | "deadline-idle-enter"
@@ -275,8 +278,17 @@ pub(in super::super::super) fn test_waiting_demo(
     if matches!(case, "deactivate" | "disable" | "cancel-mode") {
         test_window_boundary(window, case)?;
     }
-    if case == "escape" {
+    if matches!(case, "escape" | "escape-empty-text" | "escape-queued-text") {
         route(window, WM_KEYDOWN, 0x1b)?;
+    }
+    if matches!(case, "escape-empty-text" | "escape-queued-text") {
+        assert!(!owner.active());
+        if case == "escape-queued-text" {
+            let records = Owner::records(editor, &owner.session.borrow());
+            assert_eq!(records.len(), 2);
+            assert!(records.iter().all(|(_, metadata)| metadata.copyable));
+        }
+        route(window, WM_CHAR, 'c' as usize)?;
     }
     if case == "deadline" {
         owner.session.borrow_mut().as_mut().unwrap().deadline = Instant::now();
@@ -307,6 +319,7 @@ pub(in super::super::super) fn test_waiting_demo(
         | "cancel-mode" => "nihongo",
         "deadline-admit" | "deadline-idle-text" => "nihongoab",
         "deadline-queued-text" => "nihongoc",
+        "escape-empty-text" | "escape-queued-text" => "nihongoc",
         "deadline-backspace" | "deadline-idle-backspace" => "nihong",
         _ => "日本語",
     };
@@ -333,6 +346,13 @@ pub(in super::super::super) fn test_waiting_demo(
         route(window, WM_KEYDOWN, 0x77)?;
         owner.service(window, editor, &clipboard)?;
         assert!(!owner.view.borrow().as_ref().unwrap().view.copyable);
+    }
+    if matches!(case, "escape-empty-text" | "escape-queued-text") {
+        assert_eq!(store.undo.borrow().len(), 1, "later key edits once");
+        assert_eq!(
+            Owner::records(editor, &owner.session.borrow()).len(),
+            if case == "escape-queued-text" { 2 } else { 0 }
+        );
     }
     if matches!(
         case,

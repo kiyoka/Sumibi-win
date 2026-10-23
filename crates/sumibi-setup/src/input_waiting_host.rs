@@ -147,13 +147,26 @@ impl Waiting {
             && self.watch.generation().ok() == Some(self.notification)
     }
     // Diagnostic host only: F7 leaves the source selected while the worker is
-    // pending. An unadmitted ordinary character must not replace that source.
+    // pending. A later ordinary character must not replace that source after
+    // unadmitted input, timeout, or an explicit Esc cancellation.
     fn fallback_caret_end(&self) -> Option<usize> {
         if self.native_owned || !self.stable() {
             return None;
         }
         let (start, end) = self.metadata.selection;
         (start < end).then(|| usize::try_from(end).ok()).flatten()
+    }
+    fn release_source_selection(
+        &self,
+        editor: &Editor,
+        fallback_caret: Option<usize>,
+    ) -> Result<()> {
+        if let Some(end) = fallback_caret {
+            if self.stable() {
+                editor.store.get().host_selection(end, end)?;
+            }
+        }
+        Ok(())
     }
     fn refresh(&mut self) -> Result<()> {
         let notification = self.watch.generation()?;

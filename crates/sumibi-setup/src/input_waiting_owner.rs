@@ -131,6 +131,17 @@ impl Owner {
             Ok(())
         })
     }
+    fn cancel(&self, editor: &Editor) -> Result<()> {
+        editor.high.set(None);
+        self.state(editor, |session| {
+            if let Some(session) = session {
+                let fallback_caret = session.fallback_caret_end();
+                session.stop(editor, Boundary::Cancelled, Outcome::Deferred);
+                session.release_source_selection(editor, fallback_caret)?;
+            }
+            Ok(())
+        })
+    }
     pub(in super::super) fn close(&self) {
         self.closed.set(true);
         self.boundary();
@@ -241,11 +252,7 @@ impl Owner {
                     // This original event was not admitted. Cancel the request
                     // and preserve earlier events before its ordinary host path.
                     session.stop(editor, Boundary::Cancelled, Outcome::Deferred);
-                    if let Some(end) = fallback_caret {
-                        if session.stable() {
-                            editor.store.get().host_selection(end, end)?;
-                        }
-                    }
+                    session.release_source_selection(editor, fallback_caret)?;
                     Ok(false)
                 }
             }
@@ -284,7 +291,7 @@ impl Owner {
             return Ok(false);
         }
         if key == 0x1b {
-            self.stop(editor)?;
+            self.cancel(editor)?;
             return Ok(true);
         }
         let modified =
@@ -382,10 +389,8 @@ impl Owner {
                     // The owner loop can retire a request before another key
                     // arrives. Release F7's selection now, or that later
                     // ordinary key would replace the entire source.
-                    if let Some(end) = fallback_caret {
-                        if waiting.queue.is_none() && waiting.stable() {
-                            editor.store.get().host_selection(end, end)?;
-                        }
+                    if waiting.queue.is_none() {
+                        waiting.release_source_selection(editor, fallback_caret)?;
                     }
                 }
                 if waiting.inspect().is_err() {

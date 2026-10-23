@@ -29,16 +29,21 @@ caret移動に失敗した場合は入力を重ねて実行しない。
 原文の選択をその時点で解除する。これで後から届く通常文字・Backspace・Enterが
 期限切れの原文選択を引き継がない。受入れ済みの文字は救済へ残す。
 その後の通常編集で保護履歴が変われば救済本文を除去し、操作記録だけを残す。
+Escを消費して明示取消する場合も、待機中の安定した原文選択を取消前後に照合し、
+原文末尾へcaretを移す。後続の通常文字が原文全体を置換しない。
+移動や修飾ショートカットなど元のキーをホストへ渡す停止経路は変更しない。
 
 ## 検証と限界
 
-`waiting-demo-test`を47件から55件へ拡張した。実DLL/TSF・合成MSG・試験用Clipboardで、
+`waiting-demo-test`を47件から57件へ拡張した。実DLL/TSF・合成MSG・試験用Clipboardで、
 空の待機期限、期限時の文字・Backspace・Enter、容量超過の原文保持と共有救済、
 入力なしで期限が切れた後の文字・Backspace・Enter、受入れ済み文字の救済と後続編集、
+Esc明示取消後の文字と受入れ済み救済の保持、
 文書本文・Undo回数・Enter一度だけの通過、期限表示の維持と解除を確認した。
 `waiting-input-test`26件、workspace Rust134件・fmt・Clippy 3構成・spike buildも成功した。
 ログは`target/issue-4-deadline-feedback-*.log`。
 入力なしの期限検出を加えた4ケースのログは`target/issue-4-idle-timeout-*.log`。
+Esc後の通常入力を加えた2ケースのログは`target/issue-4-escape-fallback-*.log`。
 
 caret補正は専用の協調ACPホストだけで行う。一般アプリの選択・Undo・実打鍵、
 製品の待機容量/期限/超過時動作をこれで確定した意味ではない。
