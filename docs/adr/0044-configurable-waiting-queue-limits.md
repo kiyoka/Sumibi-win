@@ -40,6 +40,6 @@ load_smoke、self/edit/keyの基本検査が成功した（`target/issue-4-wait-
 今回の実行では前面化できず30秒後の失敗を確認したが、26ケース完走は未確認。
 現時点で実DLL待機回帰を成功とは記録しない。
 ログは`target/issue-4-wait-limits-{input,input-retry,baseline,window,explicit-foreground,interactive-waiting}.log`。
-最終静的検査は`target/issue-4-wait-limits-static-final.log`。
+最終静的検査は`target/issue-4-wait-limits-static-interactive.log`。
 対話desktopで前面化した状態で再実行し、容量境界まで通ることを確認する必要がある。
 一般アプリのキー配送・標準Undo・製品の全体予算も本変更の受入範囲外である。
