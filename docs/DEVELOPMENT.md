@@ -47,11 +47,13 @@ F8で救済画面を開き、さらにF8で次のレコードを確認する。c
 待機レコードの後に通常入力の未確認レコードも巡回する。保護境界で本文が除去された場合も、操作情報を開いて破棄できる。
 ×は画面だけを閉じ、救済は最大10分保持する。未確認レコードが残る間のF7は確認画面へ案内する。
 救済が期限切れでなくなり入力結果が未確認なら、文書確認の案内を表示する。
+待機の8秒期限が切れた場合も文書確認を案内する。期限後や4枠満杯で受け入れなかった入力は、
+対象が安定していれば選択中の原文末尾へcaretを移してから通常ホストへ一度だけ渡す。
 既存transaction-demoや他アプリの入力には待機を有効化しない。
 
-`waiting-demo-test --dll target/debug/sumibi_tip.dll`で同じ配送/確認UIと開始失敗・定期確認の47ケースを自動検証できる。
+`waiting-demo-test --dll target/debug/sumibi_tip.dll`で同じ配送/確認UIと開始失敗・定期確認・期限後の通常入力の51ケースを自動検証できる。
 合成MSGを使い、コピーは試験用Clipboardへ差し替える。物理キーの受入とは区別する。
-今回、待機adapter26・同期入力174・救済47・通知30・close4とRust134件・静的/基本DLL検査が成功。
+待機adapter26・同期入力174・救済47・通知30・close4とRust134件・静的/基本DLL検査の成功記録がある。
 Backspace55・書記素ホスト22・composition46・broker入力11・追跡25は前段階の成功記録を維持する。
 通知・救済の結付けは[ADR 0035](adr/0035-waiting-demo-and-record-recovery-ui.md)、統合表示とコピー期限は[ADR 0036](adr/0036-unified-demo-recovery-and-copy-expiry.md)、開始失敗の取消は[ADR 0037](adr/0037-cancel-failed-waiting-start.md)、通常救済だけの定期確認は[ADR 0038](adr/0038-owner-wake-for-ordinary-recovery.md)を参照。
 

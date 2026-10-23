@@ -26,6 +26,7 @@ pub(in super::super) struct Owner {
     busy: Cell<bool>,
     closed: Cell<bool>,
     start_failed: Cell<bool>,
+    timed_out: Cell<bool>,
     // Expired waiting records must not silently return to the normal F7 title.
     lost: Cell<bool>,
     epoch: Cell<u64>,
@@ -67,6 +68,7 @@ impl Owner {
             busy: Cell::new(false),
             closed: Cell::new(false),
             start_failed: Cell::new(false),
+            timed_out: Cell::new(false),
             lost: Cell::new(false),
             epoch: Cell::new(0),
             boundary: Cell::new(None),
@@ -217,6 +219,7 @@ impl Owner {
             *session = Some(candidate);
             attempt.accepted = true;
             self.start_failed.set(false);
+            self.timed_out.set(false);
             Ok(())
         })
     }
@@ -231,9 +234,18 @@ impl Owner {
             match session.admit(editor, input) {
                 Ok(()) => Ok(true),
                 Err(_) => {
+                    let fallback_caret = session.fallback_caret_end();
+                    if Instant::now() >= session.deadline {
+                        self.timed_out.set(true);
+                    }
                     // This original event was not admitted. Cancel the request
                     // and preserve earlier events before its ordinary host path.
                     session.stop(editor, Boundary::Cancelled, Outcome::Deferred);
+                    if let Some(end) = fallback_caret {
+                        if session.stable() {
+                            editor.store.get().host_selection(end, end)?;
+                        }
+                    }
                     Ok(false)
                 }
             }
@@ -267,6 +279,7 @@ impl Owner {
         if !self.active.get() {
             if key == 0x1b {
                 self.lost.set(false);
+                self.timed_out.set(false);
             }
             return Ok(false);
         }
@@ -360,6 +373,9 @@ impl Owner {
             if let Some(waiting) = session {
                 waiting.expire(Instant::now());
                 if waiting.queue.is_some() {
+                    if Instant::now() >= waiting.deadline {
+                        self.timed_out.set(true);
+                    }
                     waiting.service(editor)?;
                 }
                 if waiting.inspect().is_err() {
@@ -479,6 +495,8 @@ impl Owner {
                 } else if self.lost.get() || (!acknowledged && editor.store.get().input_problem.get())
                 {
                     "Sumibi 未確認入力の救済は残っていません。文書の結果を確認してください | Esc 追跡解除"
+                } else if self.timed_out.get() {
+                    "Sumibi 変換待機が期限切れになりました | 文書の結果を確認 | F7 再試行 / Esc 解除"
                 } else {
                     "Sumibi 待機入力デモ（固定結果） | F7 変換 | F8 救済確認 | Ctrl+Z Undo"
                 })?;

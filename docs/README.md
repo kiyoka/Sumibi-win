@@ -51,6 +51,7 @@
 - [ADR 0037](adr/0037-cancel-failed-waiting-start.md)：F7後の待機初期化失敗で捕捉した要求だけを取消し、重複通知と古い初期化の上書きを拒否する。
 - [ADR 0038](adr/0038-owner-wake-for-ordinary-recovery.md)：待機デモで通常救済だけが残る間も表示と保護状態を定期確認する。
 - [ADR 0039](adr/0039-waiting-demo-recovery-loss-warning.md)：救済がなくなっても未確認の入力結果が残る場合は文書確認を促す。
+- [ADR 0040](adr/0040-waiting-deadline-and-unadmitted-fallback.md)：待機期限を表示し、未受入れ入力で選択中の原文を置換しない。
 
 ## 更新の規則
 

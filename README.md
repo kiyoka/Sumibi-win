@@ -24,7 +24,7 @@ Brokerの予約は未受取・受取済み結果も含め合計4件に制限し�
 常駐Broker、一般アプリの入力基盤、HTTP通信はまだありません。
 手動変換待ちの文字・Backspace・Enter・Convertを有限に保持するCoreを追加しました。FIFO順序、消費前の容量確保、結果不明時の停止を検証し、Enterは自動配送しません（[Coreの設計](docs/adr/0033-bounded-core-waiting-input.md)）。
 `waiting-input-test`で専用adapterから実DLL・非同期workerへ接続し、25ケースを検証できます。受入れ前に既存の共有救済枠を予約し、未適用の入力と結果不明を区別します（[共有枠と順序](docs/adr/0034-shared-recovery-waiting-adapter.md)）。
-`waiting-demo`でF7変換中の入力を試せます。最大4件・8秒で待機を止め、Enterは救済へ移します。F8で待機・通常入力の救済を順に確認し、表示中の1件をF9で破棄・F10でコピーできます。救済は最大10分です。`waiting-demo-test`で配送・確認・開始失敗・定期確認の47ケースを検証できます（[起動と操作](docs/DEVELOPMENT.md#待機入力デモを試す)、[通常救済の定期確認](docs/adr/0038-owner-wake-for-ordinary-recovery.md)）。製品キー・一般アプリへの接続は未実装です。
+`waiting-demo`でF7変換中の入力を試せます。最大4件・8秒で待機を止め、Enterは救済へ移します。F8で待機・通常入力の救済を順に確認し、表示中の1件をF9で破棄・F10でコピーできます。救済は最大10分です。`waiting-demo-test`で配送・確認・開始失敗・期限と通常入力の51ケースを検証できます（[起動と操作](docs/DEVELOPMENT.md#待機入力デモを試す)、[期限と通常入力](docs/adr/0040-waiting-deadline-and-unadmitted-fallback.md)）。製品キー・一般アプリへの接続は未実装です。
 `native-edit-test`で標準RichEditの実TSF contextと拒否理由を検証できます。現在のRichEditは保護条件を満たさず、変換は未対応です（[手順と実測](docs/adr/0019-native-richedit-status-diagnostics.md)）。
 入力保護の検査を追加し、通常テキストと確認できないscope・状態ではDLLの本文取得と要求送信を拒否します。
 `protection-test`で実DLL/TSFの39ケースを検証できます（[境界と制限](docs/adr/0006-input-protection-metadata.md)）。
@@ -89,6 +89,7 @@ Notepad等の実アプリでの表示と実打鍵は未確認です。
 - [待機入力の開始失敗と要求IDの取消](docs/adr/0037-cancel-failed-waiting-start.md)
 - [待機デモの通常救済を定期確認する](docs/adr/0038-owner-wake-for-ordinary-recovery.md)
 - [救済終了後の入力確認案内](docs/adr/0039-waiting-demo-recovery-loss-warning.md)
+- [待機期限と未受入れ入力の通常経路](docs/adr/0040-waiting-deadline-and-unadmitted-fallback.md)
 - [後続の実装順序](docs/NEXT_STEPS.md)
 
 設計基準はSumibi-mac main `553c69021eda7a8a5944d8748357f3790cc2f45c`。

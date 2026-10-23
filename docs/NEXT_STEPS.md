@@ -169,6 +169,9 @@ F7後の待機初期化失敗で捕捉した要求だけを取消し、重複通
 デモ47ケースで検証した（[ADR 0038](adr/0038-owner-wake-for-ordinary-recovery.md)）。
 救済の期限切れ後に通常のF7案内へ戻る経路も、文書結果の確認を促す表示へ変更した
 （[ADR 0039](adr/0039-waiting-demo-recovery-loss-warning.md)）。
+待機期限の案内と、未受入れ文字/Backspace/Enterの通常経路を補強した。
+容量超過でも原文全体を新文字で置換せず、デモ51ケースで確認した
+（[ADR 0040](adr/0040-waiting-deadline-and-unadmitted-fallback.md)）。
 次は専用デモの対話操作を確認し、製品の待機/救済容量・期限・超過時動作を確定する。
 製品キーはまだ接続せず、全体予算/期限/超過時政策と一般アプリの残範囲も維持する。
 

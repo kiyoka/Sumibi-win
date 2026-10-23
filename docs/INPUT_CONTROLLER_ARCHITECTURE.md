@@ -200,6 +200,9 @@ F7要求の開始後にWaiting初期化が失敗した場合は捕捉した要�
 （[ADR 0038](adr/0038-owner-wake-for-ordinary-recovery.md)）。
 救済が期限切れで消えた後は通常のF7案内に戻さず、文書結果の確認を促す
 （[ADR 0039](adr/0039-waiting-demo-recovery-loss-warning.md)）。
+待機期限でも文書結果の確認を促す。未受入れ入力の通常経路へ移る際、専用対象と選択が安定し
+結果未適用なら原文の選択末尾へcaretを移し、元のキーを一度だけホストへ渡す
+（[ADR 0040](adr/0040-waiting-deadline-and-unadmitted-fallback.md)）。
 TSFを呼ぶ前にRefCellの借用を解放し、通知やウィンドウ破棄が再入しても借用違反を起こさないようにする。
 
 本文置換と属性解除の延期は区別する。属性解除は弱参照・世代一致を検査した上で非同期化できる。

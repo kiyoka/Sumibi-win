@@ -104,6 +104,10 @@ pub(crate) fn exercise_waiting_demo(
         "unicode",
         "convert",
         "deadline",
+        "deadline-empty",
+        "deadline-admit",
+        "deadline-backspace",
+        "deadline-enter",
         "copy-failed",
         "copy-boundary",
         "stale-copy",
@@ -202,12 +206,28 @@ pub(in super::super::super) fn test_waiting_demo(
     if recovery_case {
         route(window, WM_KEYDOWN, 0x0d)?;
     }
-    let text = if case == "unicode" { "😀" } else { "ab" };
+    if matches!(
+        case,
+        "deadline-empty" | "deadline-admit" | "deadline-backspace" | "deadline-enter"
+    ) {
+        owner.session.borrow_mut().as_mut().unwrap().deadline = Instant::now();
+    }
+    let text = match case {
+        "unicode" => "😀",
+        "deadline-empty" | "deadline-backspace" | "deadline-enter" => "",
+        _ => "ab",
+    };
     for unit in text.encode_utf16() {
         route(window, WM_CHAR, unit as usize)?;
     }
     if case == "fifo" {
         route(window, WM_KEYDOWN, 8)?;
+    }
+    if case == "deadline-backspace" {
+        route(window, WM_KEYDOWN, 8)?;
+    }
+    if case == "deadline-enter" {
+        route(window, WM_KEYDOWN, 0x0d)?;
     }
     if case == "capacity" {
         for unit in "cde".encode_utf16() {
@@ -242,10 +262,12 @@ pub(in super::super::super) fn test_waiting_demo(
     let expected = match case {
         "fifo" => "日本語a",
         "unicode" => "日本語😀",
-        "capacity" => "e",
+        "capacity" => "nihongoe",
         "convert" => "日本語日本語z",
-        "focus" | "escape" | "deadline" | "close-busy" | "deactivate" | "disable"
-        | "cancel-mode" => "nihongo",
+        "focus" | "escape" | "deadline" | "deadline-empty" | "deadline-enter" | "close-busy"
+        | "deactivate" | "disable" | "cancel-mode" => "nihongo",
+        "deadline-admit" => "nihongoab",
+        "deadline-backspace" => "nihong",
         _ => "日本語",
     };
     assert_eq!(
@@ -255,9 +277,37 @@ pub(in super::super::super) fn test_waiting_demo(
     );
     assert_eq!(
         editor.submits.get(),
-        0,
+        usize::from(case == "deadline-enter"),
         "consumed Enter must not generate a second WM_CHAR"
     );
+    if case == "capacity" {
+        assert_eq!(store.undo.borrow().len(), 1, "unadmitted key edits once");
+        assert_eq!(Owner::records(editor, &owner.session.borrow()).len(), 4);
+        route(window, WM_KEYDOWN, 0x77)?;
+        owner.service(window, editor, &clipboard)?;
+        assert!(owner.view.borrow().as_ref().unwrap().view.copyable);
+    }
+    if matches!(
+        case,
+        "deadline-empty" | "deadline-admit" | "deadline-backspace" | "deadline-enter"
+    ) {
+        assert!(Owner::records(editor, &owner.session.borrow()).is_empty());
+        assert_eq!(
+            store.undo.borrow().len(),
+            match case {
+                "deadline-admit" => 2,
+                "deadline-backspace" => 1,
+                _ => 0,
+            },
+            "each unadmitted key edits once"
+        );
+        assert!(title(window).contains("変換待機が期限切れ"));
+        owner.service(window, editor, &clipboard)?;
+        assert!(title(window).contains("変換待機が期限切れ"));
+        route(window, WM_KEYDOWN, 0x1b)?;
+        owner.service(window, editor, &clipboard)?;
+        assert!(!title(window).contains("変換待機が期限切れ"));
+    }
     if recovery_case {
         route(window, WM_KEYDOWN, 0x77)?;
         owner.service(window, editor, &clipboard)?;
