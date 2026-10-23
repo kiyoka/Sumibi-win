@@ -35,3 +35,8 @@ COM/TSF登録解除、DLLアンロードも成功した。続く通常の`window
 `target/issue-4-user-active-{window,input,delayed}-test.log`。
 これらは専用診断ホストの自動検査であり、物理キーボードからの打鍵、
 Notepadなど一般アプリの入力、標準Undoの受入れではない。
+同日、専用`transaction-demo`で利用者が実際に`nihongo`を打鍵し、F7で「日本語」、
+Ctrl+Zで`nihongo`へ戻ることと、×で閉じられることを利用者が画面で確認した。
+プロセス終了と標準エラー出力が空であることも確認した。デモは操作・本文をログに記録しないため、
+文字表示の結果は利用者の報告による。Shift選択やIME切替、一般アプリのキー配送・標準Undoは未確認。
+起動時ログは`target/issue-4-manual-transaction-demo.log`。

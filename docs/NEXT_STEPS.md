@@ -92,7 +92,8 @@ Core 5件追加でworkspace 71件、救済31ケースと同期入力/削除/通�
 前面化で未通過だったwindow/input/delayedの3検査は、2026-10-23に対話desktopで個別に成功した。
 window-test-interactiveと通常のwindow-testは実TSFキーマネージャー経由のキー検査まで成功した
 （[ADR 0043](adr/0043-interactive-native-key-activation.md)）。
-一般アプリの保護情報・sink寿命・標準Undoと物理打鍵は次に進める。
+専用transaction-demoでは、利用者の実打鍵による`nihongo`→F7で「日本語」→Ctrl+Zで原文復元と×終了を確認した。
+一般アプリの保護情報・sink寿命・標準Undoと実打鍵、専用ホストのShift選択・IME切替は次に進める。
 
 所有windowの非アクティブ化・無効化・モード取消も実WndProcから失効経路へ接続した。
 復元後の保留変換・救済コピーを拒否し、Windows標準のモード取消は維持する。

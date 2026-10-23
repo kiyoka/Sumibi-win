@@ -269,7 +269,7 @@ Coreへ同時予約と解放等の5件を追加し、workspace 71件・fmt・各
 
 | 入力先 | 現在の状態 | 最初の確認範囲 |
 | --- | --- | --- |
-| 専用sumibi-setup | 自動試験成功、物理キーボードは未確認 | 実打鍵・Shift・IME切替 |
+| 専用sumibi-setup | 自動試験成功。2026-10-23にtransaction-demoで利用者が`nihongo`入力、F7変換、Ctrl+Z復元、×終了を目視確認 | Shift選択・IME切替、別デモの実打鍵 |
 | 専用window内の標準RichEdit | native TSFの拒否7構成を自動確認。隠し文字なしの保証がなく変換は未対応 | 肯定的な保護情報・領域境界の扱いを決定してから変換/標準Undo |
 | Notepad | 未検証 | 通常入力・選択・Enter/Esc・1回Undo・読取専用 |
 | VS Code | 未検証 | editorと検索欄、複数文書、キー競合 |
