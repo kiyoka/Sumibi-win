@@ -105,6 +105,10 @@ pub(crate) fn exercise_waiting_demo(
         "convert",
         "deadline",
         "deadline-empty",
+        "deadline-idle-text",
+        "deadline-idle-backspace",
+        "deadline-idle-enter",
+        "deadline-queued-text",
         "deadline-admit",
         "deadline-backspace",
         "deadline-enter",
@@ -208,13 +212,31 @@ pub(in super::super::super) fn test_waiting_demo(
     }
     if matches!(
         case,
-        "deadline-empty" | "deadline-admit" | "deadline-backspace" | "deadline-enter"
+        "deadline-empty"
+            | "deadline-idle-text"
+            | "deadline-idle-backspace"
+            | "deadline-idle-enter"
+            | "deadline-admit"
+            | "deadline-backspace"
+            | "deadline-enter"
     ) {
         owner.session.borrow_mut().as_mut().unwrap().deadline = Instant::now();
     }
+    if matches!(
+        case,
+        "deadline-idle-text" | "deadline-idle-backspace" | "deadline-idle-enter"
+    ) {
+        owner.service(window, editor, &clipboard)?;
+        assert!(!owner.active(), "idle timeout retires the queue");
+        assert!(title(window).contains("変換待機が期限切れ"));
+    }
     let text = match case {
         "unicode" => "😀",
-        "deadline-empty" | "deadline-backspace" | "deadline-enter" => "",
+        "deadline-empty"
+        | "deadline-idle-backspace"
+        | "deadline-idle-enter"
+        | "deadline-backspace"
+        | "deadline-enter" => "",
         _ => "ab",
     };
     for unit in text.encode_utf16() {
@@ -223,16 +245,25 @@ pub(in super::super::super) fn test_waiting_demo(
     if case == "fifo" {
         route(window, WM_KEYDOWN, 8)?;
     }
-    if case == "deadline-backspace" {
+    if matches!(case, "deadline-backspace" | "deadline-idle-backspace") {
         route(window, WM_KEYDOWN, 8)?;
     }
-    if case == "deadline-enter" {
+    if matches!(case, "deadline-enter" | "deadline-idle-enter") {
         route(window, WM_KEYDOWN, 0x0d)?;
     }
     if case == "capacity" {
         for unit in "cde".encode_utf16() {
             route(window, WM_CHAR, unit as usize)?;
         }
+    }
+    if case == "deadline-queued-text" {
+        owner.session.borrow_mut().as_mut().unwrap().deadline = Instant::now();
+        owner.service(window, editor, &clipboard)?;
+        assert!(!owner.active(), "idle timeout retires accepted input");
+        let records = Owner::records(editor, &owner.session.borrow());
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|(_, metadata)| metadata.copyable));
+        route(window, WM_CHAR, 'c' as usize)?;
     }
     if case == "convert" {
         route(window, WM_KEYDOWN, 0x76)?;
@@ -264,10 +295,19 @@ pub(in super::super::super) fn test_waiting_demo(
         "unicode" => "日本語😀",
         "capacity" => "nihongoe",
         "convert" => "日本語日本語z",
-        "focus" | "escape" | "deadline" | "deadline-empty" | "deadline-enter" | "close-busy"
-        | "deactivate" | "disable" | "cancel-mode" => "nihongo",
-        "deadline-admit" => "nihongoab",
-        "deadline-backspace" => "nihong",
+        "focus"
+        | "escape"
+        | "deadline"
+        | "deadline-empty"
+        | "deadline-enter"
+        | "deadline-idle-enter"
+        | "close-busy"
+        | "deactivate"
+        | "disable"
+        | "cancel-mode" => "nihongo",
+        "deadline-admit" | "deadline-idle-text" => "nihongoab",
+        "deadline-queued-text" => "nihongoc",
+        "deadline-backspace" | "deadline-idle-backspace" => "nihong",
         _ => "日本語",
     };
     assert_eq!(
@@ -277,7 +317,7 @@ pub(in super::super::super) fn test_waiting_demo(
     );
     assert_eq!(
         editor.submits.get(),
-        usize::from(case == "deadline-enter"),
+        usize::from(matches!(case, "deadline-enter" | "deadline-idle-enter")),
         "consumed Enter must not generate a second WM_CHAR"
     );
     if case == "capacity" {
@@ -287,16 +327,29 @@ pub(in super::super::super) fn test_waiting_demo(
         owner.service(window, editor, &clipboard)?;
         assert!(owner.view.borrow().as_ref().unwrap().view.copyable);
     }
+    if case == "deadline-queued-text" {
+        assert_eq!(store.undo.borrow().len(), 1, "later key edits once");
+        assert_eq!(Owner::records(editor, &owner.session.borrow()).len(), 2);
+        route(window, WM_KEYDOWN, 0x77)?;
+        owner.service(window, editor, &clipboard)?;
+        assert!(!owner.view.borrow().as_ref().unwrap().view.copyable);
+    }
     if matches!(
         case,
-        "deadline-empty" | "deadline-admit" | "deadline-backspace" | "deadline-enter"
+        "deadline-empty"
+            | "deadline-idle-text"
+            | "deadline-idle-backspace"
+            | "deadline-idle-enter"
+            | "deadline-admit"
+            | "deadline-backspace"
+            | "deadline-enter"
     ) {
         assert!(Owner::records(editor, &owner.session.borrow()).is_empty());
         assert_eq!(
             store.undo.borrow().len(),
             match case {
-                "deadline-admit" => 2,
-                "deadline-backspace" => 1,
+                "deadline-admit" | "deadline-idle-text" => 2,
+                "deadline-backspace" | "deadline-idle-backspace" => 1,
                 _ => 0,
             },
             "each unadmitted key edits once"

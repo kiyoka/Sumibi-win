@@ -373,10 +373,20 @@ impl Owner {
             if let Some(waiting) = session {
                 waiting.expire(Instant::now());
                 if waiting.queue.is_some() {
-                    if Instant::now() >= waiting.deadline {
+                    let expired = Instant::now() >= waiting.deadline;
+                    let fallback_caret = expired.then(|| waiting.fallback_caret_end()).flatten();
+                    if expired {
                         self.timed_out.set(true);
                     }
                     waiting.service(editor)?;
+                    // The owner loop can retire a request before another key
+                    // arrives. Release F7's selection now, or that later
+                    // ordinary key would replace the entire source.
+                    if let Some(end) = fallback_caret {
+                        if waiting.queue.is_none() && waiting.stable() {
+                            editor.store.get().host_selection(end, end)?;
+                        }
+                    }
                 }
                 if waiting.inspect().is_err() {
                     waiting.redact();

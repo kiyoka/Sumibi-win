@@ -17,7 +17,7 @@
 | キー配送 | keys.rs / input_host.rs。専用windowで実TSF経路 | US/JIS配列・変換キー・Terminal・実打鍵 |
 | Undo/Redo | TextStoreに本文・選択・向きの履歴。固定変換含む | 一般アプリの標準履歴で変換が1回のUndoにまとまる |
 | 描画 | live_render / render / window_host。通知→WM_APP→Frame | 製品候補UIのUIElement、DPI、高コントラスト、読み上げ |
-| 手動待機と救済 | 所有editor救済47・専用待機adapter26・waiting-demoの受付/確認UI51ケースを確認。同じEXE共有4枠を取得前に確保し、待機/通常救済を1画面へ接続 | 対話操作の確認、製品キー・容量/超過/期限/明示破棄とプロセス間政策 |
+| 手動待機と救済 | 所有editor救済47・専用待機adapter26・waiting-demoの受付/確認UI55ケースを確認。同じEXE共有4枠を取得前に確保し、待機/通常救済を1画面へ接続 | 対話操作の確認、製品キー・容量/超過/期限/明示破棄とプロセス間政策 |
 | Protocol / Broker | 有限フレーム・JSON・client状態、固定process相互検査・8 endpoint・overlapped pipe。単発Host・容量4（完了済みjob・受取済み結果も含む）・各1結果。[ADR 0015](adr/0015-broker-admission-through-delivery.md)。実DLLキー・Core・実TSFから診断用EXE bridgeを通す経路も検証。EXE再利用workerへ実DLLキー・所有STA配送を接続し、25ケースを検証（[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)） | 製品Broker発見・常駐dispatch、一般アプリ内の配置と入力統合。AppContainerは初期非対応 |
 | HTTP | 未実装。固定文字列で検証 | 模擬HTTPで認証・同意・転送拒否・上限・取消・エラー分類 |
 | 設定・資格情報 | 未実装。LocalAppData / Credential Manager案 | 形式版・原子的保存・秘密分離・認可取消・破損回復 |
@@ -206,7 +206,9 @@ F7要求の開始後にWaiting初期化が失敗した場合、捕捉した要�
 
 待機期限の表示と、期限直後/容量超過で未受入れの文字・Backspace・Enterの通常経路を補強した。
 原文を選択したまま通常入力が置換しないよう、安定した専用対象では先にcaretを末尾へ移す。
-デモ51ケースで本文・Undo・救済の保持を確認した
+入力なしで所有ループが期限を検出する場合も、安定した原文の選択を解除する。
+後続の通常入力による保護履歴変更では救済本文を除去し、操作記録は維持する。
+デモ55ケースで本文・Undo・救済の状態を確認した
 （[ADR 0040](adr/0040-waiting-deadline-and-unadmitted-fallback.md)）。
 
 2026-10-22、context付きF7準備を追加し、文字入力前の明示選択を変換できるようにした。
