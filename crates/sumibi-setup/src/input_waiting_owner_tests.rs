@@ -121,6 +121,7 @@ fn exercise_waiting_demo_with_activation(
         "unicode",
         "convert",
         "convert-key",
+        "convert-key-alt",
         "deadline",
         "deadline-empty",
         "deadline-idle-text",
@@ -220,12 +221,33 @@ pub(in super::super::super) fn test_waiting_demo(
     editor.insert(&"nihongo".encode_utf16().collect::<Vec<_>>())?;
     pump(window)?;
     store.undo.borrow_mut().clear();
+    if case == "convert-key-alt" {
+        assert!(!editor.input(WM_KEYDOWN, WPARAM(0x1c), LPARAM(1 | (1 << 29)))?);
+        assert!(!owner.active());
+        assert!(editor
+            .broker
+            .as_ref()
+            .ok_or(E_FAIL)?
+            .1
+            .get()
+            .pending_id()
+            .is_none());
+    }
     route(
         window,
         WM_KEYDOWN,
-        if case == "convert-key" { 0x1c } else { 0x76 },
+        if matches!(case, "convert-key" | "convert-key-alt") {
+            0x1c
+        } else {
+            0x76
+        },
     )?;
     assert!(owner.active());
+    if case == "convert-key-alt" {
+        assert!(!editor.input(WM_KEYDOWN, WPARAM(0x1c), LPARAM(1 | (1 << 29)))?);
+        assert!(owner.active());
+        assert_eq!(owner.offered.get(), 0);
+    }
     let mut peers = Vec::new();
     if matches!(case, "shared-capacity" | "invalid-full") {
         for _ in 0..sumibi_core::recovery::MAX_RECORDS {
@@ -360,6 +382,7 @@ pub(in super::super::super) fn test_waiting_demo(
         "shared-capacity" => "nihongoe",
         "invalid-full" => "nihongo",
         "convert" | "convert-key" => "日本語日本語z",
+        "convert-key-alt" => "日本語ab",
         "focus"
         | "escape"
         | "deadline"

@@ -428,7 +428,7 @@ impl Editor {
         }
         if message == WM_KEYDOWN {
             if let Some(owner) = &self.waiting {
-                if owner.key(self, key.0, (flags.0 as usize & 0xffff).max(1))? {
+                if owner.key(self, key.0, flags)? {
                     return Ok(true);
                 }
             }

@@ -290,12 +290,7 @@ impl Owner {
             }
         })
     }
-    pub(in super::super) fn key(
-        &self,
-        editor: &Editor,
-        key: usize,
-        repeats: usize,
-    ) -> Result<bool> {
+    pub(in super::super) fn key(&self, editor: &Editor, key: usize, flags: LPARAM) -> Result<bool> {
         if self.busy.get() {
             return Ok(false);
         }
@@ -313,7 +308,11 @@ impl Owner {
         let convert = matches!(key, 0x76 | 0x1c);
         let modified =
             unsafe { GetKeyState(VK_CONTROL.0 as i32) < 0 || GetKeyState(VK_MENU.0 as i32) < 0 };
-        if key == 0x1c && (modified || unsafe { GetKeyState(VK_SHIFT.0 as i32) < 0 }) {
+        if key == 0x1c
+            && (flags.0 & (1 << 29) != 0
+                || modified
+                || unsafe { GetKeyState(VK_SHIFT.0 as i32) < 0 })
+        {
             return Ok(false);
         }
         if convert
@@ -340,7 +339,7 @@ impl Owner {
             return Ok(false);
         }
         let input = match key {
-            0x08 => Some(Input::Backspace(repeats as u32)),
+            0x08 => Some(Input::Backspace((flags.0 as usize & 0xffff).max(1) as u32)),
             0x0d => Some(Input::Enter),
             0x76 | 0x1c => Some(Input::Convert),
             _ => None,

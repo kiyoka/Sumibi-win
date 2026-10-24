@@ -17,7 +17,7 @@
 | キー配送 | keys.rs / input_host.rs。専用windowで実TSF経路。待機デモの文字・F7・Enter・F8を利用者が実打鍵 | US/JIS配列・変換キー・Terminal・一般アプリの実打鍵 |
 | Undo/Redo | TextStoreに本文・選択・向きの履歴。固定変換含む | 一般アプリの標準履歴で変換が1回のUndoにまとまる |
 | 描画 | live_render / render / window_host。通知→WM_APP→Frame | 製品候補UIのUIElement、DPI、高コントラスト、読み上げ |
-| 手動待機と救済 | 所有editor救済48。待機Coreの件数/本文量を設定可能とし、専用adapterへ4枠・4096単位を明示。2026-10-24、通常ユーザーの対話desktopで実DLL通常版adapter26・通常版waiting-demo59ケース、変換キーを含む現行対話版60ケースが成功。AppContainer起動は入力受付前に拒否。共有救済を取得前に予約し、待機/通常救済を1画面へ接続（[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)） | 一般アプリでの製品キー・容量/超過/期限/明示破棄とプロセス間政策。変換キーの実打鍵は未確認 |
+| 手動待機と救済 | 所有editor救済48。待機Coreの件数/本文量を設定可能とし、専用adapterへ4枠・4096単位を明示。2026-10-24、通常ユーザーの対話desktopで実DLL通常版adapter26・通常版waiting-demo59ケース、修飾付き変換キーの非消費を含む現行対話版61ケースが成功。AppContainer起動は入力受付前に拒否。共有救済を取得前に予約し、待機/通常救済を1画面へ接続（[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)） | 一般アプリでの製品キー・容量/超過/期限/明示破棄とプロセス間政策。変換キーの実打鍵は未確認 |
 | Protocol / Broker | 有限フレーム・JSON・client状態、固定process相互検査・8 endpoint・overlapped pipe。単発Host・容量4（完了済みjob・受取済み結果も含む）・各1結果。[ADR 0015](adr/0015-broker-admission-through-delivery.md)。実DLLキー・Core・実TSFから診断用EXE bridgeを通す経路も検証。EXE再利用workerへ実DLLキー・所有STA配送を接続し、25ケースを検証（[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)） | 製品Broker発見・常駐dispatch、一般アプリ内の配置と入力統合。AppContainerは初期非対応 |
 | HTTP | 未実装。固定文字列で検証 | 模擬HTTPで認証・同意・転送拒否・上限・取消・エラー分類 |
 | 設定・資格情報 | 未実装。LocalAppData / Credential Manager案 | 形式版・原子的保存・秘密分離・認可取消・破損回復 |
@@ -59,6 +59,7 @@ build、実DLL/デスクトップ/別プロセスIPCを完走した
 開画面の否定には使わない。後続の計測は実行中の最大件数と画面作成回数を保持する。
 同じ版の`waiting-demo-test`通常版59ケースとTSF/COM解除・DLLアンロードが成功した。
 変換キーを専用windowのF7と同じ開始・待機中再変換へ接続した直後、合成`VK_CONVERT`を含むクリック待ち付き対話版60ケースが一度成功し、TSF/COM解除・DLLアンロードも確認した。後続の表示変更版では既存`start-retained`の保持件数が2件の想定に対し4件となる失敗を一度観測した。受付件数の診断を追加し、変換キーの受付を待機デモに限定した。各windowの前面化待ちも追加した現行版は、対話版60ケースとTSF/COM解除・DLLアンロードが成功（`target/issue-4-convert-key-foreground-per-case.log`）。件数不一致は今回再現せず、物理的な変換キーと一般アプリでの配送は未確認。
+さらに待機中の変換キー判定へ`LPARAM`のAlt状態を渡し、修飾付きキーを受理しないことを開始前・待機中の両方で検査した。対話版61ケースとTSF/COM解除・DLLアンロードが成功（`target/issue-4-convert-key-alt-native-final.log`）。実キーボードと一般アプリでの配送は未確認。
 
 Issue #4の追加分（2026-10-21）は[IPC_PROTOCOL](IPC_PROTOCOL.md)に記録する。
 Protocol 22件のうち16件が追加のJSON・session・Core模擬接続であり、基準コミット当時の14件と混同しない。
