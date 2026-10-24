@@ -2,7 +2,8 @@
 
 ## 1. 文書の範囲と基準
 
-2026-10-21作成。Windows実装の基準はコミット `91552b0`（最小試作とIPC検証まで）。
+2026-10-21作成。初版のWindows実装基準は `91552b0`（最小試作とIPC検証まで）。
+Issue #4のJSON/client状態とsumibi-ipcの追加は[PR #10](https://github.com/kiyoka/Sumibi-win/pull/10)として追記している。
 関連: [全体設計 Issue #3](https://github.com/kiyoka/Sumibi-win/issues/3)。
 本書は実行時の構成、入力と変換、所有と寿命、保存と送信、異常系、配布までを扱う。
 初期の採用判断は[DESIGN](DESIGN.md)と[ADR 0001](adr/0001-language-and-ime.md)、
@@ -16,14 +17,15 @@ Mac技術解説自身の実装照合基準 `d2b96fc` と区別する。Macの機
 本書の「実装済み」は専用検証プロセスでのコードを意味する。「設計案」は製品化時の契約案、
 「未決」は実装前に検証・決定が必要な事項を意味する。文書作成だけでは製品仕様の合意や動作保証にしない。
 
-| 領域 | 基準コミットの状態 |
+| 領域 | 現在の記録範囲での状態 |
 | --- | --- |
-| Coreの応答適用判定 | 実装済み。単一要求の照合のみ。通常入力全体の状態機械ではない |
+| Coreの応答適用判定・入力追跡 | 単一要求の照合と、所有ホストの実入力範囲の記録を実装。製品の通常入力全体の状態機械ではない |
 | TIPのCOM・キー・表示属性・編集 | 専用ホストで実装済み。通常アプリへの常設登録なし |
+| 入力保護 | scope/status/compartmentと取得・送信前・適用時の検査を実装。専用ACPで39ケース。status診断と標準RichEditの拒否7構成を確認（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)）。一般アプリの全機密欄の識別は未検証 |
 | 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。実キーボードの手動確認は未実施 |
-| 追跡入力・composition・候補UI | 製品用の統合は未実装 |
-| Protocol | 有限UTF-8フレーム層を実装。JSON・認証・製品接続は未実装 |
-| Host・HTTP・キー保存・設定UI | 未実装。本書で境界と受入条件を定義 |
+| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮/初回選択46・選択composition 18・他サービス拒否16・同期入力取引174（選択Delete20・記録内移動/前方Delete26・内部挿入20・Shift選択27・記録内選択編集33・文書端移動/選択26を含む）・書記素Backspace 55（内部caret18を含む）ケースを確認。所有editorの救済48ケースとEXE共有4枠、window境界を含む通知30ケースも確認。専用ホストの書記素移動/削除22ケースも確認。一般アプリの行端移動・待機・製品統合・候補UIは未実装 |
+| Protocol / IPC | 有限フレーム・版付きJSON・client状態、固定process相互検査・overlapped pipe。実DLLのキー・Core・所有TSFから診断用EXE bridge経由で再利用Brokerへ接続。一般アプリは未接続 |
+| Host・HTTP・キー保存・設定UI | 単発/有限連続要求の診断Host EXEを実装。既定では変換拒否。常駐Host・HTTP・キー保存・設定UIは未実装 |
 | Decisions・辞書・署名付き配布 | 未実装。後続段階 |
 
 ## 2. 目的と不変条件
@@ -78,12 +80,15 @@ flowchart TB
     window -->|"未消費の文字・ホスト編集"| store
 ```
 
-Coreの `ManualConversion` は別に単体試験している適用判定器で、上図の固定変換経路には統合されていない。
-現在のDLLの安全検査は `edit` と `Preview` 自身が担う。Coreを通るネットワーク経路が完成した図ではない。
+Coreの `ManualConversion` は上図の従来demoの固定変換経路には統合されていない。
+別のbroker-testでは、setup所有STAにリンクしたManualEditがCoreを通し、別Hostからの固定結果を適用する。
+この単発経路と寿命図は[ADR 0004](adr/0004-one-shot-broker-and-owner-edit.md)に分ける。
+続いて実DLLのキーから診断用EXE bridgeを経由する経路を追加した
+（[ADR 0005](adr/0005-dll-key-broker-bridge.md)）。この図の従来demoや、ネットワーク経路と区別する。
 
 | モジュール | 現在の責務・コード |
 | --- | --- |
-| sumibi-core | [lib.rs](../crates/sumibi-core/src/lib.rs)：要求ID、対象、世代の完全照合。unsafe禁止 |
+| sumibi-core | [lib.rs](../crates/sumibi-core/src/lib.rs)：要求ID、対象、世代の完全照合。[input.rs](../crates/sumibi-core/src/input.rs)：実入力範囲の有限追跡。unsafe禁止 |
 | sumibi-tip COM | [com.rs](../crates/sumibi-tip/src/com.rs)：factory、Activate/Deactivate、寿命計数、所有スレッド |
 | キー・検証制御 | [keys.rs](../crates/sumibi-tip/src/keys.rs)、[spike.rs](../crates/sumibi-tip/src/spike.rs)：明示許可context限定、固定変換 |
 | 編集・下線 | [edit.rs](../crates/sumibi-tip/src/edit.rs)、[preview.rs](../crates/sumibi-tip/src/preview.rs)、[display.rs](../crates/sumibi-tip/src/display.rs) |
@@ -131,10 +136,11 @@ flowchart TB
 
 | crate / 所有者 | 契約 |
 | --- | --- |
-| sumibi-core | OS非依存のイベントと効果、手動／自動の状態、候補、上限判定。将来もunsafe禁止 |
-| sumibi-protocol | 現在は4バイト長＋最大256KiBのUTF-8フレーム。版・要求／応答・JSON構造検査は後続。COMやHTTPを含めない |
+| sumibi-core | OS非依存の状態と上限判定。実装済みの手動応答照合・入力追跡・救済に、実験的な手動待機入力の有限FIFOを追加。製品キーは未接続。自動/候補全体は将来範囲。unsafe禁止 |
+| sumibi-protocol | 4バイト長＋最大256KiBのUTF-8フレーム、版付きの単一結果JSON、要求・接続世代・取消・期限・再接続。COM・HTTP・OS認証は含めない |
+| sumibi-ipc | Windowsの固定process handle・token照合、合計8 endpoint、overlapped pipe・停止・期限。単発起動と容量4のworker。EXE再利用workerから認証済み子の連続要求と所有STA配送を検証（[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)）。診断EXE bridge経由で実DLLキーとも接続。製品の一般アプリ内配置は未実装 |
 | sumibi-tip | TSFキー、composition、範囲取得、保護判定、書込、候補表示、IPCの所有スレッドへの復帰 |
-| sumibi-host（未作成） | 接続認証、設定・同意・辞書の一貫した版、資格情報、HTTP、全体の自動要求制限 |
+| sumibi-host | 現在は明示起動の単発/有限連続要求server、既定で変換拒否。製品では設定・同意・辞書の一貫した版、資格情報、HTTP、全体の自動要求制限を担当予定 |
 | sumibi-setup | 現在は開発検証のみ。製品の登録・更新ツールと共用するかは配布ADRで決める |
 
 入力先ごとのCOM参照をBrokerへ送らない。設定画面へ入力先本文を自動表示しない。
@@ -153,10 +159,63 @@ F7または許可された予約キーは固定の「日本語」へ変換する
 修飾なしEscは有効なプレビューを取り消して消費する。Enterは取消後に未消費で返し、
 専用1行ホストが原文確認を一度だけ処理する。一般アプリの改行・送信を保証した検証ではない。
 
-ホストの左右移動、Shift選択、Home/End、Backspace、DeleteはUnicodeスカラーの境界を守る。
+ホストの左右移動、Shift選択、Backspace/DeleteはUnicode 17.0.0の拡張書記素を使う。
+内部caretは移動方向の書記素端へ寄せ、collapsed caretの削除は含まれる書記素全体を対象にする。
+非空の明示選択は有効なUTF-16範囲を維持し、repeatで選択を広げない。Home/Endは文書端へ移動する。
 選択の始点と移動端を区別し、`TS_AE_START/END`で向きを保存する。入力と削除後はカーソルを閉じる。
 UTF-16上位サロゲートは下位が揃うまで保留し、不正な組合せは挿入しない。
-1行・1024 UTF-16単位・固定サイズの表示に限定し、書記素クラスタ削除・マウス選択・スクロールは未対応。
+1行・1024 UTF-16単位・固定サイズの表示に限定し、マウス選択・スクロールは未対応。
+ホストのBackspace/Delete repeatは一度の編集とUndoにまとめ、明示選択の外へ繰り返さない。
+Coreの位置だけの境界表とホスト編集の22ケースは[ADR 0024](adr/0024-grapheme-navigation-in-owned-host.md)を参照。
+製品DLLの任意位置編集や前方削除取引の完成ではない。
+
+追加のtracking-demoは所有ホストが実際に挿入した文字だけをCoreで記録する。
+composing/transactionホストの明示選択は、context付きF7準備で初回入力前でも扱える。
+準備は本文を取得せず、選択の向きと一度だけのReadyを維持する。記録のないcollapsed caretは拒否する。
+初回選択ではcompositionを開始しないため、診断sink欠損でも成立する
+（[ADR 0026](adr/0026-initialize-explicit-selection-with-context.md)）。
+カーソルが有効な入力範囲の末尾にある場合だけ、F7でその範囲を選択して既存の非同期変換へ渡す。
+移動・外部編集・保護変更等で無効になった範囲を復元せず、全文を推測しない。
+明示選択は従来の選択変換を使う。入力反映自体はホストが一度だけ行い、追跡失敗で再送しない。
+通知世代・composition counter・送信直前の原文完全一致を使う限定経路であり、
+この経路自体はcompositionを更新しない（[ADR 0009](adr/0009-cooperating-host-input-run.md)）。
+別のcomposing-demoでは、入力の前後を実DLLへ通知し、同じcompositionを文字入力で広げ、
+Backspaceで縮める。本文はホストで一度だけ反映し、別の同期writeでメタデータだけを更新する。
+F7前に自分のcompositionを終了し、通常の保護検査と原文の完全照合を通す。
+このメタデータ専用の所有例外をGetTextの許可には使わない。
+原子的なTSF本文入力取引や一般アプリの統合ではない（[ADR 0010](adr/0010-cooperating-host-composition-growth.md)）。
+外部メタデータ通知はEXEのeventへ集約し、所有ループが次の打鍵を待たず古いcompositionを解除する。
+statusの変更・復元もGuardで失効させ、同じ世代のwakeだけで拒否されたcleanupを繰り返さない。
+通知callbackは編集・本文取得を行わない（[ADR 0011](adr/0011-owner-loop-input-invalidation.md)）。
+transaction-demoでは供給された文字の挿入・caret・composition更新を同じ同期writeで行う。
+書込前拒否と書込後の未確認状態を分け、後者では二重入力を防ぐため再入力せず、変換を停止して
+確認を表示する。rollback・入力救済・製品の削除取引や一般アプリ対応の完成ではない
+（[ADR 0012](adr/0012-synchronous-input-transaction.md)）。
+記録内のBackspaceも、削除・caret・composition縮小を同じwriteで処理する。
+記録済みUTF-16だけから拡張書記素単位で削除範囲を決め、全削除では自己compositionを終了する。
+範囲越え等は部分削除せず書込前にホストへ返し、試行後の失敗では再削除しない。
+記録と一致しない明示選択Deleteは独立ABIで同期writeへ接続し、本文・caret・一時composition終了を処理する。
+旧追跡は退役し、削除本文を取得・救済コピーしない。書込前拒否と試行後失敗を区別し、再削除を防ぐ
+（[ADR 0025](adr/0025-synchronous-selected-delete.md)）。
+記録内の左右移動と前方Deleteも独立ABIで実DLLへ接続する。caretと記録終端を分け、内部caretのF7は
+記録全体だけを変換する。移動は本文/Undoを増やさず、削除は同じcompositionを縮める。
+境界越えや未知の追跡は退役し、試行後の失敗では元の操作を重ねない
+（[ADR 0027](adr/0027-tracked-caret-and-forward-delete.md)）。
+内部Backspaceは前方Deleteと方向付き計画を共有し、削除前後に残る記録を同じcompositionで保持する。
+旧ホスト観測用の末尾限定APIとは分離する（[ADR 0028](adr/0028-tracked-internal-backspace.md)）。
+途中挿入も既存Writerで記録全体を継続し、合計容量とscalar境界を検査する。既存本文は取得せず、
+供給断片だけを一度挿入し、同じcompositionを広げる（[ADR 0029](adr/0029-tracked-internal-insertion.md)）。
+記録内のShift＋左右も同じcompositionを保ち、選択のanchorとactive endpointを維持して拡縮/反転する。
+通常左右で選択を解除した後も入力を継続でき、非空選択のF7は選択部分だけを変換する。
+向きは端点とは別にInputMetadataとReadyで照合する（[ADR 0030](adr/0030-tracked-shift-selection.md)）。
+記録内の選択置換・Delete・Backspaceは同じcompositionと前後の記録を保ち、全削除では終了する。
+選択範囲を拡張せず、供給長と削除長から全範囲と容量を照合する。失効した選択は旧runを継続せず、
+新しい供給文字だけを記録できる（[ADR 0031](adr/0031-recorded-selection-replacement.md)）。
+専用単一行ホストのHome/EndとShift選択は、実contextの文書端が記録内にある場合だけ追跡を継続する。
+文書端は位置だけから確認し、本文/Undoを変えずSetSelectionだけを一度行う。記録外へは通常移動を一度だけ行い、
+記録端へ読み替えない（[ADR 0032](adr/0032-recorded-document-edge-navigation.md)）。
+一般アプリの行端/折り返し・キー配送は未完了。同期取引は[ADR 0013](adr/0013-synchronous-tracked-backspace.md)、
+分割版・記録境界とfallbackは[ADR 0023](adr/0023-grapheme-backspace-within-recorded-input.md)を参照。
 
 ### 5.2 製品の追跡入力（未実装）
 
@@ -184,17 +243,31 @@ APIの同期／非同期指定は[Microsoftの契約](https://learn.microsoft.co
 
 現在の1024 UTF-16単位はアダプターの技術上限で、後述する送信1000書記素の上限と別である。
 Coreの`Target`はcontext/rangeの不透明ID、選択、UTF-16全文、入力・設定・認可の版、allowedを持つ。
+選択は絶対ACP座標と保持rangeの長さstampを明示的に区別する。
+ManualEditはgeneric ITfRangeのcontext・端点・向きを所有STAで検査し、長さstampを使う。
+source前のmetadata検査で失敗した要求は復元後も再利用できない。
+非ACPアプリの互換性は未検証で、実入力追跡はACP方式を維持する
+（[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md)）。
 同じ要求の応答は照合失敗でも消費するが、別要求の古い応答で現在の要求を消さない。
-現在のCoreには容量制限や追跡入力全体の処理はなく、呼出し側が追加の上限を担う。
+ManualEdit.cancelは所有ホストの明示境界で保留要求と原文bufferを解放する。
+source/finishを永久に拒否し、再開には新IDでcaptureする。通信停止は別に所有側で行う
+（[ADR 0020](adr/0020-owner-cancellation-and-shared-tsf-pump.md)）。
+ManualConversionのTargetには独立の容量制限を設けず、呼出し側が上限を担う。
+追加のCore InputSessionは所有ホストの入力範囲を1024 UTF-16単位に制限する。
+製品の追跡入力全体や待機・救済の処理ではない。
 
 ## 7. 下線・通知・描画（実装済み）
 
 `Preview`はスナップショットと表示属性atomを保持し、編集セッションをまたいで点線を残す。
 既存の別属性がある範囲では開始を拒否する。取消は自分のatomと記録範囲に属する属性だけを解除し、本文を変更しない。
 確定は再照合・自分の属性解除・最終照合・SetTextの順とし、成功した本文書込の後に失敗し得る処理を置かない。
+2026-10-22、Previewに自分の選択compositionも追加した。確定は所有objectの存続確認・終了を先に行い、
+その後で従来のidle条件と本文再照合を行う。取消も自分のcompositionと属性だけを解除する。
+強制終了後の別objectを同じ範囲・原文で再利用せず、開始拒否時にもDLL参照を残さない診断ホスト契約を使う
+（[ADR 0008](adr/0008-owned-selection-composition.md)）。製品の通常入力追跡の実装ではない。
 
 本文／選択変更やフォーカス喪失では先に適用権限を失効させる。
-通知中に書込できなければ、下線の解除だけを非同期writeセッションへ予約する。
+通知中に書込できなければ、自分のcompositionと下線の解除だけを非同期writeセッションへ予約する。
 弱参照とプレビュー世代で古い解除を拒否する。取消直後に新しいプレビューを始めても旧予約で消さない。
 解除ロック拒否時は情報を保持して再試行できるが、無効化済みの本文置換は許可しない。
 
@@ -250,10 +323,51 @@ Mac実装の最大12候補とSPECの追加10件の差は[移植表](MAC_PARITY.m
 通常Enterのその場の通過と、待機中に消費済みのEnterを区別する。
 
 提案上限は1024イベントかつ本文16384 UTF-16単位、救済本文はプロセス合計16384単位・10分。
-期限切れ破棄の事前表示と明示操作の関係は未決で、現段階で自動破棄を実装しない。
+製品の期限切れ破棄の事前表示と明示操作の関係は未決で、製品の待機入力へ自動破棄を有効にしない。
 容量超過では要求を取消し、安全に元欄へ原文を反映するか、消費前に通過へ切り替える必要がある。
 この切替と容量確保を証明できるまで、製品用の待機キー消費を有効化しない。
+実験的なCoreモデルはwaiting_input::WaitingInputに実装した。1 queueの上記イベント/本文上限を守り、
+消費前admit、先頭だけの試行ticket、確認済み適用後だけの除去、新しいConvert要求での排出停止を扱う。
+Enterと不明完了は自動配送不能な救済状態へ移し、focus/保護境界ではpayloadを除去する。
+Core12件で検証し、後続の専用adapterはイベントごとに既存EXE共有救済枠を確保して実DLL/workerへ接続する。
+25ケースで順序・容量・未適用救済・取消を検証した。後続のwaiting-demoは専用の受付と複数確認UIを接続する。製品の全体予算/期限政策は未決である
+（[ADR 0033](adr/0033-bounded-core-waiting-input.md)）。
+専用adapterの4件/4096単位、自己状態検査ABI、変換後のcaretとDeferredの契約は
+[ADR 0034](adr/0034-shared-recovery-waiting-adapter.md)を参照。
+waiting-demoでは受入れ後だけ元のキー/文字を消費し、F8巡回・表示中の1件のコピー/破棄を提供する。
+UI操作はSession/行/slotを照合し、window境界とClipboard公開前のepoch検査で失効させる。
+配送/確認の22ケースと未対応範囲は[ADR 0035](adr/0035-waiting-demo-and-record-recovery-ui.md)を参照。
+後続では待機と通常入力の救済を1つの確認画面にまとめ、同じticket値でもSourceを区別する。
+保護で本文を除去した後も操作情報を確認/破棄でき、コピー公開直前の期限も照合する。
+デモ34・待機adapter26ケースへの拡張は[ADR 0036](adr/0036-unified-demo-recovery-and-copy-expiry.md)を参照。
+F7開始後の初期化失敗では捕捉した要求IDだけを取消し、後から別の要求が始まっても巻き込まない。
+同一IDの重複通知や未確認救済の上書きも拒否する。デモ45ケースの検証は
+[ADR 0037](adr/0037-cancel-failed-waiting-start.md)を参照。
+通常救済だけが残る間もOwnerが期限表示と保護状態を定期確認する。
+デモ47ケースの検証は[ADR 0038](adr/0038-owner-wake-for-ordinary-recovery.md)を参照。
+待機/通常救済がなくなっても未確認の入力結果が残る場合は文書確認を案内する
+（[ADR 0039](adr/0039-waiting-demo-recovery-loss-warning.md)）。
+待機期限だけで救済がない場合も期限を表示する。未受入れ入力を通常ホストへ渡す前に、
+専用対象が安定し結果未適用なら、選択された原文を保持してcaretを末尾へ移す。
+入力がないまま期限が切れた場合も、安定した原文の選択をその時点で解除する。
+Escで明示取消した場合も同じ安全条件で選択を解除する。
+デモ57ケースの検証は[ADR 0040](adr/0040-waiting-deadline-and-unadmitted-fallback.md)を参照。
+共有枠の容量超過表示と通常入力への切替、不正入力との区別を含む59ケースは[ADR 0042](adr/0042-waiting-capacity-fallback-feedback.md)を参照。
+共有Budgetは件数と本文総量を一度に予約する。診断経路は4件・4096単位を維持し、
+製品容量とプロセス間の所有方法は引き続き未決である
+（[ADR 0041](adr/0041-configurable-shared-recovery-budget.md)）。
 救済はメモリーに限定し、明示コピー・破棄だけを提供する。クラッシュ後の本文復元は保証しない。
+
+診断editorでは上記の製品提案と分けて、1件・1024 UTF-16単位・10分の救済を実装した
+（[ADR 0014](adr/0014-bounded-input-recovery.md)）。文字挿入／Backspaceの取引前に容量だけを予約し、
+結果不明／適用後追跡失敗の場合だけ保持する。保護履歴と新しいmetadata検査に失敗すれば本文を保存しない。
+F8で明示確認し、確認画面からF10でコピー、F9で破棄する。文書への自動適用や待機キーの再送はしない。
+診断経路では期限による自動破棄を事前表示し、ownerの期限待機で解除する。製品の全体予算・期限政策は未決。
+診断EXEには別途共有Budgetを追加し、予約中を含め全editor合計4件（レコード本文合計4096単位）とする。
+本文を除去した警告も数え、他所有者の枠が満杯なら書込前に元のホスト入力へ返す。
+期限切れの容量はそのownerのcleanupで戻し、別ownerが本文を取得・再適用することはない。
+UIやコピーの一時bufferはこの本文上限とは別で、製品案やプロセス間の予算には読み替えない
+（[ADR 0021](adr/0021-shared-input-recovery-budget.md)）。
 
 ## 9. Decisions自動変換（後続設計）
 
@@ -320,7 +434,14 @@ TSF UIElementのBegin/Update/Endと候補リストの契約を実装し、ホス
 
 実装済みの外側フレームは[IPC_PROTOCOL](IPC_PROTOCOL.md)、SID限定pipeの同一プロセス検証と
 AppContainerの初期非対応判断は[ADR 0002](adr/0002-ipc-boundary-and-desktop-probe.md)を参照。
-以下の相互認証と型付きメッセージは製品化の設計案で、pipe probeだけでは検証済みとしない。
+型付きメッセージとclient状態はIssue #4の最初の段階で追加した。固定した起動process間のOS相互検査と
+overlapped pipeも追加した（[ADR 0003](adr/0003-pinned-desktop-peers.md)）。
+単発Hostと所有TSFへの配送は専用ACP storeで検証した（[ADR 0004](adr/0004-one-shot-broker-and-owner-edit.md)）。
+実DLLキーからの診断用bridgeと非同期デモも追加した（[ADR 0005](adr/0005-dll-key-broker-bridge.md)）。
+製品の常駐Broker・発見・一般入力は未完了。
+現在の正確な版1の形式・上限は
+[IPC_PROTOCOL](IPC_PROTOCOL.md)を参照。以下の相互認証と製品接続は設計案で、pipe probeだけでは検証済みとしない。
+下表は候補等も含む製品案であり、実装した版1は単一の変換要求／結果に限定する。
 
 通常デスクトップの第一候補はローカルnamed pipe。対象ユーザーとログオンセッションの明示DACL、
 リモート拒否、サーバー／クライアントのトークン・セッション確認を組み合わせる。
@@ -337,7 +458,7 @@ AppContainerの初期非対応判断は[ADR 0002](adr/0002-ipc-boundary-and-desk
 | PolicyChanged | 設定・認可版と許可状態。旧版の未送信要求をBroker側でも拒否 |
 
 COM参照・cookie・TSF座標・APIキー・アプリ名はConvertへ含めない。
-原文はUTF-8へ厳密変換し、4バイトlittle endian長＋最大256KiB本文とする。外側フレームは実装済み、JSONは後続。
+原文はUTF-8へ厳密変換し、4バイトlittle endian長＋最大256KiB本文とする。外側フレームと単一結果のJSONは実装済み。
 整数の範囲・必須フィールド・候補件数・文字列長・総容量も検証し、未対応版は拒否する。
 切断・不正フレーム・過大要求は要求を終端化し、本文をログに出さない。
 受信数・未完了数・出力バッファは有限にし、具体値は負荷試験とともにProtocol仕様へ固定する。
@@ -389,7 +510,8 @@ MacのChat Completions形式・プロンプトを参照するが、モデル名�
 
 送信の可変部分は原文＋現在結果＋登録辞書で合計1000拡張書記素クラスタを初期案とする。
 UTF-8バイト長、UTF-16単位数、Unicodeスカラー数をこの文字数と混同しない。
-分割ライブラリとUnicode版は未選定で、結合文字・異体字セレクター・ZWJ絵文字を受入ケースにする。
+編集用はunicode-segmentation 1.13.3 / Unicode 17.0.0を選定し、結合文字・VS・ZWJ等を検証した。
+送信1000書記素の制限への接続とbyte/UTF-16上限の整合はIssue #5で実装する。
 対象原文の照合はUTF-16単位の完全一致とし、正規化・大文字化・空白差を許容しない。
 TSFアダプターの1024単位制限が先に効く場合がある。長文対応を増やすときは両上限を別々に再評価する。
 周辺文脈・文体・クリップボード取得は初期範囲に含めず、黙って送信対象へ追加しない。
@@ -412,6 +534,12 @@ TSFアダプターの1024単位制限が先に効く場合がある。長文対�
 | Host/TIPクラッシュ | 原文保持を目指す。メモリーだけの救済文字・候補の復元は保証しない |
 
 機密性の判定にはTSF入力スコープ・状態通知・対象外ポリシーを組み合わせる。
+現在は通常テキストのscopeと状態を肯定確認し、未知・欠損・private/password/PIN等を拒否する
+（[ADR 0006](adr/0006-input-protection-metadata.md)）。MSCTF自身の内部読取とDLLの本文取得は分けて計測する。
+2026-10-22、同一contextのcompositionを本文取得・source・適用時に拒否する検査も追加した。
+非空の変更はproperty通知で取消し、空compositionの履歴は専用ホストのowner通知から取消を伝える。
+一般アプリのowner sinkを変更せず、未通知の空composition履歴の保証は一般アプリでは未成立とする
+（[ADR 0007](adr/0007-foreign-composition-boundary.md)）。
 専用contextのGrantは開発用の許可で、一般アプリのパスワード検出の代替ではない。
 独自の機密欄を全検出できるとは保証せず、保護条件を判定できない場合は追跡と送信を見送る。
 設定UIのURL・モデル・APIキー欄は変換対象外にする。辞書欄を例外とするかは別のUI受入条件で決める。
@@ -458,7 +586,7 @@ Notepad、VS Code、Chromium、Windows Terminalの標準Undo、実打鍵、機�
 | F：公開準備 | アプリ互換表、署名・導入／更新／削除・復旧・プライバシー表示・第三者ライセンス |
 
 未決事項はIPC認証の具体方式、AppContainer仲介、製品キー割当、候補件数、待機超過と救済期限、
-書記素分割依存、HTTPとUIの依存、導入権限・登録範囲・署名・更新方式である。
+送信上限への書記素分割の接続、HTTPとUIの依存、導入権限・登録範囲・署名・更新方式である。
 各実装前にADRと受入ケースを追加する。文書変更で未決の判断を実装済みに変更しない。
 
 ## 16. 資料の保守

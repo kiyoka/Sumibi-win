@@ -1,4 +1,4 @@
-//! Process-local COM/TSF registration; never modifies the default input profile.
+//! Development TSF probe with either a local COM factory or user COM registration.
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
@@ -121,9 +121,35 @@ enum Exercise {
     Edit,
     Key,
     Window,
+    WindowInteractive,
     Input,
     Close,
     Delayed,
+    Broker,
+    Ranges,
+    NativeEdit,
+    BrokerKeys,
+    BrokerInput,
+    Protection,
+    Composition,
+    OwnedComposition,
+    BrokerDemo,
+    TrackingDemo,
+    Tracking,
+    ComposingDemo,
+    Composing,
+    Notifications,
+    Transactions,
+    Backspace,
+    GraphemeInput,
+    Recovery,
+    WaitingInput,
+    WaitingInputInteractive,
+    WaitingDemo,
+    WaitingDemoTest,
+    WaitingDemoTestInteractive,
+    RecoveryDemo,
+    TransactionDemo,
     Demo,
 }
 
@@ -146,6 +172,39 @@ fn checkpoint(point: FailAfter, requested: FailAfter) -> Result<(), Failure> {
 
 pub(super) fn run() -> Result<(), Failure> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "register-com-dev") {
+        return crate::registration::register(&args[1..]);
+    }
+    if args.len() == 1 && args[0] == "verify-com-dev" {
+        return crate::registration::verify();
+    }
+    if args.len() == 1 && args[0] == "registered-tsf-test-dev" {
+        return registered_tsf_test();
+    }
+    if args.len() == 1 && args[0] == "unregister-com-dev" {
+        return crate::registration::unregister();
+    }
+    if args.first().is_some_and(|arg| arg == "plan-system-dev") {
+        return crate::system_registration::plan(&args[1..]);
+    }
+    if args.len() == 1 && args[0] == "broker-worker-test" {
+        crate::worker_probe::run()?;
+        return Ok(());
+    }
+    if args.len() == 1
+        && (args[0] == "broker-channel-test" || args[0] == "broker-channel-denied-test")
+    {
+        crate::channel_probe::run(args[0] == "broker-channel-denied-test")?;
+        return Ok(());
+    }
+    if args.len() == 1 && args[0] == "ipc-peer-test" {
+        crate::pipe_peer::run()?;
+        return Ok(());
+    }
+    if args.first().is_some_and(|arg| arg == "ipc-peer-child") {
+        crate::pipe_peer::child(&args[1..])?;
+        return Ok(());
+    }
     if args.len() == 1 && args[0] == "ipc-test" {
         crate::pipe_probe::run()?;
         return Ok(());
@@ -158,13 +217,39 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "edit-test"
             && args[0] != "key-test"
             && args[0] != "window-test"
+            && args[0] != "window-test-interactive"
             && args[0] != "input-test"
             && args[0] != "close-test"
             && args[0] != "delayed-test"
+            && args[0] != "broker-test"
+            && args[0] != "range-target-test"
+            && args[0] != "native-edit-test"
+            && args[0] != "broker-key-test"
+            && args[0] != "broker-input-test"
+            && args[0] != "protection-test"
+            && args[0] != "composition-test"
+            && args[0] != "owned-composition-test"
+            && args[0] != "broker-demo"
+            && args[0] != "tracking-demo"
+            && args[0] != "tracking-input-test"
+            && args[0] != "composing-demo"
+            && args[0] != "composing-input-test"
+            && args[0] != "input-notify-test"
+            && args[0] != "transaction-input-test"
+            && args[0] != "backspace-input-test"
+            && args[0] != "grapheme-input-test"
+            && args[0] != "recovery-input-test"
+            && args[0] != "waiting-input-test"
+            && args[0] != "waiting-input-test-interactive"
+            && args[0] != "waiting-demo"
+            && args[0] != "waiting-demo-test"
+            && args[0] != "waiting-demo-test-interactive"
+            && args[0] != "recovery-demo"
+            && args[0] != "transaction-demo"
             && args[0] != "demo")
     {
         return Err(
-            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|input-test|close-test|delayed-test|demo> --dll <sumibi_tip.dll>"
+            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|window-test-interactive|input-test|close-test|delayed-test|broker-test|range-target-test|native-edit-test|broker-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|composing-input-test|composing-demo|input-notify-test|transaction-input-test|backspace-input-test|grapheme-input-test|recovery-input-test|waiting-input-test|waiting-input-test-interactive|waiting-demo|waiting-demo-test|waiting-demo-test-interactive|recovery-demo|transaction-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
                 .into(),
         );
     }
@@ -216,14 +301,40 @@ pub(super) fn run() -> Result<(), Failure> {
                 Some("edit-test") => Exercise::Edit,
                 Some("key-test") => Exercise::Key,
                 Some("window-test") => Exercise::Window,
+                Some("window-test-interactive") => Exercise::WindowInteractive,
                 Some("input-test") => Exercise::Input,
                 Some("close-test") => Exercise::Close,
                 Some("delayed-test") => Exercise::Delayed,
+                Some("broker-test") => Exercise::Broker,
+                Some("range-target-test") => Exercise::Ranges,
+                Some("native-edit-test") => Exercise::NativeEdit,
+                Some("broker-key-test") => Exercise::BrokerKeys,
+                Some("broker-input-test") => Exercise::BrokerInput,
+                Some("protection-test") => Exercise::Protection,
+                Some("composition-test") => Exercise::Composition,
+                Some("owned-composition-test") => Exercise::OwnedComposition,
+                Some("broker-demo") => Exercise::BrokerDemo,
+                Some("tracking-demo") => Exercise::TrackingDemo,
+                Some("tracking-input-test") => Exercise::Tracking,
+                Some("composing-demo") => Exercise::ComposingDemo,
+                Some("composing-input-test") => Exercise::Composing,
+                Some("input-notify-test") => Exercise::Notifications,
+                Some("transaction-input-test") => Exercise::Transactions,
+                Some("backspace-input-test") => Exercise::Backspace,
+                Some("grapheme-input-test") => Exercise::GraphemeInput,
+                Some("recovery-input-test") => Exercise::Recovery,
+                Some("waiting-input-test") => Exercise::WaitingInput,
+                Some("waiting-input-test-interactive") => Exercise::WaitingInputInteractive,
+                Some("waiting-demo") => Exercise::WaitingDemo,
+                Some("waiting-demo-test") => Exercise::WaitingDemoTest,
+                Some("waiting-demo-test-interactive") => Exercise::WaitingDemoTestInteractive,
+                Some("recovery-demo") => Exercise::RecoveryDemo,
+                Some("transaction-demo") => Exercise::TransactionDemo,
                 Some("demo") => Exercise::Demo,
                 _ => Exercise::None,
             };
             let cleanup = CleanupLog::default();
-            let result = registered_probe(get_class, *point, &cleanup, exercise);
+            let result = registered_probe(Some(get_class), *point, &cleanup, exercise);
             if !cleanup.borrow().is_empty() {
                 return Err(format!("cleanup failed: {}", cleanup.borrow().join("; ")).into());
             }
@@ -246,34 +357,65 @@ pub(super) fn run() -> Result<(), Failure> {
     Ok(())
 }
 
+fn registered_tsf_test() -> Result<(), Failure> {
+    // This process has no CoRegisterClassObject. TSF must resolve the TIP via
+    // the current-user COM entry verified here. Its language profile remains
+    // local to this process and is removed before returning.
+    let path = crate::registration::registered_path()?;
+    if !path.is_file() {
+        return Err(format!("registered DLL no longer exists: {}", path.display()).into());
+    }
+    // SAFETY: dedicated single-threaded console process; guards release COM
+    // interfaces before balancing initialization.
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
+        let _apartment = Apartment;
+        let cleanup = CleanupLog::default();
+        let result = registered_probe(None, FailAfter::None, &cleanup, Exercise::None);
+        if !cleanup.borrow().is_empty() {
+            return Err(format!("cleanup failed: {}", cleanup.borrow().join("; ")).into());
+        }
+        result?;
+    }
+    println!("Registry-loaded TIP, process-local TSF profile and cleanup: OK");
+    Ok(())
+}
+
 fn registered_probe(
-    get_class: GetClass,
+    get_class: Option<GetClass>,
     fail_after: FailAfter,
     cleanup: &CleanupLog,
     exercise: Exercise,
 ) -> Result<(), Failure> {
-    // SAFETY: caller keeps the DLL and STA apartment alive for this entire
-    // function. All guards are released in reverse registration order.
+    // SAFETY: caller keeps the STA apartment alive. When an explicit factory
+    // is supplied, it also keeps the DLL loaded. All guards are released in
+    // reverse registration order.
     unsafe {
-        let mut output = ptr::null_mut();
-        get_class(
-            &sumibi_tip::CLSID_SUMIBI_TIP,
-            &IClassFactory::IID,
-            &mut output,
-        )
-        .ok()?;
-        let factory = IClassFactory::from_raw(output);
-        let class = ClassRegistration(
-            CoRegisterClassObject(
+        let (factory, class) = if let Some(get_class) = get_class {
+            let mut output = ptr::null_mut();
+            get_class(
                 &sumibi_tip::CLSID_SUMIBI_TIP,
-                &factory,
-                CLSCTX_INPROC_SERVER,
-                REGCLS_MULTIPLEUSE,
+                &IClassFactory::IID,
+                &mut output,
             )
-            .map_err(|e| format!("register local COM class: {e}"))?,
-            cleanup.clone(),
-        );
-        println!("COM factory registered in process");
+            .ok()?;
+            let factory = IClassFactory::from_raw(output);
+            let class = ClassRegistration(
+                CoRegisterClassObject(
+                    &sumibi_tip::CLSID_SUMIBI_TIP,
+                    &factory,
+                    CLSCTX_INPROC_SERVER,
+                    REGCLS_MULTIPLEUSE,
+                )
+                .map_err(|e| format!("register local COM class: {e}"))?,
+                cleanup.clone(),
+            );
+            println!("COM factory registered in process");
+            (Some(factory), Some(class))
+        } else {
+            println!("Using current-user COM registration");
+            (None, None)
+        };
         checkpoint(FailAfter::Class, fail_after)?;
         let profiles: ITfInputProcessorProfileMgr =
             CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)?;
@@ -325,9 +467,59 @@ fn registered_probe(
             Exercise::Edit => crate::edit_host::exercise(&manager.0, app_client)?,
             Exercise::Key => crate::edit_host::exercise_keys(&manager.0, app_client)?,
             Exercise::Window => crate::edit_host::exercise_window_keys(&manager.0, app_client)?,
+            Exercise::WindowInteractive => {
+                crate::edit_host::exercise_window_keys_interactive(&manager.0, app_client)?
+            }
             Exercise::Input => crate::edit_host::exercise_input(&manager.0, app_client)?,
             Exercise::Close => crate::edit_host::exercise_close(&manager.0, app_client)?,
             Exercise::Delayed => crate::edit_host::exercise_delayed(&manager.0, app_client)?,
+            Exercise::Broker => crate::edit_host::exercise_broker(&manager.0, app_client)?,
+            Exercise::Ranges => crate::edit_host::exercise_ranges(&manager.0, app_client)?,
+            Exercise::NativeEdit => crate::edit_host::exercise_native_edit(&manager.0, app_client)?,
+            Exercise::BrokerKeys => crate::edit_host::exercise_broker_keys(&manager.0, app_client)?,
+            Exercise::BrokerInput => {
+                crate::edit_host::exercise_broker_input(&manager.0, app_client)?
+            }
+            Exercise::BrokerDemo => crate::edit_host::run_broker_demo(&manager.0, app_client)?,
+            Exercise::TrackingDemo => crate::edit_host::run_tracking_demo(&manager.0, app_client)?,
+            Exercise::Tracking => crate::edit_host::exercise_tracking(&manager.0, app_client)?,
+            Exercise::ComposingDemo => {
+                crate::edit_host::run_composing_demo(&manager.0, app_client)?
+            }
+            Exercise::Composing => crate::edit_host::exercise_composing(&manager.0, app_client)?,
+            Exercise::Transactions => {
+                crate::edit_host::exercise_transactions(&manager.0, app_client)?
+            }
+            Exercise::Backspace => crate::edit_host::exercise_backspace(&manager.0, app_client)?,
+            Exercise::GraphemeInput => {
+                crate::edit_host::exercise_graphemes(&manager.0, app_client)?
+            }
+            Exercise::Recovery => crate::edit_host::exercise_recovery(&manager.0, app_client)?,
+            Exercise::WaitingInput => crate::edit_host::exercise_waiting(&manager.0, app_client)?,
+            Exercise::WaitingInputInteractive => {
+                crate::edit_host::exercise_waiting_interactive(&manager.0, app_client)?
+            }
+            Exercise::WaitingDemo => crate::edit_host::run_waiting_demo(&manager.0, app_client)?,
+            Exercise::WaitingDemoTest => {
+                crate::edit_host::exercise_waiting_demo(&manager.0, app_client)?
+            }
+            Exercise::WaitingDemoTestInteractive => {
+                crate::edit_host::exercise_waiting_demo_interactive(&manager.0, app_client)?
+            }
+            Exercise::RecoveryDemo => crate::edit_host::run_recovery_demo(&manager.0, app_client)?,
+            Exercise::TransactionDemo => {
+                crate::edit_host::run_transaction_demo(&manager.0, app_client)?
+            }
+            Exercise::Notifications => {
+                crate::edit_host::exercise_notifications(&manager.0, app_client)?
+            }
+            Exercise::Protection => crate::edit_host::exercise_protection(&manager.0, app_client)?,
+            Exercise::Composition => {
+                crate::edit_host::exercise_composition(&manager.0, app_client)?
+            }
+            Exercise::OwnedComposition => {
+                crate::edit_host::exercise_owned_composition(&manager.0, app_client)?
+            }
             Exercise::Demo => crate::edit_host::run_demo(&manager.0, app_client)?,
         }
         drop(keys);

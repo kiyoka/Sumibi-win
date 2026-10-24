@@ -1,0 +1,11 @@
+[package]
+name = "sumibi-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+spike = []
+
+[target.'cfg(windows)'.dependencies]
+sumibi-ipc = { path = "../sumibi-ipc" }
