@@ -514,7 +514,19 @@ impl Editor {
                     }
                     return Ok(true);
                 }
-                0x76 => {
+                0x76 | 0x1c if key.0 == 0x76 || self.waiting.is_some() => {
+                    // Only the waiting demo opts into VK_CONVERT. Keep its
+                    // modified forms with the host; F7 retains its prior path.
+                    if key.0 == 0x1c
+                        && (flags.0 & (1 << 29) != 0
+                            || unsafe {
+                                [VK_CONTROL, VK_MENU, VK_SHIFT]
+                                    .iter()
+                                    .any(|key| GetKeyState(key.0 as i32) < 0)
+                            })
+                    {
+                        return Ok(false);
+                    }
                     if let Some((broker, bridge)) = &self.broker {
                         if bridge.get().active() || self.store.get().text.borrow().is_empty() {
                             return Ok(true);
@@ -856,12 +868,11 @@ fn run(
             RunMode::WaitingInteractiveTest(_) | RunMode::WaitingDemoInteractiveTest(_)
         ) {
             wait_for_waiting_foreground(&window, true)?;
-        } else if matches!(
-            &mode,
-            RunMode::TransactionTest("waiting/fifo") | RunMode::WaitingTest("fifo")
-        ) {
-            // The first window can receive queued activation messages after
-            // SetFocus. Drain them before starting the conversion fixture.
+        } else if matches!(&mode, RunMode::TransactionTest(case) if case.starts_with("waiting/"))
+            || matches!(&mode, RunMode::WaitingTest(_))
+        {
+            // Each fresh window can receive queued activation messages after
+            // SetFocus. Let foreground routing settle before the TSF fixture.
             wait_for_waiting_foreground(&window, false)?;
         }
         if matches!(&mode, RunMode::TransactionTest(case) if case.starts_with("waiting/"))
@@ -1006,7 +1017,7 @@ fn run(
                 | RunMode::WaitingDemo
         ) {
             if matches!(mode, RunMode::WaitingDemo) {
-                window.set_title("Sumibi 待機入力デモ（固定結果） | F7変換 | Enterは救済へ | F8順に確認 | 最大4件・10分救済")?;
+                window.set_title("Sumibi 待機入力デモ（固定結果） | F7/変換キー | Enterは救済へ | F8順に確認 | 最大4件・10分救済")?;
             }
             if matches!(mode, RunMode::TrackingDemo) {
                 window.set_title(

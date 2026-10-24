@@ -120,6 +120,7 @@ fn exercise_waiting_demo_with_activation(
         "escape-queued-text",
         "unicode",
         "convert",
+        "convert-key",
         "deadline",
         "deadline-empty",
         "deadline-idle-text",
@@ -219,7 +220,11 @@ pub(in super::super::super) fn test_waiting_demo(
     editor.insert(&"nihongo".encode_utf16().collect::<Vec<_>>())?;
     pump(window)?;
     store.undo.borrow_mut().clear();
-    route(window, WM_KEYDOWN, 0x76)?;
+    route(
+        window,
+        WM_KEYDOWN,
+        if case == "convert-key" { 0x1c } else { 0x76 },
+    )?;
     assert!(owner.active());
     let mut peers = Vec::new();
     if matches!(case, "shared-capacity" | "invalid-full") {
@@ -310,8 +315,12 @@ pub(in super::super::super) fn test_waiting_demo(
         assert!(records.iter().all(|(_, metadata)| metadata.copyable));
         route(window, WM_CHAR, 'c' as usize)?;
     }
-    if case == "convert" {
-        route(window, WM_KEYDOWN, 0x76)?;
+    if matches!(case, "convert" | "convert-key") {
+        route(
+            window,
+            WM_KEYDOWN,
+            if case == "convert-key" { 0x1c } else { 0x76 },
+        )?;
         route(window, WM_CHAR, 'z' as usize)?;
     }
     if case == "focus" {
@@ -350,7 +359,7 @@ pub(in super::super::super) fn test_waiting_demo(
         "capacity" => "nihongoe",
         "shared-capacity" => "nihongoe",
         "invalid-full" => "nihongo",
-        "convert" => "日本語日本語z",
+        "convert" | "convert-key" => "日本語日本語z",
         "focus"
         | "escape"
         | "deadline"
@@ -718,7 +727,16 @@ fn test_start(
             return Ok(());
         }
         drive(window, editor, clipboard)?;
-        assert_eq!(owner.session.borrow().as_ref().unwrap().ready.len(), 2);
+        assert_eq!(
+            owner.session.borrow().as_ref().unwrap().ready.len(),
+            2,
+            "start-retained: starts={}, offered={}, admitted={}, peak_recoveries={}, views_opened={}",
+            owner.starts.get(),
+            owner.offered.get(),
+            owner.admitted.get(),
+            owner.peak_recoveries.get(),
+            owner.views_opened.get(),
+        );
         editor.navigation_boundary();
         store.host_selection(0, store.text.borrow().len())?;
         pump(window)?;

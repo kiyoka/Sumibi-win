@@ -51,7 +51,7 @@ cargo build --workspace --features sumibi-host/spike --locked --offline
 .\target\debug\sumibi-setup.exe waiting-demo --dll .\target\debug\sumibi_tip.dll
 ```
 
-文字を入力してF7を押すと、対話デモでは約2秒後に固定の「日本語」へ変換する。
+文字を入力してF7または日本語キーボードの変換キーを押すと、対話デモでは約2秒後に固定の「日本語」へ変換する。
 自動検査と他のデモは約400msのまま。その間の文字・Backspace・F7は順に待機し、
 Enterは送信せず救済へ移す。Escで取消。待機は最大4件・8秒で、満杯ではそれまでの入力を救済に保存して今回の入力を通常経路へ返す。
 F8で救済画面を開き、さらにF8で次のレコードを確認する。captionの位置/件数を確認して、表示中の1件だけをF9で破棄・F10で全文コピーする。
@@ -65,11 +65,12 @@ Escで待機を明示取消した場合も、安定した原文の選択を解�
 受入れ済みの待機入力は救済へ残り、後続の通常編集で保護履歴が変われば本文を除去する。
 既存transaction-demoや他アプリの入力には待機を有効化しない。
 
-`waiting-demo-test --dll target/debug/sumibi_tip.dll`で同じ配送/確認UIと開始失敗・定期確認・期限/Esc後の通常入力・容量超過表示の59ケースを自動検証できる。
+`waiting-demo-test --dll target/debug/sumibi_tip.dll`に同じ配送/確認UIと開始失敗・定期確認・期限/Esc後の通常入力・容量超過表示、変換キーの開始と待機中再変換の60ケースを用意している。
 最初のwindowが前面化しない場合は、`waiting-demo-test-interactive --dll target/debug/sumibi_tip.dll`
-を使い、必要なら30秒以内にそのwindowをクリックする。500ms連続で前面になってから
-検査を始める。通常ユーザーのmedium・非AppContainerで実行する。
+を使い、必要なら30秒以内にそのwindowをクリックする。以後も各windowが500ms連続で
+前面になってから検査を始める。通常ユーザーのmedium・非AppContainerで実行する。
 合成MSGを使い、コピーは試験用Clipboardへ差し替える。物理キーの受入とは区別する。
+変換キーの追加ケースは`VK_CONVERT`（0x1c）を同じ所有windowへ配送する。Ctrl/Alt/Shift付き変換は消費せず、一般アプリや実キーボードでの変換キー配送は未確認。
 共有救済予算はレコード件数と本文総量を同時に予約し、診断EXEは4件・4096単位を維持する
 （[ADR 0041](adr/0041-configurable-shared-recovery-budget.md)）。
 待機行列Coreにも件数・本文量の設定値を追加し、専用adapterへ同じ4件・4096単位を渡す。
@@ -88,6 +89,7 @@ Escで待機を明示取消した場合も、安定した原文の選択を解�
 待機中イベント提示1・受入1・開始失敗なし。救済の残件数は画面を閉じた後の値なので、
 後続版では実行中の最大件数と画面作成回数を累積表示する。同じ版の通常版59ケースも成功し、
 TSF/COM解除とDLLアンロードを確認した。
+続いて変換キーを専用待機デモのF7と同じ開始・待機中再変換へ接続した。表示変更を含む途中版で、既存`start-retained`ケースの保持件数が2件の想定に対し4件となり一度失敗した。本文・キーを記録せず受付件数を表示する診断を追加し、変換キーの受付範囲を待機デモだけへ限定した。各windowの前面化を待つ現行版で、クリック待ち付き対話版60ケースとTSF/COM解除・DLLアンロードが成功した。ログは`target/issue-4-convert-key-foreground-per-case.log`。保持件数の不一致は再現しておらず、物理的な変換キーの実打鍵は未確認。
 同日の省略なし`tools/Test-Spike.ps1`も成功し、Rust 138件、fmt、Clippy 3構成、
 build、基本DLL/TSF、デスクトップ各検査と別プロセスIPCを完走した。
 ログは`target/issue-4-full-regression-2026-10-24.log`。

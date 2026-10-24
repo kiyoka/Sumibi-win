@@ -308,7 +308,15 @@ impl Owner {
             }
             return Ok(true);
         }
-        if key == 0x76
+        // F7 and the Japanese keyboard's Convert key are equivalent only in
+        // this explicitly owned demo. Leave modified Convert to the host.
+        let convert = matches!(key, 0x76 | 0x1c);
+        let modified =
+            unsafe { GetKeyState(VK_CONTROL.0 as i32) < 0 || GetKeyState(VK_MENU.0 as i32) < 0 };
+        if key == 0x1c && (modified || unsafe { GetKeyState(VK_SHIFT.0 as i32) < 0 }) {
+            return Ok(false);
+        }
+        if convert
             && !self.active.get()
             && (!self.can_start() || editor.rescue.metadata().is_some())
         {
@@ -327,8 +335,6 @@ impl Owner {
             self.cancel(editor)?;
             return Ok(true);
         }
-        let modified =
-            unsafe { GetKeyState(VK_CONTROL.0 as i32) < 0 || GetKeyState(VK_MENU.0 as i32) < 0 };
         if modified || matches!(key, 0x23..=0x28 | 0x2e) {
             self.stop(editor)?;
             return Ok(false);
@@ -336,7 +342,7 @@ impl Owner {
         let input = match key {
             0x08 => Some(Input::Backspace(repeats as u32)),
             0x0d => Some(Input::Enter),
-            0x76 => Some(Input::Convert),
+            0x76 | 0x1c => Some(Input::Convert),
             _ => None,
         };
         if let Some(input) = input {
@@ -536,7 +542,7 @@ impl Owner {
                 })?;
             } else if queued {
                 window.set_title(
-                    "Sumibi 待機入力デモ | 待機は最大8秒・4件 | F7再変換 | Enterは救済へ | Esc取消",
+                    "Sumibi 待機入力デモ | 待機は最大8秒・4件 | F7/変換キーで再変換 | Enterは救済へ | Esc取消",
                 )?;
             } else {
                 if acknowledged {
@@ -554,7 +560,7 @@ impl Owner {
                 } else if self.capacity_limited.get() {
                     "Sumibi 容量上限で新しい入力は通常経路へ | 文書を確認 | F7 再試行 / Esc 解除"
                 } else {
-                    "Sumibi 待機入力デモ（固定結果） | F7 変換 | F8 救済確認 | Ctrl+Z Undo"
+                    "Sumibi 待機入力デモ（固定結果） | F7/変換キー | F8 救済確認 | Ctrl+Z Undo"
                 })?;
             }
             Ok(())
