@@ -29,3 +29,5 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Lint diagnostic build
         run: cargo clippy --workspace --all-targets --features sumibi-host/spike --locked -- -D warnings
+      - name: Headless DLL and TSF diagnostics
+        run: .\tools\Test-Spike.ps1 -SkipDesktop

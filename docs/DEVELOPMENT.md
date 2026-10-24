@@ -1,8 +1,9 @@
 # 開発環境と現在の実装範囲
 
 `.github/workflows/rust-windows.yml`はPRとmainへのpushでWindows 2022上のRust書式・
-単体テスト・Clippyを、通常版と診断用spike版の両方で実行する。GUIを使うTSF/COM・
-実DLL・別プロセスIPCの診断コマンドは含めず、通常ユーザーの対話desktopで別途検証する。
+単体テスト・Clippyを通常版と診断用spike版で実行し、`Test-Spike.ps1 -SkipDesktop`で
+画面不要のDLL/COM/TSF診断も検査する。ウィンドウ・実打鍵・別プロセスIPC等の
+デスクトップ検査は含めず、通常ユーザーの対話desktopで別途検証する。
 
 Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCEPTANCE.md)を参照。
 まとめて検証する場合は通常ユーザーのPowerShellで `./tools/Test-Spike.ps1` を実行する。
