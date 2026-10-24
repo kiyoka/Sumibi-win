@@ -1,5 +1,27 @@
 # 開発環境と現在の実装範囲
 
+## 開発用COM登録（明示実行のみ）
+
+一般アプリでのロード経路を切り分けるため、現ユーザーの64-bit COM登録を個別に検証できる。
+`register-com-dev`は既存CLSIDを上書きせず、登録直後にCOM生成を確認する。
+`verify-com-dev`は別プロセスから同じ生成を確認する。登録したDLLを移動・削除する前に解除する。
+
+```powershell
+cargo build -p sumibi-tip -p sumibi-setup --locked --offline
+.\target\debug\sumibi-setup.exe register-com-dev --dll .\target\debug\sumibi_tip.dll
+.\target\debug\sumibi-setup.exe verify-com-dev
+.\target\debug\sumibi-setup.exe unregister-com-dev
+```
+
+このコマンドが登録するのは`HKCU\Software\Classes\CLSID\{E927D4AB-2EC9-4DD3-A921-A4620B95A410}`の
+`InprocServer32`と所有マーカーのみ。TSF言語プロファイル、既定IME、有効化状態には触れない。
+一般アプリの入力欄で変換できることを示す検査ではない。開発中のDLLを配布・製品登録しない。
+2026-10-24、通常ユーザーのWindowsで登録直後と別プロセスからのCOM生成が成功し、
+解除後に当該HKCUキーが存在しないことと再検証が失敗することを確認した。
+Windowsの[ユーザー別COM登録](https://learn.microsoft.com/en-us/windows/win32/com/classes-and-servers)、
+[InprocServer32](https://learn.microsoft.com/en-us/windows/win32/com/inprocserver32)、
+[TSF登録](https://learn.microsoft.com/en-us/windows/win32/tsf/text-service-registration)を参照。
+
 `.github/workflows/rust-windows.yml`はPRとmainへのpushでWindows 2022上のRust書式・
 単体テスト・Clippyを通常版と診断用spike版で実行し、DLLロードと模擬TSF寿命を
 `load_smoke`で検査する。実TSFプロファイル・ウィンドウ・実打鍵・別プロセスIPC等の

@@ -17,6 +17,8 @@ mod probe;
 #[cfg(windows)]
 mod recovery_view;
 #[cfg(windows)]
+mod registration;
+#[cfg(windows)]
 mod render;
 #[cfg(windows)]
 mod window_host;
