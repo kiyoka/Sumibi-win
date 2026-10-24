@@ -115,6 +115,8 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         Mode::DiagnosticFixed { .. } if diagnostic_enabled => true,
         Mode::DiagnosticRevoke if diagnostic_enabled => true,
         Mode::DiagnosticRevokeIdle if diagnostic_enabled => true,
+        Mode::DiagnosticRevokeCoalesced if diagnostic_enabled => true,
+        Mode::DiagnosticRevokeAfterResult if diagnostic_enabled => true,
         _ => return Err(Error::PolicyDenied),
     };
     let server = Server::create(&bootstrap.name)?;
@@ -137,15 +139,22 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         generation: hello.generation,
         message,
     };
-    pipe.write_all(
-        message::encode(&envelope(Message::Ready(Ready {
-            broker: bootstrap.boot.id(),
-            policy,
-        })))
-        .map_err(|_| Error::InvalidMessage)?,
-        &bootstrap.stop,
-        deadline,
-    )?;
+    let mut ready = message::encode(&envelope(Message::Ready(Ready {
+        broker: bootstrap.boot.id(),
+        policy,
+    })))
+    .map_err(|_| Error::InvalidMessage)?;
+    if bootstrap.mode == Mode::DiagnosticRevokeCoalesced {
+        ready.extend(
+            message::encode(&envelope(Message::PolicyChanged(Policy {
+                settings: policy.settings,
+                authorization: policy.authorization + 1,
+                allowed: false,
+            })))
+            .map_err(|_| Error::InvalidMessage)?,
+        );
+    }
+    pipe.write_all(ready, &bootstrap.stop, deadline)?;
     if allowed {
         let lifetime = Instant::now() + crate::channel::MAX_LIFETIME;
         if bootstrap.mode == Mode::DiagnosticRevokeIdle {
@@ -166,7 +175,10 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             )?;
         }
         let mut last_request = 0;
-        let max_requests = if bootstrap.mode == Mode::DiagnosticRevokeIdle {
+        let max_requests = if matches!(
+            bootstrap.mode,
+            Mode::DiagnosticRevokeIdle | Mode::DiagnosticRevokeCoalesced
+        ) {
             0
         } else {
             crate::channel::MAX_REQUESTS
@@ -185,6 +197,25 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             accept_request(&convert, policy, &mut last_request)?;
             let deadline =
                 (Instant::now() + Duration::from_millis(convert.timeout_ms.into())).min(lifetime);
+            if bootstrap.mode == Mode::DiagnosticRevokeAfterResult {
+                let mut reply = message::encode(&envelope(Message::Result(ConversionResult {
+                    request: convert.request,
+                    revision: convert.revision,
+                    text: "日本語".into(),
+                })))
+                .map_err(|_| Error::InvalidMessage)?;
+                reply.extend(
+                    message::encode(&envelope(Message::PolicyChanged(Policy {
+                        settings: policy.settings,
+                        authorization: policy.authorization + 1,
+                        allowed: false,
+                    })))
+                    .map_err(|_| Error::InvalidMessage)?,
+                );
+                drop(convert);
+                pipe.write_all(reply, &bootstrap.stop, deadline)?;
+                break;
+            }
             if bootstrap.mode == Mode::DiagnosticRevoke {
                 // Exercise a policy change on the authenticated transport while
                 // the client has an outstanding request. No result is sent.

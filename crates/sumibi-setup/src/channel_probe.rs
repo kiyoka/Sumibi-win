@@ -70,6 +70,24 @@ fn exercise(default_host: bool) -> Result<()> {
             Channel::connect(&path, Mode::DiagnosticRevokeIdle, &Stop::new()?, deadline()),
             Err(Error::Disconnected | Error::PolicyDenied)
         ));
+        assert!(matches!(
+            Channel::connect(
+                &path,
+                Mode::DiagnosticRevokeCoalesced,
+                &Stop::new()?,
+                deadline()
+            ),
+            Err(Error::Disconnected | Error::PolicyDenied)
+        ));
+        assert!(matches!(
+            Channel::connect(
+                &path,
+                Mode::DiagnosticRevokeAfterResult,
+                &Stop::new()?,
+                deadline()
+            ),
+            Err(Error::Disconnected | Error::PolicyDenied)
+        ));
         println!("Broker channel / default host rejects diagnostic converter: OK");
         return Ok(());
     }
@@ -237,6 +255,42 @@ fn exercise(default_host: bool) -> Result<()> {
         exited(&peer);
     }
     println!("Broker channel / queued idle revocation rejects before source: OK");
+    {
+        let mut channel = Channel::connect(
+            &path,
+            Mode::DiagnosticRevokeCoalesced,
+            &Stop::new()?,
+            deadline(),
+        )?;
+        let peer = channel.peer_process()?;
+        let revoked = channel.convert(revision(1), "synthetic", deadline());
+        assert!(
+            matches!(revoked, Err(Error::PolicyDenied)),
+            "{:?}",
+            revoked.err()
+        );
+        assert!(channel.is_closed());
+        exited(&peer);
+    }
+    println!("Broker channel / coalesced Ready and revocation keep the unread frame: OK");
+    {
+        let mut channel = Channel::connect(
+            &path,
+            Mode::DiagnosticRevokeAfterResult,
+            &Stop::new()?,
+            deadline(),
+        )?;
+        let peer = channel.peer_process()?;
+        let revoked = channel.convert(revision(1), "synthetic", deadline());
+        assert!(
+            matches!(revoked, Err(Error::PolicyDenied)),
+            "{:?}",
+            revoked.err()
+        );
+        assert!(channel.is_closed());
+        exited(&peer);
+    }
+    println!("Broker channel / result followed by queued revocation is not delivered: OK");
     {
         let mut channel = connect(&path, 1000, &Stop::new()?)?;
         let peer = channel.peer_process()?;

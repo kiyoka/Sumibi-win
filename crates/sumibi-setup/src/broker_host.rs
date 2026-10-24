@@ -381,6 +381,10 @@ fn exercise_job_capacity(messages: &ITfMessagePump) -> std::result::Result<(), F
             Mode::Disabled => "policy-denied",
             Mode::DiagnosticRevoke => unreachable!("fixture is not used by one-shot jobs"),
             Mode::DiagnosticRevokeIdle => unreachable!("fixture is not used by one-shot jobs"),
+            Mode::DiagnosticRevokeCoalesced => unreachable!("fixture is not used by one-shot jobs"),
+            Mode::DiagnosticRevokeAfterResult => {
+                unreachable!("fixture is not used by one-shot jobs")
+            }
         };
         let jobs = completed_jobs(messages, mode)?;
         assert!(matches!(
@@ -396,6 +400,12 @@ fn exercise_job_capacity(messages: &ITfMessagePump) -> std::result::Result<(), F
                 Mode::Disabled => assert_eq!(reply.outcome(), Err(sumibi_ipc::Error::PolicyDenied)),
                 Mode::DiagnosticRevoke => unreachable!("fixture is not used by one-shot jobs"),
                 Mode::DiagnosticRevokeIdle => unreachable!("fixture is not used by one-shot jobs"),
+                Mode::DiagnosticRevokeCoalesced => {
+                    unreachable!("fixture is not used by one-shot jobs")
+                }
+                Mode::DiagnosticRevokeAfterResult => {
+                    unreachable!("fixture is not used by one-shot jobs")
+                }
             }
             assert!(job.try_result().is_none());
             replies.push(reply);

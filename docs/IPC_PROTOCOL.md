@@ -154,6 +154,10 @@ Protocolは22テスト（既存frame 6、session 8、JSON 4、Core模擬接続4�
 再利用ChannelへのEXE worker dispatchと所有STA配送を接続した。既存デモは同じ認証済み子を再利用し、
 取消・失敗後は次の明示操作で新しい接続を作る。取得前Permitは結果配送の最後まで保持する
 （[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)）。
+Client側のpipe受信は1 readに複数frameが含まれても未消費部分を1 read分だけ保持し、
+次のreadより先に処理する。`Ready`直後の失効通知を本文送信前に破棄できることを
+[ADR 0046](adr/0046-inflight-policy-revocation.md)の実子Broker検査で確認した。
+結果の直後に結合された失効通知も、結果を所有側へ返す前に確認して破棄する。
 scope/status/compartmentの保護検査を追加し、実DLLで39ケースを確認した
 （[ADR 0006](adr/0006-input-protection-metadata.md)）。
 同一contextのcompositionを拒否し、実DLL/TSFで16ケースを確認した

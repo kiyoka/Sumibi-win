@@ -2,7 +2,7 @@
 //! Blocking worker-only API: launch/I/O/close/Drop must never run in a TSF or
 //! window callback. No discovery, retry, COM target or UI dispatch is provided.
 use crate::bootstrap::{Launched, Mode};
-use crate::job::{read_event, Reservation};
+use crate::job::{read_event, reject_queued, Inbox, Reservation};
 use crate::{Error, Nonce, PinnedProcess, Pipe, Result, Stop};
 use std::path::Path;
 use std::sync::{Arc, Weak};
@@ -18,6 +18,7 @@ struct Connected {
     // Drop the pipe before stopping/reaping the launched process.
     pipe: Pipe,
     client: ClientSession,
+    inbox: Inbox,
     policy: Policy,
     child: Launched,
 }
@@ -76,12 +77,14 @@ impl Channel {
         let expires = Instant::now() + MAX_LIFETIME;
         let (child, mut pipe, boot) = Launched::connect_channel(path, mode, stop, deadline)?;
         let mut client = ClientSession::new(Nonce::random()?.id(), boot.id());
+        let mut inbox = Inbox::default();
         pipe.write_all(
             client.hello().map_err(|_| Error::InvalidMessage)?,
             stop,
             deadline,
         )?;
-        let Event::Ready(policy) = read_event(&mut pipe, &mut client, stop, deadline)? else {
+        let Event::Ready(policy) = read_event(&mut pipe, &mut client, &mut inbox, stop, deadline)?
+        else {
             return Err(Error::InvalidMessage);
         };
         if !policy.allowed {
@@ -91,6 +94,7 @@ impl Channel {
             connected: Some(Connected {
                 pipe,
                 client,
+                inbox,
                 policy,
                 child,
             }),
@@ -178,17 +182,13 @@ impl Channel {
         }
         // An idle policy notice already queued by the authenticated broker
         // must retire this request before its text is copied into a frame.
-        if connected.pipe.has_data()? {
-            return match read_event(
-                &mut connected.pipe,
-                &mut connected.client,
-                &self.stop,
-                deadline,
-            )? {
-                Event::PolicyChanged { .. } => Err(Error::PolicyDenied),
-                _ => Err(Error::InvalidMessage),
-            };
-        }
+        reject_queued(
+            &mut connected.pipe,
+            &mut connected.client,
+            &mut connected.inbox,
+            &self.stop,
+            deadline,
+        )?;
         let bytes = connected
             .client
             .begin(revision.input, text, milliseconds as u32, Instant::now())
@@ -201,6 +201,7 @@ impl Channel {
         match read_event(
             &mut connected.pipe,
             &mut connected.client,
+            &mut connected.inbox,
             &self.stop,
             deadline,
         )? {
@@ -208,7 +209,16 @@ impl Channel {
                 request,
                 revision: actual,
                 outcome: Outcome::Result(text),
-            } if request == expected && actual == revision => Ok((request, text)),
+            } if request == expected && actual == revision => {
+                reject_queued(
+                    &mut connected.pipe,
+                    &mut connected.client,
+                    &mut connected.inbox,
+                    &self.stop,
+                    deadline,
+                )?;
+                Ok((request, text))
+            }
             Event::PolicyChanged {
                 cancelled: Some(request),
                 ..

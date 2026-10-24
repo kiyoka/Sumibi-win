@@ -178,12 +178,15 @@ fn run(executable: PathBuf, request: Request, stop: &Stop) -> Result<String> {
     let (_child, mut pipe, boot) =
         Launched::connect(&executable, request.mode, stop, request.deadline)?;
     let mut client = ClientSession::new(Nonce::random()?.id(), boot.id());
+    let mut inbox = Inbox::default();
     pipe.write_all(
         client.hello().map_err(|_| Error::InvalidMessage)?,
         stop,
         request.deadline,
     )?;
-    let Event::Ready(policy) = read_event(&mut pipe, &mut client, stop, request.deadline)? else {
+    let Event::Ready(policy) =
+        read_event(&mut pipe, &mut client, &mut inbox, stop, request.deadline)?
+    else {
         return Err(Error::InvalidMessage);
     };
     // Consent/configuration is checked BEFORE constructing/transmitting Convert.
@@ -193,6 +196,7 @@ fn run(executable: PathBuf, request: Request, stop: &Stop) -> Result<String> {
     {
         return Err(Error::PolicyDenied);
     }
+    reject_queued(&mut pipe, &mut client, &mut inbox, stop, request.deadline)?;
     let now = Instant::now();
     let milliseconds = request
         .deadline
@@ -205,35 +209,88 @@ fn run(executable: PathBuf, request: Request, stop: &Stop) -> Result<String> {
     let bytes = client
         .begin(request.revision.input, &request.text, milliseconds, now)
         .map_err(|_| Error::InvalidMessage)?;
+    let expected = client.pending_request().ok_or(Error::InvalidMessage)?;
     drop(request.text);
     pipe.write_all(bytes, stop, request.deadline)?;
-    match read_event(&mut pipe, &mut client, stop, request.deadline)? {
+    match read_event(&mut pipe, &mut client, &mut inbox, stop, request.deadline)? {
         Event::Reply {
+            request: reply_request,
             revision,
             outcome: Outcome::Result(text),
+        } if reply_request == expected && revision == request.revision => {
+            reject_queued(&mut pipe, &mut client, &mut inbox, stop, request.deadline)?;
+            Ok(text)
+        }
+        Event::PolicyChanged {
+            cancelled: Some(cancelled_request),
             ..
-        } if revision == request.revision => Ok(text),
+        } if cancelled_request == expected => Err(Error::PolicyDenied),
         Event::Expired(_) => Err(Error::Timeout),
         _ => Err(Error::InvalidMessage),
+    }
+}
+/// At most one pipe read (4096 bytes) can remain after a framed event. The
+/// session decoder owns partial frames; this inbox owns only unread tail bytes.
+#[derive(Default)]
+pub(crate) struct Inbox {
+    bytes: Vec<u8>,
+    offset: usize,
+}
+impl Inbox {
+    pub(crate) fn has_pending(&self) -> bool {
+        self.offset < self.bytes.len()
+    }
+
+    fn receive(&mut self, client: &mut ClientSession) -> Result<Option<Event>> {
+        if !self.has_pending() {
+            return Ok(None);
+        }
+        let received = client
+            .receive(&self.bytes[self.offset..], Instant::now())
+            .map_err(|_| Error::InvalidMessage)?;
+        if received.consumed == 0 {
+            return Err(Error::InvalidMessage);
+        }
+        self.offset += received.consumed;
+        if !self.has_pending() {
+            self.bytes = Vec::new();
+            self.offset = 0;
+        }
+        Ok(received.event)
     }
 }
 pub(crate) fn read_event(
     pipe: &mut Pipe,
     client: &mut ClientSession,
+    inbox: &mut Inbox,
     stop: &Stop,
     deadline: Instant,
 ) -> Result<Event> {
     loop {
-        let read = pipe.start_read(stop, deadline)?.wait()?;
-        let received = client
-            .receive(&read.bytes, Instant::now())
-            .map_err(|_| Error::InvalidMessage)?;
-        if received.consumed != read.bytes.len() {
-            return Err(Error::InvalidMessage);
+        if !inbox.has_pending() {
+            inbox.bytes = pipe.start_read(stop, deadline)?.wait()?.bytes;
+            inbox.offset = 0;
         }
-        if let Some(event) = received.event {
+        if let Some(event) = inbox.receive(client)? {
             return Ok(event);
         }
+    }
+}
+/// Before sending source or delivering a result, fail closed on any already
+/// queued peer event. The only expected unsolicited event is a policy change.
+pub(crate) fn reject_queued(
+    pipe: &mut Pipe,
+    client: &mut ClientSession,
+    inbox: &mut Inbox,
+    stop: &Stop,
+    deadline: Instant,
+) -> Result<()> {
+    if !inbox.has_pending() && !pipe.has_data()? {
+        return Ok(());
+    }
+    match read_event(pipe, client, inbox, stop, deadline)? {
+        Event::PolicyChanged { .. } => Err(Error::PolicyDenied),
+        _ => Err(Error::InvalidMessage),
     }
 }
 
@@ -241,6 +298,59 @@ pub(crate) fn read_event(
 mod tests {
     use super::*;
     use std::sync::Barrier;
+    use sumibi_protocol::message::{self, Envelope, Id, Message, Policy, Ready, VERSION};
+
+    #[test]
+    fn inbox_keeps_coalesced_policy_notice_after_fragmented_ready() {
+        let session = Id::new(1).unwrap();
+        let broker = Id::new(2).unwrap();
+        let mut client = ClientSession::new(session, broker);
+        client.hello().unwrap();
+        let frame = |message| {
+            message::encode(&Envelope {
+                version: VERSION,
+                session,
+                generation: 1,
+                message,
+            })
+            .unwrap()
+        };
+        let ready = frame(Message::Ready(Ready {
+            broker,
+            policy: Policy {
+                settings: 1,
+                authorization: 1,
+                allowed: true,
+            },
+        }));
+        let revoked = frame(Message::PolicyChanged(Policy {
+            settings: 1,
+            authorization: 2,
+            allowed: false,
+        }));
+        let mut inbox = Inbox {
+            bytes: ready[..3].to_vec(),
+            offset: 0,
+        };
+        assert!(inbox.receive(&mut client).unwrap().is_none());
+        assert!(!inbox.has_pending());
+        inbox.bytes.extend_from_slice(&ready[3..]);
+        inbox.bytes.extend_from_slice(&revoked);
+        assert!(matches!(
+            inbox.receive(&mut client),
+            Ok(Some(Event::Ready(_)))
+        ));
+        assert!(inbox.has_pending());
+        assert!(matches!(
+            inbox.receive(&mut client),
+            Ok(Some(Event::PolicyChanged {
+                policy: Policy { allowed: false, .. },
+                cancelled: None
+            }))
+        ));
+        assert!(!inbox.has_pending());
+    }
+
     #[test]
     fn reservations_are_bounded_and_released_without_starting_workers() {
         let _serial = ADMISSION_TEST.lock().unwrap();

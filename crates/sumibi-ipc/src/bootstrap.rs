@@ -17,6 +17,8 @@ pub enum Mode {
     DiagnosticFixed { delay_ms: u32 },
     DiagnosticRevoke,
     DiagnosticRevokeIdle,
+    DiagnosticRevokeCoalesced,
+    DiagnosticRevokeAfterResult,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Service {
@@ -40,6 +42,8 @@ impl Mode {
             }
             Self::DiagnosticRevoke => Ok("revoke".into()),
             Self::DiagnosticRevokeIdle => Ok("revoke-idle".into()),
+            Self::DiagnosticRevokeCoalesced => Ok("revoke-coalesced".into()),
+            Self::DiagnosticRevokeAfterResult => Ok("revoke-after-result".into()),
             _ => Err(Error::InvalidArgument),
         }
     }
@@ -269,6 +273,8 @@ impl Bootstrap {
             "disabled" => Mode::Disabled,
             "revoke" => Mode::DiagnosticRevoke,
             "revoke-idle" => Mode::DiagnosticRevokeIdle,
+            "revoke-coalesced" => Mode::DiagnosticRevokeCoalesced,
+            "revoke-after-result" => Mode::DiagnosticRevokeAfterResult,
             value => {
                 let delay_ms = value
                     .strip_prefix("fixed:")

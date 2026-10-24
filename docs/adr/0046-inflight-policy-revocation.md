@@ -22,3 +22,12 @@ spikeの待機中失効モードと実子process検査で確認した。
 Broker側での送信直前のポリシー検査もまだない。
 現行Channelは固定ポリシーの診断Brokerを明示起動するworker専用APIであり、
 この検査は利用者の送信同意や製品での即時失効保証を示さない。
+
+続く変更では、byte-stream pipeの1回のreadに複数frameが入っても、client側は
+最初のeventまでを処理して残りを最大1 read分（4096 byte）だけ保持する。
+部分frameは既存の`ClientSession` decoderが保持する。次のreadより先に残りを処理し、
+`Ready`と失効通知を一度のwriteで送る実子Broker、分割`Ready`と結合通知の
+単体検査で確認する。単発jobも同じ受信処理を使い、送信前に残りの通知を調べる。
+結果と失効通知が同じreadに入った場合も、結果を所有側へ返す前に残りの通知を処理し、
+結果を破棄して接続を退役させる。これも専用の実子Broker検査で確認する。
+Server側は要求/応答のlockstepを維持し、pipelined Convertは受け付けない。
