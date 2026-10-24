@@ -21,6 +21,8 @@ mod registration;
 #[cfg(windows)]
 mod render;
 #[cfg(windows)]
+mod system_registration;
+#[cfg(windows)]
 mod window_host;
 #[cfg(windows)]
 mod worker_probe;

@@ -184,6 +184,9 @@ pub(super) fn run() -> Result<(), Failure> {
     if args.len() == 1 && args[0] == "unregister-com-dev" {
         return crate::registration::unregister();
     }
+    if args.first().is_some_and(|arg| arg == "plan-system-dev") {
+        return crate::system_registration::plan(&args[1..]);
+    }
     if args.len() == 1 && args[0] == "broker-worker-test" {
         crate::worker_probe::run()?;
         return Ok(());

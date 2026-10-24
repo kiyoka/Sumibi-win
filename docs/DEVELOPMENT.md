@@ -1,5 +1,25 @@
 # 開発環境と現在の実装範囲
 
+## マシン登録の事前確認
+
+`plan-system-dev`はレジストリを変更せず、64-bitのパッシブTIP DLL、既存CLSIDとの衝突、
+既存TSFサービスとの衝突を検査する。診断用spike DLLは拒否する。
+DLLのエクスポート確認ではDLLをロードするため、信頼できる開発用DLLだけを指定する。
+マシン全体のHKLM COM・TSF登録コマンドはまだ公開しない。
+
+```powershell
+cargo build -p sumibi-setup --locked --offline
+cargo build -p sumibi-tip --locked --offline
+.\target\debug\sumibi-setup.exe plan-system-dev --dll .\target\debug\sumibi_tip.dll
+```
+
+ビルド順はパッシブDLLを最後に置くために重要。事前確認は配置先のACL、署名、
+更新・ロールバックを検証しない。これらを満たすインストーラーを設計してから、
+管理者権限の隔離環境で登録・解除を検証する。
+[TSF登録](https://learn.microsoft.com/en-us/windows/win32/tsf/text-service-registration)と
+[RegisterProfile](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-registerprofile)を参照。
+実装境界は[ADR 0045](adr/0045-machine-registration-boundary.md)に記録する。
+
 ## 開発用COM登録（明示実行のみ）
 
 一般アプリでのロード経路を切り分けるため、現ユーザーの64-bit COM登録を個別に検証できる。
