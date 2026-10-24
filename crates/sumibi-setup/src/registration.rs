@@ -152,7 +152,7 @@ fn server(class: HKEY) -> Result<Key, Failure> {
     Ok(Key(key))
 }
 
-fn registered_path() -> Result<PathBuf, Failure> {
+pub(super) fn registered_path() -> Result<PathBuf, Failure> {
     let class = open_class(KEY_READ)?.ok_or("Sumibi development COM registration is absent")?;
     if get(class.0, Some(MARKER))? != MARKER_VALUE {
         return Err("CLSID is not owned by this development registration".into());

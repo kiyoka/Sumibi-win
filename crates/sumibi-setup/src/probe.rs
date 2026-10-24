@@ -1,4 +1,4 @@
-//! Process-local COM/TSF registration; never modifies the default input profile.
+//! Development TSF probe with either a local COM factory or user COM registration.
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
@@ -178,6 +178,9 @@ pub(super) fn run() -> Result<(), Failure> {
     if args.len() == 1 && args[0] == "verify-com-dev" {
         return crate::registration::verify();
     }
+    if args.len() == 1 && args[0] == "registered-tsf-test-dev" {
+        return registered_tsf_test();
+    }
     if args.len() == 1 && args[0] == "unregister-com-dev" {
         return crate::registration::unregister();
     }
@@ -328,7 +331,7 @@ pub(super) fn run() -> Result<(), Failure> {
                 _ => Exercise::None,
             };
             let cleanup = CleanupLog::default();
-            let result = registered_probe(get_class, *point, &cleanup, exercise);
+            let result = registered_probe(Some(get_class), *point, &cleanup, exercise);
             if !cleanup.borrow().is_empty() {
                 return Err(format!("cleanup failed: {}", cleanup.borrow().join("; ")).into());
             }
@@ -351,34 +354,65 @@ pub(super) fn run() -> Result<(), Failure> {
     Ok(())
 }
 
+fn registered_tsf_test() -> Result<(), Failure> {
+    // This process has no CoRegisterClassObject. TSF must resolve the TIP via
+    // the current-user COM entry verified here. Its language profile remains
+    // local to this process and is removed before returning.
+    let path = crate::registration::registered_path()?;
+    if !path.is_file() {
+        return Err(format!("registered DLL no longer exists: {}", path.display()).into());
+    }
+    // SAFETY: dedicated single-threaded console process; guards release COM
+    // interfaces before balancing initialization.
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
+        let _apartment = Apartment;
+        let cleanup = CleanupLog::default();
+        let result = registered_probe(None, FailAfter::None, &cleanup, Exercise::None);
+        if !cleanup.borrow().is_empty() {
+            return Err(format!("cleanup failed: {}", cleanup.borrow().join("; ")).into());
+        }
+        result?;
+    }
+    println!("Registry-loaded TIP, process-local TSF profile and cleanup: OK");
+    Ok(())
+}
+
 fn registered_probe(
-    get_class: GetClass,
+    get_class: Option<GetClass>,
     fail_after: FailAfter,
     cleanup: &CleanupLog,
     exercise: Exercise,
 ) -> Result<(), Failure> {
-    // SAFETY: caller keeps the DLL and STA apartment alive for this entire
-    // function. All guards are released in reverse registration order.
+    // SAFETY: caller keeps the STA apartment alive. When an explicit factory
+    // is supplied, it also keeps the DLL loaded. All guards are released in
+    // reverse registration order.
     unsafe {
-        let mut output = ptr::null_mut();
-        get_class(
-            &sumibi_tip::CLSID_SUMIBI_TIP,
-            &IClassFactory::IID,
-            &mut output,
-        )
-        .ok()?;
-        let factory = IClassFactory::from_raw(output);
-        let class = ClassRegistration(
-            CoRegisterClassObject(
+        let (factory, class) = if let Some(get_class) = get_class {
+            let mut output = ptr::null_mut();
+            get_class(
                 &sumibi_tip::CLSID_SUMIBI_TIP,
-                &factory,
-                CLSCTX_INPROC_SERVER,
-                REGCLS_MULTIPLEUSE,
+                &IClassFactory::IID,
+                &mut output,
             )
-            .map_err(|e| format!("register local COM class: {e}"))?,
-            cleanup.clone(),
-        );
-        println!("COM factory registered in process");
+            .ok()?;
+            let factory = IClassFactory::from_raw(output);
+            let class = ClassRegistration(
+                CoRegisterClassObject(
+                    &sumibi_tip::CLSID_SUMIBI_TIP,
+                    &factory,
+                    CLSCTX_INPROC_SERVER,
+                    REGCLS_MULTIPLEUSE,
+                )
+                .map_err(|e| format!("register local COM class: {e}"))?,
+                cleanup.clone(),
+            );
+            println!("COM factory registered in process");
+            (Some(factory), Some(class))
+        } else {
+            println!("Using current-user COM registration");
+            (None, None)
+        };
         checkpoint(FailAfter::Class, fail_after)?;
         let profiles: ITfInputProcessorProfileMgr =
             CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)?;

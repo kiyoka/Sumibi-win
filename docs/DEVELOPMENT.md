@@ -10,11 +10,21 @@
 cargo build -p sumibi-tip -p sumibi-setup --locked --offline
 .\target\debug\sumibi-setup.exe register-com-dev --dll .\target\debug\sumibi_tip.dll
 .\target\debug\sumibi-setup.exe verify-com-dev
+.\target\debug\sumibi-setup.exe registered-tsf-test-dev
 .\target\debug\sumibi-setup.exe unregister-com-dev
 ```
 
-このコマンドが登録するのは`HKCU\Software\Classes\CLSID\{E927D4AB-2EC9-4DD3-A921-A4620B95A410}`の
-`InprocServer32`と所有マーカーのみ。TSF言語プロファイル、既定IME、有効化状態には触れない。
+実TSFまで一度に検査する場合はビルド後に `./tools/Test-RegisteredTsf.ps1` を実行する。
+成功・失敗のどちらでもCOM登録の解除を試みる。`registered-tsf-test-dev`は
+`CoRegisterClassObject`を使わず、現ユーザーのCOM登録からDLLを取得して
+`TF_RP_LOCALPROCESS`のTSFプロファイルを有効化・解除する。
+2026-10-24の通常ユーザーのWindowsでは`Test-RegisteredTsf.ps1`が成功した。
+`ITfKeystrokeMgr::GetForeground`がSumibiのCLSIDを返し、終了後にHKCUの登録キーが
+存在しないことを確認した。この検査は専用プロセス内で完結し、一般アプリでの入力や
+恒久TSFプロファイルの登録を確認するものではない。
+
+`register-com-dev`が永続的に登録するのは`HKCU\Software\Classes\CLSID\{E927D4AB-2EC9-4DD3-A921-A4620B95A410}`の
+`InprocServer32`と所有マーカーのみ。恒久TSF言語プロファイルや既定IMEには触れない。
 一般アプリの入力欄で変換できることを示す検査ではない。開発中のDLLを配布・製品登録しない。
 2026-10-24、通常ユーザーのWindowsで登録直後と別プロセスからのCOM生成が成功し、
 解除後に当該HKCUキーが存在しないことと再検証が失敗することを確認した。
