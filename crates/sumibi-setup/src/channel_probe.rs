@@ -62,6 +62,10 @@ fn exercise(default_host: bool) -> Result<()> {
             connect(&path, 0, &Stop::new()?),
             Err(Error::Disconnected | Error::PolicyDenied)
         ));
+        assert!(matches!(
+            Channel::connect(&path, Mode::DiagnosticRevoke, &Stop::new()?, deadline()),
+            Err(Error::Disconnected | Error::PolicyDenied)
+        ));
         println!("Broker channel / default host rejects diagnostic converter: OK");
         return Ok(());
     }
@@ -196,6 +200,24 @@ fn exercise(default_host: bool) -> Result<()> {
         exited(&peer);
     }
     println!("Broker channel / cancellation interrupts pending read and prevents replay: OK");
+    {
+        let mut channel =
+            Channel::connect(&path, Mode::DiagnosticRevoke, &Stop::new()?, deadline())?;
+        let peer = channel.peer_process()?;
+        let revoked = channel.convert(revision(1), "synthetic", deadline());
+        assert!(
+            matches!(revoked, Err(Error::PolicyDenied)),
+            "{:?}",
+            revoked.err()
+        );
+        assert!(channel.is_closed());
+        assert!(matches!(
+            channel.convert(revision(2), "unused", deadline()),
+            Err(Error::Closed)
+        ));
+        exited(&peer);
+    }
+    println!("Broker channel / in-flight revocation retires without a result or replay: OK");
     {
         let mut channel = connect(&path, 1000, &Stop::new()?)?;
         let peer = channel.peer_process()?;

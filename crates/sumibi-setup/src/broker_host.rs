@@ -379,6 +379,7 @@ fn exercise_job_capacity(messages: &ITfMessagePump) -> std::result::Result<(), F
         let label = match mode {
             Mode::DiagnosticFixed { .. } => "success",
             Mode::Disabled => "policy-denied",
+            Mode::DiagnosticRevoke => unreachable!("fixture is not used by one-shot jobs"),
         };
         let jobs = completed_jobs(messages, mode)?;
         assert!(matches!(
@@ -392,6 +393,7 @@ fn exercise_job_capacity(messages: &ITfMessagePump) -> std::result::Result<(), F
             match mode {
                 Mode::DiagnosticFixed { .. } => assert_eq!(reply.outcome(), Ok("日本語")),
                 Mode::Disabled => assert_eq!(reply.outcome(), Err(sumibi_ipc::Error::PolicyDenied)),
+                Mode::DiagnosticRevoke => unreachable!("fixture is not used by one-shot jobs"),
             }
             assert!(job.try_result().is_none());
             replies.push(reply);

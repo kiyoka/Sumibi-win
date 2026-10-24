@@ -113,6 +113,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
     let allowed = match bootstrap.mode {
         Mode::Disabled => false,
         Mode::DiagnosticFixed { .. } if diagnostic_enabled => true,
+        Mode::DiagnosticRevoke if diagnostic_enabled => true,
         _ => return Err(Error::PolicyDenied),
     };
     let server = Server::create(&bootstrap.name)?;
@@ -159,11 +160,26 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 return Err(Error::InvalidMessage);
             };
             accept_request(&convert, policy, &mut last_request)?;
+            let deadline =
+                (Instant::now() + Duration::from_millis(convert.timeout_ms.into())).min(lifetime);
+            if bootstrap.mode == Mode::DiagnosticRevoke {
+                // Exercise a policy change on the authenticated transport while
+                // the client has an outstanding request. No result is sent.
+                pipe.write_all(
+                    message::encode(&envelope(Message::PolicyChanged(Policy {
+                        settings: policy.settings,
+                        authorization: policy.authorization + 1,
+                        allowed: false,
+                    })))
+                    .map_err(|_| Error::InvalidMessage)?,
+                    &bootstrap.stop,
+                    deadline,
+                )?;
+                break;
+            }
             let Mode::DiagnosticFixed { delay_ms } = bootstrap.mode else {
                 return Err(Error::PolicyDenied);
             };
-            let deadline =
-                (Instant::now() + Duration::from_millis(convert.timeout_ms.into())).min(lifetime);
             if wait_stop(&bootstrap.stop, delay_ms.min(convert.timeout_ms))? {
                 return Err(Error::Cancelled);
             }

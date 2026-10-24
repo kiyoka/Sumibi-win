@@ -15,6 +15,7 @@ use windows::Win32::System::Threading::*;
 pub enum Mode {
     Disabled,
     DiagnosticFixed { delay_ms: u32 },
+    DiagnosticRevoke,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Service {
@@ -36,6 +37,7 @@ impl Mode {
             Self::DiagnosticFixed { delay_ms } if delay_ms <= 2000 => {
                 Ok(format!("fixed:{delay_ms}"))
             }
+            Self::DiagnosticRevoke => Ok("revoke".into()),
             _ => Err(Error::InvalidArgument),
         }
     }
@@ -263,6 +265,7 @@ impl Bootstrap {
         let boot = Nonce::from_bootstrap(args[5].to_str().ok_or(Error::InvalidArgument)?)?;
         let mode = match args[6].to_str().ok_or(Error::InvalidArgument)? {
             "disabled" => Mode::Disabled,
+            "revoke" => Mode::DiagnosticRevoke,
             value => {
                 let delay_ms = value
                     .strip_prefix("fixed:")

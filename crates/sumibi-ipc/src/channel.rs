@@ -196,6 +196,10 @@ impl Channel {
                 revision: actual,
                 outcome: Outcome::Result(text),
             } if request == expected && actual == revision => Ok((request, text)),
+            Event::PolicyChanged {
+                cancelled: Some(request),
+                ..
+            } if request == expected => Err(Error::PolicyDenied),
             Event::Expired(_) => Err(Error::Timeout),
             _ => Err(Error::InvalidMessage),
         }
