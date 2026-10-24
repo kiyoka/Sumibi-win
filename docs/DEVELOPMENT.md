@@ -80,6 +80,11 @@ Escで待機を明示取消した場合も、安定した原文の選択を解�
 本文やキーを残さず表示する。2026-10-24、初回前面の安定待ち追加後に通常版59ケース、
 対話版59ケース、通常版adapter26ケースを同じ通常ユーザーの対話desktopで完走し、
 それぞれTSF/COM登録解除とDLLアンロードまで確認した。一般アプリ・物理キーの受入とは区別する。
+同月24日に利用者が`waiting-demo`で`nihongo`→F7→直後に`abc`を実打鍵し、
+本文が「日本語abc」になったことを確認した。×終了後のTSF/COM解除とDLLアンロードも成功。
+同日の省略なし`tools/Test-Spike.ps1`も成功し、Rust 138件、fmt、Clippy 3構成、
+build、基本DLL/TSF、デスクトップ各検査と別プロセスIPCを完走した。
+ログは`target/issue-4-full-regression-2026-10-24.log`。
 認証条件と検証ログは[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)を参照。
 待機adapter26・同期入力174・救済48・通知30・close4とRust136件・静的/基本DLL検査の成功記録がある。
 Backspace55・書記素ホスト22・composition46・broker入力11・追跡25は前段階の成功記録を維持する。

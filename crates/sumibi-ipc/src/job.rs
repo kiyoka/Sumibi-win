@@ -17,6 +17,8 @@ use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObj
 /// Includes reservations, running workers, retained jobs and delivered results.
 pub const MAX_JOBS: usize = 4;
 static JOBS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) static ADMISSION_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Reserve before capturing a target or consuming a conversion key.
 /// The private field prevents callers from constructing an uncounted slot.
@@ -238,8 +240,7 @@ pub(crate) fn read_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Barrier, Mutex};
-    static ADMISSION_TEST: Mutex<()> = Mutex::new(());
+    use std::sync::Barrier;
     #[test]
     fn reservations_are_bounded_and_released_without_starting_workers() {
         let _serial = ADMISSION_TEST.lock().unwrap();

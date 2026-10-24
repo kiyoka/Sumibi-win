@@ -412,6 +412,7 @@ mod tests {
 
     #[test]
     fn stopped_worker_wakes_owner_for_queued_terminal_completion() {
+        let _serial = crate::job::ADMISSION_TEST.lock().unwrap();
         let state = Arc::new(State {
             stop: Stop::new().unwrap(),
             requests: Requests::default(),

@@ -44,6 +44,15 @@
 本書作成は文書作業であり、過去の実行記録を本日再実行したと読み替えない。
 実機手順と個別の条件は[DEVELOPMENT](DEVELOPMENT.md)、[TSF_SPIKE](TSF_SPIKE.md)を参照。
 
+2026-10-24、利用者が専用`waiting-demo`へ`nihongo`→F7→直後に`abc`を実打鍵し、
+「日本語abc」を確認した。×終了後のTSF/COM解除とDLLアンロードも成功した。
+同日の省略なし`tools/Test-Spike.ps1`はRust 138件、fmt、Clippy 3構成、
+build、実DLL/デスクトップ/別プロセスIPCを完走した
+（`target/issue-4-full-regression-2026-10-24.log`）。
+最初の一括回帰は新規IPCテストと既存の共有4枠テストの並列競合で停止し、
+テスト用ロックを共用した後に20回のIPC単体反復と省略なし一括回帰が通った。
+この実打鍵は専用ACPデモであり、Notepad等の一般アプリを受け入れた記録ではない。
+
 Issue #4の追加分（2026-10-21）は[IPC_PROTOCOL](IPC_PROTOCOL.md)に記録する。
 Protocol 22件のうち16件が追加のJSON・session・Core模擬接続であり、基準コミット当時の14件と混同しない。
 製品TSF配送や別プロセス認証を新たに成功とする更新ではない。
