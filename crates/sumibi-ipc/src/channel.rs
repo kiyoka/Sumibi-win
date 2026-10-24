@@ -176,6 +176,19 @@ impl Channel {
         {
             return Err(Error::PolicyDenied);
         }
+        // An idle policy notice already queued by the authenticated broker
+        // must retire this request before its text is copied into a frame.
+        if connected.pipe.has_data()? {
+            return match read_event(
+                &mut connected.pipe,
+                &mut connected.client,
+                &self.stop,
+                deadline,
+            )? {
+                Event::PolicyChanged { .. } => Err(Error::PolicyDenied),
+                _ => Err(Error::InvalidMessage),
+            };
+        }
         let bytes = connected
             .client
             .begin(revision.input, text, milliseconds as u32, Instant::now())

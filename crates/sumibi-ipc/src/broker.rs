@@ -114,6 +114,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         Mode::Disabled => false,
         Mode::DiagnosticFixed { .. } if diagnostic_enabled => true,
         Mode::DiagnosticRevoke if diagnostic_enabled => true,
+        Mode::DiagnosticRevokeIdle if diagnostic_enabled => true,
         _ => return Err(Error::PolicyDenied),
     };
     let server = Server::create(&bootstrap.name)?;
@@ -147,8 +148,30 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
     )?;
     if allowed {
         let lifetime = Instant::now() + crate::channel::MAX_LIFETIME;
+        if bootstrap.mode == Mode::DiagnosticRevokeIdle {
+            // Leave Ready as a separate read in this fixture, then publish a
+            // policy change while the client has no outstanding request.
+            if wait_stop(&bootstrap.stop, 150)? {
+                return Err(Error::Cancelled);
+            }
+            pipe.write_all(
+                message::encode(&envelope(Message::PolicyChanged(Policy {
+                    settings: policy.settings,
+                    authorization: policy.authorization + 1,
+                    allowed: false,
+                })))
+                .map_err(|_| Error::InvalidMessage)?,
+                &bootstrap.stop,
+                (Instant::now() + Duration::from_secs(5)).min(lifetime),
+            )?;
+        }
         let mut last_request = 0;
-        for _ in 0..crate::channel::MAX_REQUESTS {
+        let max_requests = if bootstrap.mode == Mode::DiagnosticRevokeIdle {
+            0
+        } else {
+            crate::channel::MAX_REQUESTS
+        };
+        for _ in 0..max_requests {
             // Lockstep: no pipelined frames, queued text, or unbounded resident
             // lifetime. Peer death and Stop also interrupt an idle read.
             let idle = (Instant::now() + crate::channel::IDLE_TIMEOUT).min(lifetime);

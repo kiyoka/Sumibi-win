@@ -16,6 +16,7 @@ pub enum Mode {
     Disabled,
     DiagnosticFixed { delay_ms: u32 },
     DiagnosticRevoke,
+    DiagnosticRevokeIdle,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Service {
@@ -38,6 +39,7 @@ impl Mode {
                 Ok(format!("fixed:{delay_ms}"))
             }
             Self::DiagnosticRevoke => Ok("revoke".into()),
+            Self::DiagnosticRevokeIdle => Ok("revoke-idle".into()),
             _ => Err(Error::InvalidArgument),
         }
     }
@@ -266,6 +268,7 @@ impl Bootstrap {
         let mode = match args[6].to_str().ok_or(Error::InvalidArgument)? {
             "disabled" => Mode::Disabled,
             "revoke" => Mode::DiagnosticRevoke,
+            "revoke-idle" => Mode::DiagnosticRevokeIdle,
             value => {
                 let delay_ms = value
                     .strip_prefix("fixed:")

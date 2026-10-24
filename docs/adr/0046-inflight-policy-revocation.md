@@ -12,6 +12,13 @@
 子process終了を確認する。通常Hostはこの診断モードを拒否する。
 通知の送信期限は当該要求期限以内に収め、pipeの60秒I/O上限を守る。
 
-製品の設定・認可変更元と通知の発行、idle時に届いた通知を本文送信前に処理する仕組みは
-まだない。現行Channelは固定ポリシーの診断Brokerを明示起動するworker専用APIであり、
+後続の同日変更で、次要求の前に認証済みpipeへ既に溜まった通知を確認する。
+通知があれば本文のframe生成前に読み、`PolicyDenied`で接続を退役させる。
+spikeの待機中失効モードと実子process検査で確認した。
+[PeekNamedPipe](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-peeknamedpipe)
+はpipeからデータを取り除かずに利用可能バイト数を返す。
+
+検査直後に通知が届く競合は残る。製品の設定・認可変更元と通知の発行、
+Broker側での送信直前のポリシー検査もまだない。
+現行Channelは固定ポリシーの診断Brokerを明示起動するworker専用APIであり、
 この検査は利用者の送信同意や製品での即時失効保証を示さない。

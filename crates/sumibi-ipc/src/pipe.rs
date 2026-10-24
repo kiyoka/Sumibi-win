@@ -222,6 +222,25 @@ impl Pipe {
             bytes.drain(..completion.transferred);
         }
     }
+    /// Check only for data already queued on this authenticated, asynchronous
+    /// pipe. The caller still needs server-side policy enforcement for a change
+    /// racing with a subsequent write.
+    pub(crate) fn has_data(&self) -> Result<bool> {
+        self.check()?;
+        let mut available = 0;
+        unsafe {
+            PeekNamedPipe(
+                raw(&self.resource.handle),
+                None,
+                0,
+                None,
+                Some(&mut available),
+                None,
+            )
+            .map_err(classify)?;
+        }
+        Ok(available != 0)
+    }
     fn check(&self) -> Result<()> {
         if self.closed || self.busy || !self.authenticated {
             return Err(Error::Closed);
