@@ -14,7 +14,7 @@
 | 追跡composition | 選択composition 18・所有ホストの入力範囲25・実DLLのcomposition伸縮/初回選択46・同期入力取引174（選択Delete20・記録内移動/前方Delete26・内部挿入20・Shift選択27・記録内選択編集33・文書端移動/選択26を含む）・書記素Backspace 55（内部caret18を含む）・他サービス拒否16ケースを確認 | 一般アプリの行端移動・待機・製品全体の救済・製品InputSession・他IMEとの競合と寿命 |
 | 表示属性 | display.rs / preview.rs。点線、原文保持、属性だけ遅延解除 | 通常アプリでの下線、アクセシビリティ、既存属性との共存 |
 | 変更通知 | notifications.rs。本文・選択・scope・compartment・composition属性・フォーカスで失効。空compositionは所有ホストから取消を転送 | 製品追跡・IPC・候補との統合、一般アプリの未通知履歴 |
-| キー配送 | keys.rs / input_host.rs。専用windowで実TSF経路 | US/JIS配列・変換キー・Terminal・実打鍵 |
+| キー配送 | keys.rs / input_host.rs。専用windowで実TSF経路。待機デモの文字・F7・Enter・F8を利用者が実打鍵 | US/JIS配列・変換キー・Terminal・一般アプリの実打鍵 |
 | Undo/Redo | TextStoreに本文・選択・向きの履歴。固定変換含む | 一般アプリの標準履歴で変換が1回のUndoにまとまる |
 | 描画 | live_render / render / window_host。通知→WM_APP→Frame | 製品候補UIのUIElement、DPI、高コントラスト、読み上げ |
 | 手動待機と救済 | 所有editor救済48。待機Coreの件数/本文量を設定可能とし、専用adapterへ4枠・4096単位を明示。2026-10-24、通常ユーザーの対話desktopで現版の実DLL通常版adapter26・通常版/対話版waiting-demo各59ケース成功、TSF/COM解除・DLLアンロード確認。AppContainer起動は入力受付前に拒否。共有救済を取得前に予約し、待機/通常救済を1画面へ接続（[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)） | 一般アプリでの製品キー・容量/超過/期限/明示破棄とプロセス間政策 |
@@ -52,6 +52,12 @@ build、実DLL/デスクトップ/別プロセスIPCを完走した
 最初の一括回帰は新規IPCテストと既存の共有4枠テストの並列競合で停止し、
 テスト用ロックを共用した後に20回のIPC単体反復と省略なし一括回帰が通った。
 この実打鍵は専用ACPデモであり、Notepad等の一般アプリを受け入れた記録ではない。
+
+同日、対話用の固定結果を2秒に延ばした`waiting-demo`で利用者が`nihongo`→F7→
+直後にEnter→F8を実打鍵し、救済画面が開くことを確認した。終了時の診断値は
+待機開始1・イベント提示1・受入1・開始失敗なし。救済残件数0は終了時点の値であり、
+開画面の否定には使わない。後続の計測は実行中の最大件数と画面作成回数を保持する。
+同じ版の`waiting-demo-test`通常版59ケースとTSF/COM解除・DLLアンロードが成功した。
 
 Issue #4の追加分（2026-10-21）は[IPC_PROTOCOL](IPC_PROTOCOL.md)に記録する。
 Protocol 22件のうち16件が追加のJSON・session・Core模擬接続であり、基準コミット当時の14件と混同しない。

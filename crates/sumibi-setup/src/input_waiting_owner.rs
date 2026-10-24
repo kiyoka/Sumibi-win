@@ -35,6 +35,12 @@ pub(in super::super) struct Owner {
     show: Cell<bool>,
     copy: Cell<Option<Key>>,
     discard: Cell<Option<Key>>,
+    // Diagnostic counts only; never retain text or individual key identities.
+    starts: Cell<u32>,
+    offered: Cell<u32>,
+    admitted: Cell<u32>,
+    peak_recoveries: Cell<usize>,
+    views_opened: Cell<u32>,
 }
 struct Busy<'a>(&'a Cell<bool>);
 impl Drop for Busy<'_> {
@@ -77,7 +83,22 @@ impl Owner {
             show: Cell::new(false),
             copy: Cell::new(None),
             discard: Cell::new(None),
+            starts: Cell::new(0),
+            offered: Cell::new(0),
+            admitted: Cell::new(0),
+            peak_recoveries: Cell::new(0),
+            views_opened: Cell::new(0),
         }
+    }
+    pub(in super::super) fn diagnostics(&self) -> (u32, u32, u32, usize, u32, bool) {
+        (
+            self.starts.get(),
+            self.offered.get(),
+            self.admitted.get(),
+            self.peak_recoveries.get(),
+            self.views_opened.get(),
+            self.start_failed.get(),
+        )
     }
     pub(in super::super) fn active(&self) -> bool {
         self.active.get()
@@ -231,6 +252,7 @@ impl Owner {
             }
             *session = Some(candidate);
             attempt.accepted = true;
+            self.starts.set(self.starts.get().saturating_add(1));
             self.start_failed.set(false);
             self.timed_out.set(false);
             self.capacity_limited.set(false);
@@ -241,12 +263,16 @@ impl Owner {
         if !self.active.get() {
             return Ok(false);
         }
+        self.offered.set(self.offered.get().saturating_add(1));
         self.state(editor, |session| {
             let Some(session) = session else {
                 return Ok(false);
             };
             match session.admit(editor, input) {
-                Ok(()) => Ok(true),
+                Ok(()) => {
+                    self.admitted.set(self.admitted.get().saturating_add(1));
+                    Ok(true)
+                }
                 Err(_) => {
                     if session.capacity_denied {
                         self.capacity_limited.set(true);
@@ -444,6 +470,8 @@ impl Owner {
             }
             editor.rescue.maintain();
             let records = Self::records(editor, session);
+            self.peak_recoveries
+                .set(self.peak_recoveries.get().max(records.len()));
             if shown.as_ref().is_some_and(|v| {
                 Self::metadata(editor, session, v.key).is_none_or(|m| m.copyable != v.view.copyable)
             }) {
@@ -475,6 +503,8 @@ impl Owner {
                 if let Some(text) = text {
                     if let Ok(view) = View::new(window.hwnd(), metadata, &text) {
                         view.position(ordinal + 1, records.len())?;
+                        self.views_opened
+                            .set(self.views_opened.get().saturating_add(1));
                         shown = Some(Shown { key, view });
                     }
                 }

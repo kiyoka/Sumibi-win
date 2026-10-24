@@ -910,7 +910,15 @@ fn run(
                 .cast()?;
             Some((
                 broker,
-                Bridge::new(sumibi_ipc::bootstrap::Mode::DiagnosticFixed { delay_ms: 400 })?,
+                Bridge::new(sumibi_ipc::bootstrap::Mode::DiagnosticFixed {
+                    // Give a person time to exercise the waiting/recovery UI;
+                    // automated cases and the other demos keep their 400 ms peer.
+                    delay_ms: if matches!(mode, RunMode::WaitingDemo) {
+                        2000
+                    } else {
+                        400
+                    },
+                })?,
             ))
         } else {
             None
@@ -1054,6 +1062,15 @@ fn run(
         } else {
             test_input(&window, &editor, &live)
         };
+        if matches!(mode, RunMode::WaitingDemo) {
+            if let Some(owner) = &editor.waiting {
+                let (starts, offered, admitted, peak_recoveries, views_opened, start_failed) =
+                    owner.diagnostics();
+                println!(
+                    "Waiting demo diagnostic: starts={starts}, offered={offered}, admitted={admitted}, peak_recoveries={peak_recoveries}, views_opened={views_opened}, start_failed={start_failed}"
+                );
+            }
+        }
         window.clear_input();
         if let Some(owner) = &editor.waiting {
             owner.close();
