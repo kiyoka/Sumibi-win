@@ -31,11 +31,16 @@ pub struct Reply {
     pub request: u64,
     pub revision: Revision,
     text: String,
+    deadline: Instant,
     _delivery: Arc<Delivery>,
 }
 impl Reply {
-    pub fn text(&self) -> &str {
-        &self.text
+    /// Successful text remains private after the originating request expires.
+    pub fn text(&self) -> Result<&str> {
+        if Instant::now() >= self.deadline {
+            return Err(Error::Timeout);
+        }
+        Ok(&self.text)
     }
 }
 
@@ -134,7 +139,8 @@ impl Channel {
         {
             return Err(Error::InvalidArgument);
         }
-        let result = self.exchange(revision, text, deadline.min(self.expires));
+        let deadline = deadline.min(self.expires);
+        let result = self.exchange(revision, text, deadline);
         match result {
             Ok((request, text)) => {
                 self.completed += 1;
@@ -146,6 +152,7 @@ impl Channel {
                     request,
                     revision,
                     text,
+                    deadline,
                     _delivery: delivery,
                 })
             }

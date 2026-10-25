@@ -81,8 +81,8 @@ impl Completion {
         }
         self.outcome
             .as_ref()
-            .map(|reply| reply.text())
             .map_err(|error| *error)
+            .and_then(|reply| reply.text())
     }
     /// Metadata only, for verifying process reuse; not an authentication API.
     pub fn exchange(&self) -> Option<(u32, u64)> {

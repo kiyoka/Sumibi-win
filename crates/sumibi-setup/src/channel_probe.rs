@@ -140,7 +140,7 @@ fn exercise(default_host: bool) -> Result<()> {
                 (reply.revision.settings, reply.revision.authorization),
                 (1, 1)
             );
-            assert_eq!(reply.text(), "日本語");
+            assert_eq!(reply.text(), Ok("日本語"));
             let current = channel.peer_process()?;
             assert_eq!(
                 unsafe { GetProcessId(HANDLE(current.as_handle().as_raw_handle())) },
@@ -160,6 +160,17 @@ fn exercise(default_host: bool) -> Result<()> {
         exited(&peer);
     }
     println!("Broker channel / sequential requests keep exact launched peer: OK");
+    {
+        let mut channel = connect(&path, 0, &Stop::new()?)?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let reply = channel.convert(revision(1), "synthetic", deadline)?;
+        assert_eq!(reply.text(), Ok("日本語"));
+        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        assert_eq!(reply.text(), Err(Error::Timeout));
+        drop(reply);
+        channel.close();
+    }
+    println!("Broker channel / completed reply expires before late direct read: OK");
     {
         let mut channel = connect(&path, 0, &Stop::new()?)?;
         let reply = channel.convert(revision(1), "fixed", deadline())?;
