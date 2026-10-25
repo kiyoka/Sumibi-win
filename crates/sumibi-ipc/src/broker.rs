@@ -211,6 +211,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         return Err(Error::InvalidMessage);
     };
     let mut ready = message::encode(&ready_frame).map_err(|_| Error::InvalidMessage)?;
+    let mut coalesced_policy = None;
     if bootstrap.mode == Mode::DiagnosticRevokeCoalesced {
         let next = Policy {
             settings: policy.settings,
@@ -223,8 +224,12 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             .map_err(|_| Error::InvalidMessage)?
             .ok_or(Error::InvalidMessage)?;
         ready.extend(message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?);
+        coalesced_policy = Some(next);
     }
     pipe.write_all(ready, &bootstrap.stop, deadline)?;
+    if let Some(policy) = coalesced_policy {
+        order.notice_delivered(policy).map_err(map_broker_error)?;
+    }
     if allowed {
         let lifetime = Instant::now() + crate::channel::MAX_LIFETIME;
         if bootstrap.mode == Mode::DiagnosticRevokeIdle {
@@ -248,6 +253,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 &bootstrap.stop,
                 (Instant::now() + Duration::from_secs(5)).min(lifetime),
             )?;
+            order.notice_delivered(next).map_err(map_broker_error)?;
         }
         let mut last_request = 0;
         let max_requests = if matches!(
@@ -309,6 +315,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                     &bootstrap.stop,
                     idle,
                 )?;
+                order.notice_delivered(latest).map_err(map_broker_error)?;
                 break;
             }
             accept_request(&convert, &gate, &mut last_request)?;
@@ -377,6 +384,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 reply.extend(message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?);
                 drop(convert);
                 pipe.write_all(reply, &bootstrap.stop, deadline)?;
+                order.notice_delivered(next).map_err(map_broker_error)?;
                 break;
             }
             if bootstrap.mode == Mode::DiagnosticRevoke {
@@ -403,6 +411,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                     &bootstrap.stop,
                     deadline,
                 )?;
+                order.notice_delivered(revoked).map_err(map_broker_error)?;
                 break;
             }
             let Mode::DiagnosticFixed { delay_ms } = bootstrap.mode else {

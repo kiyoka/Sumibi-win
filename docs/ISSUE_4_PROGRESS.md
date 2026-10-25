@@ -27,11 +27,12 @@
 - Broker側のHello、要求順序、取消、policy変更、結果期限を`BrokerSession`に集約。
   単発Jobと再利用Channelの実子Hostを接続し、Protocol単体、`broker-test`、
   `broker-channel-test`、`broker-worker-test`、`broker-key-test`で回帰した
+  通知の書込完了前には次要求を受け付けない
   （[ADR 0057](adr/0057-broker-side-session-order.md)）。
 - Hostのpolicy通知カーソルは設定版だけが進んだ場合も新しい状態を返す。
   通常のBroker結果は政策の読取guardをpipe書込まで保持し、更新との順序を
   固定した（[ADR 0058](adr/0058-policy-publication-order.md)）。
-- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で167件成功。
+- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で168件成功。
   現在のサンドボックスでは診断用localhost HTTPの4件が接続不可になるため、同じコマンドを通常ユーザー環境で再実行して切り分けた。
 
 ## 次の受入作業

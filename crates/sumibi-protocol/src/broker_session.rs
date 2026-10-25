@@ -14,6 +14,7 @@ pub enum BrokerError {
     Busy,
     PolicyDenied,
     PolicyRegression,
+    NoticePending,
     InvalidReply,
     Expired,
 }
@@ -51,6 +52,7 @@ pub struct BrokerSession {
     policy: Policy,
     last_request: u64,
     pending: Option<Pending>,
+    undelivered_policy: Option<Policy>,
 }
 
 impl BrokerSession {
@@ -66,6 +68,7 @@ impl BrokerSession {
             policy,
             last_request: 0,
             pending: None,
+            undelivered_policy: None,
         })
     }
 
@@ -80,6 +83,7 @@ impl BrokerSession {
     pub fn disconnect(&mut self) {
         self.status = Status::Closed;
         self.pending = None;
+        self.undelivered_policy = None;
     }
 
     /// Parse/order one complete, already authenticated frame. Every error is
@@ -116,6 +120,9 @@ impl BrokerSession {
         }
         if self.session != Some(envelope.session) || self.generation != envelope.generation {
             return Err(BrokerError::WrongSession);
+        }
+        if self.undelivered_policy.is_some() {
+            return Err(BrokerError::NoticePending);
         }
         match envelope.message {
             Message::Convert(convert) => {
@@ -162,6 +169,9 @@ impl BrokerSession {
         if self.status != Status::Ready {
             return Err(BrokerError::WrongState);
         }
+        if self.undelivered_policy.is_some() {
+            return Err(BrokerError::NoticePending);
+        }
         if next.settings == 0
             || next.authorization == 0
             || next.settings < self.policy.settings
@@ -178,7 +188,19 @@ impl BrokerSession {
         let frame = self.frame(Message::PolicyChanged(next))?;
         let cancelled = self.pending.take().map(|pending| pending.request);
         self.policy = next;
+        self.undelivered_policy = Some(next);
         Ok(Some(PolicyNotice { frame, cancelled }))
+    }
+
+    /// Call only after the complete PolicyChanged frame has been written.
+    /// Failed writes must close the transport instead of acknowledging here.
+    pub fn notice_delivered(&mut self, delivered: Policy) -> Result<(), BrokerError> {
+        if self.status != Status::Ready || self.undelivered_policy != Some(delivered) {
+            self.disconnect();
+            return Err(BrokerError::WrongState);
+        }
+        self.undelivered_policy = None;
+        Ok(())
     }
 
     /// A reply cannot outlive its original request, deadline or policy epoch.
@@ -436,6 +458,7 @@ mod tests {
         let notice = session.update_policy(changed).unwrap().unwrap();
         assert_eq!(notice.cancelled, Some(1));
         assert!(matches!(notice.frame.message, Message::PolicyChanged(_)));
+        session.notice_delivered(changed).unwrap();
         assert!(session
             .result(1, revision(), "旧".into(), now)
             .unwrap()
@@ -558,5 +581,45 @@ mod tests {
             .result(1, revision(), "遅延".into(), now)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn policy_notice_must_be_delivered_before_another_request() {
+        let now = Instant::now();
+        let changed = Policy {
+            settings: 3,
+            ..policy()
+        };
+        let mut session = connected(now);
+        session.update_policy(changed).unwrap().unwrap();
+        let mut current = match convert(1) {
+            Message::Convert(convert) => convert,
+            _ => unreachable!(),
+        };
+        current.revision.settings = 3;
+        assert_eq!(
+            session
+                .receive(frame(Message::Convert(current.clone()), 1), now)
+                .err(),
+            Some(BrokerError::NoticePending)
+        );
+        assert_eq!(session.status(), Status::Closed);
+
+        let mut session = connected(now);
+        session.update_policy(changed).unwrap().unwrap();
+        assert_eq!(
+            session
+                .update_policy(Policy {
+                    settings: 4,
+                    ..changed
+                })
+                .err(),
+            Some(BrokerError::NoticePending)
+        );
+        session.notice_delivered(changed).unwrap();
+        assert!(matches!(
+            session.receive(frame(Message::Convert(current), 1), now),
+            Ok(Event::Convert(_))
+        ));
     }
 }

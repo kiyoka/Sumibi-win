@@ -11,6 +11,9 @@ OS非依存の`BrokerSession`を`sumibi-protocol`へ追加した。
 古い完了は新しい要求を消費せず、未発行の未来番号と異なる接続世代は接続を閉じる。
 結果は要求の版、policyの版、許可、期限、本文を検査してから生成する。
 policy変更は保留中の要求を取り消し、通知frameと取消番号を同時に返す。
+通知frameの書込が完了するまでは次のConvertを受け付けない。
+Brokerは書込後に一致するpolicy版を`notice_delivered`へ渡し、失敗時は
+接続を閉じる。連続変更は通知完了後に適用するか、外側で最新版にまとめる。
 設定版だけの増加を認め、許可の変更には認可版の増加を必須とする。
 
 この型はI/O、OS peer認証、policy変更元、TSF対象を持たない。呼出し側は
@@ -21,7 +24,7 @@ Readyと通常応答を生成する。意図的に不正な未来IDを送る診�
 状態機械を経由せずwire frameを作る。
 
 Protocol単体ではHello誤認、世代違い、二重要求、取消後の古い完了、
-未来Cancel、policy更新、期限ちょうど、期限後の成功拒否、固定Timeout応答を
+未来Cancel、未配送のpolicy通知、期限ちょうど、期限後の成功拒否、固定Timeout応答を
 検査する。実子の`broker-test`、`broker-channel-test`、`broker-worker-test`、
 実DLLの`broker-key-test`で単発・再利用・所有TSF配送を回帰した。
 これらは合成本文と診断用固定結果であり、製品Brokerの常駐・設定配信や
