@@ -25,6 +25,7 @@ function Invoke-Spike {
 
 $previousIncremental = $env:CARGO_INCREMENTAL
 $restoreDefaultHost = $false
+$restorePassiveTip = $false
 Push-Location -LiteralPath $workspacePath
 try {
     $env:CARGO_INCREMENTAL = '0'
@@ -35,6 +36,7 @@ try {
     Invoke-Cargo -Arguments @('clippy', '-p', 'sumibi-tip', '--no-default-features', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings')
     Invoke-Cargo -Arguments @('clippy', '-p', 'sumibi-host', '--all-features', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings')
     Invoke-Cargo -Arguments @('build', '--workspace', '--locked', '--offline')
+    $restorePassiveTip = $true
     Invoke-Cargo -Arguments @('run', '-p', 'sumibi-tip', '--features', 'spike', '--example', 'load_smoke', '--locked', '--offline', '--', 'target/debug/sumibi_tip.dll')
     foreach ($name in @('self-test', 'edit-test', 'key-test')) { Invoke-Spike -Name $name }
     if (!$SkipDesktop) {
@@ -69,8 +71,6 @@ try {
         & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') ipc-peer-test
         if ($LASTEXITCODE -ne 0) { throw 'Two-process pipe check failed; use a normal user session.' }
     }
-    Write-Output 'All selected spike checks passed.'
-    if ($SkipDesktop) { Write-Output 'Desktop window/input/close/delayed/broker/range-target/native-edit/broker-channel/broker-worker/protection/composition/owned-composition/tracking/composing/input-notify/transaction/backspace/grapheme/recovery/waiting/waiting-demo/pipe/peer checks were explicitly skipped.' }
 }
 finally {
     try {
@@ -79,7 +79,16 @@ finally {
         }
     }
     finally {
-        $env:CARGO_INCREMENTAL = $previousIncremental
-        Pop-Location
+        try {
+            if ($restorePassiveTip) {
+                Invoke-Cargo -Arguments @('build', '-p', 'sumibi-tip', '--locked', '--offline')
+            }
+        }
+        finally {
+            $env:CARGO_INCREMENTAL = $previousIncremental
+            Pop-Location
+        }
     }
 }
+Write-Output 'All selected spike checks passed; passive TIP and default Host restored.'
+if ($SkipDesktop) { Write-Output 'Desktop window/input/close/delayed/broker/range-target/native-edit/broker-channel/broker-worker/protection/composition/owned-composition/tracking/composing/input-notify/transaction/backspace/grapheme/recovery/waiting/waiting-demo/pipe/peer checks were explicitly skipped.' }

@@ -71,7 +71,8 @@
   `tools/Test-Broker.ps1`で既定Host拒否、実子Channel 24件、Worker 14件を
   正しいビルド順で再確認した。
   `tools/Test-Spike.ps1 -SkipDesktop`も成功し、終了後の既定Host拒否を
-  実子Channelで再確認した。省略なしの対話検査は今回実行していない。
+  実子Channelで再確認した。パッシブTIP DLLの事前確認も成功した。
+  省略なしの対話検査は今回実行していない。
   現在のサンドボックスでは診断用localhost HTTPの4件が接続不可になるため、同じコマンドを通常ユーザー環境で再実行して切り分けた。
 
 ## 次の受入作業
