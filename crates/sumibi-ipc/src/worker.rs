@@ -248,11 +248,15 @@ impl Worker {
         }
         Ok(())
     }
+    /// Reap the worker outside callbacks. This stops in-flight work but does
+    /// not revoke an already received completion; call cancel(id) for that.
     pub fn shutdown(&mut self, timeout: Duration) -> Result<()> {
         if timeout > Duration::from_secs(3) {
             return Err(Error::InvalidArgument);
         }
-        self.state.cancelled.store(true, Ordering::Release);
+        // Stop pending I/O and reap the thread. A result already received by
+        // the owner remains valid until its deadline unless cancel(id) was
+        // explicitly requested; teardown is not a late owner cancellation.
         self.state.closed.store(true, Ordering::Release);
         self.state.stop.cancel()?;
         match unsafe { WaitForSingleObject(raw(&self.done), timeout.as_millis() as u32) } {
@@ -268,7 +272,6 @@ impl Worker {
 }
 impl Drop for Worker {
     fn drop(&mut self) {
-        self.state.cancelled.store(true, Ordering::Release);
         self.state.closed.store(true, Ordering::Release);
         let _ = self.state.stop.cancel();
     }

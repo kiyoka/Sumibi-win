@@ -127,6 +127,8 @@ transportの総接続数・送信容量・受信容量の上限、消費前の�
 送信キューへcancelを置けないときはtransportを閉じる。期限切れはexpireと受信の両方で確認し、
 期限ちょうども非適用とする。呼出し側は最新の単調時刻を渡す。
 古いsession・接続世代・要求番号、完了済み重複はIgnoredとなり、現在の要求を消費しない。
+発行していない未来の要求番号に対するresult/errorは順序違反として接続を閉じる。
+実装と検査の理由は[ADR 0056](adr/0056-future-reply-id-is-terminal.md)に記録する。
 対応する要求の版不一致、受信方向違い、不正フレーム／JSON／版、途中EOFは終端化する。
 有効な対応応答は一度だけ取り出すが、これだけでTSF編集を許可しない。
 
@@ -138,7 +140,7 @@ ManualConversion.finishを呼ぶ。対象・範囲・選択・同長別本文・
 cancel、EOF、通信エラー、期限切れ、policy変更では所有側がCore.cancelも呼ぶ契約を検証する。
 送信キュー満杯も再送せず、接続とCore要求を失効させる。
 
-Protocolは22テスト（既存frame 6、session 8、JSON 4、Core模擬接続4）。
+Protocolは23テスト（既存frame 6、session 9、JSON 4、Core模擬接続4）。
 偽の固定ID・合成本文だけを使い、解析エラーに元の本文を含めない。
 これは製品Core→実pipe→実TSF編集の縦断試験ではなく、既存DLLやdemoにもまだ接続していない。
 次段階のsumibi-ipcは、BCrypt乱数と起動ハンドルの明示継承、SID/PID/作成時刻の相互検査、

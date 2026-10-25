@@ -7,7 +7,7 @@ use sumibi_core::{RequestId, Revision};
 use sumibi_tip::edit::{input_status_denial, manual::ManualEdit, EditPolicy, InputStatusDenial};
 use windows::core::{s, w, Interface, Result, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{
-    FreeLibrary, E_ABORT, E_ACCESSDENIED, E_NOINTERFACE, HMODULE, HWND, LPARAM, WPARAM,
+    FreeLibrary, E_ABORT, E_ACCESSDENIED, E_NOINTERFACE, HMODULE, HWND, LPARAM, S_OK, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::{
     GetModuleHandleW, GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
@@ -263,5 +263,85 @@ pub(crate) fn exercise_native_edit(
         }
     }
     println!("Native RichEdit: 7 rejection scenarios passed; conversion and standard Undo remain unsupported");
+    inspect_standard_edit(manager, &messages)?;
+    Ok(())
+}
+
+fn inspect_standard_edit(manager: &ITfThreadMgr, messages: &ITfMessagePump) -> Result<()> {
+    // A stock EDIT child is a separate native target from RichEdit. Only
+    // inspect metadata; never infer support from successful window focus.
+    unsafe {
+        let parent = crate::window_host::Window::new(manager)?;
+        let hwnd = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("EDIT"),
+            w!(""),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(ES_MULTILINE as u32),
+            10,
+            10,
+            620,
+            140,
+            Some(parent.hwnd()),
+            None,
+            None,
+            None,
+        )?;
+        struct EditWindow(HWND);
+        impl Drop for EditWindow {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = DestroyWindow(self.0);
+                }
+            }
+        }
+        let _edit = EditWindow(hwnd);
+        SetWindowTextW(hwnd, w!("prefix nihongo suffix"))?;
+        SendMessageW(hwnd, EM_EMPTYUNDOBUFFER, None, None);
+        let before = sumibi_tip::spike::SumibiSpikeBodyReadCount();
+        let _ = SetFocus(Some(hwnd));
+        pump_tsf_messages(messages)?;
+        assert_eq!(GetFocus(), hwnd);
+        // A successful COM call with a null interface pointer is surfaced by
+        // the windows crate as Err(S_OK). Distinguish both TSF stages.
+        let document = match manager.GetFocus() {
+            Ok(document) => Some(document),
+            Err(error) if error.code() == S_OK => {
+                println!("Native EDIT / no TSF focused document");
+                None
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(document) = document {
+            match document.GetTop() {
+                Ok(context) => match context.GetStatus() {
+                    Ok(status) => {
+                        let denial = input_status_denial(status);
+                        assert!(
+                            denial.is_some(),
+                            "standard EDIT status changed; review compatibility before authorizing body access"
+                        );
+                        println!(
+                            "Native EDIT / denied ({denial:?}, dynamic={:#x}, static={:#x})",
+                            status.dwDynamicFlags, status.dwStaticFlags
+                        );
+                    }
+                    Err(error) if error.code() == TF_E_EMPTYCONTEXT => {
+                        println!("Native EDIT / empty TSF context: {:?}", error.code())
+                    }
+                    Err(error) => return Err(error),
+                },
+                Err(error) if error.code() == S_OK => println!("Native EDIT / no TSF top context"),
+                Err(error) => return Err(error),
+            }
+        }
+        assert_eq!(sumibi_tip::spike::SumibiSpikeBodyReadCount(), before);
+        assert_eq!(SendMessageW(hwnd, EM_CANUNDO, None, None).0, 0);
+        let mut buffer = vec![0u16; 64];
+        let len = GetWindowTextW(hwnd, &mut buffer);
+        assert_eq!(
+            String::from_utf16(&buffer[..len as usize]).unwrap(),
+            "prefix nihongo suffix"
+        );
+    }
     Ok(())
 }

@@ -312,10 +312,18 @@ impl ClientSession {
         now: Instant,
     ) -> Result<Event, SessionError> {
         let Some(pending) = &self.pending else {
-            return Ok(Event::Ignored);
+            return if request <= self.last_request {
+                Ok(Event::Ignored)
+            } else {
+                Err(SessionError::UnexpectedMessage)
+            };
         };
         if request != pending.request {
-            return Ok(Event::Ignored);
+            return if request < pending.request {
+                Ok(Event::Ignored)
+            } else {
+                Err(SessionError::UnexpectedMessage)
+            };
         }
         if revision != pending.revision {
             return Err(SessionError::RevisionMismatch);
@@ -488,6 +496,50 @@ mod tests {
             deliver(&mut client, reply(3), now),
             Event::Ignored
         ));
+    }
+
+    #[test]
+    fn future_reply_ids_close_the_connection_but_old_replies_are_ignored() {
+        let now = Instant::now();
+        let future_error = Message::Error(ConversionError {
+            request: 2,
+            revision: Revision {
+                input: 1,
+                settings: 2,
+                authorization: 3,
+            },
+            code: ErrorCode::Unavailable,
+        });
+        for message in [reply(2), future_error] {
+            let mut client = connected(now);
+            client.begin(1, "fixed", 100, now).unwrap();
+            assert_eq!(
+                client.receive(&frame(message, 1), now).err(),
+                Some(SessionError::UnexpectedMessage)
+            );
+            assert_eq!(client.status(), Status::Closed);
+            assert_eq!(client.pending_request(), None);
+        }
+
+        let mut client = connected(now);
+        assert_eq!(
+            client.receive(&frame(reply(1), 1), now).err(),
+            Some(SessionError::UnexpectedMessage)
+        );
+        assert_eq!(client.status(), Status::Closed);
+
+        let mut client = connected(now);
+        client.begin(1, "fixed", 100, now).unwrap();
+        client.cancel().unwrap();
+        assert!(matches!(
+            deliver(&mut client, reply(1), now),
+            Event::Ignored
+        ));
+        assert_eq!(
+            client.receive(&frame(reply(2), 1), now).err(),
+            Some(SessionError::UnexpectedMessage)
+        );
+        assert_eq!(client.status(), Status::Closed);
     }
 
     #[test]

@@ -221,6 +221,30 @@ pub(super) fn run() -> Result<()> {
     }
     println!("Reusable worker / cancellation after completion blocks delivery: OK");
     {
+        let mut worker = worker(mode())?;
+        worker.submit(worker.reserve(1)?, request(1, mode()))?;
+        let reply = wait(&worker)?;
+        assert_eq!(reply.outcome(), Ok("日本語"));
+        worker.shutdown(Duration::from_secs(3))?;
+        assert_eq!(reply.outcome(), Ok("日本語"));
+        assert_eq!(reply.exchange().map(|(_, wire)| wire), Some(1));
+        drop(worker);
+        assert_eq!(reply.outcome(), Ok("日本語"));
+        drop(reply);
+    }
+    println!("Reusable worker / cleanup preserves completed result until deadline: OK");
+    {
+        let mut worker = worker(mode())?;
+        worker.submit(worker.reserve(1)?, request(1, mode()))?;
+        let reply = wait(&worker)?;
+        worker.shutdown(Duration::from_secs(3))?;
+        assert_eq!(reply.outcome(), Ok("日本語"));
+        worker.cancel(1)?;
+        assert_eq!(reply.outcome(), Err(Error::Cancelled));
+        assert!(reply.exchange().is_none());
+    }
+    println!("Reusable worker / explicit cancellation after cleanup still blocks delivery: OK");
+    {
         let mode = Mode::DiagnosticFixed { delay_ms: 0 };
         let mut worker = worker(mode)?;
         for wire in 1..=sumibi_ipc::channel::MAX_REQUESTS {

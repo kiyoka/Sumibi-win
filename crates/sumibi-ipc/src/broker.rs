@@ -167,6 +167,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         Mode::DiagnosticRegrantAfterResult if diagnostic_enabled => true,
         Mode::DiagnosticRevokeAtAccept if diagnostic_enabled => true,
         Mode::DiagnosticRegrantAtAccept if diagnostic_enabled => true,
+        Mode::DiagnosticFutureReply if diagnostic_enabled => true,
         _ => return Err(Error::PolicyDenied),
     };
     let server = Server::create(&bootstrap.name)?;
@@ -284,6 +285,24 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             accept_request(&convert, &gate, &mut last_request)?;
             let deadline =
                 (Instant::now() + Duration::from_millis(convert.timeout_ms.into())).min(lifetime);
+            if bootstrap.mode == Mode::DiagnosticFutureReply {
+                let future = convert
+                    .request
+                    .checked_add(1)
+                    .ok_or(Error::InvalidMessage)?;
+                let reply = Message::Result(ConversionResult {
+                    request: future,
+                    revision: convert.revision,
+                    text: "日本語".into(),
+                });
+                drop(convert);
+                pipe.write_all(
+                    message::encode(&envelope(reply)).map_err(|_| Error::InvalidMessage)?,
+                    &bootstrap.stop,
+                    deadline,
+                )?;
+                break;
+            }
             if matches!(
                 bootstrap.mode,
                 Mode::DiagnosticRevokeAfterResult | Mode::DiagnosticRegrantAfterResult

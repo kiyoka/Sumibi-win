@@ -10,7 +10,7 @@
 | OS非依存Core | core/lib.rsのManualConversionとinput.rsの有限InputSession。所有ホストの実入力を1024 UTF-16単位まで記録。recovery.rsに有限救済とDeferred。waiting_input.rsの待機FIFOを専用adapter/デモへ接続 | 製品キーと容量/期限、追跡・候補・手動／自動の統合 |
 | COMとDLL | tip/com.rs、build.rs。factory・独立lease・所有thread・解除再試行 | 一般アプリにロードされる常設登録と更新時の寿命 |
 | TSF編集 | tip/edit.rsとmanual_edit.rs。generic保持range、同期read/write、全文照合、Core gate、IPC結果の一度だけ適用。専用所有contextで検証。[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md) | 非ACP入力先の実検証、製品キーとの統合、一般アプリの対象分類と編集 |
-| 保護入力 | protection.rs。scope/status/compartmentの肯定検査、取得・source・適用時の再検査。実DLLで39ケース。statusの固定診断コードと標準RichEditの拒否7構成を追加（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)） | 一般アプリの実スコープ・独自機密欄・判定不能時の動作確認 |
+| 保護入力 | protection.rs。scope/status/compartmentの肯定検査、取得・source・適用時の再検査。実DLLで39ケース。statusの固定診断コード、標準RichEditの拒否7構成、標準EDITのcontext不在観測を追加（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)） | 一般アプリの実スコープ・独自機密欄・判定不能時の動作確認 |
 | 追跡composition | 選択composition 18・所有ホストの入力範囲25・実DLLのcomposition伸縮/初回選択46・同期入力取引174（選択Delete20・記録内移動/前方Delete26・内部挿入20・Shift選択27・記録内選択編集33・文書端移動/選択26を含む）・書記素Backspace 55（内部caret18を含む）・他サービス拒否16ケースを確認 | 一般アプリの行端移動・待機・製品全体の救済・製品InputSession・他IMEとの競合と寿命 |
 | 表示属性 | display.rs / preview.rs。点線、原文保持、属性だけ遅延解除 | 通常アプリでの下線、アクセシビリティ、既存属性との共存 |
 | 変更通知 | notifications.rs。本文・選択・scope・compartment・composition属性・フォーカスで失効。空compositionは所有ホストから取消を転送 | 製品追跡・IPC・候補との統合、一般アプリの未通知履歴 |
@@ -18,12 +18,15 @@
 | Undo/Redo | TextStoreに本文・選択・向きの履歴。固定変換含む | 一般アプリの標準履歴で変換が1回のUndoにまとまる |
 | 描画 | live_render / render / window_host。通知→WM_APP→Frame | 製品候補UIのUIElement、DPI、高コントラスト、読み上げ |
 | 手動待機と救済 | 所有editor救済48。待機Coreの件数/本文量を設定可能とし、専用adapterへ4枠・4096単位を明示。2026-10-24、通常ユーザーの対話desktopで実DLL通常版adapter26・通常版waiting-demo59ケース、修飾付き変換キーの非消費を含む現行対話版61ケースが成功。AppContainer起動は入力受付前に拒否。共有救済を取得前に予約し、待機/通常救済を1画面へ接続（[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)） | 一般アプリでの製品キー・容量/超過/期限/明示破棄とプロセス間政策。変換キーの実打鍵は未確認 |
-| Protocol / Broker | 有限フレーム・JSON・client状態、固定process相互検査・8 endpoint・overlapped pipe。単発Host・容量4（完了済みjob・受取済み結果も含む）・各1結果。[ADR 0015](adr/0015-broker-admission-through-delivery.md)。実DLLキー・Core・実TSFから診断用EXE bridgeを通す経路も検証。EXE再利用workerへ実DLLキー・所有STA配送を接続し、25ケースを検証（[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)）。認証済みpipe上の進行中/待機中失効と再同意後の旧結果破棄を診断Hostで検証（[ADR 0046](adr/0046-inflight-policy-revocation.md)）。Broker側で要求受付時・結果返却前の政策版を再検査し、受付直前の失効を実子processで確認（[ADR 0050](adr/0050-broker-side-policy-gate.md)）。許可・読取状態の復元後も旧結果を拒否する実子Broker/TSF縦断検査を追加（[ADR 0051](adr/0051-restored-protection-and-consent-broker-regression.md)）。再許可後に届く旧要求も実子Brokerの受付で拒否（[ADR 0052](adr/0052-reconsent-before-broker-acceptance.md)）。完成済み結果は直接Channel読取時と所有側配送時の両方で期限を再検査（[ADR 0053](adr/0053-expire-completed-broker-results-at-delivery.md)）。単発Jobの完成後明示取消でも旧本文を拒否（[ADR 0054](adr/0054-one-shot-completion-cancellation.md)） | 製品Broker発見・常駐dispatch、設定/認可変更元と全接続への実配送、一般アプリ内の配置と入力統合。AppContainerは初期非対応 |
+| Protocol / Broker | 有限フレーム・JSON・client状態、固定process相互検査・8 endpoint・overlapped pipe。単発Host・容量4（完了済みjob・受取済み結果も含む）・各1結果。[ADR 0015](adr/0015-broker-admission-through-delivery.md)。実DLLキー・Core・実TSFから診断用EXE bridgeを通す経路も検証。EXE再利用workerへ実DLLキー・所有STA配送を接続し、25ケースを検証（[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)）。認証済みpipe上の進行中/待機中失効と再同意後の旧結果破棄を診断Hostで検証（[ADR 0046](adr/0046-inflight-policy-revocation.md)）。Broker側で要求受付時・結果返却前の政策版を再検査し、受付直前の失効を実子processで確認（[ADR 0050](adr/0050-broker-side-policy-gate.md)）。許可・読取状態の復元後も旧結果を拒否する実子Broker/TSF縦断検査を追加（[ADR 0051](adr/0051-restored-protection-and-consent-broker-regression.md)）。再許可後に届く旧要求も実子Brokerの受付で拒否（[ADR 0052](adr/0052-reconsent-before-broker-acceptance.md)）。完成済み結果は直接Channel読取時と所有側配送時の両方で期限を再検査（[ADR 0053](adr/0053-expire-completed-broker-results-at-delivery.md)）。単発Jobの完成後明示取消でも旧本文を拒否（[ADR 0054](adr/0054-one-shot-completion-cancellation.md)）。再利用Workerは後片付けと明示取消を分離（[ADR 0055](adr/0055-reusable-worker-completion-cleanup.md)） | 製品Broker発見・常駐dispatch、設定/認可変更元と全接続への実配送、一般アプリ内の配置と入力統合。AppContainerは初期非対応 |
 | HTTP | 製品通信は未実装。Host内の手動送信ゲートで接続先識別子・同意・版・資格情報・期限を送信前/結果返却前に検査する（[ADR 0047](adr/0047-host-manual-send-gate.md)）。ローカル模擬HTTPで送信形式・転送拒否・応答上限・期限・失敗分類を検証（[ADR 0048](adr/0048-diagnostic-loopback-http.md)）。固定文字列の診断Brokerを維持 | 製品API契約、非同期WinHTTPの取消/TLS/プロキシ、設定/資格情報と同意UIへの接続 |
 | 設定・資格情報 | Host内メモリーの一貫した設定・認可スナップショットを追加。接続先・キー変更、同意付与・取消で版と送信可否を更新。IPC用の秘密を含まない政策値と変更カーソルを追加し、型付きProtocolで取消と旧結果拒否を検証（[ADR 0049](adr/0049-host-in-memory-policy-authority.md)）。保存・UI・Credential Manager・実IPC配送は未実装 | 形式版・原子的保存・秘密分離・認可取消の実配送・破損回復 |
 | 追加候補・辞書 | 未実装。Mac移植範囲に目的を記録 | 件数決定・現在候補・出所・索引ハッシュ・LICENSE |
 | Decisions | 未実装。Mac契約を参照した後続案 | API再確認、独立同意、固定窓、永続回数予約、手動優先 |
 | 導入・更新・配布 | 現ユーザーの開発用COM登録・別プロセス生成確認・解除とプロセス内TSF検査が成功。パッシブDLL限定の読取専用マシン登録事前確認を追加。HKLM/恒久TSF登録コードは配置先ACL・署名・更新設計の後に実装する。spike DLLは配布不可 | 保護配置、署名、マシン登録実証、Host起動、更新・削除・旧版復旧 |
+
+2026-10-25、未発行の未来要求番号を持つBroker応答を接続異常として拒否し、
+認証済み実子processで退役と再送不可を確認した（[ADR 0056](adr/0056-future-reply-id-is-terminal.md)）。
 
 ## 2. Windowsで実行済みの検証
 
@@ -288,6 +291,7 @@ Coreへ同時予約と解放等の5件を追加し、workspace 71件・fmt・各
 | --- | --- | --- |
 | 専用sumibi-setup | 自動試験成功。2026-10-23にtransaction-demoで利用者が`nihongo`入力、F7変換、Ctrl+Z復元、×終了を目視確認 | Shift選択・IME切替、別デモの実打鍵 |
 | 専用window内の標準RichEdit | native TSFの拒否7構成を自動確認。隠し文字なしの保証がなく変換は未対応 | 肯定的な保護情報・領域境界の扱いを決定してから変換/標準Undo |
+| 専用window内の標準EDIT | 今回のWindows 11環境ではHWND focus後もTSFのfocused documentなし。本文読取・Undo・変更なしを自動確認 | document/context提供条件の調査と、取得できた環境での保護情報確認 |
 | Notepad | 未検証 | 通常入力・選択・Enter/Esc・1回Undo・読取専用 |
 | VS Code | 未検証 | editorと検索欄、複数文書、キー競合 |
 | Chromium系 | 未検証 | input / textarea / contenteditable、長文、パスワード |
