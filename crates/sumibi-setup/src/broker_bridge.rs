@@ -136,8 +136,19 @@ impl Bridge {
             }
         };
         if completion.id != pending {
-            // Never retire a newer target on an unrelated completion.
-            return Ok(None);
+            // A consumed completion cannot wake this pending request again.
+            // Retire both identities instead of leaving the owner loop stuck
+            // with a live target and an empty result queue.
+            self.last_worker_error
+                .set(Some(sumibi_ipc::Error::InvalidMessage));
+            self.pending.set(None);
+            if let Some(worker) = self.worker.borrow().as_ref() {
+                let _ = worker.cancel(completion.id);
+            }
+            unsafe {
+                let _ = control.Cancel(pending);
+            }
+            return Ok(Some(Delivery::Discarded));
         }
         self.pending.set(None);
         self.exchange.set(completion.exchange());
