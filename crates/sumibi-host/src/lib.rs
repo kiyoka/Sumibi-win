@@ -2,4 +2,5 @@
 //! persistent settings or credential-store access is contained here.
 #![forbid(unsafe_code)]
 
+pub mod diagnostic_http;
 pub mod manual;

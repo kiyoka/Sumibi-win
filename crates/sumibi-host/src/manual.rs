@@ -123,9 +123,14 @@ pub trait PolicySource {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportError {
+    InvalidRequest,
     Connection,
     Timeout,
     Http,
+    Redirect,
+    Authentication,
+    RateLimited,
+    ResponseTooLarge,
     InvalidResponse,
 }
 
