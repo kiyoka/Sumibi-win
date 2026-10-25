@@ -38,10 +38,12 @@ pub(crate) fn exercise_broker(
             "selection-restored",
             "focus-restored",
             "revoke",
+            "revoke-regranted",
             "settings",
             "readonly",
             "write-denied",
             "read-denied",
+            "read-restored",
             "timeout",
             "wrong-request",
             "wrong-revision",
@@ -195,11 +197,16 @@ pub(crate) fn exercise_broker(
                         .is_err());
                     assert_eq!(sumibi_tip::spike::SumibiSpikeBodyReadCount(), reads);
                 }
-                "revoke" => {
+                "revoke" | "revoke-regranted" => {
                     let mut changed = policy.get();
                     changed.allowed = false;
                     changed.revision.authorization += 1;
                     policy.set(changed);
+                    if case == "revoke-regranted" {
+                        changed.allowed = true;
+                        changed.revision.authorization += 1;
+                        policy.set(changed);
+                    }
                 }
                 "settings" => {
                     let mut changed = policy.get();
@@ -208,7 +215,7 @@ pub(crate) fn exercise_broker(
                 }
                 "readonly" => store.get().readonly.set(true),
                 "write-denied" => store.get().deny_lock.set(true),
-                "read-denied" => {
+                "read-denied" | "read-restored" => {
                     // TSF may retain text in its own cache. The host must report
                     // loss of availability; an unannounced GetText limit alone
                     // does not revoke already cached data or an edit cookie.
@@ -221,6 +228,13 @@ pub(crate) fn exercise_broker(
                         .clone()
                         .ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
                     sink.OnStatusChange(TS_SD_LOADING)?;
+                    pump_tsf_messages(&messages)?;
+                    if case == "read-restored" {
+                        store.get().read_limit.set(usize::MAX);
+                        store.get().dynamic_status.set(0);
+                        sink.OnStatusChange(0)?;
+                        pump_tsf_messages(&messages)?;
+                    }
                 }
                 _ => {}
             }
