@@ -733,6 +733,15 @@ mod tests {
             .result(2, 1, revision, "日本語".into(), now)
             .unwrap()
             .is_some());
+        fanout.receive(2, convert(2, 2, policy()), now).unwrap();
+        assert!(matches!(
+            fanout
+                .error(2, 2, revision, ErrorCode::Timeout, deadline)
+                .unwrap()
+                .unwrap()
+                .message,
+            Message::Error(_)
+        ));
         assert!(matches!(
             fanout.receive(1, convert(1, 2, policy()), deadline),
             Ok(Event::Convert(_))
