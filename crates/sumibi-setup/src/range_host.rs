@@ -24,6 +24,8 @@ pub(crate) fn exercise_ranges(
             "apply-direction",
             "apply-text",
             "apply-client",
+            "apply-object-result",
+            "apply-oversize-result",
             "cancel-before-source",
             "cancel-after-source",
             "cancel-repeat",
@@ -200,6 +202,18 @@ pub(crate) fn exercise_ranges(
                             policy.get().revision,
                             "日本語".into(),
                         )
+                        .is_err());
+                    assert_eq!(sumibi_tip::spike::SumibiSpikeBodyReadCount(), before);
+                    assert_eq!(store.get().set_text_calls.get(), 0);
+                    assert!(store.get().undo.borrow().is_empty());
+                } else if case == "apply-object-result" || case == "apply-oversize-result" {
+                    let replacement = if case == "apply-object-result" {
+                        "日本\u{fffc}語".into()
+                    } else {
+                        "😀".repeat(513)
+                    };
+                    assert!(ticket
+                        .finish(manager, client, id, policy.get().revision, replacement)
                         .is_err());
                     assert_eq!(sumibi_tip::spike::SumibiSpikeBodyReadCount(), before);
                     assert_eq!(store.get().set_text_calls.get(), 0);

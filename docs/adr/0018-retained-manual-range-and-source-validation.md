@@ -109,4 +109,5 @@ Core 98テストでゼロ値、原文超過、補助面文字を含む結果超�
 `ManualEdit`がcapture時に保持したclient IDと、finishを呼ぶ側のclient IDが
 異なる場合、write sessionより前に拒否する。`range-target-test`の実TSF
 17ケース目で別clientを指定し、本文読み直し・SetText・Undo履歴がないことと
-COM/TSF解除を確認した。
+COM/TSF解除を確認した。さらに同じ経路で結果中の`U+FFFC`と1024 UTF-16単位を
+超える補助面文字列も拒否し、実TSFの`range-target-test`は19ケースとなった。
