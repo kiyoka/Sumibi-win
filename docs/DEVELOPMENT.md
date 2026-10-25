@@ -69,6 +69,8 @@ Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCE
 まとめて検証する場合は通常ユーザーのPowerShellで `./tools/Test-Spike.ps1` を実行する。
 Rust workspaceの通常版と`sumibi-host/spike`診断版を両方検査する。
 途中失敗で停止し、既定では専用ウィンドウとログオンSID限定pipeも検証する。
+省略なし実行では診断Hostをビルドするため、成功・失敗時とも終了処理で
+既定拒否Hostへ再ビルドする。`-SkipDesktop`は通常版のworkspaceビルドを維持する。
 画面を使用できない環境では `-SkipDesktop` を明示し、未実行の検査を成功扱いにしない。
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は

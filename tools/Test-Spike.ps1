@@ -24,6 +24,7 @@ function Invoke-Spike {
 }
 
 $previousIncremental = $env:CARGO_INCREMENTAL
+$restoreDefaultHost = $false
 Push-Location -LiteralPath $workspacePath
 try {
     $env:CARGO_INCREMENTAL = '0'
@@ -39,6 +40,7 @@ try {
     if (!$SkipDesktop) {
         & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') broker-channel-denied-test
         if ($LASTEXITCODE -ne 0) { throw 'Default Host broker channel rejection check failed.' }
+        $restoreDefaultHost = $true
         Invoke-Cargo -Arguments @('build', '-p', 'sumibi-host', '--features', 'spike', '--locked', '--offline')
         & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') broker-channel-test
         if ($LASTEXITCODE -ne 0) { throw 'Reusable broker channel check failed.' }
@@ -71,6 +73,13 @@ try {
     if ($SkipDesktop) { Write-Output 'Desktop window/input/close/delayed/broker/range-target/native-edit/broker-channel/broker-worker/protection/composition/owned-composition/tracking/composing/input-notify/transaction/backspace/grapheme/recovery/waiting/waiting-demo/pipe/peer checks were explicitly skipped.' }
 }
 finally {
-    $env:CARGO_INCREMENTAL = $previousIncremental
-    Pop-Location
+    try {
+        if ($restoreDefaultHost) {
+            Invoke-Cargo -Arguments @('build', '-p', 'sumibi-host', '--locked', '--offline')
+        }
+    }
+    finally {
+        $env:CARGO_INCREMENTAL = $previousIncremental
+        Pop-Location
+    }
 }
