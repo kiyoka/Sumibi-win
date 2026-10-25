@@ -300,6 +300,14 @@ impl PolicyFanout {
         result.map_err(FanoutError::Broker)
     }
 
+    /// Retire one request when its local deadline passes. The caller owns the
+    /// timer and may then close the transport or send a timeout response.
+    /// A later worker completion cannot publish the expired result.
+    pub fn expire(&mut self, key: u64, now: Instant) -> Result<Option<u64>, FanoutError> {
+        let index = self.index(key)?;
+        Ok(self.subscribers[index].session.expire(now))
+    }
+
     pub fn detach(&mut self, key: u64) -> bool {
         if let Ok(index) = self.index(key) {
             let mut subscriber = self.subscribers.remove(index);
@@ -323,6 +331,8 @@ mod tests {
     use super::*;
     use crate::broker_session::Event;
     use crate::message::{Convert, Hello, VERSION};
+    use crate::session::{ClientSession, Event as ClientEvent, Outcome};
+    use crate::Decoder;
 
     fn id(value: u128) -> Id {
         Id::new(value).unwrap()
@@ -369,6 +379,13 @@ mod tests {
         let ready = fanout.attach(key, hello(client), now).unwrap();
         fanout.ready_delivered(key).unwrap();
         ready
+    }
+
+    fn decode_frame(bytes: &[u8]) -> Envelope {
+        let mut decoder = Decoder::default();
+        let decoded = decoder.decode(bytes).unwrap();
+        assert_eq!(decoded.consumed, bytes.len());
+        crate::message::decode(decoded.body.unwrap()).unwrap()
     }
 
     #[test]
@@ -685,5 +702,92 @@ mod tests {
         fanout.ready_delivered(2).unwrap();
         fanout.notice_delivered(2, changed).unwrap();
         assert!(fanout.pending_notice(2).unwrap().is_none());
+    }
+
+    #[test]
+    fn expiry_is_scoped_to_one_connection_and_discards_late_completion() {
+        let now = Instant::now();
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        attach_ready(&mut fanout, 1, 1, now);
+        attach_ready(&mut fanout, 2, 2, now);
+        fanout.receive(1, convert(1, 1, policy()), now).unwrap();
+        fanout.receive(2, convert(2, 1, policy()), now).unwrap();
+        let deadline = now + std::time::Duration::from_millis(1000);
+        assert_eq!(fanout.expire(1, deadline).unwrap(), Some(1));
+        assert_eq!(fanout.expire(1, deadline).unwrap(), None);
+        let revision = Revision {
+            input: 1,
+            settings: 1,
+            authorization: 1,
+        };
+        assert!(fanout
+            .result(1, 1, revision, "古い".into(), deadline)
+            .unwrap()
+            .is_none());
+        assert!(fanout
+            .result(2, 1, revision, "日本語".into(), now)
+            .unwrap()
+            .is_some());
+        assert!(matches!(
+            fanout.receive(1, convert(1, 2, policy()), deadline),
+            Ok(Event::Convert(_))
+        ));
+    }
+
+    #[test]
+    fn client_reconnect_and_broker_replay_floor_agree_on_real_frames() {
+        let now = Instant::now();
+        let mut client = ClientSession::new(id(1), id(90));
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        let ready = fanout
+            .attach(1, decode_frame(&client.hello().unwrap()), now)
+            .unwrap();
+        let ready_bytes = crate::message::encode(&ready).unwrap();
+        assert!(matches!(
+            client.receive(&ready_bytes, now).unwrap().event,
+            Some(ClientEvent::Ready(_))
+        ));
+        fanout.ready_delivered(1).unwrap();
+
+        let first = client.begin(1, "nihongo", 1000, now).unwrap();
+        assert!(matches!(
+            fanout.receive(1, decode_frame(&first), now),
+            Ok(Event::Convert(convert)) if convert.request == 1
+        ));
+        assert!(fanout.detach(1));
+        client.disconnect();
+
+        let reconnect = client.reconnect(id(90)).unwrap();
+        let ready = fanout.attach(2, decode_frame(&reconnect), now).unwrap();
+        let ready_bytes = crate::message::encode(&ready).unwrap();
+        assert!(matches!(
+            client.receive(&ready_bytes, now).unwrap().event,
+            Some(ClientEvent::Ready(_))
+        ));
+        fanout.ready_delivered(2).unwrap();
+        let second = client.begin(2, "nihongo", 1000, now).unwrap();
+        let Event::Convert(convert) = fanout.receive(2, decode_frame(&second), now).unwrap() else {
+            panic!("expected Convert");
+        };
+        assert_eq!(convert.request, 2);
+        assert!(fanout
+            .result(2, 1, convert.revision, "古い".into(), now)
+            .unwrap()
+            .is_none());
+        let result = fanout
+            .result(2, 2, convert.revision, "日本語".into(), now)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            client
+                .receive(&crate::message::encode(&result).unwrap(), now)
+                .unwrap()
+                .event,
+            Some(ClientEvent::Reply {
+                request: 2,
+                outcome: Outcome::Result(ref text),
+                ..
+            }) if text == "日本語"
+        ));
     }
 }
