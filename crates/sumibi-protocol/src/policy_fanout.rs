@@ -21,6 +21,7 @@ pub enum FanoutError {
     Unknown,
     InvalidPolicy,
     NoNotice,
+    NoticeNotClaimed,
     StaleNotice,
     ReadyPending,
     NoReady,
@@ -33,6 +34,7 @@ struct Subscriber {
     session: BrokerSession,
     ready_pending: bool,
     notice: Option<PolicyNotice>,
+    notice_claimed: bool,
 }
 
 struct SeenSession {
@@ -76,17 +78,19 @@ impl PolicyFanout {
         self.subscribers.len()
     }
 
-    /// Copy at most one pending notice per live connection while holding the
-    /// Fanout lock. The caller releases that lock before pipe I/O and confirms
-    /// the exact policy epoch after each complete write.
-    pub fn pending_writes(&self) -> Vec<(u64, PolicyNotice)> {
+    /// Claim each unscheduled notice exactly once while holding the Fanout
+    /// lock. Release that lock before pipe I/O, then confirm the exact policy
+    /// epoch after each complete write. A failed write requires detach.
+    pub fn pending_writes(&mut self) -> Vec<(u64, PolicyNotice)> {
         self.subscribers
-            .iter()
+            .iter_mut()
             .filter_map(|subscriber| {
-                subscriber
-                    .notice
-                    .as_ref()
-                    .map(|notice| (subscriber.key, notice.clone()))
+                if subscriber.notice_claimed {
+                    return None;
+                }
+                let notice = subscriber.notice.as_ref()?.clone();
+                subscriber.notice_claimed = true;
+                Some((subscriber.key, notice))
             })
             .collect()
     }
@@ -169,6 +173,7 @@ impl PolicyFanout {
             session,
             ready_pending: true,
             notice: None,
+            notice_claimed: false,
         });
         self.last_key = key;
         self.attachments += 1;
@@ -206,6 +211,7 @@ impl PolicyFanout {
             match subscriber.session.update_policy(next) {
                 Ok(Some(notice)) => {
                     subscriber.notice = Some(notice);
+                    subscriber.notice_claimed = false;
                     true
                 }
                 _ => {
@@ -241,6 +247,10 @@ impl PolicyFanout {
             self.detach(key);
             return Err(FanoutError::NoNotice);
         };
+        if !self.subscribers[index].notice_claimed {
+            self.detach(key);
+            return Err(FanoutError::NoticeNotClaimed);
+        }
         if !matches!(notice.frame.message, Message::PolicyChanged(policy) if policy == delivered) {
             self.detach(key);
             return Err(FanoutError::StaleNotice);
@@ -250,6 +260,7 @@ impl PolicyFanout {
             return Err(FanoutError::Broker(error));
         }
         self.subscribers[index].notice = None;
+        self.subscribers[index].notice_claimed = false;
         Ok(())
     }
 
@@ -396,6 +407,10 @@ mod tests {
         fanout.ready_delivered(key).unwrap();
         ready
     }
+    fn deliver(fanout: &mut PolicyFanout, key: u64, policy: Policy) -> Result<(), FanoutError> {
+        let _ = fanout.pending_writes();
+        fanout.notice_delivered(key, policy)
+    }
 
     fn decode_frame(bytes: &[u8]) -> Envelope {
         let mut decoder = Decoder::default();
@@ -436,8 +451,8 @@ mod tests {
             )
             .unwrap()
             .is_none());
-        fanout.notice_delivered(1, revoked).unwrap();
-        fanout.notice_delivered(2, revoked).unwrap();
+        deliver(&mut fanout, 1, revoked).unwrap();
+        deliver(&mut fanout, 2, revoked).unwrap();
         assert!(matches!(
             fanout.receive(1, convert(1, 2, revoked), now),
             Err(FanoutError::Broker(BrokerError::PolicyDenied))
@@ -463,7 +478,7 @@ mod tests {
             ..policy()
         };
         fanout.publish(first).unwrap();
-        fanout.notice_delivered(1, first).unwrap();
+        deliver(&mut fanout, 1, first).unwrap();
         let second = Policy {
             settings: 3,
             ..policy()
@@ -612,7 +627,7 @@ mod tests {
             Err(FanoutError::Broker(BrokerError::NoticePending))
         ));
         assert_eq!(fanout.active_count(), 1);
-        fanout.notice_delivered(2, changed).unwrap();
+        deliver(&mut fanout, 2, changed).unwrap();
         assert!(matches!(
             fanout.receive(2, convert(2, 1, changed), now),
             Ok(Event::Convert(_))
@@ -635,8 +650,8 @@ mod tests {
             first_writes.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
             [1, 2]
         );
-        fanout.notice_delivered(1, first).unwrap();
-        fanout.notice_delivered(2, first).unwrap();
+        deliver(&mut fanout, 1, first).unwrap();
+        deliver(&mut fanout, 2, first).unwrap();
         let second = Policy {
             settings: 3,
             ..policy()
@@ -647,7 +662,7 @@ mod tests {
             Message::PolicyChanged(policy) if policy == first
         ));
         assert_eq!(
-            fanout.notice_delivered(first_writes[0].0, first),
+            deliver(&mut fanout, first_writes[0].0, first),
             Err(FanoutError::StaleNotice)
         );
         assert_eq!(fanout.active_count(), 1);
@@ -656,7 +671,7 @@ mod tests {
             Err(FanoutError::Unknown)
         ));
         assert!(fanout.pending_notice(2).unwrap().is_some());
-        fanout.notice_delivered(2, second).unwrap();
+        deliver(&mut fanout, 2, second).unwrap();
         assert!(matches!(
             fanout.receive(2, convert(2, 1, second), now),
             Ok(Event::Convert(_))
@@ -674,17 +689,37 @@ mod tests {
             ..policy()
         };
         fanout.publish(changed).unwrap();
-        fanout.notice_delivered(1, changed).unwrap();
-        assert_eq!(
-            fanout.notice_delivered(1, changed),
-            Err(FanoutError::NoNotice)
-        );
+        deliver(&mut fanout, 1, changed).unwrap();
+        assert_eq!(deliver(&mut fanout, 1, changed), Err(FanoutError::NoNotice));
         assert_eq!(fanout.active_count(), 1);
-        fanout.notice_delivered(2, changed).unwrap();
+        deliver(&mut fanout, 2, changed).unwrap();
         assert!(matches!(
             fanout.receive(2, convert(2, 1, changed), now),
             Ok(Event::Convert(_))
         ));
+    }
+
+    #[test]
+    fn each_notice_is_claimed_once_before_write_completion() {
+        let now = Instant::now();
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        attach_ready(&mut fanout, 1, 1, now);
+        attach_ready(&mut fanout, 2, 2, now);
+        let changed = Policy {
+            settings: 2,
+            ..policy()
+        };
+        fanout.publish(changed).unwrap();
+        assert_eq!(
+            fanout.notice_delivered(1, changed),
+            Err(FanoutError::NoticeNotClaimed)
+        );
+        let writes = fanout.pending_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, 2);
+        assert!(fanout.pending_writes().is_empty());
+        fanout.notice_delivered(2, changed).unwrap();
+        assert_eq!(fanout.active_count(), 1);
     }
 
     #[test]
@@ -720,12 +755,12 @@ mod tests {
         fanout.attach(2, hello(2), now).unwrap();
         fanout.publish(changed).unwrap();
         assert_eq!(
-            fanout.notice_delivered(1, changed),
+            deliver(&mut fanout, 1, changed),
             Err(FanoutError::ReadyPending)
         );
         assert_eq!(fanout.active_count(), 1);
         fanout.ready_delivered(2).unwrap();
-        fanout.notice_delivered(2, changed).unwrap();
+        deliver(&mut fanout, 2, changed).unwrap();
         assert!(fanout.pending_notice(2).unwrap().is_none());
     }
 

@@ -235,7 +235,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         if !gate.publish(&mut order, next)?.is_empty() {
             return Err(Error::InvalidMessage);
         }
-        let (notice, _) = pending_notice(&order)?;
+        let (notice, _) = pending_notice(&mut order)?;
         ready.extend(notice);
         coalesced_policy = Some(next);
     }
@@ -264,7 +264,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             if !gate.publish(&mut order, next)?.is_empty() {
                 return Err(Error::InvalidMessage);
             }
-            let (notice, _) = pending_notice(&order)?;
+            let (notice, _) = pending_notice(&mut order)?;
             pipe.write_all(
                 notice,
                 &bootstrap.stop,
@@ -329,7 +329,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 {
                     return Err(Error::InvalidMessage);
                 }
-                let (notice, cancelled) = pending_notice(&order)?;
+                let (notice, cancelled) = pending_notice(&mut order)?;
                 if cancelled != Some(convert.request) {
                     return Err(Error::InvalidMessage);
                 }
@@ -399,7 +399,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 if !gate.publish(&mut order, next)?.is_empty() {
                     return Err(Error::InvalidMessage);
                 }
-                let (notice, cancelled) = pending_notice(&order)?;
+                let (notice, cancelled) = pending_notice(&mut order)?;
                 if cancelled.is_some() {
                     return Err(Error::InvalidMessage);
                 }
@@ -425,7 +425,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 if gate.authorize(convert.revision) != Err(Error::PolicyDenied) {
                     return Err(Error::InvalidMessage);
                 }
-                let (notice, cancelled) = pending_notice(&order)?;
+                let (notice, cancelled) = pending_notice(&mut order)?;
                 if cancelled != Some(convert.request) {
                     return Err(Error::InvalidMessage);
                 }
@@ -496,11 +496,15 @@ fn map_fanout_error(error: FanoutError) -> Error {
     }
 }
 
-fn pending_notice(order: &PolicyFanout) -> Result<(Vec<u8>, Option<u64>)> {
-    let notice = order
-        .pending_notice(DIAGNOSTIC_CONNECTION)
-        .map_err(map_fanout_error)?
-        .ok_or(Error::InvalidMessage)?;
+fn pending_notice(order: &mut PolicyFanout) -> Result<(Vec<u8>, Option<u64>)> {
+    let mut writes = order.pending_writes();
+    if writes.len() != 1 {
+        return Err(Error::InvalidMessage);
+    }
+    let (key, notice) = writes.pop().ok_or(Error::InvalidMessage)?;
+    if key != DIAGNOSTIC_CONNECTION {
+        return Err(Error::InvalidMessage);
+    }
     Ok((
         message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?,
         notice.cancelled,

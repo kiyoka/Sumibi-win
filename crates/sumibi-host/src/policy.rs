@@ -631,8 +631,10 @@ mod tests {
             }),
             Err(sumibi_ipc::Error::PolicyDenied)
         );
+        let writes = fanout.pending_writes();
+        assert_eq!(writes.len(), clients.len());
         for (index, client) in clients.iter_mut().enumerate() {
-            let notice = fanout.pending_notice((index + 1) as u64).unwrap().unwrap();
+            let notice = &writes[index].1;
             let frame = message::encode(&notice.frame).unwrap();
             let cancelled = if index == 0 { Some(1) } else { None };
             assert!(matches!(
@@ -708,7 +710,8 @@ mod tests {
             }),
             Err(sumibi_ipc::Error::PolicyDenied)
         );
-        let notice = &fanout.pending_notice(1).unwrap().unwrap().frame;
+        let writes = fanout.pending_writes();
+        let notice = &writes[0].1.frame;
         assert!(matches!(
             client.receive(&message::encode(notice).unwrap(), now).unwrap().event,
             Some(Event::PolicyChanged { cancelled: Some(1), policy }) if policy == latest
