@@ -614,6 +614,7 @@ mod tests {
                 client.receive(&ready, now).unwrap().event,
                 Some(Event::Ready(_))
             ));
+            fanout.ready_delivered((index + 1) as u64).unwrap();
         }
         let convert = clients[0].begin(1, "nihongo", 1000, now).unwrap();
         fanout.receive(1, decode_frame(&convert), now).unwrap();

@@ -234,6 +234,9 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         coalesced_policy = Some(next);
     }
     pipe.write_all(ready, &bootstrap.stop, deadline)?;
+    order
+        .ready_delivered(DIAGNOSTIC_CONNECTION)
+        .map_err(map_fanout_error)?;
     if let Some(delivered) = coalesced_policy {
         order
             .notice_delivered(DIAGNOSTIC_CONNECTION, delivered)
@@ -718,6 +721,7 @@ mod tests {
                 Instant::now(),
             )
             .unwrap();
+        fanout.ready_delivered(1).unwrap();
         assert!(gate.publish(&mut fanout, advanced).unwrap().is_empty());
         assert!(gate.snapshot().unwrap() == advanced);
         assert!(fanout.policy() == advanced);

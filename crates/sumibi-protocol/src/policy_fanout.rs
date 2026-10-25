@@ -10,12 +10,15 @@ pub const MAX_SESSIONS: usize = 8;
 pub enum FanoutError {
     InvalidKey,
     Duplicate,
+    StaleKey,
     DuplicateSession,
     Full,
     Unknown,
     InvalidPolicy,
     NoNotice,
     StaleNotice,
+    ReadyPending,
+    NoReady,
     Broker(BrokerError),
 }
 
@@ -23,6 +26,7 @@ struct Subscriber {
     key: u64,
     session_id: Id,
     session: BrokerSession,
+    ready_pending: bool,
     notice: Option<PolicyNotice>,
 }
 
@@ -33,6 +37,7 @@ pub struct PolicyFanout {
     broker: Id,
     policy: Policy,
     subscribers: Vec<Subscriber>,
+    last_key: u64,
 }
 
 impl PolicyFanout {
@@ -44,6 +49,7 @@ impl PolicyFanout {
             broker,
             policy,
             subscribers: Vec::new(),
+            last_key: 0,
         })
     }
 
@@ -56,6 +62,8 @@ impl PolicyFanout {
     }
 
     /// The transport must authenticate its OS peer before calling attach.
+    /// Keys increase for this Broker lifetime and are never reused after
+    /// detach, so delayed write callbacks cannot address a new connection.
     pub fn attach(
         &mut self,
         key: u64,
@@ -71,6 +79,9 @@ impl PolicyFanout {
             .any(|subscriber| subscriber.key == key)
         {
             return Err(FanoutError::Duplicate);
+        }
+        if key <= self.last_key {
+            return Err(FanoutError::StaleKey);
         }
         let session_id = hello.session;
         if self
@@ -92,9 +103,23 @@ impl PolicyFanout {
             key,
             session_id,
             session,
+            ready_pending: true,
             notice: None,
         });
+        self.last_key = key;
         Ok(ready)
+    }
+
+    /// A newly attached transport must finish writing Ready before it can
+    /// receive source text or acknowledge a later policy notice.
+    pub fn ready_delivered(&mut self, key: u64) -> Result<(), FanoutError> {
+        let index = self.index(key)?;
+        if !self.subscribers[index].ready_pending {
+            self.detach(key);
+            return Err(FanoutError::NoReady);
+        }
+        self.subscribers[index].ready_pending = false;
+        Ok(())
     }
 
     /// Return keys whose transports must be closed. Updates are all-or-retire:
@@ -143,6 +168,10 @@ impl PolicyFanout {
     /// completion for an older epoch retires this subscriber.
     pub fn notice_delivered(&mut self, key: u64, delivered: Policy) -> Result<(), FanoutError> {
         let index = self.index(key)?;
+        if self.subscribers[index].ready_pending {
+            self.detach(key);
+            return Err(FanoutError::ReadyPending);
+        }
         let Some(notice) = self.subscribers[index].notice.as_ref() else {
             self.detach(key);
             return Err(FanoutError::NoNotice);
@@ -166,6 +195,10 @@ impl PolicyFanout {
         now: Instant,
     ) -> Result<Event, FanoutError> {
         let index = self.index(key)?;
+        if self.subscribers[index].ready_pending {
+            self.detach(key);
+            return Err(FanoutError::ReadyPending);
+        }
         let result = self.subscribers[index].session.receive(frame, now);
         if result.is_err() {
             self.subscribers.remove(index);
@@ -268,13 +301,18 @@ mod tests {
             }),
         }
     }
+    fn attach_ready(fanout: &mut PolicyFanout, key: u64, client: u128, now: Instant) -> Envelope {
+        let ready = fanout.attach(key, hello(client), now).unwrap();
+        fanout.ready_delivered(key).unwrap();
+        ready
+    }
 
     #[test]
     fn revocation_reaches_each_connection_before_another_request() {
         let now = Instant::now();
         let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
-        fanout.attach(1, hello(1), now).unwrap();
-        fanout.attach(2, hello(2), now).unwrap();
+        attach_ready(&mut fanout, 1, 1, now);
+        attach_ready(&mut fanout, 2, 2, now);
         fanout.receive(1, convert(1, 1, policy()), now).unwrap();
         let revoked = Policy {
             authorization: 2,
@@ -307,7 +345,7 @@ mod tests {
             fanout.receive(1, convert(1, 2, revoked), now),
             Err(FanoutError::Broker(BrokerError::PolicyDenied))
         ));
-        let ready = fanout.attach(3, hello(3), now).unwrap();
+        let ready = attach_ready(&mut fanout, 3, 3, now);
         assert!(matches!(ready.message, Message::Ready(ready) if !ready.policy.allowed));
     }
 
@@ -316,7 +354,7 @@ mod tests {
         let now = Instant::now();
         let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
         for key in 1..=MAX_SESSIONS as u64 {
-            fanout.attach(key, hello(key.into()), now).unwrap();
+            attach_ready(&mut fanout, key, key.into(), now);
         }
         assert_eq!(fanout.active_count(), MAX_SESSIONS);
         assert!(matches!(
@@ -340,7 +378,7 @@ mod tests {
             fanout.pending_notice(2),
             Err(FanoutError::Unknown)
         ));
-        let ready = fanout.attach(9, hello(9), now).unwrap();
+        let ready = attach_ready(&mut fanout, 9, 9, now);
         assert!(matches!(ready.message, Message::Ready(ready) if ready.policy.settings == 3));
     }
 
@@ -348,7 +386,7 @@ mod tests {
     fn live_connections_cannot_claim_the_same_session_identity() {
         let now = Instant::now();
         let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
-        fanout.attach(1, hello(1), now).unwrap();
+        attach_ready(&mut fanout, 1, 1, now);
         assert!(matches!(
             fanout.attach(2, hello(1), now),
             Err(FanoutError::DuplicateSession)
@@ -359,10 +397,23 @@ mod tests {
     }
 
     #[test]
+    fn retired_transport_key_cannot_name_a_new_connection() {
+        let now = Instant::now();
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        attach_ready(&mut fanout, 1, 1, now);
+        assert!(fanout.detach(1));
+        assert!(matches!(
+            fanout.attach(1, hello(2), now),
+            Err(FanoutError::StaleKey)
+        ));
+        assert!(fanout.attach(2, hello(2), now).is_ok());
+    }
+
+    #[test]
     fn failed_publication_leaves_every_session_at_previous_epoch() {
         let now = Instant::now();
         let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
-        fanout.attach(1, hello(1), now).unwrap();
+        attach_ready(&mut fanout, 1, 1, now);
         assert!(matches!(
             fanout.publish(Policy {
                 allowed: false,
@@ -382,8 +433,8 @@ mod tests {
     fn input_before_notice_delivery_retires_only_that_connection() {
         let now = Instant::now();
         let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
-        fanout.attach(1, hello(1), now).unwrap();
-        fanout.attach(2, hello(2), now).unwrap();
+        attach_ready(&mut fanout, 1, 1, now);
+        attach_ready(&mut fanout, 2, 2, now);
         let changed = Policy {
             settings: 2,
             ..policy()
@@ -405,8 +456,8 @@ mod tests {
     fn late_write_completion_cannot_acknowledge_a_newer_notice() {
         let now = Instant::now();
         let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
-        fanout.attach(1, hello(1), now).unwrap();
-        fanout.attach(2, hello(2), now).unwrap();
+        attach_ready(&mut fanout, 1, 1, now);
+        attach_ready(&mut fanout, 2, 2, now);
         let first = Policy {
             settings: 2,
             ..policy()
@@ -440,8 +491,8 @@ mod tests {
     fn duplicate_write_completion_retires_that_connection() {
         let now = Instant::now();
         let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
-        fanout.attach(1, hello(1), now).unwrap();
-        fanout.attach(2, hello(2), now).unwrap();
+        attach_ready(&mut fanout, 1, 1, now);
+        attach_ready(&mut fanout, 2, 2, now);
         let changed = Policy {
             settings: 2,
             ..policy()
@@ -458,5 +509,47 @@ mod tests {
             fanout.receive(2, convert(2, 1, changed), now),
             Ok(Event::Convert(_))
         ));
+    }
+
+    #[test]
+    fn source_before_ready_write_completion_retires_only_its_connection() {
+        let now = Instant::now();
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        fanout.attach(1, hello(1), now).unwrap();
+        fanout.attach(2, hello(2), now).unwrap();
+        assert!(matches!(
+            fanout.receive(1, convert(1, 1, policy()), now),
+            Err(FanoutError::ReadyPending)
+        ));
+        assert_eq!(fanout.active_count(), 1);
+        fanout.ready_delivered(2).unwrap();
+        assert!(matches!(
+            fanout.receive(2, convert(2, 1, policy()), now),
+            Ok(Event::Convert(_))
+        ));
+        assert_eq!(fanout.ready_delivered(2), Err(FanoutError::NoReady));
+        assert_eq!(fanout.active_count(), 0);
+    }
+
+    #[test]
+    fn coalesced_notice_still_waits_for_complete_ready_write() {
+        let now = Instant::now();
+        let changed = Policy {
+            authorization: 2,
+            allowed: false,
+            ..policy()
+        };
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        fanout.attach(1, hello(1), now).unwrap();
+        fanout.attach(2, hello(2), now).unwrap();
+        fanout.publish(changed).unwrap();
+        assert_eq!(
+            fanout.notice_delivered(1, changed),
+            Err(FanoutError::ReadyPending)
+        );
+        assert_eq!(fanout.active_count(), 1);
+        fanout.ready_delivered(2).unwrap();
+        fanout.notice_delivered(2, changed).unwrap();
+        assert!(fanout.pending_notice(2).unwrap().is_none());
     }
 }
