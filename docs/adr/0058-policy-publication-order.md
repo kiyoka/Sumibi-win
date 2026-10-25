@@ -14,6 +14,9 @@ Hostの通知カーソルは設定版または認可版のどちらかが進め�
 `PolicyChanged`を返す。設定版だけの進行を不正と扱っていた条件を修正した。
 未来版のカーソルは拒否する。Protocol、Broker、Hostは設定版だけの更新を
 同じ規則で扱う。
+ClientSession、BrokerSession、PolicyFanout、BrokerPolicyGateの版遷移判定は
+`Policy::follows`へ集約した。設定版だけの増加は有効、版の巻き戻りと
+認可版を進めない許可変更は無効という同じ表を使う。
 
 このguardはBrokerからのwire書込とBroker内の政策更新の順序だけを
 固定する。clientが書込済み結果をいつ読むか、所有TSFスレッドがいつ編集するか

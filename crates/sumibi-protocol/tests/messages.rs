@@ -26,6 +26,67 @@ fn policy() -> Policy {
 }
 
 #[test]
+fn shared_policy_transition_accepts_settings_only_and_requires_new_authority_for_permission() {
+    let previous = policy();
+    for (next, accepted) in [
+        (previous, true),
+        (
+            Policy {
+                settings: 3,
+                ..previous
+            },
+            true,
+        ),
+        (
+            Policy {
+                authorization: 4,
+                allowed: false,
+                ..previous
+            },
+            true,
+        ),
+        (
+            Policy {
+                settings: 3,
+                authorization: 4,
+                allowed: false,
+            },
+            true,
+        ),
+        (
+            Policy {
+                settings: 1,
+                ..previous
+            },
+            false,
+        ),
+        (
+            Policy {
+                authorization: 2,
+                ..previous
+            },
+            false,
+        ),
+        (
+            Policy {
+                allowed: false,
+                ..previous
+            },
+            false,
+        ),
+        (
+            Policy {
+                settings: 0,
+                ..previous
+            },
+            false,
+        ),
+    ] {
+        assert_eq!(next.follows(previous), accepted);
+    }
+}
+
+#[test]
 fn every_message_round_trips_through_the_frame_without_integer_precision_loss() {
     for message in [
         Message::Hello(Hello {

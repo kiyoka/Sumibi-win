@@ -173,8 +173,19 @@ impl Envelope {
 }
 
 impl Policy {
-    fn valid(self) -> bool {
+    /// A policy epoch is present only when both revision counters are nonzero.
+    pub fn valid(self) -> bool {
         self.settings != 0 && self.authorization != 0
+    }
+
+    /// Both epochs are monotonic; changing permission advances the authority
+    /// epoch even when the final value returns to its earlier state.
+    pub fn follows(self, previous: Self) -> bool {
+        self.valid()
+            && previous.valid()
+            && self.settings >= previous.settings
+            && self.authorization >= previous.authorization
+            && (self.allowed == previous.allowed || self.authorization > previous.authorization)
     }
 }
 

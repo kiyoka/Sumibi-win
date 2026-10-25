@@ -26,7 +26,7 @@ struct PublishGuard<'a> {
 }
 impl BrokerPolicyGate {
     pub fn new(initial: Policy) -> Result<Self> {
-        if initial.settings == 0 || initial.authorization == 0 {
+        if !initial.valid() {
             return Err(Error::InvalidArgument);
         }
         Ok(Self {
@@ -41,12 +41,7 @@ impl BrokerPolicyGate {
     }
     pub fn update(&self, next: Policy) -> Result<()> {
         let mut state = self.state.write().map_err(|_| Error::PolicyDenied)?;
-        if next.settings == 0
-            || next.authorization == 0
-            || next.settings < state.settings
-            || next.authorization < state.authorization
-            || (next.allowed != state.allowed && next.authorization == state.authorization)
-        {
+        if !next.follows(*state) {
             return Err(Error::PolicyDenied);
         }
         *state = next;

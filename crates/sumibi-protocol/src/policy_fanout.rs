@@ -86,13 +86,7 @@ impl PolicyFanout {
     /// Return keys whose transports must be closed. Updates are all-or-retire:
     /// every surviving subscriber has the new policy and a pending notice.
     pub fn publish(&mut self, next: Policy) -> Result<Vec<u64>, FanoutError> {
-        if next.settings == 0
-            || next.authorization == 0
-            || next.settings < self.policy.settings
-            || next.authorization < self.policy.authorization
-            || (next.allowed != self.policy.allowed
-                && next.authorization == self.policy.authorization)
-        {
+        if !next.follows(self.policy) {
             return Err(FanoutError::InvalidPolicy);
         }
         if next == self.policy {

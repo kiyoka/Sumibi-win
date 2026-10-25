@@ -340,12 +340,7 @@ impl ClientSession {
     }
 
     fn check_policy(&self, next: Policy) -> Result<(), SessionError> {
-        if self.policy.is_some_and(|previous| {
-            next.settings < previous.settings
-                || next.authorization < previous.authorization
-                || (next.allowed != previous.allowed
-                    && next.authorization == previous.authorization)
-        }) {
+        if !next.valid() || self.policy.is_some_and(|previous| !next.follows(previous)) {
             Err(SessionError::PolicyRegression)
         } else {
             Ok(())

@@ -57,7 +57,7 @@ pub struct BrokerSession {
 
 impl BrokerSession {
     pub fn new(broker: Id, policy: Policy) -> Result<Self, BrokerError> {
-        if policy.settings == 0 || policy.authorization == 0 {
+        if !policy.valid() {
             return Err(BrokerError::PolicyDenied);
         }
         Ok(Self {
@@ -172,13 +172,7 @@ impl BrokerSession {
         if self.undelivered_policy.is_some() {
             return Err(BrokerError::NoticePending);
         }
-        if next.settings == 0
-            || next.authorization == 0
-            || next.settings < self.policy.settings
-            || next.authorization < self.policy.authorization
-            || (next.allowed != self.policy.allowed
-                && next.authorization == self.policy.authorization)
-        {
+        if !next.follows(self.policy) {
             self.disconnect();
             return Err(BrokerError::PolicyRegression);
         }
