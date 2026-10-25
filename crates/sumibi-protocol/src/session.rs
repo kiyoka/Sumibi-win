@@ -639,6 +639,38 @@ mod tests {
     }
 
     #[test]
+    fn settings_only_policy_change_cancels_old_work_and_uses_new_revision() {
+        let now = Instant::now();
+        let mut client = connected(now);
+        client.begin(1, "fixed", 100, now).unwrap();
+        let changed = Policy {
+            settings: 3,
+            ..policy()
+        };
+        assert!(matches!(
+            deliver(&mut client, Message::PolicyChanged(changed), now),
+            Event::PolicyChanged {
+                cancelled: Some(1),
+                ..
+            }
+        ));
+        assert!(matches!(
+            deliver(&mut client, reply(1), now),
+            Event::Ignored
+        ));
+        let bytes = client.begin(1, "fixed", 100, now).unwrap();
+        let mut decoder = Decoder::default();
+        let decoded = decoder.decode(&bytes).unwrap();
+        let envelope = message::decode(decoded.body.unwrap()).unwrap();
+        let Message::Convert(convert) = envelope.message else {
+            panic!("expected conversion after settings update");
+        };
+        assert_eq!(convert.request, 2);
+        assert_eq!(convert.revision.settings, 3);
+        assert_eq!(convert.revision.authorization, 3);
+    }
+
+    #[test]
     fn wrong_broker_direction_revision_or_schema_closes_the_pending_request() {
         let now = Instant::now();
         let mut client = ClientSession::new(Id::new(1).unwrap(), Id::new(3).unwrap());

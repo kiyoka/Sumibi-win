@@ -35,7 +35,7 @@ impl BrokerPolicyGate {
             || next.authorization == 0
             || next.settings < state.settings
             || next.authorization < state.authorization
-            || (next != *state && next.authorization == state.authorization)
+            || (next.allowed != state.allowed && next.authorization == state.authorization)
         {
             return Err(Error::PolicyDenied);
         }
@@ -537,5 +537,33 @@ mod tests {
         current.revision.authorization = 3;
         assert_eq!(accept_request(&current, &gate, &mut last), Ok(()));
         assert_eq!(last, 2);
+    }
+
+    #[test]
+    fn settings_revision_can_advance_without_changing_authorization() {
+        let gate = BrokerPolicyGate::new(policy()).unwrap();
+        let updated = Policy {
+            settings: 2,
+            authorization: 1,
+            allowed: true,
+        };
+        assert_eq!(gate.update(updated), Ok(()));
+        let mut last = 0;
+        assert_eq!(
+            accept_request(&request(1), &gate, &mut last),
+            Err(Error::PolicyDenied)
+        );
+        assert_eq!(last, 0);
+        let mut current = request(1);
+        current.revision.settings = 2;
+        assert_eq!(accept_request(&current, &gate, &mut last), Ok(()));
+        assert_eq!(last, 1);
+        assert_eq!(
+            gate.update(Policy {
+                allowed: false,
+                ..updated
+            }),
+            Err(Error::PolicyDenied)
+        );
     }
 }
