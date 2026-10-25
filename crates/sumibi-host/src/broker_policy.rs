@@ -172,7 +172,6 @@ mod tests {
         );
         assert_eq!(relay.cursor, first_cursor);
         assert!(gate.snapshot().unwrap() == initial);
-
     }
 
     #[test]
