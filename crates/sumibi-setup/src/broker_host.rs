@@ -407,6 +407,9 @@ fn exercise_job_capacity(messages: &ITfMessagePump) -> std::result::Result<(), F
             Mode::DiagnosticRevokeAfterResult => {
                 unreachable!("fixture is not used by one-shot jobs")
             }
+            Mode::DiagnosticSettingsAfterResult => {
+                unreachable!("fixture is not used by one-shot jobs")
+            }
             Mode::DiagnosticRegrantAfterResult => {
                 unreachable!("fixture is not used by one-shot jobs")
             }
@@ -436,6 +439,9 @@ fn exercise_job_capacity(messages: &ITfMessagePump) -> std::result::Result<(), F
                     unreachable!("fixture is not used by one-shot jobs")
                 }
                 Mode::DiagnosticRevokeAfterResult => {
+                    unreachable!("fixture is not used by one-shot jobs")
+                }
+                Mode::DiagnosticSettingsAfterResult => {
                     unreachable!("fixture is not used by one-shot jobs")
                 }
                 Mode::DiagnosticRegrantAfterResult => {

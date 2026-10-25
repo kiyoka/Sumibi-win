@@ -164,6 +164,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         Mode::DiagnosticRevokeIdle if diagnostic_enabled => true,
         Mode::DiagnosticRevokeCoalesced if diagnostic_enabled => true,
         Mode::DiagnosticRevokeAfterResult if diagnostic_enabled => true,
+        Mode::DiagnosticSettingsAfterResult if diagnostic_enabled => true,
         Mode::DiagnosticRegrantAfterResult if diagnostic_enabled => true,
         Mode::DiagnosticRevokeAtAccept if diagnostic_enabled => true,
         Mode::DiagnosticRegrantAtAccept if diagnostic_enabled => true,
@@ -305,7 +306,9 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             }
             if matches!(
                 bootstrap.mode,
-                Mode::DiagnosticRevokeAfterResult | Mode::DiagnosticRegrantAfterResult
+                Mode::DiagnosticRevokeAfterResult
+                    | Mode::DiagnosticSettingsAfterResult
+                    | Mode::DiagnosticRegrantAfterResult
             ) {
                 let mut reply = message::encode(&envelope(Message::Result(ConversionResult {
                     request: convert.request,
@@ -313,11 +316,15 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                     text: "日本語".into(),
                 })))
                 .map_err(|_| Error::InvalidMessage)?;
-                reply.extend(
-                    message::encode(&envelope(Message::PolicyChanged(Policy {
+                let next = if bootstrap.mode == Mode::DiagnosticSettingsAfterResult {
+                    Policy {
+                        settings: policy.settings + 1,
+                        ..policy
+                    }
+                } else {
+                    Policy {
                         settings: policy.settings,
-                        // The second fixture coalesces revoke and re-consent:
-                        // final allowed=true still invalidates the old result.
+                        // Re-consent has allowed=true but still invalidates the old result.
                         authorization: policy.authorization
                             + if bootstrap.mode == Mode::DiagnosticRegrantAfterResult {
                                 2
@@ -325,8 +332,12 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                                 1
                             },
                         allowed: bootstrap.mode == Mode::DiagnosticRegrantAfterResult,
-                    })))
-                    .map_err(|_| Error::InvalidMessage)?,
+                    }
+                };
+                gate.update(next)?;
+                reply.extend(
+                    message::encode(&envelope(Message::PolicyChanged(next)))
+                        .map_err(|_| Error::InvalidMessage)?,
                 );
                 drop(convert);
                 pipe.write_all(reply, &bootstrap.stop, deadline)?;

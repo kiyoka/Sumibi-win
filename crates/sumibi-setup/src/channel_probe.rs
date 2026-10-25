@@ -91,6 +91,15 @@ fn exercise(default_host: bool) -> Result<()> {
         assert!(matches!(
             Channel::connect(
                 &path,
+                Mode::DiagnosticSettingsAfterResult,
+                &Stop::new()?,
+                deadline()
+            ),
+            Err(Error::Disconnected | Error::PolicyDenied)
+        ));
+        assert!(matches!(
+            Channel::connect(
+                &path,
                 Mode::DiagnosticRegrantAfterResult,
                 &Stop::new()?,
                 deadline()
@@ -364,6 +373,22 @@ fn exercise(default_host: bool) -> Result<()> {
         exited(&peer);
     }
     println!("Broker channel / result followed by queued revocation is not delivered: OK");
+    {
+        let mut channel = Channel::connect(
+            &path,
+            Mode::DiagnosticSettingsAfterResult,
+            &Stop::new()?,
+            deadline(),
+        )?;
+        let peer = channel.peer_process()?;
+        assert!(matches!(
+            channel.convert(revision(1), "synthetic", deadline()),
+            Err(Error::PolicyDenied)
+        ));
+        assert!(channel.is_closed());
+        exited(&peer);
+    }
+    println!("Broker channel / result followed by settings change is not delivered: OK");
     {
         let mut channel = Channel::connect(
             &path,
