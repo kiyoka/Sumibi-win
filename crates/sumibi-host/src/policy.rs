@@ -2,6 +2,7 @@
 //! Persistence, credential loading, UI consent and IPC publication are separate.
 use crate::manual::{Credential, Destination, PolicySnapshot, PolicySource};
 use std::sync::{Arc, Mutex};
+use sumibi_protocol::message::Policy;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PolicyVersion {
@@ -12,6 +13,7 @@ pub struct PolicyVersion {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeError {
     InvalidConsent,
+    InvalidCursor,
     Exhausted,
     Unavailable,
 }
@@ -34,6 +36,27 @@ impl PolicyAuthority {
                 allowed: false,
             }),
         }
+    }
+
+    /// Public IPC metadata only. Neither the credential nor the destination is
+    /// placed in the wire policy. A failed read must retire the connection.
+    pub fn wire_policy(&self) -> Result<Policy, ChangeError> {
+        let state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        Ok(wire_policy(&state))
+    }
+
+    /// A bounded publisher can keep just one cursor and coalesce changes into
+    /// the latest policy. It must send this value before accepting another
+    /// request; failure to publish requires disconnecting that client.
+    pub fn wire_change_after(&self, cursor: PolicyVersion) -> Result<Option<Policy>, ChangeError> {
+        let state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        if cursor.settings > state.settings
+            || cursor.authorization > state.authorization
+            || (cursor.settings != state.settings && cursor.authorization == state.authorization)
+        {
+            return Err(ChangeError::InvalidCursor);
+        }
+        Ok((cursor.authorization != state.authorization).then(|| wire_policy(&state)))
     }
 
     /// A changed destination invalidates both the old consent and credential
@@ -119,6 +142,14 @@ fn version(state: &PolicySnapshot) -> PolicyVersion {
     }
 }
 
+fn wire_policy(state: &PolicySnapshot) -> Policy {
+    Policy {
+        settings: state.settings,
+        authorization: state.authorization,
+        allowed: state.allowed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,7 +157,10 @@ mod tests {
         self, ConversionTransport, ManualRequest, Scheme, SendError, TransportError,
     };
     use std::time::{Duration, Instant};
-    use sumibi_protocol::message::Revision;
+    use sumibi_protocol::message::{
+        self, ConversionResult, Envelope, Id, Message, Ready, Revision, VERSION,
+    };
+    use sumibi_protocol::session::{ClientSession, Event, SessionError};
 
     fn destination(host: &str) -> Destination {
         Destination::new(Scheme::Https, host, 443, "/convert").unwrap()
@@ -317,5 +351,117 @@ mod tests {
             authority.revoke_manual_consent(),
             Err(ChangeError::Unavailable)
         );
+        assert!(matches!(
+            authority.wire_policy(),
+            Err(ChangeError::Unavailable)
+        ));
+    }
+
+    #[test]
+    fn wire_policy_coalesces_and_retires_a_pending_client_request() {
+        let destination = destination("api.example.test");
+        let authority = PolicyAuthority::new(destination.clone());
+        let initial = PolicyVersion {
+            settings: 1,
+            authorization: 1,
+        };
+        assert!(matches!(authority.wire_change_after(initial), Ok(None)));
+        authority
+            .replace_credential(Some(Credential::new("synthetic-key".into()).unwrap()))
+            .unwrap();
+        let allowed = authority.grant_manual_consent(&destination).unwrap();
+        let policy = authority.wire_change_after(initial).unwrap().unwrap();
+        assert_eq!(policy.settings, allowed.settings);
+        assert_eq!(policy.authorization, allowed.authorization);
+        assert!(policy.allowed);
+        assert!(matches!(
+            authority.wire_change_after(PolicyVersion {
+                settings: 1,
+                authorization: allowed.authorization + 1,
+            }),
+            Err(ChangeError::InvalidCursor)
+        ));
+
+        let session = Id::new(1).unwrap();
+        let broker = Id::new(2).unwrap();
+        let mut client = ClientSession::new(session, broker);
+        client.hello().unwrap();
+        let frame = |message| {
+            message::encode(&Envelope {
+                version: VERSION,
+                session,
+                generation: 1,
+                message,
+            })
+            .unwrap()
+        };
+        let ready = frame(Message::Ready(Ready { broker, policy }));
+        assert!(matches!(
+            client.receive(&ready, Instant::now()).unwrap().event,
+            Some(Event::Ready(_))
+        ));
+        client.begin(1, "nihongo", 1000, Instant::now()).unwrap();
+        assert_eq!(client.pending_request(), Some(1));
+
+        let revoked = authority.revoke_manual_consent().unwrap();
+        let notice = authority.wire_change_after(allowed).unwrap().unwrap();
+        assert_eq!(notice.authorization, revoked.authorization);
+        assert!(!notice.allowed);
+        let changed = frame(Message::PolicyChanged(notice));
+        assert!(matches!(
+            client.receive(&changed, Instant::now()).unwrap().event,
+            Some(Event::PolicyChanged {
+                cancelled: Some(1),
+                ..
+            })
+        ));
+        assert_eq!(client.pending_request(), None);
+        assert!(matches!(
+            client.begin(1, "nihongo", 1000, Instant::now()),
+            Err(SessionError::NotAllowed)
+        ));
+        let old_reply = frame(Message::Result(ConversionResult {
+            request: 1,
+            revision: Revision {
+                input: 1,
+                settings: allowed.settings,
+                authorization: allowed.authorization,
+            },
+            text: "日本語".into(),
+        }));
+        assert!(matches!(
+            client.receive(&old_reply, Instant::now()).unwrap().event,
+            Some(Event::Ignored)
+        ));
+
+        let granted = authority.grant_manual_consent(&destination).unwrap();
+        let allowed_again = authority.wire_change_after(revoked).unwrap().unwrap();
+        assert_eq!(allowed_again.authorization, granted.authorization);
+        assert!(allowed_again.allowed);
+        let changed = frame(Message::PolicyChanged(allowed_again));
+        assert!(matches!(
+            client.receive(&changed, Instant::now()).unwrap().event,
+            Some(Event::PolicyChanged {
+                cancelled: None,
+                ..
+            })
+        ));
+        client.begin(1, "nihongo", 1000, Instant::now()).unwrap();
+        assert_eq!(client.pending_request(), Some(2));
+
+        authority.revoke_manual_consent().unwrap();
+        let restored = authority.grant_manual_consent(&destination).unwrap();
+        let coalesced = authority.wire_change_after(granted).unwrap().unwrap();
+        assert_eq!(coalesced.authorization, restored.authorization);
+        assert!(coalesced.allowed);
+        let changed = frame(Message::PolicyChanged(coalesced));
+        assert!(matches!(
+            client.receive(&changed, Instant::now()).unwrap().event,
+            Some(Event::PolicyChanged {
+                cancelled: Some(2),
+                ..
+            })
+        ));
+        assert_eq!(client.pending_request(), None);
     }
 }
