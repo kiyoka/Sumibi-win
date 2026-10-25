@@ -23,6 +23,7 @@ pub(crate) fn exercise_ranges(
             "apply-selection",
             "apply-direction",
             "apply-text",
+            "apply-client",
             "cancel-before-source",
             "cancel-after-source",
             "cancel-repeat",
@@ -190,7 +191,20 @@ pub(crate) fn exercise_ranges(
                     before,
                     "source must not reread text"
                 );
-                if case.starts_with("apply-") {
+                if case == "apply-client" {
+                    assert!(ticket
+                        .finish(
+                            manager,
+                            client ^ 1,
+                            id,
+                            policy.get().revision,
+                            "日本語".into(),
+                        )
+                        .is_err());
+                    assert_eq!(sumibi_tip::spike::SumibiSpikeBodyReadCount(), before);
+                    assert_eq!(store.get().set_text_calls.get(), 0);
+                    assert!(store.get().undo.borrow().is_empty());
+                } else if case.starts_with("apply-") {
                     if case == "apply-text" {
                         // TSF caches text. Host-originated body changes require
                         // the real OnTextChange contract; raw unnotified memory

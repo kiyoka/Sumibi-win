@@ -103,3 +103,10 @@ OS非依存の`ManualConversion`も、要求ID・対象ID・入力/設定/認可
 失効し、返却本文を作らない。TIP/Protocolと同じ現在の有限上限をCoreでも
 守るための検査であり、製品の最終的な送信文字数の決定ではない。
 Core 98テストでゼロ値、原文超過、補助面文字を含む結果超過を確認した。
+
+## 2026-10-25: 適用時のTSF client照合
+
+`ManualEdit`がcapture時に保持したclient IDと、finishを呼ぶ側のclient IDが
+異なる場合、write sessionより前に拒否する。`range-target-test`の実TSF
+17ケース目で別clientを指定し、本文読み直し・SetText・Undo履歴がないことと
+COM/TSF解除を確認した。

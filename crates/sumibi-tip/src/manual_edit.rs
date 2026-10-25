@@ -396,7 +396,10 @@ impl ManualEdit {
         replacement: String,
     ) -> Result<()> {
         self.guard.check()?;
-        if request != self.request || revision != self.revision() || Instant::now() >= self.deadline
+        if client != self.client
+            || request != self.request
+            || revision != self.revision()
+            || Instant::now() >= self.deadline
         {
             return Err(E_ABORT.into());
         }
