@@ -10,6 +10,7 @@ pub const MAX_SESSIONS: usize = 8;
 pub enum FanoutError {
     InvalidKey,
     Duplicate,
+    DuplicateSession,
     Full,
     Unknown,
     InvalidPolicy,
@@ -19,6 +20,7 @@ pub enum FanoutError {
 
 struct Subscriber {
     key: u64,
+    session_id: Id,
     session: BrokerSession,
     notice: Option<PolicyNotice>,
 }
@@ -69,6 +71,14 @@ impl PolicyFanout {
         {
             return Err(FanoutError::Duplicate);
         }
+        let session_id = hello.session;
+        if self
+            .subscribers
+            .iter()
+            .any(|subscriber| subscriber.session_id == session_id)
+        {
+            return Err(FanoutError::DuplicateSession);
+        }
         if self.subscribers.len() == MAX_SESSIONS {
             return Err(FanoutError::Full);
         }
@@ -79,6 +89,7 @@ impl PolicyFanout {
         };
         self.subscribers.push(Subscriber {
             key,
+            session_id,
             session,
             notice: None,
         });
@@ -329,6 +340,20 @@ mod tests {
         ));
         let ready = fanout.attach(9, hello(9), now).unwrap();
         assert!(matches!(ready.message, Message::Ready(ready) if ready.policy.settings == 3));
+    }
+
+    #[test]
+    fn live_connections_cannot_claim_the_same_session_identity() {
+        let now = Instant::now();
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        fanout.attach(1, hello(1), now).unwrap();
+        assert!(matches!(
+            fanout.attach(2, hello(1), now),
+            Err(FanoutError::DuplicateSession)
+        ));
+        assert_eq!(fanout.active_count(), 1);
+        assert!(fanout.detach(1));
+        assert!(fanout.attach(2, hello(1), now).is_ok());
     }
 
     #[test]
