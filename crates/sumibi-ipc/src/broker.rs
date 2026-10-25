@@ -166,6 +166,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         Mode::DiagnosticRevokeAfterResult if diagnostic_enabled => true,
         Mode::DiagnosticRegrantAfterResult if diagnostic_enabled => true,
         Mode::DiagnosticRevokeAtAccept if diagnostic_enabled => true,
+        Mode::DiagnosticRegrantAtAccept if diagnostic_enabled => true,
         _ => return Err(Error::PolicyDenied),
     };
     let server = Server::create(&bootstrap.name)?;
@@ -244,19 +245,36 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             let Message::Convert(convert) = request.message else {
                 return Err(Error::InvalidMessage);
             };
-            if bootstrap.mode == Mode::DiagnosticRevokeAtAccept {
+            if matches!(
+                bootstrap.mode,
+                Mode::DiagnosticRevokeAtAccept | Mode::DiagnosticRegrantAtAccept
+            ) {
                 let revoked = Policy {
                     settings: policy.settings,
                     authorization: policy.authorization + 1,
                     allowed: false,
                 };
                 gate.update(revoked)?;
+                let latest = if bootstrap.mode == Mode::DiagnosticRegrantAtAccept {
+                    let regranted = Policy {
+                        settings: policy.settings,
+                        authorization: policy.authorization + 2,
+                        allowed: true,
+                    };
+                    gate.update(regranted)?;
+                    regranted
+                } else {
+                    revoked
+                };
                 if accept_request(&convert, &gate, &mut last_request) != Err(Error::PolicyDenied) {
+                    return Err(Error::InvalidMessage);
+                }
+                if last_request != 0 {
                     return Err(Error::InvalidMessage);
                 }
                 drop(convert);
                 pipe.write_all(
-                    message::encode(&envelope(Message::PolicyChanged(revoked)))
+                    message::encode(&envelope(Message::PolicyChanged(latest)))
                         .map_err(|_| Error::InvalidMessage)?,
                     &bootstrap.stop,
                     idle,

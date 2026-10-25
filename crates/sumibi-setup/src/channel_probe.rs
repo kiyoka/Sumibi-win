@@ -106,6 +106,15 @@ fn exercise(default_host: bool) -> Result<()> {
             ),
             Err(Error::Disconnected | Error::PolicyDenied)
         ));
+        assert!(matches!(
+            Channel::connect(
+                &path,
+                Mode::DiagnosticRegrantAtAccept,
+                &Stop::new()?,
+                deadline()
+            ),
+            Err(Error::Disconnected | Error::PolicyDenied)
+        ));
         println!("Broker channel / default host rejects diagnostic converter: OK");
         return Ok(());
     }
@@ -258,13 +267,11 @@ fn exercise(default_host: bool) -> Result<()> {
         exited(&peer);
     }
     println!("Broker channel / in-flight revocation retires without a result or replay: OK");
-    {
-        let mut channel = Channel::connect(
-            &path,
-            Mode::DiagnosticRevokeAtAccept,
-            &Stop::new()?,
-            deadline(),
-        )?;
+    for mode in [
+        Mode::DiagnosticRevokeAtAccept,
+        Mode::DiagnosticRegrantAtAccept,
+    ] {
+        let mut channel = Channel::connect(&path, mode, &Stop::new()?, deadline())?;
         let peer = channel.peer_process()?;
         let denied = channel.convert(revision(1), "synthetic", deadline());
         assert!(
@@ -278,8 +285,13 @@ fn exercise(default_host: bool) -> Result<()> {
             Err(Error::Closed)
         ));
         exited(&peer);
+        let label = if mode == Mode::DiagnosticRegrantAtAccept {
+            "re-consent"
+        } else {
+            "revocation"
+        };
+        println!("Broker channel / {label} at acceptance rejects already-arrived old request: OK");
     }
-    println!("Broker channel / broker policy change rejects already-arrived old request: OK");
     {
         let mut channel =
             Channel::connect(&path, Mode::DiagnosticRevokeIdle, &Stop::new()?, deadline())?;
