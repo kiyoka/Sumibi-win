@@ -38,6 +38,8 @@ idle workerも計数し、閉じた旧workerが子の回収中ならその枠も
 pipeの8 endpoint、同時1操作と取消bufferの保持条件は維持する。
 Channelの最大64要求・idle 60秒・受付/実行10分・最終返信後10秒の条件も維持する。
 64番目の正常結果は配送でき、その後のReserve前にworkerをretiredにする。
+原文に`U+FFFC`がある場合は`Request::validate`でsubmit前に拒否し、
+同じworkerの次の正常要求がwire ID 1から始まることを実子Brokerで確認する。
 これは製品の遅延キー待機行列や救済のprocess合計容量の採用ではない。
 
 ## 取消・失敗・終了

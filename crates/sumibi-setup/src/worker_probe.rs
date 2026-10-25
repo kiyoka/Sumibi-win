@@ -145,7 +145,13 @@ pub(super) fn run() -> Result<()> {
             first.submit(first.reserve(5)?, wrong),
             Err(Error::InvalidArgument)
         ));
-        first.submit(first.reserve(6)?, request(6, mode()))?;
+        let mut wrong = request(6, mode());
+        wrong.text = "a\u{fffc}b".into();
+        assert!(matches!(
+            first.submit(first.reserve(6)?, wrong),
+            Err(Error::InvalidArgument)
+        ));
+        first.submit(first.reserve(7)?, request(7, mode()))?;
         let reply = wait(&first)?;
         assert_eq!(reply.outcome(), Ok("日本語"));
         assert_eq!(reply.exchange().map(|(_, wire)| wire), Some(1));
