@@ -55,6 +55,8 @@
 - Broker内の認可判定と接続通知を一つの`publish`操作で進める。
   Fanoutが更新を拒否しても認可版は進めず、旧版結果の書込guardとも直列化する。
 - `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で186件成功。
+  `tools/Test-Broker.ps1`で既定Host拒否、実子Channel 24件、Worker 14件を
+  正しいビルド順で再確認した。
   現在のサンドボックスでは診断用localhost HTTPの4件が接続不可になるため、同じコマンドを通常ユーザー環境で再実行して切り分けた。
 
 ## 次の受入作業

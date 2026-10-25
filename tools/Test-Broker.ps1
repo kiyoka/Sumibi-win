@@ -1,0 +1,40 @@
+param([string]$CargoPath = '')
+
+$ErrorActionPreference = 'Stop'
+$workspacePath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+if (!$CargoPath) {
+    $cargoCommand = Get-Command cargo -ErrorAction SilentlyContinue
+    if ($cargoCommand) { $CargoPath = $cargoCommand.Source }
+    else { $CargoPath = Join-Path $env:USERPROFILE '.cargo/bin/cargo.exe' }
+}
+$CargoPath = [IO.Path]::GetFullPath($CargoPath)
+if (!(Test-Path -LiteralPath $CargoPath)) { throw 'Cargo was not found.' }
+
+function Invoke-Cargo {
+    param([string[]]$Arguments)
+    & $CargoPath @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "Cargo failed: $($Arguments -join ' ')" }
+}
+function Invoke-Broker {
+    param([string]$Name)
+    & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') $Name
+    if ($LASTEXITCODE -ne 0) { throw "Broker check failed: $Name" }
+}
+
+$previousIncremental = $env:CARGO_INCREMENTAL
+Push-Location -LiteralPath $workspacePath
+try {
+    $env:CARGO_INCREMENTAL = '0'
+    # The default Host must be built first: it intentionally denies the
+    # diagnostic converter. The second build replaces only that Host EXE.
+    Invoke-Cargo -Arguments @('build', '--workspace', '--locked', '--offline')
+    Invoke-Broker -Name 'broker-channel-denied-test'
+    Invoke-Cargo -Arguments @('build', '-p', 'sumibi-host', '--features', 'spike', '--locked', '--offline')
+    Invoke-Broker -Name 'broker-channel-test'
+    Invoke-Broker -Name 'broker-worker-test'
+    Write-Output 'Default denial, Broker Channel, and Broker Worker checks passed.'
+}
+finally {
+    $env:CARGO_INCREMENTAL = $previousIncremental
+    Pop-Location
+}

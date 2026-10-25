@@ -221,6 +221,14 @@ window/input/delayedの3検査は、所有windowの前面化が拒否された�
 ## 同期入力取引を試す
 
 通常ユーザーのPowerShellで、リポジトリのフォルダから実行する。
+既定Hostと診断Hostを正しい順序でビルドして3つの検査を行うには、
+次のスクリプトを使う。マシン登録・ユーザー文書へのアクセスは行わない。
+
+```powershell
+./tools/Test-Broker.ps1
+```
+
+個別に実行する場合もビルド順序を維持する。
 
 ```powershell
 cargo build --workspace --locked --offline
@@ -388,7 +396,7 @@ cargo build -p sumibi-host --features spike --locked --offline
 denied-testは通常Hostの診断モード拒否を、channel-testは実子processで政策変更と再同意後の旧結果破棄を含む経路を自動検証する。専用workerで同じ
 起動processへ連続変換し、Reply保持中の拒否、取消、期限、64要求上限、共通4枠、子と親handleの解放を確認する。
 原文は合成文字列だけで、ユーザー文書・HTTP・既定IMEを使用しない。
-worker-testは11項目を確認する。既存の入力デモも同じEXE workerからBrokerを再利用する。
+worker-testは14項目を確認する。既存の入力デモも同じEXE workerからBrokerを再利用する。
 Channelはblockingのworker専用APIで、TSF/window callbackから直接呼ばない。
 所有STAからは非blockingのWorker facadeを使い、起動・通信・子回収はworkerへ限定する
 （[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)）。製品の常駐共有探索・一般アプリ統合は未完了。
