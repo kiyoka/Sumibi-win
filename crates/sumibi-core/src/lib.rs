@@ -72,6 +72,7 @@ impl ManualConversion {
         }
         if !target.allowed
             || target.text.is_empty()
+            || target.text.contains(&0xfffc)
             || !match target.selection {
                 Selection::Acp(start, end) => start >= 0 && end >= start,
                 Selection::RetainedRange { utf16_units } => {
@@ -112,7 +113,7 @@ impl ManualConversion {
         if !current.allowed || current != &pending.target {
             return Err(Reject::TargetChanged);
         }
-        if result.is_empty() {
+        if result.is_empty() || result.contains('\u{fffc}') {
             return Err(Reject::InvalidResult);
         }
         Ok(result.encode_utf16().collect())
@@ -219,8 +220,8 @@ mod tests {
     }
 
     #[test]
-    fn protected_empty_and_invalid_utf16_targets_are_rejected() {
-        for text in [Vec::new(), vec![0xd800]] {
+    fn protected_empty_object_and_invalid_utf16_targets_are_rejected() {
+        for text in [Vec::new(), vec![0xd800], vec![0xfffc]] {
             let mut target = target();
             target.text = text;
             assert_eq!(
@@ -252,6 +253,12 @@ mod tests {
         state.begin(RequestId(1), target.clone()).unwrap();
         assert_eq!(
             state.finish(RequestId(1), &target, ""),
+            Err(Reject::InvalidResult)
+        );
+        assert!(!state.is_pending());
+        state.begin(RequestId(2), target.clone()).unwrap();
+        assert_eq!(
+            state.finish(RequestId(2), &target, "日本\u{fffc}語"),
             Err(Reject::InvalidResult)
         );
         assert!(!state.is_pending());

@@ -702,6 +702,8 @@ pub(super) fn exercise(
             "missing-write-callback",
             "no-progress",
             "invalid-utf16",
+            "object-marker",
+            "replacement-object-marker",
             "over-limit",
             "limit",
             "unicode",
@@ -715,6 +717,7 @@ pub(super) fn exercise(
                 "subrange" => "prefix nihongo suffix".to_owned(),
                 "over-limit" => "a".repeat(MAX_SELECTION_UNITS + 1),
                 "unicode" | "unicode-partial" | "split-surrogate" => "a😀e\u{301}".to_owned(),
+                "object-marker" => "a\u{fffc}b".to_owned(),
                 "empty" => String::new(),
                 _ => "nihongo".to_owned(),
             };
@@ -775,6 +778,7 @@ pub(super) fn exercise(
                     | "read-lock-denied"
                     | "no-progress"
                     | "invalid-utf16"
+                    | "object-marker"
                     | "over-limit"
                     | "empty"
                     | "split-surrogate"
@@ -788,6 +792,9 @@ pub(super) fn exercise(
                     "{case}"
                 );
                 assert_eq!(*store.get().text.borrow(), before, "{case}");
+                if case == "object-marker" {
+                    assert!(store.get().undo.borrow().is_empty());
+                }
                 if case == "protected" {
                     assert_eq!(store.get().reads.get(), 0);
                 }
@@ -843,7 +850,12 @@ pub(super) fn exercise(
                 _ => {}
             }
             let before = store.get().text.borrow().clone();
-            let result = replace_selection(manager, client, snapshot, "日本語");
+            let replacement = if case == "replacement-object-marker" {
+                "日本\u{fffc}語"
+            } else {
+                "日本語"
+            };
+            let result = replace_selection(manager, client, snapshot, replacement);
             if matches!(case, "replace" | "subrange" | "limit" | "unicode") {
                 result?;
                 let expected = if case == "subrange" {
@@ -858,6 +870,9 @@ pub(super) fn exercise(
             } else {
                 assert!(result.is_err(), "{case}");
                 assert_eq!(*store.get().text.borrow(), before, "{case}");
+                if case == "replacement-object-marker" {
+                    assert!(store.get().undo.borrow().is_empty());
+                }
             }
             if let Some(other_store) = other_store.as_ref() {
                 assert_eq!(
@@ -872,7 +887,7 @@ pub(super) fn exercise(
     }
     exercise_attributes(manager, client)?;
     exercise_previews(manager, client)?;
-    println!("Real TSF edit-session scenarios: 23 passed, plus 3 attribute scenarios");
+    println!("Real TSF edit-session scenarios: 25 passed, plus 3 attribute scenarios");
     Ok(())
 }
 

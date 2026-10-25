@@ -201,6 +201,7 @@ fn invalid_text_repeat_and_identity_never_grant_input_consumption() {
         vec![0x0a],
         vec![0x0d],
         vec![0],
+        vec![0xfffc],
         vec![b'a' as u16; MAX_EVENT_UNITS + 1],
     ] {
         assert_eq!(

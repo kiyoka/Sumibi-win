@@ -198,6 +198,7 @@ fn exercise(default_host: bool) -> Result<()> {
         for (rev, text, until) in [
             (revision(0), "fixed".to_owned(), deadline()),
             (revision(1), String::new(), deadline()),
+            (revision(1), "a\u{fffc}b".to_owned(), deadline()),
             (revision(1), "x".repeat(1025), deadline()),
             (
                 revision(1),

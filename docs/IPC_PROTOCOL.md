@@ -86,7 +86,7 @@ Decoder単体はJSONであることまで検査しない。上位の`message::de
 | generation | 非ゼロu64。再接続ごとに増加。sessionと合わせて接続を識別 |
 | request | 非ゼロu64。client寿命中単調増加し、再接続・Broker再起動でもリセットしない |
 | revision | input / settings / authorization。非ゼロu64の厳密な整数。浮動小数・文字列・桁あふれを拒否 |
-| text | 原文と単一結果とも非空、最大1024 UTF-16単位。client.beginはコピー前にも検査。1000書記素という製品案とは別 |
+| text | 原文と単一結果とも非空、最大1024 UTF-16単位。埋め込みオブジェクト境界を表す`U+FFFC`は拒否。client.beginはコピー前にも検査。1000書記素という製品案とは別 |
 | timeout_ms | 整数1〜60000。現段階のclient期限上限。HTTPの実装や製品期限の実証ではない |
 
 必須フィールド欠損、不明フィールド、重複キー（入れ子も含む）、複数種別、未知種別、

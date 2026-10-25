@@ -78,3 +78,17 @@ fixtureの送信前選択・向き変更は通知なしで現在値を返すが�
 host側変更を通知し、TSFによるSetTextを同じ通知で重複報告しない。
 sourceの追加検査もmetadataのみであり、通知がない任意の本文変更の検出とは扱わない。
 OS内部の本文参照とadapterのcounterの区別は[ADR 0006](0006-input-protection-metadata.md)を維持する。
+
+## 2026-10-25: 選択中のオブジェクト置換文字
+
+`ITfRange::GetText`で取得した選択本文に`U+FFFC`が含まれる場合、
+通常の文字列としてBrokerへ送る前にcaptureを拒否する。
+Coreの要求開始・結果判定、版1の送受信本文、直接/所有TSF置換も同じ文字を拒否する。
+これは文字として読める本文だけを扱う現在の範囲に合わせた判断であり、
+埋め込みオブジェクトを変換対象に一般化しない。
+専用TSF storeの`edit-test`に固定合成の`a\u{fffc}b`と
+置換結果`日本\u{fffc}語`を追加し、captureまたは適用前の拒否、
+本文不変、Undo履歴なし、COM/TSF解除を確認した。
+実TSFの選択編集は25ケースとなった。一般アプリのオブジェクト表現は未検証。
+認証済み実子Brokerの`broker-channel-test`でも同文字の原文を送信前に
+`InvalidArgument`として拒否し、接続・要求番号を保った次の正常要求を確認した。

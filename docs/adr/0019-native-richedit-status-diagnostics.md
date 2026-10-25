@@ -112,12 +112,13 @@ Notepad/Word/VS Code等の実アプリ、実打鍵、非ACP入力先、所有com
 ## 2026-10-25: 標準EDITの追加観測
 
 同じ専用親window内にWindows標準の`EDIT`子windowを作り、固定合成本文を
-設定してfocusした。今回のWindows 11環境ではHWNDのfocusは成立したが、
+設定してfocusした。既定scopeと`SetInputScope(IS_TEXT)`の両方で検査した。
+今回のWindows 11環境では、どちらもHWNDのfocusは成立したが、
 `ITfThreadMgr::GetFocus`はTSF文書を返さなかった。Rust bindingでは
 成功HRESULTとnull出力が`Err(S_OK)`として現れた。
 そのためstatus、入力scope、変換可否へは進めなかった。
 
-検査はadapter本文読取counterの不変、native Undo履歴なし、固定本文不変、
+検査は両構成でadapter本文読取counterの不変、native Undo履歴なし、固定本文不変、
 TSF/COM解除とDLL unloadを確認する。別OSや入力サービスでcontextが現れた場合は
 statusが現在の保護条件で拒否されることを要求し、肯定的statusへ変われば
 自動検査を停止して互換性を再評価する。標準EDIT、RichEdit、一般アプリの

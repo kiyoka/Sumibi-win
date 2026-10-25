@@ -76,7 +76,7 @@ fn valid_replacement(before: InputPoint, after: InputPoint, text: &[u16]) -> boo
         && (before.selection.0 != before.selection.1 || !text.is_empty())
         && text.len() <= MAX_TRACKED_UNITS
         && char::decode_utf16(text.iter().copied())
-            .all(|unit| unit.is_ok_and(|value| !value.is_control()))
+            .all(|unit| unit.is_ok_and(|value| !value.is_control() && value != '\u{fffc}'))
         && before
             .selection
             .0
@@ -823,6 +823,7 @@ mod tests {
             vec![0xdc00],
             vec![0x0d],
             vec![0x1b],
+            vec![0xfffc],
             vec![b'a' as u16; MAX_TRACKED_UNITS + 1],
         ] {
             let mut session = InputSession::default();

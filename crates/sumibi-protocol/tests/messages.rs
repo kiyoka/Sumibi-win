@@ -152,6 +152,7 @@ fn utf16_and_encoded_size_caps_apply_in_both_directions() {
         ("😀".repeat(MAX_TEXT_UNITS / 2), true),
         ("😀".repeat(MAX_TEXT_UNITS / 2 + 1), false),
         ("\0".repeat(MAX_TEXT_UNITS), true),
+        ("a\u{fffc}b".to_owned(), false),
     ] {
         let message = envelope(Message::Result(ConversionResult {
             request: 1,

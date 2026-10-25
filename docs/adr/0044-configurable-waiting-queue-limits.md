@@ -65,3 +65,11 @@ TSF/COMの登録解除とDLLアンロードまで確認した。ログは
 初期失敗の観測ログは
 `target/issue-4-waiting-interactive-diagnostic*.log`。
 一般アプリのキー配送・標準Undo・製品の全体予算も本変更の受入範囲外である。
+
+## 2026-10-25: 本文文字の受付条件
+
+専用waiting adapter、同期入力取引、救済スロットはオブジェクト置換文字`U+FFFC`を
+本文として扱わない。Coreの`WaitingInput::admit`と`InputSession`の追跡・置換判定も
+同じ文字を受付前に拒否するようにした。別のadapterがCoreを使っても、
+オブジェクト境界を通常の入力文字として保存・配送しない。
+Core 97テストで両方の拒否を確認した。

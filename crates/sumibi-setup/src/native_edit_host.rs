@@ -268,6 +268,18 @@ pub(crate) fn exercise_native_edit(
 }
 
 fn inspect_standard_edit(manager: &ITfThreadMgr, messages: &ITfMessagePump) -> Result<()> {
+    for (case, scope) in [("default", None), ("text-scope", Some(IS_TEXT))] {
+        inspect_standard_edit_case(manager, messages, case, scope)?;
+    }
+    Ok(())
+}
+
+fn inspect_standard_edit_case(
+    manager: &ITfThreadMgr,
+    messages: &ITfMessagePump,
+    case: &str,
+    scope: Option<InputScope>,
+) -> Result<()> {
     // A stock EDIT child is a separate native target from RichEdit. Only
     // inspect metadata; never infer support from successful window focus.
     unsafe {
@@ -286,15 +298,28 @@ fn inspect_standard_edit(manager: &ITfThreadMgr, messages: &ITfMessagePump) -> R
             None,
             None,
         )?;
-        struct EditWindow(HWND);
+        struct EditWindow {
+            hwnd: HWND,
+            scoped: bool,
+        }
         impl Drop for EditWindow {
             fn drop(&mut self) {
                 unsafe {
-                    let _ = DestroyWindow(self.0);
+                    if self.scoped {
+                        let _ = set_input_scope(self.hwnd, IS_DEFAULT);
+                    }
+                    let _ = DestroyWindow(self.hwnd);
                 }
             }
         }
-        let _edit = EditWindow(hwnd);
+        let mut edit = EditWindow {
+            hwnd,
+            scoped: false,
+        };
+        if let Some(scope) = scope {
+            set_input_scope(hwnd, scope)?;
+            edit.scoped = true;
+        }
         SetWindowTextW(hwnd, w!("prefix nihongo suffix"))?;
         SendMessageW(hwnd, EM_EMPTYUNDOBUFFER, None, None);
         let before = sumibi_tip::spike::SumibiSpikeBodyReadCount();
@@ -306,7 +331,7 @@ fn inspect_standard_edit(manager: &ITfThreadMgr, messages: &ITfMessagePump) -> R
         let document = match manager.GetFocus() {
             Ok(document) => Some(document),
             Err(error) if error.code() == S_OK => {
-                println!("Native EDIT / no TSF focused document");
+                println!("Native EDIT / {case}: no TSF focused document");
                 None
             }
             Err(error) => return Err(error),
@@ -321,16 +346,21 @@ fn inspect_standard_edit(manager: &ITfThreadMgr, messages: &ITfMessagePump) -> R
                             "standard EDIT status changed; review compatibility before authorizing body access"
                         );
                         println!(
-                            "Native EDIT / denied ({denial:?}, dynamic={:#x}, static={:#x})",
+                            "Native EDIT / {case}: denied ({denial:?}, dynamic={:#x}, static={:#x})",
                             status.dwDynamicFlags, status.dwStaticFlags
                         );
                     }
                     Err(error) if error.code() == TF_E_EMPTYCONTEXT => {
-                        println!("Native EDIT / empty TSF context: {:?}", error.code())
+                        println!(
+                            "Native EDIT / {case}: empty TSF context: {:?}",
+                            error.code()
+                        )
                     }
                     Err(error) => return Err(error),
                 },
-                Err(error) if error.code() == S_OK => println!("Native EDIT / no TSF top context"),
+                Err(error) if error.code() == S_OK => {
+                    println!("Native EDIT / {case}: no TSF top context")
+                }
                 Err(error) => return Err(error),
             }
         }

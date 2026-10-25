@@ -401,6 +401,7 @@ impl ManualEdit {
             return Err(E_ABORT.into());
         }
         if replacement.is_empty()
+            || replacement.contains('\u{fffc}')
             || replacement
                 .encode_utf16()
                 .take(MAX_SELECTION_UNITS + 1)

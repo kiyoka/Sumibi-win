@@ -187,6 +187,7 @@ impl Revision {
 /// Shared, allocation-free single-result text limit for transport adapters.
 pub fn valid_text(text: &str) -> bool {
     !text.is_empty()
+        && !text.contains('\u{fffc}')
         && text.len() <= MAX_TEXT_UNITS * 4
         && text.encode_utf16().take(MAX_TEXT_UNITS + 1).count() <= MAX_TEXT_UNITS
 }

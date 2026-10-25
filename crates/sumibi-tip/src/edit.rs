@@ -263,7 +263,7 @@ fn read_all(range: &ITfRange, cookie: u32) -> Result<Vec<u16>> {
                 return Err(E_ABORT.into());
             }
         }
-        if text.is_empty() || String::from_utf16(&text).is_err() {
+        if text.is_empty() || text.contains(&0xfffc) || String::from_utf16(&text).is_err() {
             return Err(E_ABORT.into());
         }
         Ok(text)
@@ -336,7 +336,10 @@ pub fn replace_selection(
         .encode_utf16()
         .take(MAX_SELECTION_UNITS + 1)
         .collect();
-    if replacement.is_empty() || replacement.len() > MAX_SELECTION_UNITS {
+    if replacement.is_empty()
+        || replacement.len() > MAX_SELECTION_UNITS
+        || replacement.contains(&0xfffc)
+    {
         return Err(E_INVALIDARG.into());
     }
     let context = snapshot.context.clone();

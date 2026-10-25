@@ -27,6 +27,10 @@
 
 2026-10-25、未発行の未来要求番号を持つBroker応答を接続異常として拒否し、
 認証済み実子processで退役と再送不可を確認した（[ADR 0056](adr/0056-future-reply-id-is-terminal.md)）。
+同日、待機Coreと追跡Coreの本文受付でも`U+FFFC`を拒否し、専用adapterと救済の条件を揃えた
+（[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)）。
+選択変換の実TSF取得でも同文字をBroker送信前に拒否し、専用storeの本文・Undo不変を確認した
+（[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md)）。
 
 ## 2. Windowsで実行済みの検証
 
@@ -291,7 +295,7 @@ Coreへ同時予約と解放等の5件を追加し、workspace 71件・fmt・各
 | --- | --- | --- |
 | 専用sumibi-setup | 自動試験成功。2026-10-23にtransaction-demoで利用者が`nihongo`入力、F7変換、Ctrl+Z復元、×終了を目視確認 | Shift選択・IME切替、別デモの実打鍵 |
 | 専用window内の標準RichEdit | native TSFの拒否7構成を自動確認。隠し文字なしの保証がなく変換は未対応 | 肯定的な保護情報・領域境界の扱いを決定してから変換/標準Undo |
-| 専用window内の標準EDIT | 今回のWindows 11環境ではHWND focus後もTSFのfocused documentなし。本文読取・Undo・変更なしを自動確認 | document/context提供条件の調査と、取得できた環境での保護情報確認 |
+| 専用window内の標準EDIT | 既定scopeと明示IS_TEXTの両方で、今回のWindows 11環境ではHWND focus後もTSFのfocused documentなし。本文読取・Undo・変更なしを自動確認 | document/context提供条件の調査と、取得できた環境での保護情報確認 |
 | Notepad | 未検証 | 通常入力・選択・Enter/Esc・1回Undo・読取専用 |
 | VS Code | 未検証 | editorと検索欄、複数文書、キー競合 |
 | Chromium系 | 未検証 | input / textarea / contenteditable、長文、パスワード |

@@ -236,8 +236,9 @@ impl WaitingInput {
             Input::Text(text)
                 if !text.is_empty()
                     && text.len() <= MAX_EVENT_UNITS
-                    && char::decode_utf16(text.iter().copied())
-                        .all(|value| value.is_ok_and(|value| !value.is_control())) =>
+                    && char::decode_utf16(text.iter().copied()).all(|value| {
+                        value.is_ok_and(|value| !value.is_control() && value != '\u{fffc}')
+                    }) =>
             {
                 text.len()
             }
