@@ -494,6 +494,28 @@ fn exercise_job_capacity(messages: &ITfMessagePump) -> std::result::Result<(), F
             Reservation::acquire(),
             Err(sumibi_ipc::Error::Capacity)
         ));
+        assert!(matches!(
+            slot.start(
+                std::env::current_exe()?.with_file_name("sumibi-host.exe"),
+                Request {
+                    id: 101,
+                    revision: sumibi_protocol::message::Revision {
+                        input: 1,
+                        settings: 1,
+                        authorization: 1,
+                    },
+                    text: "a\u{fffc}b".into(),
+                    deadline: Instant::now() + Duration::from_secs(2),
+                    mode,
+                },
+            ),
+            Err(sumibi_ipc::Error::InvalidArgument)
+        ));
+        let slot = Reservation::acquire()?;
+        assert!(matches!(
+            Reservation::acquire(),
+            Err(sumibi_ipc::Error::Capacity)
+        ));
         drop((slot, replies));
         let slots = (0..sumibi_ipc::job::MAX_JOBS)
             .map(|_| Reservation::acquire())

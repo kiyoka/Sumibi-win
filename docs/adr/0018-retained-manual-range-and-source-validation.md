@@ -94,6 +94,9 @@ Coreの要求開始・結果判定、版1の送受信本文、直接/所有TSF�
 `InvalidArgument`として拒否し、接続・要求番号を保った次の正常要求を確認した。
 単発Jobと再利用Workerの共通`Request::validate`もProtocolの`valid_text`を使い、
 スレッドや子Brokerの起動前に同じ原文を拒否する。
+`broker-worker-test`では予約後のsubmitで同文字を拒否し、次の正常要求が
+同じworkerのwire ID 1となることを確認した。単発Jobの`broker-test`では
+絶対パスのHostを指定した失敗開始でも予約枠が戻ることを確認した。
 
 ## 2026-10-25: Core単独の手動要求検査
 
