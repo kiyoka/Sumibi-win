@@ -55,7 +55,7 @@ pub(super) fn run(default_host: bool) -> Result<()> {
 fn exercise(default_host: bool) -> Result<()> {
     let path = executable()?;
     let denied = Channel::connect(&path, Mode::Disabled, &Stop::new()?, deadline());
-    assert!(matches!(denied, Err(Error::PolicyDenied)));
+    assert_eq!(denied.err(), Some(Error::PolicyDenied));
     println!("Broker channel / disabled Ready rejects before source: OK");
     if default_host {
         assert!(matches!(

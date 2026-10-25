@@ -59,6 +59,11 @@ Windowsの[ユーザー別COM登録](https://learn.microsoft.com/en-us/windows/w
 2026-10-24にCIで`Test-Spike.ps1 -SkipDesktop`を試したところ、Windows Serverランナーの
 前面サービスが空で`self-test`が止まった。対話desktopで同コマンドは成功しており、
 ランナー上の失敗を製品コードの欠陥や実TSF検査の成功に読み替えない。
+2026-10-25には別プロセスの`broker-channel-denied-test`をCIへ一時追加したが、
+最初の既定Host拒否ケースが期待する`PolicyDenied`へ到達しなかった。
+当該テストは実際のエラー分類を出力しないため、このログだけで原因は特定できない。
+CIへの追加は取り消し、通常ユーザーの対話desktopでChannel 24件とWorker 14件を
+別途成功確認した。CIの単体テスト成功を実子Brokerの成功として扱わない。
 
 Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCEPTANCE.md)を参照。
 まとめて検証する場合は通常ユーザーのPowerShellで `./tools/Test-Spike.ps1` を実行する。
@@ -68,8 +73,10 @@ Rust workspaceの通常版と`sumibi-host/spike`診断版を両方検査する�
 
 Issue #4の型付きIPCとclient状態の純粋Rust検証は
 `cargo test -p sumibi-protocol --locked --offline`で実行できる。
-現時点はCore 94件（応答照合9・入力範囲追跡/削除/caret計画52・書記素移動/削除境界7・救済14・待機入力12）、Protocol 22件（frame 6・接続状態8・JSON 4・Core模擬接続4）、IPCの境界・worker/server 12件、TIP 6件を含めworkspace合計134件。
-JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱い、実APIやOS peer認証は使わない。
+JSON構造・固定エラー・世代・取消・再接続・期限・対象照合を扱う。
+このProtocol単体コマンドは実APIやOS peer認証を使わない。
+最新のworkspace件数と実子Broker・TSF検査の範囲は
+[Issue #4の受入進捗](ISSUE_4_PROGRESS.md)を参照。
 形式・制限・残る製品接続は[IPC契約](IPC_PROTOCOL.md)を参照。
 
 手動変換の待機入力Coreは`cargo test -p sumibi-core waiting_input --locked --offline`で12件を検証できる。
