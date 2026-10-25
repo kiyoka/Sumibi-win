@@ -19,6 +19,7 @@ pub enum Mode {
     DiagnosticRevokeIdle,
     DiagnosticRevokeCoalesced,
     DiagnosticRevokeAfterResult,
+    DiagnosticRegrantAfterResult,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Service {
@@ -44,6 +45,7 @@ impl Mode {
             Self::DiagnosticRevokeIdle => Ok("revoke-idle".into()),
             Self::DiagnosticRevokeCoalesced => Ok("revoke-coalesced".into()),
             Self::DiagnosticRevokeAfterResult => Ok("revoke-after-result".into()),
+            Self::DiagnosticRegrantAfterResult => Ok("regrant-after-result".into()),
             _ => Err(Error::InvalidArgument),
         }
     }
@@ -275,6 +277,7 @@ impl Bootstrap {
             "revoke-idle" => Mode::DiagnosticRevokeIdle,
             "revoke-coalesced" => Mode::DiagnosticRevokeCoalesced,
             "revoke-after-result" => Mode::DiagnosticRevokeAfterResult,
+            "regrant-after-result" => Mode::DiagnosticRegrantAfterResult,
             value => {
                 let delay_ms = value
                     .strip_prefix("fixed:")

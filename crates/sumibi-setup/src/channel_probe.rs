@@ -88,6 +88,15 @@ fn exercise(default_host: bool) -> Result<()> {
             ),
             Err(Error::Disconnected | Error::PolicyDenied)
         ));
+        assert!(matches!(
+            Channel::connect(
+                &path,
+                Mode::DiagnosticRegrantAfterResult,
+                &Stop::new()?,
+                deadline()
+            ),
+            Err(Error::Disconnected | Error::PolicyDenied)
+        ));
         println!("Broker channel / default host rejects diagnostic converter: OK");
         return Ok(());
     }
@@ -291,6 +300,28 @@ fn exercise(default_host: bool) -> Result<()> {
         exited(&peer);
     }
     println!("Broker channel / result followed by queued revocation is not delivered: OK");
+    {
+        let mut channel = Channel::connect(
+            &path,
+            Mode::DiagnosticRegrantAfterResult,
+            &Stop::new()?,
+            deadline(),
+        )?;
+        let peer = channel.peer_process()?;
+        let stale = channel.convert(revision(1), "synthetic", deadline());
+        assert!(
+            matches!(stale, Err(Error::PolicyDenied)),
+            "{:?}",
+            stale.err()
+        );
+        assert!(channel.is_closed());
+        assert!(matches!(
+            channel.convert(revision(2), "unused", deadline()),
+            Err(Error::Closed)
+        ));
+        exited(&peer);
+    }
+    println!("Broker channel / coalesced re-consent after result still discards old result: OK");
     {
         let mut channel = connect(&path, 1000, &Stop::new()?)?;
         let peer = channel.peer_process()?;

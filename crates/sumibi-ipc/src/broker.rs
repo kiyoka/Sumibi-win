@@ -117,6 +117,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         Mode::DiagnosticRevokeIdle if diagnostic_enabled => true,
         Mode::DiagnosticRevokeCoalesced if diagnostic_enabled => true,
         Mode::DiagnosticRevokeAfterResult if diagnostic_enabled => true,
+        Mode::DiagnosticRegrantAfterResult if diagnostic_enabled => true,
         _ => return Err(Error::PolicyDenied),
     };
     let server = Server::create(&bootstrap.name)?;
@@ -197,7 +198,10 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             accept_request(&convert, policy, &mut last_request)?;
             let deadline =
                 (Instant::now() + Duration::from_millis(convert.timeout_ms.into())).min(lifetime);
-            if bootstrap.mode == Mode::DiagnosticRevokeAfterResult {
+            if matches!(
+                bootstrap.mode,
+                Mode::DiagnosticRevokeAfterResult | Mode::DiagnosticRegrantAfterResult
+            ) {
                 let mut reply = message::encode(&envelope(Message::Result(ConversionResult {
                     request: convert.request,
                     revision: convert.revision,
@@ -207,8 +211,15 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 reply.extend(
                     message::encode(&envelope(Message::PolicyChanged(Policy {
                         settings: policy.settings,
-                        authorization: policy.authorization + 1,
-                        allowed: false,
+                        // The second fixture coalesces revoke and re-consent:
+                        // final allowed=true still invalidates the old result.
+                        authorization: policy.authorization
+                            + if bootstrap.mode == Mode::DiagnosticRegrantAfterResult {
+                                2
+                            } else {
+                                1
+                            },
+                        allowed: bootstrap.mode == Mode::DiagnosticRegrantAfterResult,
                     })))
                     .map_err(|_| Error::InvalidMessage)?,
                 );

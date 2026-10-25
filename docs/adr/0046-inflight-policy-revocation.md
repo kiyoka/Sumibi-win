@@ -31,3 +31,10 @@ Broker側での送信直前のポリシー検査もまだない。
 結果と失効通知が同じreadに入った場合も、結果を所有側へ返す前に残りの通知を処理し、
 結果を破棄して接続を退役させる。これも専用の実子Broker検査で確認する。
 Server側は要求/応答のlockstepを維持し、pipelined Convertは受け付けない。
+
+追補: `regrant-after-result`診断モードを追加した。旧結果と、取消・再同意を
+最新版へまとめた`allowed=true`/認可版+2の通知を同じpipe writeで送る。
+`broker-channel-test`は実子Brokerと認証済みpipeで、最終許可状態がtrueでも
+旧結果を公開せず、Channelを退役させ、別要求へ自動再送しないことを確認した。
+通常版Hostの同モード拒否も確認した。これは[ADR 0049](0049-host-in-memory-policy-authority.md)の
+政策版を使う製品配送ではなく、固定値を送るspike fixtureである。

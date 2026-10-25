@@ -377,7 +377,7 @@ cargo build -p sumibi-host --features spike --locked --offline
 ./target/debug/sumibi-setup.exe broker-worker-test
 ```
 
-denied-testは通常Hostの拒否2項目、channel-testは実子processで14項目を自動検証する。専用workerで同じ
+denied-testは通常Hostの診断モード拒否を、channel-testは実子processで政策変更と再同意後の旧結果破棄を含む経路を自動検証する。専用workerで同じ
 起動processへ連続変換し、Reply保持中の拒否、取消、期限、64要求上限、共通4枠、子と親handleの解放を確認する。
 原文は合成文字列だけで、ユーザー文書・HTTP・既定IMEを使用しない。
 worker-testは11項目を確認する。既存の入力デモも同じEXE workerからBrokerを再利用する。
