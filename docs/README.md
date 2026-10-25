@@ -8,6 +8,7 @@
 2. [所有者と寿命](INPUT_CONTROLLER_ARCHITECTURE.md)：TSFスレッド、COM、失効、非同期後始末。
 3. [実装照合表](IMPLEMENTATION_AUDIT.md)：コード・未実装・検証結果・受入条件。
 4. [開発と操作手順](DEVELOPMENT.md)、[TSFスパイク記録](TSF_SPIKE.md)：再現方法と限定条件。
+5. [Issue #4 の受入進捗](ISSUE_4_PROGRESS.md)：現時点の根拠と、製品接続・一般アプリで残る条件。
 
 ## 採用判断と参照元
 
@@ -55,6 +56,8 @@
 - [ADR 0041](adr/0041-configurable-shared-recovery-budget.md)：共有救済の件数と本文総量を一度に予約し、既定の診断容量を維持する。
 - [ADR 0042](adr/0042-waiting-capacity-fallback-feedback.md)：待機容量超過による通常入力への切替を診断デモに表示する。
 - [ADR 0043](adr/0043-interactive-native-key-activation.md)：診断windowを手動で前面化し、実TSFキー検証を続ける専用コマンド。
+- [ADR 0045](adr/0045-machine-registration-boundary.md)：恒久登録前の配置・署名・更新条件。
+- [ADR 0057](adr/0057-broker-side-session-order.md)〜[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)：Broker側の要求順序、結果と政策更新の公開順序、有限の複数接続通知。
 
 ## 更新の規則
 
