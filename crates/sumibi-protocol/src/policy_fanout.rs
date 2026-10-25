@@ -78,14 +78,15 @@ impl PolicyFanout {
         self.subscribers.len()
     }
 
-    /// Claim each unscheduled notice exactly once while holding the Fanout
-    /// lock. Release that lock before pipe I/O, then confirm the exact policy
-    /// epoch after each complete write. A failed write requires detach.
+    /// Claim each unscheduled notice for a connection whose Ready write has
+    /// completed. Release the Fanout lock before pipe I/O, then confirm the
+    /// exact policy epoch after each complete write. A failed write requires
+    /// detach. Call again after a pending Ready write completes.
     pub fn pending_writes(&mut self) -> Vec<(u64, PolicyNotice)> {
         self.subscribers
             .iter_mut()
             .filter_map(|subscriber| {
-                if subscriber.notice_claimed {
+                if subscriber.ready_pending || subscriber.notice_claimed {
                     return None;
                 }
                 let notice = subscriber.notice.as_ref()?.clone();
@@ -93,6 +94,24 @@ impl PolicyFanout {
                 Some((subscriber.key, notice))
             })
             .collect()
+    }
+
+    /// Claim a notice while Ready is still pending only when both complete
+    /// frames will be written in one ordered operation. After that write,
+    /// acknowledge Ready first and then the notice's exact policy epoch.
+    pub fn coalesced_ready_notice(&mut self, key: u64) -> Result<PolicyNotice, FanoutError> {
+        let index = self.index(key)?;
+        let subscriber = &mut self.subscribers[index];
+        if !subscriber.ready_pending || subscriber.notice_claimed {
+            return Err(FanoutError::NoNotice);
+        }
+        let notice = subscriber
+            .notice
+            .as_ref()
+            .ok_or(FanoutError::NoNotice)?
+            .clone();
+        subscriber.notice_claimed = true;
+        Ok(notice)
     }
 
     /// The transport must authenticate its OS peer before calling attach.
@@ -720,6 +739,38 @@ mod tests {
         assert!(fanout.pending_writes().is_empty());
         fanout.notice_delivered(2, changed).unwrap();
         assert_eq!(fanout.active_count(), 1);
+    }
+
+    #[test]
+    fn notice_waits_for_ready_unless_both_frames_share_one_write() {
+        let now = Instant::now();
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        fanout.attach(1, hello(1), now).unwrap();
+        fanout.attach(2, hello(2), now).unwrap();
+        let changed = Policy {
+            settings: 2,
+            ..policy()
+        };
+        fanout.publish(changed).unwrap();
+        assert!(fanout.pending_writes().is_empty());
+
+        fanout.ready_delivered(1).unwrap();
+        let writes = fanout.pending_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, 1);
+        let coalesced = fanout.coalesced_ready_notice(2).unwrap();
+        assert!(
+            matches!(coalesced.frame.message, Message::PolicyChanged(value) if value == changed)
+        );
+        assert_eq!(
+            fanout.coalesced_ready_notice(2).err(),
+            Some(FanoutError::NoNotice)
+        );
+        assert!(fanout.pending_writes().is_empty());
+        fanout.ready_delivered(2).unwrap();
+        fanout.notice_delivered(1, changed).unwrap();
+        fanout.notice_delivered(2, changed).unwrap();
+        assert!(fanout.pending_writes().is_empty());
     }
 
     #[test]

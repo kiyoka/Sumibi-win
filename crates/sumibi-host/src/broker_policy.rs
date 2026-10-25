@@ -96,7 +96,7 @@ fn version(policy: Policy) -> PolicyVersion {
 mod tests {
     use super::*;
     use crate::manual::{Credential, Destination, Scheme};
-    use sumibi_protocol::message::{Envelope, Hello, Id, Message, VERSION};
+    use sumibi_protocol::message::{Convert, Envelope, Hello, Id, Message, Revision, VERSION};
 
     fn id(value: u128) -> Id {
         Id::new(value).unwrap()
@@ -247,5 +247,138 @@ mod tests {
         assert!(!gate.snapshot().unwrap().allowed);
         fanout.notice_delivered(1, revoked.policy).unwrap();
         assert!(fanout.pending_writes().is_empty());
+    }
+
+    #[test]
+    fn failed_notice_write_reconnects_at_latest_epoch() {
+        let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
+        let source = PolicyAuthority::new(destination.clone());
+        let initial = source.wire_policy().unwrap();
+        let gate = BrokerPolicyGate::new(initial).unwrap();
+        let mut fanout = PolicyFanout::new(id(90), initial).unwrap();
+        let now = Instant::now();
+        for key in 1..=2 {
+            fanout
+                .attach(
+                    key,
+                    Envelope {
+                        version: VERSION,
+                        session: id(key.into()),
+                        generation: 1,
+                        message: Message::Hello(Hello { broker: id(90) }),
+                    },
+                    now,
+                )
+                .unwrap();
+            fanout.ready_delivered(key).unwrap();
+        }
+        let mut relay = BrokerPolicyRelay::new(&source, &gate, &fanout).unwrap();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let granted = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
+        assert_eq!(notice_keys(&granted), [1, 2]);
+
+        // A failed complete-frame write closes only its authenticated pipe.
+        assert!(fanout.detach(1));
+        assert!(fanout.pending_notice(1).is_err());
+        fanout.notice_delivered(2, granted.policy).unwrap();
+        assert!(fanout.pending_writes().is_empty());
+        let ready = fanout
+            .attach(
+                3,
+                Envelope {
+                    version: VERSION,
+                    session: id(1),
+                    generation: 2,
+                    message: Message::Hello(Hello { broker: id(90) }),
+                },
+                now,
+            )
+            .unwrap();
+        assert!(matches!(ready.message, Message::Ready(value) if value.policy == granted.policy));
+        fanout.ready_delivered(3).unwrap();
+        let revision = Revision {
+            input: 1,
+            settings: granted.policy.settings,
+            authorization: granted.policy.authorization,
+        };
+        let accepted = fanout
+            .receive(
+                3,
+                Envelope {
+                    version: VERSION,
+                    session: id(1),
+                    generation: 2,
+                    message: Message::Convert(Convert {
+                        request: 1,
+                        revision,
+                        timeout_ms: 1000,
+                        text: "nihongo".into(),
+                    }),
+                },
+                now,
+            )
+            .unwrap();
+        assert!(matches!(
+            accepted,
+            sumibi_protocol::broker_session::Event::Convert(_)
+        ));
+        gate.authorize(revision).unwrap();
+
+        source.revoke_manual_consent().unwrap();
+        let revoked = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
+        assert_eq!(notice_keys(&revoked), [2, 3]);
+        assert!(revoked.retired.is_empty());
+        assert_eq!(revoked.notices[1].1.cancelled, Some(1));
+        assert!(fanout
+            .result(3, 1, revision, "日本語".into(), now)
+            .unwrap()
+            .is_none());
+        assert_eq!(gate.authorize(revision), Err(IpcError::PolicyDenied));
+    }
+
+    #[test]
+    fn relay_defers_notice_until_ready_write_completes() {
+        let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
+        let source = PolicyAuthority::new(destination.clone());
+        let initial = source.wire_policy().unwrap();
+        let gate = BrokerPolicyGate::new(initial).unwrap();
+        let mut fanout = PolicyFanout::new(id(90), initial).unwrap();
+        let now = Instant::now();
+        for key in 1..=2 {
+            fanout
+                .attach(
+                    key,
+                    Envelope {
+                        version: VERSION,
+                        session: id(key.into()),
+                        generation: 1,
+                        message: Message::Hello(Hello { broker: id(90) }),
+                    },
+                    now,
+                )
+                .unwrap();
+        }
+        fanout.ready_delivered(2).unwrap();
+        let mut relay = BrokerPolicyRelay::new(&source, &gate, &fanout).unwrap();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let published = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
+        assert_eq!(notice_keys(&published), [2]);
+        assert!(fanout.pending_notice(1).unwrap().is_some());
+        assert!(fanout.pending_writes().is_empty());
+        fanout.ready_delivered(1).unwrap();
+        let writes = fanout.pending_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, 1);
+        assert!(
+            matches!(writes[0].1.frame.message, Message::PolicyChanged(value) if value == published.policy)
+        );
+        fanout.notice_delivered(1, published.policy).unwrap();
+        fanout.notice_delivered(2, published.policy).unwrap();
     }
 }

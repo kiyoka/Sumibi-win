@@ -235,8 +235,10 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         if !gate.publish(&mut order, next)?.is_empty() {
             return Err(Error::InvalidMessage);
         }
-        let (notice, _) = pending_notice(&mut order)?;
-        ready.extend(notice);
+        let notice = order
+            .coalesced_ready_notice(DIAGNOSTIC_CONNECTION)
+            .map_err(map_fanout_error)?;
+        ready.extend(message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?);
         coalesced_policy = Some(next);
     }
     pipe.write_all(ready, &bootstrap.stop, deadline)?;

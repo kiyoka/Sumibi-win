@@ -46,6 +46,8 @@
   書込完了時は配送した政策版も照合し、古い・重複した完了通知で
   次の通知を承認しない。
   通知frameは各接続につき一度だけ書込担当へ取り出し、未取得の書込完了を拒否する。
+  Ready書込中の接続は通常の通知取得から外し、Ready完了後または明示的な
+  同一書込で取得する。Hostの結合検査では書込失敗後の再接続も確認した。
   診断用Brokerの実子Channelを
   1接続として通した。複数clientの実I/Oは残る
   （[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)）。
@@ -69,8 +71,8 @@
   製品Brokerでも使えるよう、書込完了まで保持する公開guard APIを用意した。
   Fanout内で結果を用意してlockを離した後に失効が入れば、書込guardは
   旧結果を拒否することも確認した。
-- `cargo test --workspace --locked --offline --quiet`はローカルHTTPを許可した環境で195件成功。
-  期限切れと再接続の追加後のProtocol単体は41件成功。
+- `cargo test --workspace --locked --offline --quiet`はローカルHTTPを許可した環境で198件成功。
+  期限切れと再接続の追加後のProtocol単体は42件成功。
   `tools/Test-Broker.ps1`で既定Host拒否、実子Channel 24件、Worker 14件を
   正しいビルド順で再確認した。
   `tools/Test-Spike.ps1 -SkipDesktop`も成功し、終了後の既定Host拒否を
