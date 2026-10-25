@@ -38,7 +38,9 @@
   （[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)）。
 - Host内の設定・認可変更を期限付きで待てる`wait_for_change`を追加。
   成功した更新だけが配信担当を起こし、最新の公開用policyを返す。
-- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で173件成功。
+  2件のProtocol接続へ失効を渡す結合検査で、保留中と待機中の双方に通知し、
+  旧結果を公開しないことを確認した。
+- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で174件成功。
   現在のサンドボックスでは診断用localhost HTTPの4件が接続不可になるため、同じコマンドを通常ユーザー環境で再実行して切り分けた。
 
 ## 次の受入作業

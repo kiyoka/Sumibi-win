@@ -207,7 +207,9 @@ mod tests {
     use sumibi_protocol::message::{
         self, ConversionResult, Envelope, Id, Message, Ready, Revision, VERSION,
     };
+    use sumibi_protocol::policy_fanout::PolicyFanout;
     use sumibi_protocol::session::{ClientSession, Event, SessionError};
+    use sumibi_protocol::Decoder;
 
     fn destination(host: &str) -> Destination {
         Destination::new(Scheme::Https, host, 443, "/convert").unwrap()
@@ -578,5 +580,74 @@ mod tests {
             .wait_for_change(version, Instant::now())
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn authority_change_reaches_busy_and_idle_protocol_connections() {
+        let now = Instant::now();
+        let destination = destination("api.example.test");
+        let authority = PolicyAuthority::new(destination.clone());
+        authority
+            .replace_credential(Some(Credential::new("synthetic-key".into()).unwrap()))
+            .unwrap();
+        let granted = authority.grant_manual_consent(&destination).unwrap();
+        let broker = Id::new(90).unwrap();
+        let mut fanout = PolicyFanout::new(broker, authority.wire_policy().unwrap()).unwrap();
+        let mut clients = [
+            ClientSession::new(Id::new(1).unwrap(), broker),
+            ClientSession::new(Id::new(2).unwrap(), broker),
+        ];
+        for (index, client) in clients.iter_mut().enumerate() {
+            let hello = client.hello().unwrap();
+            let ready = fanout
+                .attach((index + 1) as u64, decode_frame(&hello), now)
+                .unwrap();
+            let ready = message::encode(&ready).unwrap();
+            assert!(matches!(
+                client.receive(&ready, now).unwrap().event,
+                Some(Event::Ready(_))
+            ));
+        }
+        let convert = clients[0].begin(1, "nihongo", 1000, now).unwrap();
+        fanout.receive(1, decode_frame(&convert), now).unwrap();
+        let revoked = authority.revoke_manual_consent().unwrap();
+        let policy = authority.wait_for_change(granted, now).unwrap().unwrap();
+        assert_eq!(policy.authorization, revoked.authorization);
+        assert!(fanout.publish(policy).unwrap().is_empty());
+        for (index, client) in clients.iter_mut().enumerate() {
+            let notice = fanout.pending_notice((index + 1) as u64).unwrap().unwrap();
+            let frame = message::encode(&notice.frame).unwrap();
+            let cancelled = if index == 0 { Some(1) } else { None };
+            assert!(matches!(
+                client.receive(&frame, now).unwrap().event,
+                Some(Event::PolicyChanged { cancelled: actual, .. }) if actual == cancelled
+            ));
+            fanout.notice_delivered((index + 1) as u64).unwrap();
+        }
+        assert!(fanout
+            .result(
+                1,
+                1,
+                Revision {
+                    input: 1,
+                    settings: granted.settings,
+                    authorization: granted.authorization,
+                },
+                "旧結果".into(),
+                now,
+            )
+            .unwrap()
+            .is_none());
+        assert!(matches!(
+            clients[0].begin(1, "nihongo", 1000, now),
+            Err(SessionError::NotAllowed)
+        ));
+    }
+
+    fn decode_frame(bytes: &[u8]) -> Envelope {
+        let mut decoder = Decoder::default();
+        let decoded = decoder.decode(bytes).unwrap();
+        assert_eq!(decoded.consumed, bytes.len());
+        message::decode(decoded.body.unwrap()).unwrap()
     }
 }
