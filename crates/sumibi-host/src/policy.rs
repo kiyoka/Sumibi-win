@@ -662,6 +662,80 @@ mod tests {
     }
 
     #[cfg(windows)]
+    #[test]
+    fn coalesced_regrant_never_revives_the_old_request() {
+        let now = Instant::now();
+        let destination = destination("api.example.test");
+        let authority = PolicyAuthority::new(destination.clone());
+        authority
+            .replace_credential(Some(Credential::new("synthetic-key".into()).unwrap()))
+            .unwrap();
+        let granted = authority.grant_manual_consent(&destination).unwrap();
+        let initial = authority.wire_policy().unwrap();
+        let broker = Id::new(90).unwrap();
+        let gate = BrokerPolicyGate::new(initial).unwrap();
+        let mut fanout = PolicyFanout::new(broker, initial).unwrap();
+        let mut client = ClientSession::new(Id::new(1).unwrap(), broker);
+        let ready = fanout
+            .attach(1, decode_frame(&client.hello().unwrap()), now)
+            .unwrap();
+        assert!(matches!(
+            client
+                .receive(&message::encode(&ready).unwrap(), now)
+                .unwrap()
+                .event,
+            Some(Event::Ready(_))
+        ));
+        fanout.ready_delivered(1).unwrap();
+        let old = client.begin(1, "nihongo", 1000, now).unwrap();
+        fanout.receive(1, decode_frame(&old), now).unwrap();
+
+        authority.revoke_manual_consent().unwrap();
+        let regranted = authority.grant_manual_consent(&destination).unwrap();
+        let latest = authority.wait_for_change(granted, now).unwrap().unwrap();
+        assert_eq!(latest.authorization, regranted.authorization);
+        assert!(latest.allowed);
+        assert!(gate.publish(&mut fanout, latest).unwrap().is_empty());
+        assert_eq!(
+            fanout.pending_notice(1).unwrap().unwrap().cancelled,
+            Some(1)
+        );
+        assert_eq!(
+            gate.authorize(Revision {
+                input: 1,
+                settings: granted.settings,
+                authorization: granted.authorization,
+            }),
+            Err(sumibi_ipc::Error::PolicyDenied)
+        );
+        let notice = &fanout.pending_notice(1).unwrap().unwrap().frame;
+        assert!(matches!(
+            client.receive(&message::encode(notice).unwrap(), now).unwrap().event,
+            Some(Event::PolicyChanged { cancelled: Some(1), policy }) if policy == latest
+        ));
+        fanout.notice_delivered(1, latest).unwrap();
+        assert!(fanout
+            .result(
+                1,
+                1,
+                Revision {
+                    input: 1,
+                    settings: granted.settings,
+                    authorization: granted.authorization,
+                },
+                "旧結果".into(),
+                now,
+            )
+            .unwrap()
+            .is_none());
+        let current = client.begin(2, "nihongo", 1000, now).unwrap();
+        assert!(matches!(
+            fanout.receive(1, decode_frame(&current), now),
+            Ok(sumibi_protocol::broker_session::Event::Convert(_))
+        ));
+    }
+
+    #[cfg(windows)]
     fn decode_frame(bytes: &[u8]) -> Envelope {
         let mut decoder = Decoder::default();
         let decoded = decoder.decode(bytes).unwrap();
