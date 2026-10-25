@@ -80,6 +80,17 @@ impl BrokerSession {
         self.pending.as_ref().map(|pending| pending.request)
     }
 
+    /// The fanout restores a lifetime request floor before accepting a new
+    /// generation's Hello. A reconnect cannot reset the wire request counter.
+    pub(crate) fn resume_request_floor(&mut self, floor: u64) -> Result<(), BrokerError> {
+        if self.status != Status::Connecting {
+            self.disconnect();
+            return Err(BrokerError::WrongState);
+        }
+        self.last_request = floor;
+        Ok(())
+    }
+
     pub fn disconnect(&mut self) {
         self.status = Status::Closed;
         self.pending = None;

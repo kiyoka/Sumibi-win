@@ -38,6 +38,7 @@ struct Subscriber {
 struct SeenSession {
     id: Id,
     generation: u64,
+    last_request: u64,
 }
 
 /// One fixed-size list with at most one unsent policy frame per connection.
@@ -120,6 +121,11 @@ impl PolicyFanout {
         }
         let mut session =
             BrokerSession::new(self.broker, self.policy).map_err(FanoutError::Broker)?;
+        if let Some(seen) = self.seen.iter().find(|seen| seen.id == session_id) {
+            session
+                .resume_request_floor(seen.last_request)
+                .map_err(FanoutError::Broker)?;
+        }
         let Event::Ready(ready) = session.receive(hello, now).map_err(FanoutError::Broker)? else {
             return Err(FanoutError::Broker(BrokerError::WrongState));
         };
@@ -130,6 +136,7 @@ impl PolicyFanout {
             self.seen.push(SeenSession {
                 id: session_id,
                 generation,
+                last_request: 0,
             });
         }
         self.subscribers.push(Subscriber {
@@ -234,6 +241,15 @@ impl PolicyFanout {
             return Err(FanoutError::ReadyPending);
         }
         let result = self.subscribers[index].session.receive(frame, now);
+        if let Ok(Event::Convert(convert)) = &result {
+            if let Some(seen) = self
+                .seen
+                .iter_mut()
+                .find(|seen| seen.id == self.subscribers[index].session_id)
+            {
+                seen.last_request = convert.request;
+            }
+        }
         if result.is_err() {
             self.subscribers.remove(index);
         }
@@ -322,10 +338,13 @@ mod tests {
         }
     }
     fn convert(client: u128, request: u64, policy: Policy) -> Envelope {
+        convert_generation(client, 1, request, policy)
+    }
+    fn convert_generation(client: u128, generation: u64, request: u64, policy: Policy) -> Envelope {
         Envelope {
             version: VERSION,
             session: id(client),
-            generation: 1,
+            generation,
             message: Message::Convert(Convert {
                 request,
                 revision: Revision {
@@ -449,6 +468,30 @@ mod tests {
         assert!(matches!(
             fanout.attach(65, hello(65), now),
             Err(FanoutError::Exhausted)
+        ));
+    }
+
+    #[test]
+    fn reconnect_preserves_the_last_accepted_request_number() {
+        let now = Instant::now();
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        attach_ready(&mut fanout, 1, 1, now);
+        assert!(matches!(
+            fanout.receive(1, convert(1, 5, policy()), now),
+            Ok(Event::Convert(_))
+        ));
+        assert!(fanout.detach(1));
+        fanout.attach(2, hello_generation(1, 2), now).unwrap();
+        fanout.ready_delivered(2).unwrap();
+        assert!(matches!(
+            fanout.receive(2, convert_generation(1, 2, 5, policy()), now),
+            Err(FanoutError::Broker(BrokerError::Replay))
+        ));
+        fanout.attach(3, hello_generation(1, 3), now).unwrap();
+        fanout.ready_delivered(3).unwrap();
+        assert!(matches!(
+            fanout.receive(3, convert_generation(1, 3, 6, policy()), now),
+            Ok(Event::Convert(_))
         ));
     }
 
