@@ -4,7 +4,7 @@
 use crate::policy::{ChangeError, PolicyAuthority, PolicyVersion};
 use std::time::Instant;
 use sumibi_ipc::{broker::BrokerPolicyGate, Error as IpcError};
-use sumibi_protocol::{message::Policy, policy_fanout::PolicyFanout};
+use sumibi_protocol::{broker_session::PolicyNotice, message::Policy, policy_fanout::PolicyFanout};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RelayError {
@@ -16,6 +16,7 @@ pub enum RelayError {
 pub struct Published {
     pub policy: Policy,
     pub retired: Vec<u64>,
+    pub notices: Vec<(u64, PolicyNotice)>,
 }
 
 /// One serialized publisher per Broker. Keep the cursor only after the
@@ -73,9 +74,14 @@ impl<'a> BrokerPolicyRelay<'a> {
             return Ok(None);
         };
         let retired = gate.publish(fanout, policy).map_err(RelayError::Broker)?;
+        let notices = fanout.pending_writes();
         self.cursor = version(policy);
         self.published = policy;
-        Ok(Some(Published { policy, retired }))
+        Ok(Some(Published {
+            policy,
+            retired,
+            notices,
+        }))
     }
 }
 
@@ -94,6 +100,10 @@ mod tests {
 
     fn id(value: u128) -> Id {
         Id::new(value).unwrap()
+    }
+
+    fn notice_keys(published: &Published) -> Vec<u64> {
+        published.notices.iter().map(|(key, _)| *key).collect()
     }
 
     #[test]
@@ -126,6 +136,7 @@ mod tests {
         let grant = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
         assert!(grant.policy.allowed);
         assert!(grant.retired.is_empty());
+        assert_eq!(notice_keys(&grant), [1, 2]);
         assert!(gate.snapshot().unwrap() == grant.policy);
         for key in 1..=2 {
             assert!(fanout.pending_notice(key).unwrap().is_some());
@@ -137,6 +148,7 @@ mod tests {
         let revoke = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
         assert!(!revoke.policy.allowed);
         assert!(revoke.retired.is_empty());
+        assert_eq!(notice_keys(&revoke), [1, 2]);
         assert!(gate.snapshot().unwrap() == revoke.policy);
         for key in 1..=2 {
             assert!(fanout.pending_notice(key).unwrap().is_some());
@@ -193,5 +205,47 @@ mod tests {
         assert!(published.policy == source.wire_policy().unwrap());
         assert!(gate.snapshot().unwrap() == published.policy);
         assert!(!relay.wait_for_change(Instant::now()).unwrap());
+    }
+
+    #[test]
+    fn lagging_connection_is_retired_without_blocking_host_revocation() {
+        let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
+        let source = PolicyAuthority::new(destination.clone());
+        let initial = source.wire_policy().unwrap();
+        let gate = BrokerPolicyGate::new(initial).unwrap();
+        let mut fanout = PolicyFanout::new(id(90), initial).unwrap();
+        let now = Instant::now();
+        for key in 1..=2 {
+            fanout
+                .attach(
+                    key,
+                    Envelope {
+                        version: VERSION,
+                        session: id(key.into()),
+                        generation: 1,
+                        message: Message::Hello(Hello { broker: id(90) }),
+                    },
+                    now,
+                )
+                .unwrap();
+            fanout.ready_delivered(key).unwrap();
+        }
+        let mut relay = BrokerPolicyRelay::new(&source, &gate, &fanout).unwrap();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let grant = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
+        assert_eq!(notice_keys(&grant), [1, 2]);
+        fanout.notice_delivered(1, grant.policy).unwrap();
+
+        source.revoke_manual_consent().unwrap();
+        let revoked = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
+        assert_eq!(revoked.retired, [2]);
+        assert_eq!(notice_keys(&revoked), [1]);
+        assert_eq!(fanout.active_count(), 1);
+        assert!(!gate.snapshot().unwrap().allowed);
+        fanout.notice_delivered(1, revoked.policy).unwrap();
+        assert!(fanout.pending_writes().is_empty());
     }
 }

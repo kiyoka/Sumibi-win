@@ -76,6 +76,21 @@ impl PolicyFanout {
         self.subscribers.len()
     }
 
+    /// Copy at most one pending notice per live connection while holding the
+    /// Fanout lock. The caller releases that lock before pipe I/O and confirms
+    /// the exact policy epoch after each complete write.
+    pub fn pending_writes(&self) -> Vec<(u64, PolicyNotice)> {
+        self.subscribers
+            .iter()
+            .filter_map(|subscriber| {
+                subscriber
+                    .notice
+                    .as_ref()
+                    .map(|notice| (subscriber.key, notice.clone()))
+            })
+            .collect()
+    }
+
     /// The transport must authenticate its OS peer before calling attach.
     /// Keys increase for this Broker lifetime and are never reused after
     /// detach, so delayed write callbacks cannot address a new connection.
@@ -615,6 +630,11 @@ mod tests {
             ..policy()
         };
         fanout.publish(first).unwrap();
+        let first_writes = fanout.pending_writes();
+        assert_eq!(
+            first_writes.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            [1, 2]
+        );
         fanout.notice_delivered(1, first).unwrap();
         fanout.notice_delivered(2, first).unwrap();
         let second = Policy {
@@ -622,8 +642,12 @@ mod tests {
             ..policy()
         };
         fanout.publish(second).unwrap();
+        assert!(matches!(
+            first_writes[0].1.frame.message,
+            Message::PolicyChanged(policy) if policy == first
+        ));
         assert_eq!(
-            fanout.notice_delivered(1, first),
+            fanout.notice_delivered(first_writes[0].0, first),
             Err(FanoutError::StaleNotice)
         );
         assert_eq!(fanout.active_count(), 1);

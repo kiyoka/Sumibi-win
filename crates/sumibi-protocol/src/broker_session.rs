@@ -33,6 +33,7 @@ pub enum Event {
     Ignored,
 }
 
+#[derive(Clone)]
 pub struct PolicyNotice {
     pub frame: Envelope,
     pub cancelled: Option<u64>,

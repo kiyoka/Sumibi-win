@@ -56,7 +56,9 @@
   新版の要求だけを受け付けることも確認した。
 - `BrokerPolicyRelay`でHostの設定・同意状態からBrokerゲートとFanoutへ
   同じ最新版を渡す。初期版の不一致を拒否し、成功時だけカーソルを進める。
-  2接続への許可と失効を検査した。pipe配送は呼出し側に残る
+  公開結果から版付き通知frameの所有コピーと退役keyを取得できる。
+  2接続への許可と失効、
+  遅れた1接続だけの退役を検査した。pipe配送は呼出し側に残る
   （[ADR 0060](adr/0060-host-to-broker-policy-relay.md)）。
 - Brokerの成功結果と固定エラーは要求番号・版の照合を共通化し、
   古いErrorの無視と未来ID・版違いの終端化を検査した。
@@ -66,7 +68,7 @@
   製品Brokerでも使えるよう、書込完了まで保持する公開guard APIを用意した。
   Fanout内で結果を用意してlockを離した後に失効が入れば、書込guardは
   旧結果を拒否することも確認した。
-- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で193件成功。
+- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で194件成功。
   期限切れと再接続の追加後のProtocol単体は40件成功。
   `tools/Test-Broker.ps1`で既定Host拒否、実子Channel 24件、Worker 14件を
   正しいビルド順で再確認した。
