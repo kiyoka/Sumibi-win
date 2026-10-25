@@ -218,9 +218,9 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         coalesced_policy = Some(next);
     }
     pipe.write_all(ready, &bootstrap.stop, deadline)?;
-    if coalesced_policy.is_some() {
+    if let Some(delivered) = coalesced_policy {
         order
-            .notice_delivered(DIAGNOSTIC_CONNECTION)
+            .notice_delivered(DIAGNOSTIC_CONNECTION, delivered)
             .map_err(map_fanout_error)?;
     }
     if allowed {
@@ -244,7 +244,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 (Instant::now() + Duration::from_secs(5)).min(lifetime),
             )?;
             order
-                .notice_delivered(DIAGNOSTIC_CONNECTION)
+                .notice_delivered(DIAGNOSTIC_CONNECTION, next)
                 .map_err(map_fanout_error)?;
         }
         let mut last_request = 0;
@@ -301,7 +301,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 drop(convert);
                 pipe.write_all(notice, &bootstrap.stop, idle)?;
                 order
-                    .notice_delivered(DIAGNOSTIC_CONNECTION)
+                    .notice_delivered(DIAGNOSTIC_CONNECTION, latest)
                     .map_err(map_fanout_error)?;
                 break;
             }
@@ -370,7 +370,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 drop(convert);
                 pipe.write_all(reply, &bootstrap.stop, deadline)?;
                 order
-                    .notice_delivered(DIAGNOSTIC_CONNECTION)
+                    .notice_delivered(DIAGNOSTIC_CONNECTION, next)
                     .map_err(map_fanout_error)?;
                 break;
             }
@@ -392,7 +392,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 }
                 pipe.write_all(notice, &bootstrap.stop, deadline)?;
                 order
-                    .notice_delivered(DIAGNOSTIC_CONNECTION)
+                    .notice_delivered(DIAGNOSTIC_CONNECTION, revoked)
                     .map_err(map_fanout_error)?;
                 break;
             }

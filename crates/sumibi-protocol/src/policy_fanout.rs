@@ -15,6 +15,7 @@ pub enum FanoutError {
     Unknown,
     InvalidPolicy,
     NoNotice,
+    StaleNotice,
     Broker(BrokerError),
 }
 
@@ -137,21 +138,20 @@ impl PolicyFanout {
         Ok(subscriber.notice.as_ref())
     }
 
-    /// Only acknowledge after a complete bounded write. On write failure,
-    /// call detach and close the transport instead.
-    pub fn notice_delivered(&mut self, key: u64) -> Result<(), FanoutError> {
-        let subscriber = self
-            .subscribers
-            .iter_mut()
-            .find(|subscriber| subscriber.key == key)
-            .ok_or(FanoutError::Unknown)?;
+    /// Only acknowledge the exact epoch after a complete bounded write. On
+    /// write failure, call detach and close the transport instead. A late
+    /// completion for an older epoch retires this subscriber.
+    pub fn notice_delivered(&mut self, key: u64, delivered: Policy) -> Result<(), FanoutError> {
+        let index = self.index(key)?;
+        let subscriber = &mut self.subscribers[index];
         let notice = subscriber.notice.as_ref().ok_or(FanoutError::NoNotice)?;
-        let Message::PolicyChanged(policy) = notice.frame.message else {
-            return Err(FanoutError::InvalidPolicy);
-        };
+        if !matches!(notice.frame.message, Message::PolicyChanged(policy) if policy == delivered) {
+            self.detach(key);
+            return Err(FanoutError::StaleNotice);
+        }
         subscriber
             .session
-            .notice_delivered(policy)
+            .notice_delivered(delivered)
             .map_err(FanoutError::Broker)?;
         subscriber.notice = None;
         Ok(())
@@ -299,8 +299,8 @@ mod tests {
             )
             .unwrap()
             .is_none());
-        fanout.notice_delivered(1).unwrap();
-        fanout.notice_delivered(2).unwrap();
+        fanout.notice_delivered(1, revoked).unwrap();
+        fanout.notice_delivered(2, revoked).unwrap();
         assert!(matches!(
             fanout.receive(1, convert(1, 2, revoked), now),
             Err(FanoutError::Broker(BrokerError::PolicyDenied))
@@ -326,7 +326,7 @@ mod tests {
             ..policy()
         };
         fanout.publish(first).unwrap();
-        fanout.notice_delivered(1).unwrap();
+        fanout.notice_delivered(1, first).unwrap();
         let second = Policy {
             settings: 3,
             ..policy()
@@ -392,9 +392,44 @@ mod tests {
             Err(FanoutError::Broker(BrokerError::NoticePending))
         ));
         assert_eq!(fanout.active_count(), 1);
-        fanout.notice_delivered(2).unwrap();
+        fanout.notice_delivered(2, changed).unwrap();
         assert!(matches!(
             fanout.receive(2, convert(2, 1, changed), now),
+            Ok(Event::Convert(_))
+        ));
+    }
+
+    #[test]
+    fn late_write_completion_cannot_acknowledge_a_newer_notice() {
+        let now = Instant::now();
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        fanout.attach(1, hello(1), now).unwrap();
+        fanout.attach(2, hello(2), now).unwrap();
+        let first = Policy {
+            settings: 2,
+            ..policy()
+        };
+        fanout.publish(first).unwrap();
+        fanout.notice_delivered(1, first).unwrap();
+        fanout.notice_delivered(2, first).unwrap();
+        let second = Policy {
+            settings: 3,
+            ..policy()
+        };
+        fanout.publish(second).unwrap();
+        assert_eq!(
+            fanout.notice_delivered(1, first),
+            Err(FanoutError::StaleNotice)
+        );
+        assert_eq!(fanout.active_count(), 1);
+        assert!(matches!(
+            fanout.pending_notice(1),
+            Err(FanoutError::Unknown)
+        ));
+        assert!(fanout.pending_notice(2).unwrap().is_some());
+        fanout.notice_delivered(2, second).unwrap();
+        assert!(matches!(
+            fanout.receive(2, convert(2, 1, second), now),
             Ok(Event::Convert(_))
         ));
     }

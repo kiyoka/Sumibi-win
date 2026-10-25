@@ -35,6 +35,7 @@
   （[ADR 0058](adr/0058-policy-publication-order.md)）。
 - 複数接続向けの`PolicyFanout`を最大8接続・各1未配送通知で追加。
   同時session ID重複を拒否し、遅い接続だけを退役させる単体検査を追加。
+  書込完了時は配送した政策版も照合し、古い完了通知で次の通知を承認しない。
   診断用Brokerの実子Channelを
   1接続として通した。複数clientの実I/Oは残る
   （[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)）。
@@ -44,7 +45,7 @@
   旧結果を公開しないことを確認した。
 - Brokerの成功結果と固定エラーは要求番号・版の照合を共通化し、
   古いErrorの無視と未来ID・版違いの終端化を検査した。
-- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で177件成功。
+- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で178件成功。
   現在のサンドボックスでは診断用localhost HTTPの4件が接続不可になるため、同じコマンドを通常ユーザー環境で再実行して切り分けた。
 
 ## 次の受入作業

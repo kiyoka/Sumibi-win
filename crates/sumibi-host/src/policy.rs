@@ -622,7 +622,7 @@ mod tests {
                 client.receive(&frame, now).unwrap().event,
                 Some(Event::PolicyChanged { cancelled: actual, .. }) if actual == cancelled
             ));
-            fanout.notice_delivered((index + 1) as u64).unwrap();
+            fanout.notice_delivered((index + 1) as u64, policy).unwrap();
         }
         assert!(fanout
             .result(
