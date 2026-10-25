@@ -74,6 +74,22 @@ pub(super) fn run() -> Result<()> {
         drop(wait(&worker)?);
         worker.shutdown(Duration::from_secs(3))?;
     }
+    {
+        let fast = Mode::DiagnosticFixed { delay_ms: 0 };
+        let mut worker = worker(fast)?;
+        let mut late = request(1, fast);
+        late.deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = late.deadline;
+        worker.submit(worker.reserve(1)?, late)?;
+        let reply = wait(&worker)?;
+        assert_eq!(reply.outcome(), Ok("日本語"));
+        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        assert_eq!(reply.outcome(), Err(Error::Timeout));
+        assert!(reply.exchange().is_none());
+        drop(reply);
+        worker.shutdown(Duration::from_secs(3))?;
+    }
+    println!("Reusable worker / completed result expires before late owner delivery: OK");
     let baseline = handles()?;
     {
         let mut worker = worker(mode())?;

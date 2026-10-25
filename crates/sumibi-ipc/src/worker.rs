@@ -67,6 +67,7 @@ pub struct Completion {
     pub revision: Revision,
     outcome: Result<Reply>,
     peer: u32,
+    deadline: Instant,
     // Release result before allowing the next pre-capture reservation.
     _permit: Permit,
 }
@@ -75,6 +76,9 @@ impl Completion {
         if self._permit.state.cancelled.load(Ordering::Acquire) {
             return Err(Error::Cancelled);
         }
+        if self.outcome.is_ok() && Instant::now() >= self.deadline {
+            return Err(Error::Timeout);
+        }
         self.outcome
             .as_ref()
             .map(|reply| reply.text())
@@ -82,7 +86,7 @@ impl Completion {
     }
     /// Metadata only, for verifying process reuse; not an authentication API.
     pub fn exchange(&self) -> Option<(u32, u64)> {
-        if self._permit.state.cancelled.load(Ordering::Acquire) {
+        if self._permit.state.cancelled.load(Ordering::Acquire) || Instant::now() >= self.deadline {
             return None;
         }
         self.outcome
@@ -346,6 +350,7 @@ fn run(
                 revision,
                 outcome,
                 peer: pid,
+                deadline: request.deadline,
                 _permit: permit,
             })
             .is_err()
@@ -369,6 +374,7 @@ fn run(
                 revision: request.revision,
                 outcome: Err(Error::Cancelled),
                 peer: 0,
+                deadline: request.deadline,
                 _permit: permit,
             })
             .is_ok()

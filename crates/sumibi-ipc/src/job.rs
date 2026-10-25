@@ -55,6 +55,7 @@ impl Reservation {
                 let reservation = worker_reservation;
                 let id = request.id;
                 let revision = request.revision;
+                let deadline = request.deadline;
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     run(executable, request, &worker_stop)
                 }))
@@ -64,6 +65,7 @@ impl Reservation {
                     id,
                     revision,
                     outcome,
+                    deadline,
                     _reservation: reservation.clone(),
                 });
                 unsafe {
@@ -117,6 +119,7 @@ pub struct Completion {
     pub id: u64,
     pub revision: Revision,
     outcome: Result<String>,
+    deadline: Instant,
     // Moving the completion out of BrokerJob does not release its admission.
     // Keep the original allocation with its lease; adapters only borrow it.
     // No COM or callback enters this lease.
@@ -124,6 +127,9 @@ pub struct Completion {
 }
 impl Completion {
     pub fn outcome(&self) -> Result<&str> {
+        if self.outcome.is_ok() && Instant::now() >= self.deadline {
+            return Err(Error::Timeout);
+        }
         self.outcome.as_deref().map_err(|error| *error)
     }
 }
@@ -299,6 +305,23 @@ mod tests {
     use super::*;
     use std::sync::Barrier;
     use sumibi_protocol::message::{self, Envelope, Id, Message, Policy, Ready, VERSION};
+
+    #[test]
+    fn completed_one_shot_result_expires_before_owner_delivery() {
+        let _serial = ADMISSION_TEST.lock().unwrap();
+        let completion = Completion {
+            id: 1,
+            revision: Revision {
+                input: 1,
+                settings: 1,
+                authorization: 1,
+            },
+            outcome: Ok("synthetic".into()),
+            deadline: Instant::now(),
+            _reservation: Arc::new(Reservation::acquire().unwrap()),
+        };
+        assert_eq!(completion.outcome(), Err(Error::Timeout));
+    }
 
     #[test]
     fn inbox_keeps_coalesced_policy_notice_after_fragmented_ready() {
