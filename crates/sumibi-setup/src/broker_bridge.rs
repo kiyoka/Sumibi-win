@@ -130,7 +130,7 @@ impl Bridge {
                 self.last_worker_error.set(Some(error));
                 self.pending.set(None);
                 unsafe {
-                    let _ = control.Cancel(pending);
+                    let _ = control.Cancel(0);
                 }
                 return Ok(Some(Delivery::Discarded));
             }
@@ -146,7 +146,7 @@ impl Bridge {
                 let _ = worker.cancel(completion.id);
             }
             unsafe {
-                let _ = control.Cancel(pending);
+                let _ = control.Cancel(0);
             }
             return Ok(Some(Delivery::Discarded));
         }

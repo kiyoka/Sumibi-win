@@ -53,7 +53,9 @@ CancelはまずDLLの対象を論理的に失効させ、合致する要求IDの
 StopがCommand eventより先に観測された場合も、既に受領したCommandには終端結果を一度返す。
 workerの異常終了で結果channelが切れた場合は、所有STAがpending対象を破棄する。
 完了を取り出した後にEXE側pending IDと一致しない場合も、既に結果eventは消費済みなので
-pendingを残さない。結果のIDでworkerを停止し、DLL側pending対象を取消してDiscardedを返す。
+pendingを残さない。結果のIDでworkerを停止し、配送guardが新規予約を拒否している間に
+DLL側の現在の対象を無条件に取消してDiscardedを返す。結果channelの異常終了でも
+同じくDLL側の現在の対象を失効させる。
 通信失敗・取消・期限・寿命上限で接続を閉じ、同じ要求を自動再送しない。
 次の明示変換操作で閉じたworkerを外し、新しいworker/Channel/対象を予約できる。
 既に取得した古い本文を新しい接続へ持ち越す処理ではない。
