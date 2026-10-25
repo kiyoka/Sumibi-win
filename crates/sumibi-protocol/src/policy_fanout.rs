@@ -300,9 +300,10 @@ impl PolicyFanout {
         result.map_err(FanoutError::Broker)
     }
 
-    /// Retire one request when its local deadline passes. The caller owns the
-    /// timer and may then close the transport or send a timeout response.
-    /// A later worker completion cannot publish the expired result.
+    /// Retire one request silently when its local deadline passes. The caller
+    /// owns the timer. To send a protocol Timeout response, call error before
+    /// expire consumes the request. A later worker completion cannot publish
+    /// the expired result.
     pub fn expire(&mut self, key: u64, now: Instant) -> Result<Option<u64>, FanoutError> {
         let index = self.index(key)?;
         Ok(self.subscribers[index].session.expire(now))
@@ -722,6 +723,10 @@ mod tests {
         };
         assert!(fanout
             .result(1, 1, revision, "古い".into(), deadline)
+            .unwrap()
+            .is_none());
+        assert!(fanout
+            .error(1, 1, revision, ErrorCode::Timeout, deadline)
             .unwrap()
             .is_none());
         assert!(fanout
