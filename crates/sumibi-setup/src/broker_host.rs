@@ -30,6 +30,7 @@ pub(crate) fn exercise_broker(
         for (index, case) in [
             "apply",
             "cancel",
+            "cancel-after-result",
             "close",
             "new-request",
             "text",
@@ -240,6 +241,10 @@ pub(crate) fn exercise_broker(
             }
             let before = store.get().text.borrow().clone();
             let completion = wait_completion(&messages, &job)?;
+            if case == "cancel-after-result" {
+                assert_eq!(completion.outcome(), Ok("日本語"));
+                job.cancel()?;
+            }
             let result = match completion.outcome() {
                 Ok(text) => {
                     let reply_id = if case == "wrong-request" {
@@ -279,7 +284,10 @@ pub(crate) fn exercise_broker(
                 Err(error) => {
                     if case == "disabled" || case == "ready-policy" {
                         assert_eq!(error, sumibi_ipc::Error::PolicyDenied);
-                    } else if matches!(case, "cancel" | "close" | "focus-restored") {
+                    } else if matches!(
+                        case,
+                        "cancel" | "cancel-after-result" | "close" | "focus-restored"
+                    ) {
                         assert_eq!(error, sumibi_ipc::Error::Cancelled);
                     } else if case == "timeout" {
                         assert_eq!(error, sumibi_ipc::Error::Timeout);

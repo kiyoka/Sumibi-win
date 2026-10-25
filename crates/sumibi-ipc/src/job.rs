@@ -5,7 +5,7 @@ use crate::support::{own, raw};
 use crate::{Error, Nonce, Pipe, Result, Stop};
 use std::os::windows::io::{AsHandle, BorrowedHandle, OwnedHandle};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -37,6 +37,7 @@ impl Reservation {
             return Err(Error::InvalidArgument);
         }
         let stop = Stop::new()?;
+        let cancelled = Arc::new(AtomicBool::new(false));
         // SAFETY: private completion event auto-resets; done remains signalled.
         let wake = Arc::new(unsafe { own(CreateEventW(None, false, false, None)?) });
         let done = Arc::new(unsafe { own(CreateEventW(None, true, false, None)?) });
@@ -47,6 +48,7 @@ impl Reservation {
         let reservation = Arc::new(self);
         let worker_reservation = reservation.clone();
         let worker_stop = stop.clone();
+        let worker_cancelled = cancelled.clone();
         let worker_wake = wake.clone();
         let worker_done = done.clone();
         let worker = std::thread::Builder::new()
@@ -66,6 +68,7 @@ impl Reservation {
                     revision,
                     outcome,
                     deadline,
+                    cancelled: worker_cancelled,
                     _reservation: reservation.clone(),
                 });
                 unsafe {
@@ -76,6 +79,7 @@ impl Reservation {
             .map_err(|_| Error::WorkerFailed)?;
         Ok(BrokerJob {
             stop,
+            cancelled,
             wake,
             done,
             receive,
@@ -120,6 +124,7 @@ pub struct Completion {
     pub revision: Revision,
     outcome: Result<String>,
     deadline: Instant,
+    cancelled: Arc<AtomicBool>,
     // Moving the completion out of BrokerJob does not release its admission.
     // Keep the original allocation with its lease; adapters only borrow it.
     // No COM or callback enters this lease.
@@ -127,6 +132,9 @@ pub struct Completion {
 }
 impl Completion {
     pub fn outcome(&self) -> Result<&str> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err(Error::Cancelled);
+        }
         if self.outcome.is_ok() && Instant::now() >= self.deadline {
             return Err(Error::Timeout);
         }
@@ -135,6 +143,7 @@ impl Completion {
 }
 pub struct BrokerJob {
     stop: Stop,
+    cancelled: Arc<AtomicBool>,
     wake: Arc<OwnedHandle>,
     done: Arc<OwnedHandle>,
     receive: mpsc::Receiver<Completion>,
@@ -151,12 +160,17 @@ impl BrokerJob {
     pub fn try_result(&self) -> Option<Completion> {
         self.receive.try_recv().ok()
     }
+    /// Explicit owner cancellation also invalidates a result already received.
     pub fn cancel(&self) -> Result<()> {
+        self.cancelled.store(true, Ordering::Release);
         self.stop.cancel()
     }
-    /// Call after leaving the window/TSF callback. Drop itself never waits.
+    /// Reap the worker outside window/TSF callbacks. A completed reply keeps
+    /// its result status; use cancel() to invalidate it explicitly.
     pub fn shutdown(&mut self, timeout: Duration) -> Result<()> {
-        self.cancel()?;
+        // Cleanup after a completed reply must not turn it into an explicit
+        // owner cancellation. The retained completion still owns admission.
+        self.stop.cancel()?;
         if timeout > Duration::from_secs(3) {
             return Err(Error::InvalidArgument);
         }
@@ -318,6 +332,7 @@ mod tests {
             },
             outcome: Ok("synthetic".into()),
             deadline: Instant::now(),
+            cancelled: Arc::new(AtomicBool::new(false)),
             _reservation: Arc::new(Reservation::acquire().unwrap()),
         };
         assert_eq!(completion.outcome(), Err(Error::Timeout));
