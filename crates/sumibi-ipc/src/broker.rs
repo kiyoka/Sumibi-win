@@ -39,13 +39,27 @@ impl BrokerPolicyGate {
             .map(|state| *state)
             .map_err(|_| Error::PolicyDenied)
     }
-    pub fn update(&self, next: Policy) -> Result<()> {
+    // Synthetic coalescing fixture only. Product updates must use publish so
+    // admission and connection notification cannot diverge after an error.
+    fn update(&self, next: Policy) -> Result<()> {
         let mut state = self.state.write().map_err(|_| Error::PolicyDenied)?;
         if !next.follows(*state) {
             return Err(Error::PolicyDenied);
         }
         *state = next;
         Ok(())
+    }
+    /// Move the admission gate and every Broker session to one epoch while
+    /// result publication is excluded. The caller closes retired transports
+    /// and completes each notice write before accepting another request.
+    pub fn publish(&self, order: &mut PolicyFanout, next: Policy) -> Result<Vec<u64>> {
+        let mut state = self.state.write().map_err(|_| Error::PolicyDenied)?;
+        if !next.follows(*state) {
+            return Err(Error::PolicyDenied);
+        }
+        let retired = order.publish(next).map_err(map_fanout_error)?;
+        *state = next;
+        Ok(retired)
     }
     pub fn authorize(&self, revision: Revision) -> Result<()> {
         let state = self.snapshot()?;
@@ -212,8 +226,10 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             authorization: policy.authorization + 1,
             allowed: false,
         };
-        gate.update(next)?;
-        let (notice, _) = publish_notice(&mut order, next)?;
+        if !gate.publish(&mut order, next)?.is_empty() {
+            return Err(Error::InvalidMessage);
+        }
+        let (notice, _) = pending_notice(&order)?;
         ready.extend(notice);
         coalesced_policy = Some(next);
     }
@@ -236,8 +252,10 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 authorization: policy.authorization + 1,
                 allowed: false,
             };
-            gate.update(next)?;
-            let (notice, _) = publish_notice(&mut order, next)?;
+            if !gate.publish(&mut order, next)?.is_empty() {
+                return Err(Error::InvalidMessage);
+            }
+            let (notice, _) = pending_notice(&order)?;
             pipe.write_all(
                 notice,
                 &bootstrap.stop,
@@ -294,7 +312,10 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 if last_request != 0 {
                     return Err(Error::InvalidMessage);
                 }
-                let (notice, cancelled) = publish_notice(&mut order, latest)?;
+                if !gate.publish(&mut order, latest)?.is_empty() {
+                    return Err(Error::InvalidMessage);
+                }
+                let (notice, cancelled) = pending_notice(&order)?;
                 if cancelled != Some(convert.request) {
                     return Err(Error::InvalidMessage);
                 }
@@ -361,8 +382,10 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                         allowed: bootstrap.mode == Mode::DiagnosticRegrantAfterResult,
                     }
                 };
-                gate.update(next)?;
-                let (notice, cancelled) = publish_notice(&mut order, next)?;
+                if !gate.publish(&mut order, next)?.is_empty() {
+                    return Err(Error::InvalidMessage);
+                }
+                let (notice, cancelled) = pending_notice(&order)?;
                 if cancelled.is_some() {
                     return Err(Error::InvalidMessage);
                 }
@@ -382,11 +405,13 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                     authorization: policy.authorization + 1,
                     allowed: false,
                 };
-                gate.update(revoked)?;
+                if !gate.publish(&mut order, revoked)?.is_empty() {
+                    return Err(Error::InvalidMessage);
+                }
                 if gate.authorize(convert.revision) != Err(Error::PolicyDenied) {
                     return Err(Error::InvalidMessage);
                 }
-                let (notice, cancelled) = publish_notice(&mut order, revoked)?;
+                let (notice, cancelled) = pending_notice(&order)?;
                 if cancelled != Some(convert.request) {
                     return Err(Error::InvalidMessage);
                 }
@@ -457,10 +482,7 @@ fn map_fanout_error(error: FanoutError) -> Error {
     }
 }
 
-fn publish_notice(order: &mut PolicyFanout, next: Policy) -> Result<(Vec<u8>, Option<u64>)> {
-    if !order.publish(next).map_err(map_fanout_error)?.is_empty() {
-        return Err(Error::InvalidMessage);
-    }
+fn pending_notice(order: &PolicyFanout) -> Result<(Vec<u8>, Option<u64>)> {
     let notice = order
         .pending_notice(DIAGNOSTIC_CONNECTION)
         .map_err(map_fanout_error)?
@@ -664,5 +686,45 @@ mod tests {
             gate.authorize_for_publish(request(1).revision),
             Err(Error::PolicyDenied)
         ));
+    }
+
+    #[test]
+    fn failed_fanout_does_not_advance_admission_policy() {
+        let broker = Id::new(90).unwrap();
+        let gate = BrokerPolicyGate::new(policy()).unwrap();
+        let advanced = Policy {
+            settings: 2,
+            ..policy()
+        };
+        let mut ahead = PolicyFanout::new(broker, advanced).unwrap();
+        assert!(matches!(
+            gate.publish(&mut ahead, policy()),
+            Err(Error::PolicyDenied)
+        ));
+        assert!(gate.snapshot().unwrap() == policy());
+        assert!(ahead.policy() == advanced);
+
+        let mut fanout = PolicyFanout::new(broker, policy()).unwrap();
+        let session = Id::new(1).unwrap();
+        fanout
+            .attach(
+                1,
+                Envelope {
+                    version: VERSION,
+                    session,
+                    generation: 1,
+                    message: Message::Hello(Hello { broker }),
+                },
+                Instant::now(),
+            )
+            .unwrap();
+        assert!(gate.publish(&mut fanout, advanced).unwrap().is_empty());
+        assert!(gate.snapshot().unwrap() == advanced);
+        assert!(fanout.policy() == advanced);
+        assert!(fanout.pending_notice(1).unwrap().is_some());
+        assert_eq!(
+            gate.authorize(request(1).revision),
+            Err(Error::PolicyDenied)
+        );
     }
 }

@@ -24,3 +24,11 @@ ClientSession、BrokerSession、PolicyFanout、BrokerPolicyGateの版遷移判�
 通知の配送確認、適用前の所有側policy再検査、未応答clientの切断方針が必要。
 診断用のResultとPolicyChangedを同時送信するケースは、clientが通知まで
 読み取って旧結果を捨てる回帰として別に維持する。
+
+Brokerの通常の政策変更は`BrokerPolicyGate::publish`で書込guardを取得し、
+全接続の`PolicyFanout`を新しい版へ進めてから認可判定用policyを更新する。
+Fanoutが更新を拒否した場合は認可判定用policyを進めない。診断専用の
+「失効して再許可」の合成ケースだけは、中間の拒否版を認可判定に先に反映し、
+最終版の通知を一件へまとめる。中間状態では旧要求を拒否する。
+これで状態更新の原子性はBroker内部まで確保するが、通知のpipe書込完了、
+全接続の切断確認、所有TSFの適用前検査は製品統合で引き続き必要となる。

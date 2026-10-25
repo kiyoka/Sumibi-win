@@ -46,7 +46,9 @@
   旧結果を公開しないことを確認した。
 - Brokerの成功結果と固定エラーは要求番号・版の照合を共通化し、
   古いErrorの無視と未来ID・版違いの終端化を検査した。
-- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で179件成功。
+- Broker内の認可判定と接続通知を一つの`publish`操作で進める。
+  Fanoutが更新を拒否しても認可版は進めず、旧版結果の書込guardとも直列化する。
+- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で180件成功。
   現在のサンドボックスでは診断用localhost HTTPの4件が接続不可になるため、同じコマンドを通常ユーザー環境で再実行して切り分けた。
 
 ## 次の受入作業
