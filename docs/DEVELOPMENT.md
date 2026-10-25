@@ -62,6 +62,7 @@ Windowsの[ユーザー別COM登録](https://learn.microsoft.com/en-us/windows/w
 
 Issue #1の到達点と残る境界は[最小試作の受入記録](ISSUE_1_ACCEPTANCE.md)を参照。
 まとめて検証する場合は通常ユーザーのPowerShellで `./tools/Test-Spike.ps1` を実行する。
+Rust workspaceの通常版と`sumibi-host/spike`診断版を両方検査する。
 途中失敗で停止し、既定では専用ウィンドウとログオンSID限定pipeも検証する。
 画面を使用できない環境では `-SkipDesktop` を明示し、未実行の検査を成功扱いにしない。
 

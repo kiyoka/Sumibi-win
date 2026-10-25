@@ -29,6 +29,7 @@ try {
     $env:CARGO_INCREMENTAL = '0'
     Invoke-Cargo -Arguments @('fmt', '--all', '--check')
     Invoke-Cargo -Arguments @('test', '--workspace', '--locked', '--offline')
+    Invoke-Cargo -Arguments @('test', '--workspace', '--features', 'sumibi-host/spike', '--locked', '--offline')
     Invoke-Cargo -Arguments @('clippy', '--workspace', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings')
     Invoke-Cargo -Arguments @('clippy', '-p', 'sumibi-tip', '--no-default-features', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings')
     Invoke-Cargo -Arguments @('clippy', '-p', 'sumibi-host', '--all-features', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings')
