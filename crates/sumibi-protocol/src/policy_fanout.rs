@@ -242,13 +242,12 @@ impl PolicyFanout {
         }
         let result = self.subscribers[index].session.receive(frame, now);
         if let Ok(Event::Convert(convert)) = &result {
-            if let Some(seen) = self
-                .seen
-                .iter_mut()
-                .find(|seen| seen.id == self.subscribers[index].session_id)
-            {
-                seen.last_request = convert.request;
-            }
+            let session_id = self.subscribers[index].session_id;
+            let Some(seen) = self.seen.iter_mut().find(|seen| seen.id == session_id) else {
+                self.subscribers.remove(index);
+                return Err(FanoutError::Broker(BrokerError::WrongState));
+            };
+            seen.last_request = convert.request;
         }
         if result.is_err() {
             self.subscribers.remove(index);
