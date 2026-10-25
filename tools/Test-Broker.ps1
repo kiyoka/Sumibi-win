@@ -22,6 +22,7 @@ function Invoke-Broker {
 }
 
 $previousIncremental = $env:CARGO_INCREMENTAL
+$restoreDefaultHost = $false
 Push-Location -LiteralPath $workspacePath
 try {
     $env:CARGO_INCREMENTAL = '0'
@@ -29,12 +30,20 @@ try {
     # diagnostic converter. The second build replaces only that Host EXE.
     Invoke-Cargo -Arguments @('build', '--workspace', '--locked', '--offline')
     Invoke-Broker -Name 'broker-channel-denied-test'
+    $restoreDefaultHost = $true
     Invoke-Cargo -Arguments @('build', '-p', 'sumibi-host', '--features', 'spike', '--locked', '--offline')
     Invoke-Broker -Name 'broker-channel-test'
     Invoke-Broker -Name 'broker-worker-test'
-    Write-Output 'Default denial, Broker Channel, and Broker Worker checks passed.'
 }
 finally {
-    $env:CARGO_INCREMENTAL = $previousIncremental
-    Pop-Location
+    try {
+        if ($restoreDefaultHost) {
+            Invoke-Cargo -Arguments @('build', '-p', 'sumibi-host', '--locked', '--offline')
+        }
+    }
+    finally {
+        $env:CARGO_INCREMENTAL = $previousIncremental
+        Pop-Location
+    }
 }
+Write-Output 'Default denial, Broker Channel, and Broker Worker checks passed; default Host restored.'
