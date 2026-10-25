@@ -3,7 +3,7 @@
 use crate::bootstrap::{Bootstrap, Mode, Service};
 use crate::{Error, Pipe, Result, Server, Stop};
 use std::os::windows::io::AsRawHandle;
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard};
 use std::time::{Duration, Instant};
 use sumibi_protocol::broker_session::{BrokerError, BrokerSession, Event as BrokerEvent};
 use sumibi_protocol::message::{self, *};
@@ -14,6 +14,12 @@ use sumibi_protocol::Decoder;
 /// The diagnostic host currently supplies only synthetic changes.
 pub struct BrokerPolicyGate {
     state: RwLock<Policy>,
+}
+
+/// Keeps an authorized result publication ahead of the next policy update.
+/// Dropping it after the bounded pipe write is the publication point.
+struct PublishGuard<'a> {
+    _state: RwLockReadGuard<'a, Policy>,
 }
 impl BrokerPolicyGate {
     pub fn new(initial: Policy) -> Result<Self> {
@@ -52,6 +58,17 @@ impl BrokerPolicyGate {
             return Err(Error::PolicyDenied);
         }
         Ok(())
+    }
+
+    fn authorize_for_publish(&self, revision: Revision) -> Result<PublishGuard<'_>> {
+        let state = self.state.read().map_err(|_| Error::PolicyDenied)?;
+        if !state.allowed
+            || revision.settings != state.settings
+            || revision.authorization != state.authorization
+        {
+            return Err(Error::PolicyDenied);
+        }
+        Ok(PublishGuard { _state: state })
     }
 }
 
@@ -397,7 +414,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             if Instant::now() >= deadline {
                 return Err(Error::Timeout);
             }
-            gate.authorize(convert.revision)?;
+            let _publication = gate.authorize_for_publish(convert.revision)?;
             let reply = order
                 .result(
                     convert.request,
@@ -613,5 +630,25 @@ mod tests {
             }),
             Err(Error::PolicyDenied)
         );
+    }
+
+    #[test]
+    fn result_publication_guard_serializes_policy_update() {
+        let gate = BrokerPolicyGate::new(policy()).unwrap();
+        let publication = gate.authorize_for_publish(request(1).revision).unwrap();
+        assert!(gate.state.try_write().is_err());
+        drop(publication);
+        assert!(gate.state.try_write().is_ok());
+
+        gate.update(Policy {
+            settings: 1,
+            authorization: 2,
+            allowed: false,
+        })
+        .unwrap();
+        assert!(matches!(
+            gate.authorize_for_publish(request(1).revision),
+            Err(Error::PolicyDenied)
+        ));
     }
 }

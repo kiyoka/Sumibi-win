@@ -50,13 +50,13 @@ impl PolicyAuthority {
     /// request; failure to publish requires disconnecting that client.
     pub fn wire_change_after(&self, cursor: PolicyVersion) -> Result<Option<Policy>, ChangeError> {
         let state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
-        if cursor.settings > state.settings
-            || cursor.authorization > state.authorization
-            || (cursor.settings != state.settings && cursor.authorization == state.authorization)
-        {
+        if cursor.settings > state.settings || cursor.authorization > state.authorization {
             return Err(ChangeError::InvalidCursor);
         }
-        Ok((cursor.authorization != state.authorization).then(|| wire_policy(&state)))
+        Ok(
+            (cursor.settings != state.settings || cursor.authorization != state.authorization)
+                .then(|| wire_policy(&state)),
+        )
     }
 
     /// A changed destination invalidates both the old consent and credential
@@ -463,5 +463,36 @@ mod tests {
             })
         ));
         assert_eq!(client.pending_request(), None);
+    }
+
+    #[test]
+    fn settings_only_change_is_visible_to_a_bounded_publisher() {
+        let authority = PolicyAuthority::new(destination("api.example.test"));
+        let previous = PolicyVersion {
+            settings: 1,
+            authorization: 1,
+        };
+        {
+            let mut state = authority.state.lock().unwrap();
+            state.settings = 2;
+        }
+        let changed = authority.wire_change_after(previous).unwrap().unwrap();
+        assert_eq!(changed.settings, 2);
+        assert_eq!(changed.authorization, 1);
+        assert!(!changed.allowed);
+        assert!(matches!(
+            authority.wire_change_after(PolicyVersion {
+                settings: 2,
+                authorization: 1,
+            }),
+            Ok(None)
+        ));
+        assert!(matches!(
+            authority.wire_change_after(PolicyVersion {
+                settings: 3,
+                authorization: 1,
+            }),
+            Err(ChangeError::InvalidCursor)
+        ));
     }
 }

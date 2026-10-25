@@ -123,6 +123,9 @@ Broker側の`BrokerSession`も認証済み接続ごとにHello/Ready、要求番
 単発Jobと再利用Channelの診断Hostがこの状態から送信frameを生成する。
 OS peer認証とpolicy変更元はこの型の外側にあり、詳細は
 [ADR 0057](adr/0057-broker-side-session-order.md)に記録する。
+再利用Channelの通常結果は政策の読取guardをpipe書込完了まで保持し、
+Broker内の更新との公開順序を固定する。Hostの通知カーソルは設定版だけの
+進行も変更として返す（[ADR 0058](adr/0058-policy-publication-order.md)）。
 別の、OS検証済みBroker起動へ接続する場合だけpolicy版の新しいepochを許す。
 世代や要求番号が上限へ達したらラップせず拒否する。
 
