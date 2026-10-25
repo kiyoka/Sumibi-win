@@ -74,6 +74,10 @@ impl BrokerPolicyGate {
         Ok(())
     }
 
+    /// Build the frame under the Fanout lock first, release that lock, then
+    /// acquire this guard immediately before the bounded pipe write. A policy
+    /// change in between rejects the prepared old frame; never hold the
+    /// Fanout lock while waiting for this gate.
     pub fn authorize_for_publish(&self, revision: Revision) -> Result<PublishGuard<'_>> {
         let state = self.state.read().map_err(|_| Error::PolicyDenied)?;
         if !state.allowed
@@ -694,6 +698,63 @@ mod tests {
         .unwrap();
         assert!(matches!(
             gate.authorize_for_publish(request(1).revision),
+            Err(Error::PolicyDenied)
+        ));
+    }
+
+    #[test]
+    fn prepared_result_is_rejected_if_policy_changes_before_write_guard() {
+        let broker = Id::new(90).unwrap();
+        let gate = BrokerPolicyGate::new(policy()).unwrap();
+        let fanout = std::sync::Mutex::new(PolicyFanout::new(broker, policy()).unwrap());
+        let now = Instant::now();
+        let session = Id::new(1).unwrap();
+        let revision = request(1).revision;
+        let prepared = {
+            let mut order = fanout.lock().unwrap();
+            order
+                .attach(
+                    1,
+                    Envelope {
+                        version: VERSION,
+                        session,
+                        generation: 1,
+                        message: Message::Hello(Hello { broker }),
+                    },
+                    now,
+                )
+                .unwrap();
+            order.ready_delivered(1).unwrap();
+            assert!(matches!(
+                order.receive(
+                    1,
+                    Envelope {
+                        version: VERSION,
+                        session,
+                        generation: 1,
+                        message: Message::Convert(request(1)),
+                    },
+                    now,
+                ),
+                Ok(BrokerEvent::Convert(_))
+            ));
+            order
+                .result(1, 1, revision, "日本語".into(), now)
+                .unwrap()
+                .unwrap()
+        };
+        assert!(matches!(prepared.message, Message::Result(_)));
+        let revoked = Policy {
+            authorization: 2,
+            allowed: false,
+            ..policy()
+        };
+        {
+            let mut order = fanout.lock().unwrap();
+            assert!(gate.publish(&mut order, revoked).unwrap().is_empty());
+        }
+        assert!(matches!(
+            gate.authorize_for_publish(revision),
             Err(Error::PolicyDenied)
         ));
     }

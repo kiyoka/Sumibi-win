@@ -64,10 +64,14 @@
   更新前の認可ゲートとFanoutの版不一致、またはFanoutの更新拒否では
   認可版を進めない。旧版結果の書込guardとも直列化する。
   製品Brokerでも使えるよう、書込完了まで保持する公開guard APIを用意した。
-- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で192件成功。
+  Fanout内で結果を用意してlockを離した後に失効が入れば、書込guardは
+  旧結果を拒否することも確認した。
+- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で193件成功。
   期限切れと再接続の追加後のProtocol単体は40件成功。
   `tools/Test-Broker.ps1`で既定Host拒否、実子Channel 24件、Worker 14件を
   正しいビルド順で再確認した。
+  `tools/Test-Spike.ps1 -SkipDesktop`も成功し、終了後の既定Host拒否を
+  実子Channelで再確認した。省略なしの対話検査は今回実行していない。
   現在のサンドボックスでは診断用localhost HTTPの4件が接続不可になるため、同じコマンドを通常ユーザー環境で再実行して切り分けた。
 
 ## 次の受入作業
