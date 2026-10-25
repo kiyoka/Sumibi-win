@@ -447,7 +447,9 @@ overlapped pipeも追加した（[ADR 0003](adr/0003-pinned-desktop-peers.md)）
 リモート拒否、サーバー／クライアントのトークン・セッション確認を組み合わせる。
 既定のpipe ACLをそのまま使わない。[アクセス制御の根拠](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)。
 パイプ名を知っているだけでは認証とみなさず、同一ユーザーの侵害プロセスに完全耐性があるとも説明しない。
-具体的なトークン検証、偽サーバー対策、起動ハンドシェイクは実装前のIPC ADRで固定する。
+診断用の親子processでは、起動時に固定したprocess handleと両側のトークン・
+pipe peer IDで相互照合する（[ADR 0003](adr/0003-pinned-desktop-peers.md)）。
+製品Brokerを共有して発見する配置・署名・更新・起動の経路は未実装である。
 
 | メッセージ | 内容・受信側の条件 |
 | --- | --- |
@@ -461,7 +463,11 @@ COM参照・cookie・TSF座標・APIキー・アプリ名はConvertへ含めな�
 原文はUTF-8へ厳密変換し、4バイトlittle endian長＋最大256KiB本文とする。外側フレームと単一結果のJSONは実装済み。
 整数の範囲・必須フィールド・候補件数・文字列長・総容量も検証し、未対応版は拒否する。
 切断・不正フレーム・過大要求は要求を終端化し、本文をログに出さない。
-受信数・未完了数・出力バッファは有限にし、具体値は負荷試験とともにProtocol仕様へ固定する。
+診断実装の接続配信状態は最大8接続、Broker寿命中の追加64回、各接続で未配送通知1件とする。
+実子Channelは1接続として通しており、複数clientの実pipe配送と製品の容量値は未確定である。
+Hostの政策版からBrokerの認可ゲートと接続通知へ渡すRelayはI/O非依存で追加した。
+通知失敗時のpipe切断と設定UIの操作完了は常駐Brokerへ接続する段階で確認する
+（[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)、[ADR 0060](adr/0060-host-to-broker-policy-relay.md)）。
 再接続時は保留要求を破棄し、利用者の新しい操作を待つ。
 
 AppContainerではDLLが入力先の制限を受けるため、通常デスクトップのIPC成功を一般化しない。
