@@ -32,7 +32,11 @@
 - Hostのpolicy通知カーソルは設定版だけが進んだ場合も新しい状態を返す。
   通常のBroker結果は政策の読取guardをpipe書込まで保持し、更新との順序を
   固定した（[ADR 0058](adr/0058-policy-publication-order.md)）。
-- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で168件成功。
+- 複数接続向けの`PolicyFanout`を最大8接続・各1未配送通知で追加。
+  遅い接続だけを退役させる単体検査を追加し、診断用Brokerの実子Channelを
+  1接続として通した。複数clientの実I/Oは残る
+  （[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)）。
+- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で172件成功。
   現在のサンドボックスでは診断用localhost HTTPの4件が接続不可になるため、同じコマンドを通常ユーザー環境で再実行して切り分けた。
 
 ## 次の受入作業

@@ -126,6 +126,10 @@ OS peer認証とpolicy変更元はこの型の外側にあり、詳細は
 再利用Channelの通常結果は政策の読取guardをpipe書込完了まで保持し、
 Broker内の更新との公開順序を固定する。Hostの通知カーソルは設定版だけの
 進行も変更として返す（[ADR 0058](adr/0058-policy-publication-order.md)）。
+複数接続向けの`PolicyFanout`は8接続・各1通知を上限とし、遅い接続だけを
+退役させる（[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)）。
+診断用の単一Channelはこの状態を1接続として通す。複数clientの実I/Oと
+製品の政策変更元はまだ接続していない。
 別の、OS検証済みBroker起動へ接続する場合だけpolicy版の新しいepochを許す。
 世代や要求番号が上限へ達したらラップせず拒否する。
 

@@ -7,6 +7,7 @@
 
 pub mod broker_session;
 pub mod message;
+pub mod policy_fanout;
 pub mod session;
 
 /// Maximum body length in bytes, independent of input and candidate limits.

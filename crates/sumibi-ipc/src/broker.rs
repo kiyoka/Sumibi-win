@@ -7,7 +7,10 @@ use std::sync::{RwLock, RwLockReadGuard};
 use std::time::{Duration, Instant};
 use sumibi_protocol::broker_session::{BrokerError, BrokerSession, Event as BrokerEvent};
 use sumibi_protocol::message::{self, *};
+use sumibi_protocol::policy_fanout::{FanoutError, PolicyFanout};
 use sumibi_protocol::Decoder;
+
+const DIAGNOSTIC_CONNECTION: u64 = 1;
 
 /// Broker-local policy authority. A future settings owner may update this
 /// value while the worker is waiting; every accepted request reads it afresh.
@@ -194,8 +197,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         allowed,
     };
     let gate = BrokerPolicyGate::new(policy)?;
-    let mut order =
-        BrokerSession::new(bootstrap.boot.id(), policy).map_err(|_| Error::InvalidMessage)?;
+    let mut order = PolicyFanout::new(bootstrap.boot.id(), policy).map_err(map_fanout_error)?;
     let session = hello.session;
     let generation = hello.generation;
     let envelope = |message| Envelope {
@@ -204,12 +206,9 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         generation,
         message,
     };
-    let BrokerEvent::Ready(ready_frame) = order
-        .receive(hello, Instant::now())
-        .map_err(|_| Error::InvalidMessage)?
-    else {
-        return Err(Error::InvalidMessage);
-    };
+    let ready_frame = order
+        .attach(DIAGNOSTIC_CONNECTION, hello, Instant::now())
+        .map_err(map_fanout_error)?;
     let mut ready = message::encode(&ready_frame).map_err(|_| Error::InvalidMessage)?;
     let mut coalesced_policy = None;
     if bootstrap.mode == Mode::DiagnosticRevokeCoalesced {
@@ -219,16 +218,15 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             allowed: false,
         };
         gate.update(next)?;
-        let notice = order
-            .update_policy(next)
-            .map_err(|_| Error::InvalidMessage)?
-            .ok_or(Error::InvalidMessage)?;
-        ready.extend(message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?);
+        let (notice, _) = publish_notice(&mut order, next)?;
+        ready.extend(notice);
         coalesced_policy = Some(next);
     }
     pipe.write_all(ready, &bootstrap.stop, deadline)?;
-    if let Some(policy) = coalesced_policy {
-        order.notice_delivered(policy).map_err(map_broker_error)?;
+    if coalesced_policy.is_some() {
+        order
+            .notice_delivered(DIAGNOSTIC_CONNECTION)
+            .map_err(map_fanout_error)?;
     }
     if allowed {
         let lifetime = Instant::now() + crate::channel::MAX_LIFETIME;
@@ -244,16 +242,15 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 allowed: false,
             };
             gate.update(next)?;
-            let notice = order
-                .update_policy(next)
-                .map_err(|_| Error::InvalidMessage)?
-                .ok_or(Error::InvalidMessage)?;
+            let (notice, _) = publish_notice(&mut order, next)?;
             pipe.write_all(
-                message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?,
+                notice,
                 &bootstrap.stop,
                 (Instant::now() + Duration::from_secs(5)).min(lifetime),
             )?;
-            order.notice_delivered(next).map_err(map_broker_error)?;
+            order
+                .notice_delivered(DIAGNOSTIC_CONNECTION)
+                .map_err(map_fanout_error)?;
         }
         let mut last_request = 0;
         let max_requests = if matches!(
@@ -270,8 +267,8 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             let idle = (Instant::now() + crate::channel::IDLE_TIMEOUT).min(lifetime);
             let request = read_message(&mut pipe, &bootstrap.stop, idle)?;
             let BrokerEvent::Convert(convert) = order
-                .receive(request, Instant::now())
-                .map_err(|_| Error::InvalidMessage)?
+                .receive(DIAGNOSTIC_CONNECTION, request, Instant::now())
+                .map_err(map_fanout_error)?
             else {
                 return Err(Error::InvalidMessage);
             };
@@ -302,20 +299,15 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 if last_request != 0 {
                     return Err(Error::InvalidMessage);
                 }
-                let notice = order
-                    .update_policy(latest)
-                    .map_err(map_broker_error)?
-                    .ok_or(Error::InvalidMessage)?;
-                if notice.cancelled != Some(convert.request) {
+                let (notice, cancelled) = publish_notice(&mut order, latest)?;
+                if cancelled != Some(convert.request) {
                     return Err(Error::InvalidMessage);
                 }
                 drop(convert);
-                pipe.write_all(
-                    message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?,
-                    &bootstrap.stop,
-                    idle,
-                )?;
-                order.notice_delivered(latest).map_err(map_broker_error)?;
+                pipe.write_all(notice, &bootstrap.stop, idle)?;
+                order
+                    .notice_delivered(DIAGNOSTIC_CONNECTION)
+                    .map_err(map_fanout_error)?;
                 break;
             }
             accept_request(&convert, &gate, &mut last_request)?;
@@ -347,12 +339,13 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             ) {
                 let result = order
                     .result(
+                        DIAGNOSTIC_CONNECTION,
                         convert.request,
                         convert.revision,
                         "日本語".into(),
                         Instant::now(),
                     )
-                    .map_err(map_broker_error)?
+                    .map_err(map_fanout_error)?
                     .ok_or(Error::InvalidMessage)?;
                 let mut reply = message::encode(&result).map_err(|_| Error::InvalidMessage)?;
                 let next = if bootstrap.mode == Mode::DiagnosticSettingsAfterResult {
@@ -374,17 +367,16 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                     }
                 };
                 gate.update(next)?;
-                let notice = order
-                    .update_policy(next)
-                    .map_err(map_broker_error)?
-                    .ok_or(Error::InvalidMessage)?;
-                if notice.cancelled.is_some() {
+                let (notice, cancelled) = publish_notice(&mut order, next)?;
+                if cancelled.is_some() {
                     return Err(Error::InvalidMessage);
                 }
-                reply.extend(message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?);
+                reply.extend(notice);
                 drop(convert);
                 pipe.write_all(reply, &bootstrap.stop, deadline)?;
-                order.notice_delivered(next).map_err(map_broker_error)?;
+                order
+                    .notice_delivered(DIAGNOSTIC_CONNECTION)
+                    .map_err(map_fanout_error)?;
                 break;
             }
             if bootstrap.mode == Mode::DiagnosticRevoke {
@@ -399,19 +391,14 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 if gate.authorize(convert.revision) != Err(Error::PolicyDenied) {
                     return Err(Error::InvalidMessage);
                 }
-                let notice = order
-                    .update_policy(revoked)
-                    .map_err(map_broker_error)?
-                    .ok_or(Error::InvalidMessage)?;
-                if notice.cancelled != Some(convert.request) {
+                let (notice, cancelled) = publish_notice(&mut order, revoked)?;
+                if cancelled != Some(convert.request) {
                     return Err(Error::InvalidMessage);
                 }
-                pipe.write_all(
-                    message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?,
-                    &bootstrap.stop,
-                    deadline,
-                )?;
-                order.notice_delivered(revoked).map_err(map_broker_error)?;
+                pipe.write_all(notice, &bootstrap.stop, deadline)?;
+                order
+                    .notice_delivered(DIAGNOSTIC_CONNECTION)
+                    .map_err(map_fanout_error)?;
                 break;
             }
             let Mode::DiagnosticFixed { delay_ms } = bootstrap.mode else {
@@ -426,12 +413,13 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             let _publication = gate.authorize_for_publish(convert.revision)?;
             let reply = order
                 .result(
+                    DIAGNOSTIC_CONNECTION,
                     convert.request,
                     convert.revision,
                     "日本語".into(),
                     Instant::now(),
                 )
-                .map_err(map_broker_error)?
+                .map_err(map_fanout_error)?
                 .ok_or(Error::InvalidMessage)?;
             drop(convert);
             pipe.write_all(
@@ -464,6 +452,28 @@ fn map_broker_error(error: BrokerError) -> Error {
         BrokerError::Expired => Error::Timeout,
         _ => Error::InvalidMessage,
     }
+}
+
+fn map_fanout_error(error: FanoutError) -> Error {
+    match error {
+        FanoutError::Broker(error) => map_broker_error(error),
+        FanoutError::InvalidPolicy => Error::PolicyDenied,
+        _ => Error::InvalidMessage,
+    }
+}
+
+fn publish_notice(order: &mut PolicyFanout, next: Policy) -> Result<(Vec<u8>, Option<u64>)> {
+    if !order.publish(next).map_err(map_fanout_error)?.is_empty() {
+        return Err(Error::InvalidMessage);
+    }
+    let notice = order
+        .pending_notice(DIAGNOSTIC_CONNECTION)
+        .map_err(map_fanout_error)?
+        .ok_or(Error::InvalidMessage)?;
+    Ok((
+        message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?,
+        notice.cancelled,
+    ))
 }
 
 fn accept_request(
