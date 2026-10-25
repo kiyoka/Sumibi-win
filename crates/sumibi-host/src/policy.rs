@@ -204,11 +204,15 @@ mod tests {
         self, ConversionTransport, ManualRequest, Scheme, SendError, TransportError,
     };
     use std::time::{Duration, Instant};
+    #[cfg(windows)]
+    use sumibi_ipc::broker::BrokerPolicyGate;
     use sumibi_protocol::message::{
         self, ConversionResult, Envelope, Id, Message, Ready, Revision, VERSION,
     };
+    #[cfg(windows)]
     use sumibi_protocol::policy_fanout::PolicyFanout;
     use sumibi_protocol::session::{ClientSession, Event, SessionError};
+    #[cfg(windows)]
     use sumibi_protocol::Decoder;
 
     fn destination(host: &str) -> Destination {
@@ -582,6 +586,7 @@ mod tests {
             .is_none());
     }
 
+    #[cfg(windows)]
     #[test]
     fn authority_change_reaches_busy_and_idle_protocol_connections() {
         let now = Instant::now();
@@ -592,7 +597,9 @@ mod tests {
             .unwrap();
         let granted = authority.grant_manual_consent(&destination).unwrap();
         let broker = Id::new(90).unwrap();
-        let mut fanout = PolicyFanout::new(broker, authority.wire_policy().unwrap()).unwrap();
+        let initial = authority.wire_policy().unwrap();
+        let gate = BrokerPolicyGate::new(initial).unwrap();
+        let mut fanout = PolicyFanout::new(broker, initial).unwrap();
         let mut clients = [
             ClientSession::new(Id::new(1).unwrap(), broker),
             ClientSession::new(Id::new(2).unwrap(), broker),
@@ -613,7 +620,16 @@ mod tests {
         let revoked = authority.revoke_manual_consent().unwrap();
         let policy = authority.wait_for_change(granted, now).unwrap().unwrap();
         assert_eq!(policy.authorization, revoked.authorization);
-        assert!(fanout.publish(policy).unwrap().is_empty());
+        assert!(gate.publish(&mut fanout, policy).unwrap().is_empty());
+        assert!(gate.snapshot().unwrap() == fanout.policy());
+        assert_eq!(
+            gate.authorize(Revision {
+                input: 1,
+                settings: granted.settings,
+                authorization: granted.authorization,
+            }),
+            Err(sumibi_ipc::Error::PolicyDenied)
+        );
         for (index, client) in clients.iter_mut().enumerate() {
             let notice = fanout.pending_notice((index + 1) as u64).unwrap().unwrap();
             let frame = message::encode(&notice.frame).unwrap();
@@ -644,6 +660,7 @@ mod tests {
         ));
     }
 
+    #[cfg(windows)]
     fn decode_frame(bytes: &[u8]) -> Envelope {
         let mut decoder = Decoder::default();
         let decoded = decoder.decode(bytes).unwrap();
