@@ -206,32 +206,14 @@ impl BrokerSession {
         text: String,
         now: Instant,
     ) -> Result<Option<Envelope>, BrokerError> {
-        if self.status != Status::Ready {
-            return Err(BrokerError::WrongState);
-        }
-        let Some(pending) = self.pending.as_ref() else {
-            return if request != 0 && request <= self.last_request {
-                Ok(None)
-            } else {
-                self.disconnect();
-                Err(BrokerError::InvalidReply)
-            };
+        let Some(pending) = self.take_matching_request(request, revision)? else {
+            return Ok(None);
         };
-        if request != pending.request {
-            return if request < pending.request && request != 0 {
-                Ok(None)
-            } else {
-                self.disconnect();
-                Err(BrokerError::InvalidReply)
-            };
-        }
-        if revision != pending.revision || !message::valid_text(&text) {
+        if !message::valid_text(&text) {
             self.disconnect();
             return Err(BrokerError::InvalidReply);
         }
-        let expired = now >= pending.deadline;
-        self.pending = None;
-        if expired {
+        if now >= pending.deadline {
             return Err(BrokerError::Expired);
         }
         if !self.policy.allowed
@@ -258,6 +240,31 @@ impl BrokerSession {
         code: ErrorCode,
         now: Instant,
     ) -> Result<Option<Envelope>, BrokerError> {
+        let Some(pending) = self.take_matching_request(request, revision)? else {
+            return Ok(None);
+        };
+        if now >= pending.deadline && code != ErrorCode::Timeout {
+            return Err(BrokerError::Expired);
+        }
+        if !self.policy.allowed
+            || revision.settings != self.policy.settings
+            || revision.authorization != self.policy.authorization
+        {
+            return Err(BrokerError::PolicyDenied);
+        }
+        self.frame(Message::Error(ConversionError {
+            request,
+            revision,
+            code,
+        }))
+        .map(Some)
+    }
+
+    fn take_matching_request(
+        &mut self,
+        request: u64,
+        revision: Revision,
+    ) -> Result<Option<Pending>, BrokerError> {
         if self.status != Status::Ready {
             return Err(BrokerError::WrongState);
         }
@@ -281,23 +288,7 @@ impl BrokerSession {
             self.disconnect();
             return Err(BrokerError::InvalidReply);
         }
-        let expired = now >= pending.deadline;
-        self.pending = None;
-        if expired && code != ErrorCode::Timeout {
-            return Err(BrokerError::Expired);
-        }
-        if !self.policy.allowed
-            || revision.settings != self.policy.settings
-            || revision.authorization != self.policy.authorization
-        {
-            return Err(BrokerError::PolicyDenied);
-        }
-        self.frame(Message::Error(ConversionError {
-            request,
-            revision,
-            code,
-        }))
-        .map(Some)
+        Ok(self.pending.take())
     }
 
     pub fn expire(&mut self, now: Instant) -> Option<u64> {
@@ -615,5 +606,38 @@ mod tests {
             session.receive(frame(Message::Convert(current), 1), now),
             Ok(Event::Convert(_))
         ));
+    }
+
+    #[test]
+    fn errors_use_the_same_old_future_and_revision_order_as_results() {
+        let now = Instant::now();
+        let mut session = connected(now);
+        session.receive(frame(convert(1), 1), now).unwrap();
+        session
+            .receive(frame(Message::Cancel(Cancel { request: 1 }), 1), now)
+            .unwrap();
+        session.receive(frame(convert(2), 1), now).unwrap();
+        assert!(session
+            .error(1, revision(), ErrorCode::Unavailable, now)
+            .unwrap()
+            .is_none());
+        assert_eq!(session.pending_request(), Some(2));
+        let mut wrong = revision();
+        wrong.settings += 1;
+        assert_eq!(
+            session.error(2, wrong, ErrorCode::Unavailable, now).err(),
+            Some(BrokerError::InvalidReply)
+        );
+        assert_eq!(session.status(), Status::Closed);
+
+        let mut session = connected(now);
+        session.receive(frame(convert(1), 1), now).unwrap();
+        assert_eq!(
+            session
+                .error(2, revision(), ErrorCode::Unavailable, now)
+                .err(),
+            Some(BrokerError::InvalidReply)
+        );
+        assert_eq!(session.status(), Status::Closed);
     }
 }

@@ -10,6 +10,8 @@ OS非依存の`BrokerSession`を`sumibi-protocol`へ追加した。
 接続中のConvertは一件だけとし、要求番号は単調増加させる。古いCancelと
 古い完了は新しい要求を消費せず、未発行の未来番号と異なる接続世代は接続を閉じる。
 結果は要求の版、policyの版、許可、期限、本文を検査してから生成する。
+成功結果と固定エラーは、古いID・未来ID・版違いの照合を共通の
+`take_matching_request`で行い、応答種別ごとの順序差を防ぐ。
 policy変更は保留中の要求を取り消し、通知frameと取消番号を同時に返す。
 通知frameの書込が完了するまでは次のConvertを受け付けない。
 Brokerは書込後に一致するpolicy版を`notice_delivered`へ渡し、失敗時は
@@ -25,7 +27,8 @@ Readyと通常応答を生成する。意図的に不正な未来IDを送る診�
 
 Protocol単体ではHello誤認、世代違い、二重要求、取消後の古い完了、
 未来Cancel、未配送のpolicy通知、期限ちょうど、期限後の成功拒否、固定Timeout応答を
-検査する。実子の`broker-test`、`broker-channel-test`、`broker-worker-test`、
+検査する。古いErrorの無視と未来ID・版違いErrorの終端化も検査する。
+実子の`broker-test`、`broker-channel-test`、`broker-worker-test`、
 実DLLの`broker-key-test`で単発・再利用・所有TSF配送を回帰した。
 これらは合成本文と診断用固定結果であり、製品Brokerの常駐・設定配信や
 一般アプリ対応を成立させるものではない。
