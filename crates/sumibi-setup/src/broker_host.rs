@@ -388,6 +388,9 @@ fn exercise_job_capacity(messages: &ITfMessagePump) -> std::result::Result<(), F
             Mode::DiagnosticRegrantAfterResult => {
                 unreachable!("fixture is not used by one-shot jobs")
             }
+            Mode::DiagnosticRevokeAtAccept => {
+                unreachable!("fixture is not used by one-shot jobs")
+            }
         };
         let jobs = completed_jobs(messages, mode)?;
         assert!(matches!(
@@ -410,6 +413,9 @@ fn exercise_job_capacity(messages: &ITfMessagePump) -> std::result::Result<(), F
                     unreachable!("fixture is not used by one-shot jobs")
                 }
                 Mode::DiagnosticRegrantAfterResult => {
+                    unreachable!("fixture is not used by one-shot jobs")
+                }
+                Mode::DiagnosticRevokeAtAccept => {
                     unreachable!("fixture is not used by one-shot jobs")
                 }
             }

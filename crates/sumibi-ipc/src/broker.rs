@@ -3,9 +3,56 @@
 use crate::bootstrap::{Bootstrap, Mode, Service};
 use crate::{Error, Pipe, Result, Server, Stop};
 use std::os::windows::io::AsRawHandle;
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 use sumibi_protocol::message::{self, *};
 use sumibi_protocol::Decoder;
+
+/// Broker-local policy authority. A future settings owner may update this
+/// value while the worker is waiting; every accepted request reads it afresh.
+/// The diagnostic host currently supplies only synthetic changes.
+pub struct BrokerPolicyGate {
+    state: RwLock<Policy>,
+}
+impl BrokerPolicyGate {
+    pub fn new(initial: Policy) -> Result<Self> {
+        if initial.settings == 0 || initial.authorization == 0 {
+            return Err(Error::InvalidArgument);
+        }
+        Ok(Self {
+            state: RwLock::new(initial),
+        })
+    }
+    pub fn snapshot(&self) -> Result<Policy> {
+        self.state
+            .read()
+            .map(|state| *state)
+            .map_err(|_| Error::PolicyDenied)
+    }
+    pub fn update(&self, next: Policy) -> Result<()> {
+        let mut state = self.state.write().map_err(|_| Error::PolicyDenied)?;
+        if next.settings == 0
+            || next.authorization == 0
+            || next.settings < state.settings
+            || next.authorization < state.authorization
+            || (next != *state && next.authorization == state.authorization)
+        {
+            return Err(Error::PolicyDenied);
+        }
+        *state = next;
+        Ok(())
+    }
+    pub fn authorize(&self, revision: Revision) -> Result<()> {
+        let state = self.snapshot()?;
+        if !state.allowed
+            || revision.settings != state.settings
+            || revision.authorization != state.authorization
+        {
+            return Err(Error::PolicyDenied);
+        }
+        Ok(())
+    }
+}
 
 /// Dispatch only the explicit service selected by the restricted launcher.
 pub fn serve(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
@@ -118,6 +165,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         Mode::DiagnosticRevokeCoalesced if diagnostic_enabled => true,
         Mode::DiagnosticRevokeAfterResult if diagnostic_enabled => true,
         Mode::DiagnosticRegrantAfterResult if diagnostic_enabled => true,
+        Mode::DiagnosticRevokeAtAccept if diagnostic_enabled => true,
         _ => return Err(Error::PolicyDenied),
     };
     let server = Server::create(&bootstrap.name)?;
@@ -134,6 +182,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         authorization: 1,
         allowed,
     };
+    let gate = BrokerPolicyGate::new(policy)?;
     let envelope = |message| Envelope {
         version: VERSION,
         session: hello.session,
@@ -195,7 +244,26 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             let Message::Convert(convert) = request.message else {
                 return Err(Error::InvalidMessage);
             };
-            accept_request(&convert, policy, &mut last_request)?;
+            if bootstrap.mode == Mode::DiagnosticRevokeAtAccept {
+                let revoked = Policy {
+                    settings: policy.settings,
+                    authorization: policy.authorization + 1,
+                    allowed: false,
+                };
+                gate.update(revoked)?;
+                if accept_request(&convert, &gate, &mut last_request) != Err(Error::PolicyDenied) {
+                    return Err(Error::InvalidMessage);
+                }
+                drop(convert);
+                pipe.write_all(
+                    message::encode(&envelope(Message::PolicyChanged(revoked)))
+                        .map_err(|_| Error::InvalidMessage)?,
+                    &bootstrap.stop,
+                    idle,
+                )?;
+                break;
+            }
+            accept_request(&convert, &gate, &mut last_request)?;
             let deadline =
                 (Instant::now() + Duration::from_millis(convert.timeout_ms.into())).min(lifetime);
             if matches!(
@@ -230,13 +298,18 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             if bootstrap.mode == Mode::DiagnosticRevoke {
                 // Exercise a policy change on the authenticated transport while
                 // the client has an outstanding request. No result is sent.
+                let revoked = Policy {
+                    settings: policy.settings,
+                    authorization: policy.authorization + 1,
+                    allowed: false,
+                };
+                gate.update(revoked)?;
+                if gate.authorize(convert.revision) != Err(Error::PolicyDenied) {
+                    return Err(Error::InvalidMessage);
+                }
                 pipe.write_all(
-                    message::encode(&envelope(Message::PolicyChanged(Policy {
-                        settings: policy.settings,
-                        authorization: policy.authorization + 1,
-                        allowed: false,
-                    })))
-                    .map_err(|_| Error::InvalidMessage)?,
+                    message::encode(&envelope(Message::PolicyChanged(revoked)))
+                        .map_err(|_| Error::InvalidMessage)?,
                     &bootstrap.stop,
                     deadline,
                 )?;
@@ -251,6 +324,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             if Instant::now() >= deadline {
                 return Err(Error::Timeout);
             }
+            gate.authorize(convert.revision)?;
             let reply = Message::Result(ConversionResult {
                 request: convert.request,
                 revision: convert.revision,
@@ -281,16 +355,15 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
     Ok(())
 }
 
-fn accept_request(convert: &Convert, policy: Policy, last_request: &mut u64) -> Result<()> {
+fn accept_request(
+    convert: &Convert,
+    gate: &BrokerPolicyGate,
+    last_request: &mut u64,
+) -> Result<()> {
     if convert.request <= *last_request {
         return Err(Error::InvalidMessage);
     }
-    if !policy.allowed
-        || convert.revision.settings != policy.settings
-        || convert.revision.authorization != policy.authorization
-    {
-        return Err(Error::PolicyDenied);
-    }
+    gate.authorize(convert.revision)?;
     *last_request = convert.request;
     Ok(())
 }
@@ -352,13 +425,14 @@ mod tests {
     #[test]
     fn channel_rejects_replayed_and_wrapped_request_ids() {
         let mut last = 0;
+        let gate = BrokerPolicyGate::new(policy()).unwrap();
         for id in [1, 8, u64::MAX] {
-            assert_eq!(accept_request(&request(id), policy(), &mut last), Ok(()));
+            assert_eq!(accept_request(&request(id), &gate, &mut last), Ok(()));
             assert_eq!(last, id);
         }
         for id in [0, 1, 8, u64::MAX] {
             assert_eq!(
-                accept_request(&request(id), policy(), &mut last),
+                accept_request(&request(id), &gate, &mut last),
                 Err(Error::InvalidMessage)
             );
             assert_eq!(last, u64::MAX);
@@ -375,13 +449,56 @@ mod tests {
                 1 => convert.revision.authorization = 2,
                 _ => policy.allowed = false,
             }
+            let gate = BrokerPolicyGate::new(policy).unwrap();
             assert_eq!(
-                accept_request(&convert, policy, &mut last),
+                accept_request(&convert, &gate, &mut last),
                 Err(Error::PolicyDenied)
             );
             assert_eq!(last, 5);
         }
-        assert_eq!(accept_request(&request(6), policy(), &mut last), Ok(()));
+        let gate = BrokerPolicyGate::new(policy()).unwrap();
+        assert_eq!(accept_request(&request(6), &gate, &mut last), Ok(()));
         assert_eq!(last, 6);
+    }
+
+    #[test]
+    fn broker_policy_updates_reject_stale_requests_before_acceptance() {
+        let gate = BrokerPolicyGate::new(policy()).unwrap();
+        let mut last = 0;
+        assert_eq!(accept_request(&request(1), &gate, &mut last), Ok(()));
+        let revoked = Policy {
+            settings: 1,
+            authorization: 2,
+            allowed: false,
+        };
+        assert_eq!(gate.update(revoked), Ok(()));
+        assert_eq!(
+            accept_request(&request(2), &gate, &mut last),
+            Err(Error::PolicyDenied)
+        );
+        assert_eq!(last, 1);
+        assert_eq!(gate.update(policy()), Err(Error::PolicyDenied));
+        assert_eq!(
+            gate.update(Policy {
+                settings: 1,
+                authorization: 2,
+                allowed: true,
+            }),
+            Err(Error::PolicyDenied)
+        );
+        let regranted = Policy {
+            settings: 1,
+            authorization: 3,
+            allowed: true,
+        };
+        assert_eq!(gate.update(regranted), Ok(()));
+        assert_eq!(
+            accept_request(&request(2), &gate, &mut last),
+            Err(Error::PolicyDenied)
+        );
+        let mut current = request(2);
+        current.revision.authorization = 3;
+        assert_eq!(accept_request(&current, &gate, &mut last), Ok(()));
+        assert_eq!(last, 2);
     }
 }
