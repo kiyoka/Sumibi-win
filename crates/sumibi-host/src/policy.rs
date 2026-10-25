@@ -1,7 +1,8 @@
 //! In-memory Host authority for a coherent manual-send policy snapshot.
 //! Persistence, credential loading, UI consent and IPC publication are separate.
 use crate::manual::{Credential, Destination, PolicySnapshot, PolicySource};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Instant;
 use sumibi_protocol::message::Policy;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +23,7 @@ pub enum ChangeError {
 /// poisoned update cannot expose a partly changed policy to a worker.
 pub struct PolicyAuthority {
     state: Mutex<PolicySnapshot>,
+    changed: Condvar,
 }
 
 impl PolicyAuthority {
@@ -35,6 +37,7 @@ impl PolicyAuthority {
                 credential: None,
                 allowed: false,
             }),
+            changed: Condvar::new(),
         }
     }
 
@@ -50,13 +53,32 @@ impl PolicyAuthority {
     /// request; failure to publish requires disconnecting that client.
     pub fn wire_change_after(&self, cursor: PolicyVersion) -> Result<Option<Policy>, ChangeError> {
         let state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
-        if cursor.settings > state.settings || cursor.authorization > state.authorization {
-            return Err(ChangeError::InvalidCursor);
+        change_after(&state, cursor)
+    }
+
+    /// Wait for a newer coherent public policy, without queuing each update.
+    /// The caller supplies a finite deadline and closes subscribers that fail
+    /// to publish the returned epoch before accepting more source text.
+    pub fn wait_for_change(
+        &self,
+        cursor: PolicyVersion,
+        deadline: Instant,
+    ) -> Result<Option<Policy>, ChangeError> {
+        let mut state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        loop {
+            if let Some(policy) = change_after(&state, cursor)? {
+                return Ok(Some(policy));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            state = self
+                .changed
+                .wait_timeout(state, remaining)
+                .map_err(|_| ChangeError::Unavailable)?
+                .0;
         }
-        Ok(
-            (cursor.settings != state.settings || cursor.authorization != state.authorization)
-                .then(|| wire_policy(&state)),
-        )
     }
 
     /// A changed destination invalidates both the old consent and credential
@@ -76,7 +98,10 @@ impl PolicyAuthority {
         state.authorization = authorization;
         state.manual_consent = None;
         state.allowed = false;
-        Ok(version(&state))
+        let published = version(&state);
+        drop(state);
+        self.changed.notify_all();
+        Ok(published)
     }
 
     /// Even replacing a key with the same bytes changes its authority epoch.
@@ -94,7 +119,10 @@ impl PolicyAuthority {
         state.authorization = authorization;
         state.manual_consent = None;
         state.allowed = false;
-        Ok(version(&state))
+        let published = version(&state);
+        drop(state);
+        self.changed.notify_all();
+        Ok(published)
     }
 
     /// Called only after an explicit user action by the future settings UI.
@@ -113,7 +141,10 @@ impl PolicyAuthority {
         state.authorization = authorization;
         state.manual_consent = Some(destination.clone());
         state.allowed = true;
-        Ok(version(&state))
+        let published = version(&state);
+        drop(state);
+        self.changed.notify_all();
+        Ok(published)
     }
 
     pub fn revoke_manual_consent(&self) -> Result<PolicyVersion, ChangeError> {
@@ -125,7 +156,10 @@ impl PolicyAuthority {
         state.authorization = authorization;
         state.manual_consent = None;
         state.allowed = false;
-        Ok(version(&state))
+        let published = version(&state);
+        drop(state);
+        self.changed.notify_all();
+        Ok(published)
     }
 }
 
@@ -140,6 +174,19 @@ fn version(state: &PolicySnapshot) -> PolicyVersion {
         settings: state.settings,
         authorization: state.authorization,
     }
+}
+
+fn change_after(
+    state: &PolicySnapshot,
+    cursor: PolicyVersion,
+) -> Result<Option<Policy>, ChangeError> {
+    if cursor.settings > state.settings || cursor.authorization > state.authorization {
+        return Err(ChangeError::InvalidCursor);
+    }
+    Ok(
+        (cursor.settings != state.settings || cursor.authorization != state.authorization)
+            .then(|| wire_policy(state)),
+    )
 }
 
 fn wire_policy(state: &PolicySnapshot) -> Policy {
@@ -494,5 +541,42 @@ mod tests {
             }),
             Err(ChangeError::InvalidCursor)
         ));
+    }
+
+    #[test]
+    fn subscriber_wakes_for_a_new_policy_and_deadline_is_bounded() {
+        use std::sync::mpsc;
+        use std::thread;
+
+        let authority = Arc::new(PolicyAuthority::new(destination("api.example.test")));
+        let old = PolicyVersion {
+            settings: 1,
+            authorization: 1,
+        };
+        assert!(authority
+            .wait_for_change(old, Instant::now())
+            .unwrap()
+            .is_none());
+        let (ready, started) = mpsc::channel();
+        let subscriber = Arc::clone(&authority);
+        let wait = thread::spawn(move || {
+            ready.send(()).unwrap();
+            subscriber
+                .wait_for_change(old, Instant::now() + Duration::from_secs(1))
+                .unwrap()
+                .unwrap()
+        });
+        started.recv().unwrap();
+        let version = authority
+            .replace_credential(Some(Credential::new("synthetic-key".into()).unwrap()))
+            .unwrap();
+        let notice = wait.join().unwrap();
+        assert_eq!(notice.settings, version.settings);
+        assert_eq!(notice.authorization, version.authorization);
+        assert!(!notice.allowed);
+        assert!(authority
+            .wait_for_change(version, Instant::now())
+            .unwrap()
+            .is_none());
     }
 }
