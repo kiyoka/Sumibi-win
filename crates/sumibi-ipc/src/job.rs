@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use sumibi_protocol::message::{Revision, MAX_TEXT_UNITS};
+#[cfg(test)]
+use sumibi_protocol::message::MAX_TEXT_UNITS;
+use sumibi_protocol::message::{self, Revision};
 use sumibi_protocol::session::{ClientSession, Event, Outcome};
 use windows::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
@@ -108,9 +110,7 @@ impl Request {
             || self.revision.input == 0
             || self.revision.settings == 0
             || self.revision.authorization == 0
-            || self.text.is_empty()
-            || self.text.len() > MAX_TEXT_UNITS * 4
-            || self.text.encode_utf16().take(MAX_TEXT_UNITS + 1).count() > MAX_TEXT_UNITS
+            || !message::valid_text(&self.text)
             || remaining.is_zero()
             || remaining > Duration::from_secs(60)
         {
@@ -468,6 +468,8 @@ mod tests {
         };
         assert!(request.validate().is_ok());
         request.text = "x".repeat(MAX_TEXT_UNITS + 1);
+        assert!(request.validate().is_err());
+        request.text = "a\u{fffc}b".into();
         assert!(request.validate().is_err());
         request.text = "fixed".into();
         request.revision.authorization = 0;

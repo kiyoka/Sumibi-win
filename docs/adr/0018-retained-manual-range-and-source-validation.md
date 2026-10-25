@@ -92,6 +92,8 @@ Coreの要求開始・結果判定、版1の送受信本文、直接/所有TSF�
 実TSFの選択編集は25ケースとなった。一般アプリのオブジェクト表現は未検証。
 認証済み実子Brokerの`broker-channel-test`でも同文字の原文を送信前に
 `InvalidArgument`として拒否し、接続・要求番号を保った次の正常要求を確認した。
+単発Jobと再利用Workerの共通`Request::validate`もProtocolの`valid_text`を使い、
+スレッドや子Brokerの起動前に同じ原文を拒否する。
 
 ## 2026-10-25: Core単独の手動要求検査
 
