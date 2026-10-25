@@ -118,6 +118,11 @@ allowedの変更は認可版の増加を必須とし、版の巻き戻りは接�
 この規則で更新し、古い設定版を持つ要求は受付前に拒否する。
 実子Brokerの診断経路では、Result直後の設定版変更を認証済み接続で通知し、
 旧結果を配送せず接続を閉じる。通常版Hostはこの診断モードを拒否する。
+Broker側の`BrokerSession`も認証済み接続ごとにHello/Ready、要求番号、
+一件だけの保留、Cancel、期限、policy通知、通常のResult/Errorを検査する。
+単発Jobと再利用Channelの診断Hostがこの状態から送信frameを生成する。
+OS peer認証とpolicy変更元はこの型の外側にあり、詳細は
+[ADR 0057](adr/0057-broker-side-session-order.md)に記録する。
 別の、OS検証済みBroker起動へ接続する場合だけpolicy版の新しいepochを許す。
 世代や要求番号が上限へ達したらラップせず拒否する。
 

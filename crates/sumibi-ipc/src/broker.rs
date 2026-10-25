@@ -5,6 +5,7 @@ use crate::{Error, Pipe, Result, Server, Stop};
 use std::os::windows::io::AsRawHandle;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
+use sumibi_protocol::broker_session::{BrokerError, BrokerSession, Event as BrokerEvent};
 use sumibi_protocol::message::{self, *};
 use sumibi_protocol::Decoder;
 
@@ -77,39 +78,28 @@ pub fn serve_once(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> 
     let parent = crate::PinnedProcess::from_launch_handle(bootstrap.parent.as_handle())?;
     let mut pipe = server.accept(bootstrap.parent, &bootstrap.stop, deadline)?;
     let hello = read_message(&mut pipe, &bootstrap.stop, deadline)?;
-    if !matches!(hello.message, Message::Hello(Hello { broker }) if broker == bootstrap.boot.id()) {
-        return Err(Error::InvalidMessage);
-    }
     let policy = Policy {
         settings: 1,
         authorization: 1,
         allowed,
     };
-    let envelope = |message| Envelope {
-        version: VERSION,
-        session: hello.session,
-        generation: hello.generation,
-        message,
+    let mut order = BrokerSession::new(bootstrap.boot.id(), policy).map_err(map_broker_error)?;
+    let BrokerEvent::Ready(ready) = order
+        .receive(hello, Instant::now())
+        .map_err(map_broker_error)?
+    else {
+        return Err(Error::InvalidMessage);
     };
-    let bytes = message::encode(&envelope(Message::Ready(Ready {
-        broker: bootstrap.boot.id(),
-        policy,
-    })))
-    .map_err(|_| Error::InvalidMessage)?;
+    let bytes = message::encode(&ready).map_err(|_| Error::InvalidMessage)?;
     pipe.write_all(bytes, &bootstrap.stop, deadline)?;
     if allowed {
         let request = read_message(&mut pipe, &bootstrap.stop, deadline)?;
-        if request.session != hello.session || request.generation != hello.generation {
-            return Err(Error::InvalidMessage);
-        }
-        let Message::Convert(convert) = request.message else {
+        let BrokerEvent::Convert(convert) = order
+            .receive(request, Instant::now())
+            .map_err(map_broker_error)?
+        else {
             return Err(Error::InvalidMessage);
         };
-        if convert.revision.settings != policy.settings
-            || convert.revision.authorization != policy.authorization
-        {
-            return Err(Error::PolicyDenied);
-        }
         let Mode::DiagnosticFixed { delay_ms } = bootstrap.mode else {
             return Err(Error::PolicyDenied);
         };
@@ -119,21 +109,25 @@ pub fn serve_once(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> 
             return Err(Error::Cancelled);
         }
         let reply = if delay_ms >= convert.timeout_ms {
-            Message::Error(ConversionError {
-                request: convert.request,
-                revision: convert.revision,
-                code: ErrorCode::Timeout,
-            })
+            order.error(
+                convert.request,
+                convert.revision,
+                ErrorCode::Timeout,
+                Instant::now(),
+            )
         } else {
-            Message::Result(ConversionResult {
-                request: convert.request,
-                revision: convert.revision,
-                text: "日本語".into(),
-            })
-        };
+            order.result(
+                convert.request,
+                convert.revision,
+                "日本語".into(),
+                Instant::now(),
+            )
+        }
+        .map_err(map_broker_error)?
+        .ok_or(Error::InvalidMessage)?;
         drop(convert);
         pipe.write_all(
-            message::encode(&envelope(reply)).map_err(|_| Error::InvalidMessage)?,
+            message::encode(&reply).map_err(|_| Error::InvalidMessage)?,
             &bootstrap.stop,
             deadline,
         )?;
@@ -177,35 +171,41 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
     let parent = crate::PinnedProcess::from_launch_handle(bootstrap.parent.as_handle())?;
     let mut pipe = server.accept(bootstrap.parent, &bootstrap.stop, deadline)?;
     let hello = read_message(&mut pipe, &bootstrap.stop, deadline)?;
-    if !matches!(hello.message, Message::Hello(Hello { broker }) if broker == bootstrap.boot.id()) {
-        return Err(Error::InvalidMessage);
-    }
     let policy = Policy {
         settings: 1,
         authorization: 1,
         allowed,
     };
     let gate = BrokerPolicyGate::new(policy)?;
+    let mut order =
+        BrokerSession::new(bootstrap.boot.id(), policy).map_err(|_| Error::InvalidMessage)?;
+    let session = hello.session;
+    let generation = hello.generation;
     let envelope = |message| Envelope {
         version: VERSION,
-        session: hello.session,
-        generation: hello.generation,
+        session,
+        generation,
         message,
     };
-    let mut ready = message::encode(&envelope(Message::Ready(Ready {
-        broker: bootstrap.boot.id(),
-        policy,
-    })))
-    .map_err(|_| Error::InvalidMessage)?;
+    let BrokerEvent::Ready(ready_frame) = order
+        .receive(hello, Instant::now())
+        .map_err(|_| Error::InvalidMessage)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    let mut ready = message::encode(&ready_frame).map_err(|_| Error::InvalidMessage)?;
     if bootstrap.mode == Mode::DiagnosticRevokeCoalesced {
-        ready.extend(
-            message::encode(&envelope(Message::PolicyChanged(Policy {
-                settings: policy.settings,
-                authorization: policy.authorization + 1,
-                allowed: false,
-            })))
-            .map_err(|_| Error::InvalidMessage)?,
-        );
+        let next = Policy {
+            settings: policy.settings,
+            authorization: policy.authorization + 1,
+            allowed: false,
+        };
+        gate.update(next)?;
+        let notice = order
+            .update_policy(next)
+            .map_err(|_| Error::InvalidMessage)?
+            .ok_or(Error::InvalidMessage)?;
+        ready.extend(message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?);
     }
     pipe.write_all(ready, &bootstrap.stop, deadline)?;
     if allowed {
@@ -216,13 +216,18 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             if wait_stop(&bootstrap.stop, 150)? {
                 return Err(Error::Cancelled);
             }
+            let next = Policy {
+                settings: policy.settings,
+                authorization: policy.authorization + 1,
+                allowed: false,
+            };
+            gate.update(next)?;
+            let notice = order
+                .update_policy(next)
+                .map_err(|_| Error::InvalidMessage)?
+                .ok_or(Error::InvalidMessage)?;
             pipe.write_all(
-                message::encode(&envelope(Message::PolicyChanged(Policy {
-                    settings: policy.settings,
-                    authorization: policy.authorization + 1,
-                    allowed: false,
-                })))
-                .map_err(|_| Error::InvalidMessage)?,
+                message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?,
                 &bootstrap.stop,
                 (Instant::now() + Duration::from_secs(5)).min(lifetime),
             )?;
@@ -241,10 +246,10 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             // lifetime. Peer death and Stop also interrupt an idle read.
             let idle = (Instant::now() + crate::channel::IDLE_TIMEOUT).min(lifetime);
             let request = read_message(&mut pipe, &bootstrap.stop, idle)?;
-            if request.session != hello.session || request.generation != hello.generation {
-                return Err(Error::InvalidMessage);
-            }
-            let Message::Convert(convert) = request.message else {
+            let BrokerEvent::Convert(convert) = order
+                .receive(request, Instant::now())
+                .map_err(|_| Error::InvalidMessage)?
+            else {
                 return Err(Error::InvalidMessage);
             };
             if matches!(
@@ -274,10 +279,16 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 if last_request != 0 {
                     return Err(Error::InvalidMessage);
                 }
+                let notice = order
+                    .update_policy(latest)
+                    .map_err(map_broker_error)?
+                    .ok_or(Error::InvalidMessage)?;
+                if notice.cancelled != Some(convert.request) {
+                    return Err(Error::InvalidMessage);
+                }
                 drop(convert);
                 pipe.write_all(
-                    message::encode(&envelope(Message::PolicyChanged(latest)))
-                        .map_err(|_| Error::InvalidMessage)?,
+                    message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?,
                     &bootstrap.stop,
                     idle,
                 )?;
@@ -310,12 +321,16 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                     | Mode::DiagnosticSettingsAfterResult
                     | Mode::DiagnosticRegrantAfterResult
             ) {
-                let mut reply = message::encode(&envelope(Message::Result(ConversionResult {
-                    request: convert.request,
-                    revision: convert.revision,
-                    text: "日本語".into(),
-                })))
-                .map_err(|_| Error::InvalidMessage)?;
+                let result = order
+                    .result(
+                        convert.request,
+                        convert.revision,
+                        "日本語".into(),
+                        Instant::now(),
+                    )
+                    .map_err(map_broker_error)?
+                    .ok_or(Error::InvalidMessage)?;
+                let mut reply = message::encode(&result).map_err(|_| Error::InvalidMessage)?;
                 let next = if bootstrap.mode == Mode::DiagnosticSettingsAfterResult {
                     Policy {
                         settings: policy.settings + 1,
@@ -335,10 +350,14 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                     }
                 };
                 gate.update(next)?;
-                reply.extend(
-                    message::encode(&envelope(Message::PolicyChanged(next)))
-                        .map_err(|_| Error::InvalidMessage)?,
-                );
+                let notice = order
+                    .update_policy(next)
+                    .map_err(map_broker_error)?
+                    .ok_or(Error::InvalidMessage)?;
+                if notice.cancelled.is_some() {
+                    return Err(Error::InvalidMessage);
+                }
+                reply.extend(message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?);
                 drop(convert);
                 pipe.write_all(reply, &bootstrap.stop, deadline)?;
                 break;
@@ -355,9 +374,15 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 if gate.authorize(convert.revision) != Err(Error::PolicyDenied) {
                     return Err(Error::InvalidMessage);
                 }
+                let notice = order
+                    .update_policy(revoked)
+                    .map_err(map_broker_error)?
+                    .ok_or(Error::InvalidMessage)?;
+                if notice.cancelled != Some(convert.request) {
+                    return Err(Error::InvalidMessage);
+                }
                 pipe.write_all(
-                    message::encode(&envelope(Message::PolicyChanged(revoked)))
-                        .map_err(|_| Error::InvalidMessage)?,
+                    message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?,
                     &bootstrap.stop,
                     deadline,
                 )?;
@@ -373,14 +398,18 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 return Err(Error::Timeout);
             }
             gate.authorize(convert.revision)?;
-            let reply = Message::Result(ConversionResult {
-                request: convert.request,
-                revision: convert.revision,
-                text: "日本語".into(),
-            });
+            let reply = order
+                .result(
+                    convert.request,
+                    convert.revision,
+                    "日本語".into(),
+                    Instant::now(),
+                )
+                .map_err(map_broker_error)?
+                .ok_or(Error::InvalidMessage)?;
             drop(convert);
             pipe.write_all(
-                message::encode(&envelope(reply)).map_err(|_| Error::InvalidMessage)?,
+                message::encode(&reply).map_err(|_| Error::InvalidMessage)?,
                 &bootstrap.stop,
                 deadline,
             )?;
@@ -401,6 +430,14 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn map_broker_error(error: BrokerError) -> Error {
+    match error {
+        BrokerError::PolicyDenied => Error::PolicyDenied,
+        BrokerError::Expired => Error::Timeout,
+        _ => Error::InvalidMessage,
+    }
 }
 
 fn accept_request(

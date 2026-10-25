@@ -24,7 +24,11 @@
   `broker-test`では単発Jobの失敗開始後に予約枠が戻ることを確認。
 - 完了IDが所有側のpending IDと食い違う異常時は、結果待機を残さず対象とworkerを退役する。
   通常の`broker-key-test`25ケースで配送と解除の回帰を確認。
-- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で158件成功。
+- Broker側のHello、要求順序、取消、policy変更、結果期限を`BrokerSession`に集約。
+  単発Jobと再利用Channelの実子Hostを接続し、Protocol単体、`broker-test`、
+  `broker-channel-test`、`broker-worker-test`、`broker-key-test`で回帰した
+  （[ADR 0057](adr/0057-broker-side-session-order.md)）。
+- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で165件成功。
   現在のサンドボックスでは診断用localhost HTTPの4件が接続不可になるため、同じコマンドを通常ユーザー環境で再実行して切り分けた。
 
 ## 次の受入作業

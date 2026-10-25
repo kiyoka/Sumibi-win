@@ -5,6 +5,7 @@
 //! peer: a transport must authenticate both processes before exchanging frames.
 #![forbid(unsafe_code)]
 
+pub mod broker_session;
 pub mod message;
 pub mod session;
 
