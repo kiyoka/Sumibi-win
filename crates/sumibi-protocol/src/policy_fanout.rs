@@ -5,14 +5,19 @@ use crate::message::{Envelope, ErrorCode, Id, Message, Policy, Revision};
 use std::time::Instant;
 
 pub const MAX_SESSIONS: usize = 8;
+/// Provisional per-Broker lifetime cap; restart with a fresh boot ID at this
+/// boundary rather than evicting the replay history.
+pub const MAX_ATTACHMENTS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FanoutError {
     InvalidKey,
     Duplicate,
     StaleKey,
+    StaleGeneration,
     DuplicateSession,
     Full,
+    Exhausted,
     Unknown,
     InvalidPolicy,
     NoNotice,
@@ -30,6 +35,11 @@ struct Subscriber {
     notice: Option<PolicyNotice>,
 }
 
+struct SeenSession {
+    id: Id,
+    generation: u64,
+}
+
 /// One fixed-size list with at most one unsent policy frame per connection.
 /// A second change before delivery retires that connection instead of
 /// retaining an unbounded notification backlog or accepting stale source.
@@ -38,6 +48,8 @@ pub struct PolicyFanout {
     policy: Policy,
     subscribers: Vec<Subscriber>,
     last_key: u64,
+    seen: Vec<SeenSession>,
+    attachments: usize,
 }
 
 impl PolicyFanout {
@@ -50,6 +62,8 @@ impl PolicyFanout {
             policy,
             subscribers: Vec::new(),
             last_key: 0,
+            seen: Vec::new(),
+            attachments: 0,
         })
     }
 
@@ -94,11 +108,30 @@ impl PolicyFanout {
         if self.subscribers.len() == MAX_SESSIONS {
             return Err(FanoutError::Full);
         }
+        if self.attachments == MAX_ATTACHMENTS {
+            return Err(FanoutError::Exhausted);
+        }
+        if self
+            .seen
+            .iter()
+            .any(|seen| seen.id == session_id && hello.generation <= seen.generation)
+        {
+            return Err(FanoutError::StaleGeneration);
+        }
         let mut session =
             BrokerSession::new(self.broker, self.policy).map_err(FanoutError::Broker)?;
         let Event::Ready(ready) = session.receive(hello, now).map_err(FanoutError::Broker)? else {
             return Err(FanoutError::Broker(BrokerError::WrongState));
         };
+        let generation = ready.generation;
+        if let Some(seen) = self.seen.iter_mut().find(|seen| seen.id == session_id) {
+            seen.generation = generation;
+        } else {
+            self.seen.push(SeenSession {
+                id: session_id,
+                generation,
+            });
+        }
         self.subscribers.push(Subscriber {
             key,
             session_id,
@@ -107,6 +140,7 @@ impl PolicyFanout {
             notice: None,
         });
         self.last_key = key;
+        self.attachments += 1;
         Ok(ready)
     }
 
@@ -277,10 +311,13 @@ mod tests {
         }
     }
     fn hello(client: u128) -> Envelope {
+        hello_generation(client, 1)
+    }
+    fn hello_generation(client: u128, generation: u64) -> Envelope {
         Envelope {
             version: VERSION,
             session: id(client),
-            generation: 1,
+            generation,
             message: Message::Hello(Hello { broker: id(90) }),
         }
     }
@@ -393,7 +430,26 @@ mod tests {
         ));
         assert_eq!(fanout.active_count(), 1);
         assert!(fanout.detach(1));
-        assert!(fanout.attach(2, hello(1), now).is_ok());
+        assert!(matches!(
+            fanout.attach(2, hello(1), now),
+            Err(FanoutError::StaleGeneration)
+        ));
+        assert!(fanout.attach(2, hello_generation(1, 2), now).is_ok());
+    }
+
+    #[test]
+    fn lifetime_attachment_cap_keeps_reconnect_history_bounded() {
+        let now = Instant::now();
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        for key in 1..=MAX_ATTACHMENTS as u64 {
+            attach_ready(&mut fanout, key, key.into(), now);
+            assert!(fanout.detach(key));
+        }
+        assert_eq!(fanout.active_count(), 0);
+        assert!(matches!(
+            fanout.attach(65, hello(65), now),
+            Err(FanoutError::Exhausted)
+        ));
     }
 
     #[test]
