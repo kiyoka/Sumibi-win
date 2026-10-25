@@ -34,7 +34,9 @@ pub struct PolicyFanout {
 
 impl PolicyFanout {
     pub fn new(broker: Id, policy: Policy) -> Result<Self, FanoutError> {
-        BrokerSession::new(broker, policy).map_err(FanoutError::Broker)?;
+        if !policy.valid() {
+            return Err(FanoutError::InvalidPolicy);
+        }
         Ok(Self {
             broker,
             policy,

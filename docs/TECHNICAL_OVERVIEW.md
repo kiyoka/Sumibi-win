@@ -22,10 +22,10 @@ Mac技術解説自身の実装照合基準 `d2b96fc` と区別する。Macの機
 | Coreの応答適用判定・入力追跡 | 単一要求の照合と、所有ホストの実入力範囲の記録を実装。製品の通常入力全体の状態機械ではない |
 | TIPのCOM・キー・表示属性・編集 | 専用ホストで実装済み。通常アプリへの常設登録なし |
 | 入力保護 | scope/status/compartmentと取得・送信前・適用時の検査を実装。専用ACPで39ケース。status診断と標準RichEditの拒否7構成を確認（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)）。一般アプリの全機密欄の識別は未検証 |
-| 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。実キーボードの手動確認は未実施 |
+| 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。`nihongo`→F7→待機入力や救済画面の実打鍵を一部確認。一般アプリの実打鍵と標準Undoは未確認 |
 | 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮/初回選択46・選択composition 18・他サービス拒否16・同期入力取引174（選択Delete20・記録内移動/前方Delete26・内部挿入20・Shift選択27・記録内選択編集33・文書端移動/選択26を含む）・書記素Backspace 55（内部caret18を含む）ケースを確認。所有editorの救済48ケースとEXE共有4枠、window境界を含む通知30ケースも確認。専用ホストの書記素移動/削除22ケースも確認。一般アプリの行端移動・待機・製品統合・候補UIは未実装 |
-| Protocol / IPC | 有限フレーム・版付きJSON・client状態、固定process相互検査・overlapped pipe。実DLLのキー・Core・所有TSFから診断用EXE bridge経由で再利用Brokerへ接続。一般アプリは未接続 |
-| Host・HTTP・キー保存・設定UI | 単発/有限連続要求の診断Host EXEを実装。既定では変換拒否。Host内に送信前/返却前の手動認可ゲートとメモリー内の一貫した政策状態を追加（[ADR 0047](adr/0047-host-manual-send-gate.md)、[ADR 0049](adr/0049-host-in-memory-policy-authority.md)）。常駐Host・製品HTTP・キー保存・設定UIは未実装 |
+| Protocol / IPC | 有限フレーム・版付きJSON・Client/Broker状態、最大8接続・各1通知の配信状態、固定process相互検査・overlapped pipe。実DLLのキー・Core・所有TSFから診断用EXE bridge経由で再利用Brokerへ接続。診断用の配信状態は実子Channelを1接続として通す。複数clientの実I/Oと一般アプリは未接続（[ADR 0057](adr/0057-broker-side-session-order.md)、[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)） |
+| Host・HTTP・キー保存・設定UI | 単発/有限連続要求の診断Host EXEを実装。既定では変換拒否。Host内に送信前/返却前の手動認可ゲート、一貫したメモリー政策と期限付き変更待機を追加（[ADR 0047](adr/0047-host-manual-send-gate.md)、[ADR 0049](adr/0049-host-in-memory-policy-authority.md)）。常駐Host・製品HTTP・キー保存・設定UIは未実装 |
 | Decisions・辞書・署名付き配布 | 未実装。後続段階 |
 
 ## 2. 目的と不変条件
