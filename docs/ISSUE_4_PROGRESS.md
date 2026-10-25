@@ -57,7 +57,9 @@
 - Brokerの成功結果と固定エラーは要求番号・版の照合を共通化し、
   古いErrorの無視と未来ID・版違いの終端化を検査した。
 - Broker内の認可判定と接続通知を一つの`publish`操作で進める。
-  Fanoutが更新を拒否しても認可版は進めず、旧版結果の書込guardとも直列化する。
+  更新前の認可ゲートとFanoutの版不一致、またはFanoutの更新拒否では
+  認可版を進めない。旧版結果の書込guardとも直列化する。
+  製品Brokerでも使えるよう、書込完了まで保持する公開guard APIを用意した。
 - `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で189件成功。
   期限切れと再接続の追加後のProtocol単体は40件成功。
   `tools/Test-Broker.ps1`で既定Host拒否、実子Channel 24件、Worker 14件を

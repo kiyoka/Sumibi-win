@@ -20,8 +20,10 @@ pub struct BrokerPolicyGate {
 }
 
 /// Keeps an authorized result publication ahead of the next policy update.
-/// Dropping it after the bounded pipe write is the publication point.
-struct PublishGuard<'a> {
+/// Hold this through the complete bounded pipe write. Dropping it marks the
+/// point after which a policy update may become visible to new requests.
+#[must_use = "hold the publication guard until the complete result write"]
+pub struct PublishGuard<'a> {
     _state: RwLockReadGuard<'a, Policy>,
 }
 impl BrokerPolicyGate {
@@ -54,7 +56,7 @@ impl BrokerPolicyGate {
     /// and completes each notice write before accepting another request.
     pub fn publish(&self, order: &mut PolicyFanout, next: Policy) -> Result<Vec<u64>> {
         let mut state = self.state.write().map_err(|_| Error::PolicyDenied)?;
-        if !next.follows(*state) {
+        if order.policy() != *state || !next.follows(*state) {
             return Err(Error::PolicyDenied);
         }
         let retired = order.publish(next).map_err(map_fanout_error)?;
@@ -72,7 +74,7 @@ impl BrokerPolicyGate {
         Ok(())
     }
 
-    fn authorize_for_publish(&self, revision: Revision) -> Result<PublishGuard<'_>> {
+    pub fn authorize_for_publish(&self, revision: Revision) -> Result<PublishGuard<'_>> {
         let state = self.state.read().map_err(|_| Error::PolicyDenied)?;
         if !state.allowed
             || revision.settings != state.settings
@@ -315,7 +317,12 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 if last_request != 0 {
                     return Err(Error::InvalidMessage);
                 }
-                if !gate.publish(&mut order, latest)?.is_empty() {
+                // This diagnostic fixture deliberately advances admission
+                // through an unannounced intermediate revocation. Product
+                // policy changes must use gate.publish from matching states.
+                if gate.snapshot()? != latest
+                    || !order.publish(latest).map_err(map_fanout_error)?.is_empty()
+                {
                     return Err(Error::InvalidMessage);
                 }
                 let (notice, cancelled) = pending_notice(&order)?;
@@ -702,6 +709,16 @@ mod tests {
         let mut ahead = PolicyFanout::new(broker, advanced).unwrap();
         assert!(matches!(
             gate.publish(&mut ahead, policy()),
+            Err(Error::PolicyDenied)
+        ));
+        assert!(gate.snapshot().unwrap() == policy());
+        assert!(ahead.policy() == advanced);
+        let further = Policy {
+            settings: 3,
+            ..policy()
+        };
+        assert!(matches!(
+            gate.publish(&mut ahead, further),
             Err(Error::PolicyDenied)
         ));
         assert!(gate.snapshot().unwrap() == policy());

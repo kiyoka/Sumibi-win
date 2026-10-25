@@ -7,6 +7,8 @@ Brokerが結果を返す直前に政策を読むだけでは、検査とpipeへ�
 `BrokerPolicyGate::authorize_for_publish`が読取guardを返し、版と許可を
 確認した後、期限付きのpipe書込が終わるまで保持する。政策更新は書込後に
 同じlockの排他guardを取得する。更新が先なら旧版結果を送らず拒否する。
+製品Brokerからも同じ順序を使えるよう、guard取得APIを公開する。呼出し側は
+結果の版を渡し、書込失敗時はその結果を配送済みと扱わず接続を閉じる。
 更新を待つ時間は現状の有界なpipe期限に従う。政策更新元のUIへこの待機を
 直接載せるかどうかは製品接続時に決める。
 
@@ -27,6 +29,7 @@ ClientSession、BrokerSession、PolicyFanout、BrokerPolicyGateの版遷移判�
 
 Brokerの通常の政策変更は`BrokerPolicyGate::publish`で書込guardを取得し、
 全接続の`PolicyFanout`を新しい版へ進めてから認可判定用policyを更新する。
+更新前にゲートとFanoutの現在版が一致することも確認する。既に異なる場合や
 Fanoutが更新を拒否した場合は認可判定用policyを進めない。診断専用の
 「失効して再許可」の合成ケースだけは、中間の拒否版を認可判定に先に反映し、
 最終版の通知を一件へまとめる。中間状態では旧要求を拒否する。
