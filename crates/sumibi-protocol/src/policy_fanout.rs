@@ -85,6 +85,15 @@ impl PolicyFanout {
         hello: Envelope,
         now: Instant,
     ) -> Result<Envelope, FanoutError> {
+        hello
+            .validate()
+            .map_err(|_| FanoutError::Broker(BrokerError::InvalidMessage))?;
+        let Message::Hello(greeting) = &hello.message else {
+            return Err(FanoutError::Broker(BrokerError::WrongState));
+        };
+        if greeting.broker != self.broker {
+            return Err(FanoutError::Broker(BrokerError::WrongBroker));
+        }
         if key == 0 {
             return Err(FanoutError::InvalidKey);
         }
@@ -505,6 +514,33 @@ mod tests {
             Err(FanoutError::StaleKey)
         ));
         assert!(fanout.attach(2, hello(2), now).is_ok());
+    }
+
+    #[test]
+    fn invalid_initial_frames_are_rejected_before_session_membership_checks() {
+        let now = Instant::now();
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        attach_ready(&mut fanout, 1, 1, now);
+        let mut invalid = hello(1);
+        invalid.version = 0;
+        assert!(matches!(
+            fanout.attach(2, invalid, now),
+            Err(FanoutError::Broker(BrokerError::InvalidMessage))
+        ));
+        let mut wrong_broker = hello(1);
+        if let Message::Hello(greeting) = &mut wrong_broker.message {
+            greeting.broker = id(91);
+        }
+        assert!(matches!(
+            fanout.attach(2, wrong_broker, now),
+            Err(FanoutError::Broker(BrokerError::WrongBroker))
+        ));
+        assert!(matches!(
+            fanout.attach(2, convert(1, 1, policy()), now),
+            Err(FanoutError::Broker(BrokerError::WrongState))
+        ));
+        assert_eq!(fanout.active_count(), 1);
+        attach_ready(&mut fanout, 2, 2, now);
     }
 
     #[test]
