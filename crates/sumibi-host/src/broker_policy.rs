@@ -23,6 +23,7 @@ pub struct Published {
 pub struct BrokerPolicyRelay<'a> {
     source: &'a PolicyAuthority,
     cursor: PolicyVersion,
+    published: Policy,
 }
 
 impl<'a> BrokerPolicyRelay<'a> {
@@ -38,6 +39,7 @@ impl<'a> BrokerPolicyRelay<'a> {
         Ok(Self {
             source,
             cursor: version(policy),
+            published: policy,
         })
     }
 
@@ -58,6 +60,11 @@ impl<'a> BrokerPolicyRelay<'a> {
         gate: &BrokerPolicyGate,
         fanout: &mut PolicyFanout,
     ) -> Result<Option<Published>, RelayError> {
+        if gate.snapshot().map_err(RelayError::Broker)? != self.published
+            || fanout.policy() != self.published
+        {
+            return Err(RelayError::Diverged);
+        }
         let Some(policy) = self
             .source
             .wire_change_after(self.cursor)
@@ -67,6 +74,7 @@ impl<'a> BrokerPolicyRelay<'a> {
         };
         let retired = gate.publish(fanout, policy).map_err(RelayError::Broker)?;
         self.cursor = version(policy);
+        self.published = policy;
         Ok(Some(Published { policy, retired }))
     }
 }
@@ -160,10 +168,11 @@ mod tests {
         matching.publish(ahead).unwrap();
         assert_eq!(
             relay.publish_current(&gate, &mut matching).err(),
-            Some(RelayError::Broker(IpcError::PolicyDenied))
+            Some(RelayError::Diverged)
         );
         assert_eq!(relay.cursor, first_cursor);
         assert!(gate.snapshot().unwrap() == initial);
+
     }
 
     #[test]
