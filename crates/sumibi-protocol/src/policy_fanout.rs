@@ -143,17 +143,19 @@ impl PolicyFanout {
     /// completion for an older epoch retires this subscriber.
     pub fn notice_delivered(&mut self, key: u64, delivered: Policy) -> Result<(), FanoutError> {
         let index = self.index(key)?;
-        let subscriber = &mut self.subscribers[index];
-        let notice = subscriber.notice.as_ref().ok_or(FanoutError::NoNotice)?;
+        let Some(notice) = self.subscribers[index].notice.as_ref() else {
+            self.detach(key);
+            return Err(FanoutError::NoNotice);
+        };
         if !matches!(notice.frame.message, Message::PolicyChanged(policy) if policy == delivered) {
             self.detach(key);
             return Err(FanoutError::StaleNotice);
         }
-        subscriber
-            .session
-            .notice_delivered(delivered)
-            .map_err(FanoutError::Broker)?;
-        subscriber.notice = None;
+        if let Err(error) = self.subscribers[index].session.notice_delivered(delivered) {
+            self.detach(key);
+            return Err(FanoutError::Broker(error));
+        }
+        self.subscribers[index].notice = None;
         Ok(())
     }
 
@@ -430,6 +432,30 @@ mod tests {
         fanout.notice_delivered(2, second).unwrap();
         assert!(matches!(
             fanout.receive(2, convert(2, 1, second), now),
+            Ok(Event::Convert(_))
+        ));
+    }
+
+    #[test]
+    fn duplicate_write_completion_retires_that_connection() {
+        let now = Instant::now();
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        fanout.attach(1, hello(1), now).unwrap();
+        fanout.attach(2, hello(2), now).unwrap();
+        let changed = Policy {
+            settings: 2,
+            ..policy()
+        };
+        fanout.publish(changed).unwrap();
+        fanout.notice_delivered(1, changed).unwrap();
+        assert_eq!(
+            fanout.notice_delivered(1, changed),
+            Err(FanoutError::NoNotice)
+        );
+        assert_eq!(fanout.active_count(), 1);
+        fanout.notice_delivered(2, changed).unwrap();
+        assert!(matches!(
+            fanout.receive(2, convert(2, 1, changed), now),
             Ok(Event::Convert(_))
         ));
     }
