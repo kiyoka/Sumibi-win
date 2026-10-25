@@ -8,16 +8,26 @@ Hostの設定・資格情報・明示同意は`PolicyAuthority`が一つの版�
 一方だけが新しい政策版になる危険がある。
 
 `BrokerPolicyRelay`はHostの公開用政策版を期限付きで待ち、変化があれば
-`BrokerPolicyGate::publish`へ渡す。作成時にHost、Brokerゲート、Fanoutの
+最新版を`BrokerPolicyGate::publish`へ渡す。変更待機ではFanoutを借用せず、
+他の接続の処理を妨げない。待機から戻った後にFanoutのlockを取得し、
+最新版を再読込して公開する。作成時にHost、Brokerゲート、Fanoutの
 初期版が一致することを要求する。公開が失敗した場合、通知カーソルを進めず
 エラーを返す。公開に成功した場合だけカーソルを進め、接続を閉じるべきkeyを
 呼出し側へ返す。複数のHost変更は最新版一件へまとめられる。
 
-RelayはBrokerのworker側で一つだけ動かし、同じFanoutを使う要求受付・
+RelayはBrokerのworker側で一つだけ動かし、公開操作を同じFanoutを使う要求受付・
 通知書込と直列化する。呼出し側は退役したpipeを閉じ、残る接続の
 `PolicyChanged`を完全に書いてから配送確認する。Relayは資格情報・送信先を
 wireへ出さず、TSFの所有スレッドを待機させない。
 
+設定変更がHostに保存されてからBrokerへ届くまでの間は、Brokerのゲートが
+旧版の可能性がある。実送信の直前と直後はHostの`manual::convert`が元の権限を
+再確認する。製品の設定UIでは、Relayの公開と各接続の通知・切断を待つ完了条件が
+別途必要である。複数I/O workerへ拡張する際は、ゲートの読取guardとFanoutの
+lockを逆順に取らない構成も必要になる。現段階のRelayはI/Oやlock取得を
+所有しない。
+
 Hostで資格情報設定と許可を続けて行い、2接続へ一つの許可版を配り、続く失効版を
-同じ2接続へ配る単体検査を加えた。実pipeへの複数client接続、設定UIの完了通知、
+同じ2接続へ配る単体検査を加えた。待機と公開の間に状態が変わった場合は
+再読込した最新版だけを配る。実pipeへの複数client接続、設定UIの完了通知、
 所有TSFでの適用前再検査は次の製品統合で扱う。

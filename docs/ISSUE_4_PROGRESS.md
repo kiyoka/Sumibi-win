@@ -64,7 +64,7 @@
   更新前の認可ゲートとFanoutの版不一致、またはFanoutの更新拒否では
   認可版を進めない。旧版結果の書込guardとも直列化する。
   製品Brokerでも使えるよう、書込完了まで保持する公開guard APIを用意した。
-- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で191件成功。
+- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で192件成功。
   期限切れと再接続の追加後のProtocol単体は40件成功。
   `tools/Test-Broker.ps1`で既定Host拒否、実子Channel 24件、Worker 14件を
   正しいビルド順で再確認した。

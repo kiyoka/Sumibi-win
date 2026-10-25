@@ -41,18 +41,26 @@ impl<'a> BrokerPolicyRelay<'a> {
         })
     }
 
-    /// Run on a Broker worker, never the TSF owner thread. The finite wait
-    /// coalesces source changes; a failed publication leaves the cursor old.
-    /// The returned retired keys must be closed by the caller.
-    pub fn wait_and_publish(
+    /// Run on a Broker worker, never the TSF owner thread. Do not lock the
+    /// Fanout while waiting; other connections must keep making progress.
+    pub fn wait_for_change(&self, deadline: Instant) -> Result<bool, RelayError> {
+        self.source
+            .wait_for_change(self.cursor, deadline)
+            .map(|change| change.is_some())
+            .map_err(RelayError::Source)
+    }
+
+    /// After a wake, acquire the shared Fanout lock and publish the latest
+    /// source snapshot. A failed publication leaves the cursor old. The caller
+    /// closes retired transports and completes each remaining notice write.
+    pub fn publish_current(
         &mut self,
         gate: &BrokerPolicyGate,
         fanout: &mut PolicyFanout,
-        deadline: Instant,
     ) -> Result<Option<Published>, RelayError> {
         let Some(policy) = self
             .source
-            .wait_for_change(self.cursor, deadline)
+            .wire_change_after(self.cursor)
             .map_err(RelayError::Source)?
         else {
             return Ok(None);
@@ -99,19 +107,15 @@ mod tests {
             fanout.ready_delivered(key).unwrap();
         }
         let mut relay = BrokerPolicyRelay::new(&source, &gate, &fanout).unwrap();
-        assert!(relay
-            .wait_and_publish(&gate, &mut fanout, now)
-            .unwrap()
-            .is_none());
+        assert!(!relay.wait_for_change(now).unwrap());
+        assert!(relay.publish_current(&gate, &mut fanout).unwrap().is_none());
 
         source
             .replace_credential(Credential::new("fixture".into()))
             .unwrap();
         source.grant_manual_consent(&destination).unwrap();
-        let grant = relay
-            .wait_and_publish(&gate, &mut fanout, now)
-            .unwrap()
-            .unwrap();
+        assert!(relay.wait_for_change(now).unwrap());
+        let grant = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
         assert!(grant.policy.allowed);
         assert!(grant.retired.is_empty());
         assert!(gate.snapshot().unwrap() == grant.policy);
@@ -121,10 +125,8 @@ mod tests {
         }
 
         source.revoke_manual_consent().unwrap();
-        let revoke = relay
-            .wait_and_publish(&gate, &mut fanout, now)
-            .unwrap()
-            .unwrap();
+        assert!(relay.wait_for_change(now).unwrap());
+        let revoke = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
         assert!(!revoke.policy.allowed);
         assert!(revoke.retired.is_empty());
         assert!(gate.snapshot().unwrap() == revoke.policy);
@@ -157,12 +159,31 @@ mod tests {
         source.revoke_manual_consent().unwrap();
         matching.publish(ahead).unwrap();
         assert_eq!(
-            relay
-                .wait_and_publish(&gate, &mut matching, Instant::now())
-                .err(),
+            relay.publish_current(&gate, &mut matching).err(),
             Some(RelayError::Broker(IpcError::PolicyDenied))
         );
         assert_eq!(relay.cursor, first_cursor);
         assert!(gate.snapshot().unwrap() == initial);
+    }
+
+    #[test]
+    fn source_change_between_wake_and_publication_uses_latest_epoch() {
+        let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
+        let source = PolicyAuthority::new(destination.clone());
+        let initial = source.wire_policy().unwrap();
+        let gate = BrokerPolicyGate::new(initial).unwrap();
+        let mut fanout = PolicyFanout::new(id(90), initial).unwrap();
+        let mut relay = BrokerPolicyRelay::new(&source, &gate, &fanout).unwrap();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        assert!(relay.wait_for_change(Instant::now()).unwrap());
+        source.revoke_manual_consent().unwrap();
+        let published = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
+        assert!(!published.policy.allowed);
+        assert!(published.policy == source.wire_policy().unwrap());
+        assert!(gate.snapshot().unwrap() == published.policy);
+        assert!(!relay.wait_for_change(Instant::now()).unwrap());
     }
 }
