@@ -4,3 +4,4 @@
 
 pub mod diagnostic_http;
 pub mod manual;
+pub mod policy;

@@ -206,18 +206,11 @@ fn parse_headers(header: &[u8]) -> Result<usize, TransportError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manual::{self, Credential, ManualRequest, PolicySnapshot, PolicySource, SendError};
+    use crate::manual::{self, Credential, ManualRequest, SendError};
+    use crate::policy::PolicyAuthority;
     use std::net::TcpListener;
-    use std::sync::Arc;
     use std::thread;
     use sumibi_protocol::message::Revision;
-
-    struct Source(PolicySnapshot);
-    impl PolicySource for Source {
-        fn snapshot(&self) -> Option<PolicySnapshot> {
-            Some(self.0.clone())
-        }
-    }
 
     fn serve_once(
         response: Vec<u8>,
@@ -264,26 +257,23 @@ mod tests {
     }
 
     fn send(destination: &Destination, deadline: Duration) -> Result<String, SendError> {
-        let source = Source(PolicySnapshot {
-            settings: 1,
-            authorization: 1,
-            destination: destination.clone(),
-            manual_consent: Some(destination.clone()),
-            credential: Some(Arc::new(Credential::new("synthetic-key".into()).unwrap())),
-            allowed: true,
-        });
+        let authority = PolicyAuthority::new(destination.clone());
+        authority
+            .replace_credential(Some(Credential::new("synthetic-key".into()).unwrap()))
+            .unwrap();
+        let version = authority.grant_manual_consent(destination).unwrap();
         manual::convert(
             ManualRequest {
                 revision: Revision {
                     input: 1,
-                    settings: 1,
-                    authorization: 1,
+                    settings: version.settings,
+                    authorization: version.authorization,
                 },
                 destination,
                 source: "nihongo",
                 deadline: Instant::now() + deadline,
             },
-            &source,
+            &authority,
             &DiagnosticLoopbackHttp,
         )
     }
