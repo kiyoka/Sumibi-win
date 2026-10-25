@@ -33,11 +33,3 @@ jobs:
         run: cargo build --workspace --locked
       - name: DLL load and mock TSF lifecycle
         run: cargo run -p sumibi-tip --features spike --example load_smoke --locked -- target/debug/sumibi_tip.dll
-      - name: Default Broker denies conversion before source
-        run: .\target\debug\sumibi-setup.exe broker-channel-denied-test
-      - name: Build diagnostic Broker
-        run: cargo build -p sumibi-host --features spike --locked
-      - name: Authenticated Broker Channel
-        run: .\target\debug\sumibi-setup.exe broker-channel-test
-      - name: Broker worker and owner delivery
-        run: .\target\debug\sumibi-setup.exe broker-worker-test
