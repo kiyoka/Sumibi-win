@@ -19,7 +19,7 @@
 | 描画 | live_render / render / window_host。通知→WM_APP→Frame | 製品候補UIのUIElement、DPI、高コントラスト、読み上げ |
 | 手動待機と救済 | 所有editor救済48。待機Coreの件数/本文量を設定可能とし、専用adapterへ4枠・4096単位を明示。2026-10-24、通常ユーザーの対話desktopで実DLL通常版adapter26・通常版waiting-demo59ケース、修飾付き変換キーの非消費を含む現行対話版61ケースが成功。AppContainer起動は入力受付前に拒否。共有救済を取得前に予約し、待機/通常救済を1画面へ接続（[ADR 0044](adr/0044-configurable-waiting-queue-limits.md)） | 一般アプリでの製品キー・容量/超過/期限/明示破棄とプロセス間政策。変換キーの実打鍵は未確認 |
 | Protocol / Broker | 有限フレーム・JSON・client状態、固定process相互検査・8 endpoint・overlapped pipe。単発Host・容量4（完了済みjob・受取済み結果も含む）・各1結果。[ADR 0015](adr/0015-broker-admission-through-delivery.md)。実DLLキー・Core・実TSFから診断用EXE bridgeを通す経路も検証。EXE再利用workerへ実DLLキー・所有STA配送を接続し、25ケースを検証（[ADR 0017](adr/0017-reusable-worker-and-owner-delivery.md)）。認証済みpipe上の進行中/待機中ポリシー失効を診断Hostで検証（[ADR 0046](adr/0046-inflight-policy-revocation.md)） | 製品Broker発見・常駐dispatch、設定/認可変更の通知元と送信直前の再検査、一般アプリ内の配置と入力統合。AppContainerは初期非対応 |
-| HTTP | 未実装。固定文字列で検証 | 模擬HTTPで認証・同意・転送拒否・上限・取消・エラー分類 |
+| HTTP | 実通信は未実装。Host内の手動送信ゲートで接続先識別子・同意・版・資格情報・期限を送信前/結果返却前に検査し、模擬Transportで確認（[ADR 0047](adr/0047-host-manual-send-gate.md)）。固定文字列の診断Brokerを維持 | 模擬HTTPで転送拒否・上限・取消・エラー分類を検証後、実Transportと設定/資格情報へ接続 |
 | 設定・資格情報 | 未実装。LocalAppData / Credential Manager案 | 形式版・原子的保存・秘密分離・認可取消・破損回復 |
 | 追加候補・辞書 | 未実装。Mac移植範囲に目的を記録 | 件数決定・現在候補・出所・索引ハッシュ・LICENSE |
 | Decisions | 未実装。Mac契約を参照した後続案 | API再確認、独立同意、固定窓、永続回数予約、手動優先 |

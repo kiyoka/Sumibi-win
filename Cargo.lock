@@ -87,6 +87,7 @@ name = "sumibi-host"
 version = "0.1.0"
 dependencies = [
  "sumibi-ipc",
+ "sumibi-protocol",
 ]
 
 [[package]]

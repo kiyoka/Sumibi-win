@@ -7,5 +7,8 @@ license.workspace = true
 [features]
 spike = []
 
+[dependencies]
+sumibi-protocol = { path = "../sumibi-protocol" }
+
 [target.'cfg(windows)'.dependencies]
 sumibi-ipc = { path = "../sumibi-ipc" }
