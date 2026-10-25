@@ -10,6 +10,9 @@ pub mod input;
 pub mod recovery;
 pub mod waiting_input;
 
+/// Current single-result manual IPC and owned TSF edit ceiling.
+pub const MAX_MANUAL_UNITS: usize = 1024;
+
 /// Opaque, globally unique request identity supplied by the future adapter.
 /// Never reuse an identity, including after cancellation or reconnection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,14 +73,19 @@ impl ManualConversion {
         if self.pending.is_some() {
             return Err(Reject::Busy);
         }
-        if !target.allowed
+        if id.0 == 0
+            || !target.allowed
+            || target.context == 0
+            || target.range == 0
+            || target.revision.input == 0
+            || target.revision.settings == 0
+            || target.revision.authorization == 0
             || target.text.is_empty()
+            || target.text.len() > MAX_MANUAL_UNITS
             || target.text.contains(&0xfffc)
             || !match target.selection {
                 Selection::Acp(start, end) => start >= 0 && end >= start,
-                Selection::RetainedRange { utf16_units } => {
-                    target.context != 0 && target.range != 0 && utf16_units == target.text.len()
-                }
+                Selection::RetainedRange { utf16_units } => utf16_units == target.text.len(),
             }
             || String::from_utf16(&target.text).is_err()
         {
@@ -113,7 +121,10 @@ impl ManualConversion {
         if !current.allowed || current != &pending.target {
             return Err(Reject::TargetChanged);
         }
-        if result.is_empty() || result.contains('\u{fffc}') {
+        if result.is_empty()
+            || result.contains('\u{fffc}')
+            || result.encode_utf16().take(MAX_MANUAL_UNITS + 1).count() > MAX_MANUAL_UNITS
+        {
             return Err(Reject::InvalidResult);
         }
         Ok(result.encode_utf16().collect())
@@ -221,7 +232,12 @@ mod tests {
 
     #[test]
     fn protected_empty_object_and_invalid_utf16_targets_are_rejected() {
-        for text in [Vec::new(), vec![0xd800], vec![0xfffc]] {
+        for text in [
+            Vec::new(),
+            vec![0xd800],
+            vec![0xfffc],
+            vec![b'a' as u16; MAX_MANUAL_UNITS + 1],
+        ] {
             let mut target = target();
             target.text = text;
             assert_eq!(
@@ -235,6 +251,27 @@ mod tests {
             ManualConversion::default().begin(RequestId(1), target),
             Err(Reject::InvalidTarget)
         );
+    }
+
+    #[test]
+    fn zero_request_target_ids_and_policy_revisions_are_rejected_before_capture() {
+        assert_eq!(
+            ManualConversion::default().begin(RequestId(0), target()),
+            Err(Reject::InvalidTarget)
+        );
+        for change in 0..5 {
+            let mut target = target();
+            match change {
+                0 => target.context = 0,
+                1 => target.range = 0,
+                2 => target.revision.input = 0,
+                3 => target.revision.settings = 0,
+                _ => target.revision.authorization = 0,
+            }
+            let mut core = ManualConversion::default();
+            assert_eq!(core.begin(RequestId(1), target), Err(Reject::InvalidTarget));
+            assert!(!core.is_pending());
+        }
     }
 
     #[test]
@@ -259,6 +296,16 @@ mod tests {
         state.begin(RequestId(2), target.clone()).unwrap();
         assert_eq!(
             state.finish(RequestId(2), &target, "日本\u{fffc}語"),
+            Err(Reject::InvalidResult)
+        );
+        assert!(!state.is_pending());
+        state.begin(RequestId(3), target.clone()).unwrap();
+        assert_eq!(
+            state.finish(
+                RequestId(3),
+                &target,
+                &"😀".repeat(MAX_MANUAL_UNITS / 2 + 1)
+            ),
             Err(Reject::InvalidResult)
         );
         assert!(!state.is_pending());
