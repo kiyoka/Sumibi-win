@@ -244,15 +244,6 @@ impl PolicyFanout {
         Ok(retired)
     }
 
-    pub fn pending_notice(&self, key: u64) -> Result<Option<&PolicyNotice>, FanoutError> {
-        let subscriber = self
-            .subscribers
-            .iter()
-            .find(|subscriber| subscriber.key == key)
-            .ok_or(FanoutError::Unknown)?;
-        Ok(subscriber.notice.as_ref())
-    }
-
     /// Only acknowledge the exact epoch after a complete bounded write. On
     /// write failure, call detach and close the transport instead. A late
     /// completion for an older epoch retires this subscriber.
@@ -451,11 +442,10 @@ mod tests {
             ..policy()
         };
         assert!(fanout.publish(revoked).unwrap().is_empty());
-        assert_eq!(
-            fanout.pending_notice(1).unwrap().unwrap().cancelled,
-            Some(1)
-        );
-        assert_eq!(fanout.pending_notice(2).unwrap().unwrap().cancelled, None);
+        let writes = fanout.pending_writes();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0].1.cancelled, Some(1));
+        assert_eq!(writes[1].1.cancelled, None);
         assert!(fanout
             .result(
                 1,
@@ -504,11 +494,13 @@ mod tests {
         };
         assert_eq!(fanout.publish(second).unwrap(), (2..=8).collect::<Vec<_>>());
         assert_eq!(fanout.active_count(), 1);
-        assert!(fanout.pending_notice(1).unwrap().is_some());
-        assert!(matches!(
-            fanout.pending_notice(2),
+        let writes = fanout.pending_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, 1);
+        assert_eq!(
+            fanout.notice_delivered(2, second),
             Err(FanoutError::Unknown)
-        ));
+        );
         let ready = attach_ready(&mut fanout, 9, 9, now);
         assert!(matches!(ready.message, Message::Ready(ready) if ready.policy.settings == 3));
     }
@@ -623,7 +615,7 @@ mod tests {
             Err(FanoutError::InvalidPolicy)
         ));
         assert_eq!(fanout.active_count(), 1);
-        assert!(fanout.pending_notice(1).unwrap().is_none());
+        assert!(fanout.pending_writes().is_empty());
         assert!(matches!(
             fanout.receive(1, convert(1, 1, policy()), now),
             Ok(Event::Convert(_))
@@ -676,21 +668,29 @@ mod tests {
             ..policy()
         };
         fanout.publish(second).unwrap();
+        let second_writes = fanout.pending_writes();
+        assert_eq!(
+            second_writes
+                .iter()
+                .map(|(key, _)| *key)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
         assert!(matches!(
             first_writes[0].1.frame.message,
             Message::PolicyChanged(policy) if policy == first
         ));
         assert_eq!(
-            deliver(&mut fanout, first_writes[0].0, first),
+            fanout.notice_delivered(first_writes[0].0, first),
             Err(FanoutError::StaleNotice)
         );
         assert_eq!(fanout.active_count(), 1);
-        assert!(matches!(
-            fanout.pending_notice(1),
+        assert_eq!(
+            fanout.notice_delivered(1, second),
             Err(FanoutError::Unknown)
-        ));
-        assert!(fanout.pending_notice(2).unwrap().is_some());
-        deliver(&mut fanout, 2, second).unwrap();
+        );
+        assert!(fanout.pending_writes().is_empty());
+        fanout.notice_delivered(2, second).unwrap();
         assert!(matches!(
             fanout.receive(2, convert(2, 1, second), now),
             Ok(Event::Convert(_))
@@ -774,6 +774,41 @@ mod tests {
     }
 
     #[test]
+    fn coalesced_ready_and_notice_decode_in_wire_order() {
+        let now = Instant::now();
+        let mut client = ClientSession::new(id(1), id(90));
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        let ready = fanout
+            .attach(1, decode_frame(&client.hello().unwrap()), now)
+            .unwrap();
+        let revoked = Policy {
+            authorization: 2,
+            allowed: false,
+            ..policy()
+        };
+        fanout.publish(revoked).unwrap();
+        let notice = fanout.coalesced_ready_notice(1).unwrap();
+        let ready_bytes = crate::message::encode(&ready).unwrap();
+        let mut wire = ready_bytes.clone();
+        wire.extend(crate::message::encode(&notice.frame).unwrap());
+
+        let first = client.receive(&wire, now).unwrap();
+        assert_eq!(first.consumed, ready_bytes.len());
+        assert!(matches!(first.event, Some(ClientEvent::Ready(value)) if value == policy()));
+        let second = client.receive(&wire[first.consumed..], now).unwrap();
+        assert!(
+            matches!(second.event, Some(ClientEvent::PolicyChanged { policy, cancelled: None }) if policy == revoked)
+        );
+        assert_eq!(first.consumed + second.consumed, wire.len());
+        fanout.ready_delivered(1).unwrap();
+        fanout.notice_delivered(1, revoked).unwrap();
+        assert!(matches!(
+            client.begin(1, "nihongo", 1000, now),
+            Err(crate::session::SessionError::NotAllowed)
+        ));
+    }
+
+    #[test]
     fn source_before_ready_write_completion_retires_only_its_connection() {
         let now = Instant::now();
         let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
@@ -812,7 +847,7 @@ mod tests {
         assert_eq!(fanout.active_count(), 1);
         fanout.ready_delivered(2).unwrap();
         deliver(&mut fanout, 2, changed).unwrap();
-        assert!(fanout.pending_notice(2).unwrap().is_none());
+        assert!(fanout.pending_writes().is_empty());
     }
 
     #[test]

@@ -139,7 +139,6 @@ mod tests {
         assert_eq!(notice_keys(&grant), [1, 2]);
         assert!(gate.snapshot().unwrap() == grant.policy);
         for key in 1..=2 {
-            assert!(fanout.pending_notice(key).unwrap().is_some());
             fanout.notice_delivered(key, grant.policy).unwrap();
         }
 
@@ -150,9 +149,7 @@ mod tests {
         assert!(revoke.retired.is_empty());
         assert_eq!(notice_keys(&revoke), [1, 2]);
         assert!(gate.snapshot().unwrap() == revoke.policy);
-        for key in 1..=2 {
-            assert!(fanout.pending_notice(key).unwrap().is_some());
-        }
+        assert!(fanout.pending_writes().is_empty());
     }
 
     #[test]
@@ -282,7 +279,7 @@ mod tests {
 
         // A failed complete-frame write closes only its authenticated pipe.
         assert!(fanout.detach(1));
-        assert!(fanout.pending_notice(1).is_err());
+        assert_eq!(fanout.active_count(), 1);
         fanout.notice_delivered(2, granted.policy).unwrap();
         assert!(fanout.pending_writes().is_empty());
         let ready = fanout
@@ -369,7 +366,6 @@ mod tests {
         source.grant_manual_consent(&destination).unwrap();
         let published = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
         assert_eq!(notice_keys(&published), [2]);
-        assert!(fanout.pending_notice(1).unwrap().is_some());
         assert!(fanout.pending_writes().is_empty());
         fanout.ready_delivered(1).unwrap();
         let writes = fanout.pending_writes();

@@ -266,7 +266,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             if !gate.publish(&mut order, next)?.is_empty() {
                 return Err(Error::InvalidMessage);
             }
-            let (notice, _) = pending_notice(&mut order)?;
+            let (notice, _) = claim_notice_for_write(&mut order)?;
             pipe.write_all(
                 notice,
                 &bootstrap.stop,
@@ -331,7 +331,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 {
                     return Err(Error::InvalidMessage);
                 }
-                let (notice, cancelled) = pending_notice(&mut order)?;
+                let (notice, cancelled) = claim_notice_for_write(&mut order)?;
                 if cancelled != Some(convert.request) {
                     return Err(Error::InvalidMessage);
                 }
@@ -401,7 +401,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 if !gate.publish(&mut order, next)?.is_empty() {
                     return Err(Error::InvalidMessage);
                 }
-                let (notice, cancelled) = pending_notice(&mut order)?;
+                let (notice, cancelled) = claim_notice_for_write(&mut order)?;
                 if cancelled.is_some() {
                     return Err(Error::InvalidMessage);
                 }
@@ -427,7 +427,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 if gate.authorize(convert.revision) != Err(Error::PolicyDenied) {
                     return Err(Error::InvalidMessage);
                 }
-                let (notice, cancelled) = pending_notice(&mut order)?;
+                let (notice, cancelled) = claim_notice_for_write(&mut order)?;
                 if cancelled != Some(convert.request) {
                     return Err(Error::InvalidMessage);
                 }
@@ -498,7 +498,7 @@ fn map_fanout_error(error: FanoutError) -> Error {
     }
 }
 
-fn pending_notice(order: &mut PolicyFanout) -> Result<(Vec<u8>, Option<u64>)> {
+fn claim_notice_for_write(order: &mut PolicyFanout) -> Result<(Vec<u8>, Option<u64>)> {
     let mut writes = order.pending_writes();
     if writes.len() != 1 {
         return Err(Error::InvalidMessage);
@@ -809,7 +809,7 @@ mod tests {
         assert!(gate.publish(&mut fanout, advanced).unwrap().is_empty());
         assert!(gate.snapshot().unwrap() == advanced);
         assert!(fanout.policy() == advanced);
-        assert!(fanout.pending_notice(1).unwrap().is_some());
+        assert_eq!(fanout.pending_writes().len(), 1);
         assert_eq!(
             gate.authorize(request(1).revision),
             Err(Error::PolicyDenied)

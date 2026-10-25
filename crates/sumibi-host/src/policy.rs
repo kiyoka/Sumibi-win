@@ -699,10 +699,6 @@ mod tests {
         assert!(latest.allowed);
         assert!(gate.publish(&mut fanout, latest).unwrap().is_empty());
         assert_eq!(
-            fanout.pending_notice(1).unwrap().unwrap().cancelled,
-            Some(1)
-        );
-        assert_eq!(
             gate.authorize(Revision {
                 input: 1,
                 settings: granted.settings,
@@ -711,6 +707,7 @@ mod tests {
             Err(sumibi_ipc::Error::PolicyDenied)
         );
         let writes = fanout.pending_writes();
+        assert_eq!(writes[0].1.cancelled, Some(1));
         let notice = &writes[0].1.frame;
         assert!(matches!(
             client.receive(&message::encode(notice).unwrap(), now).unwrap().event,
