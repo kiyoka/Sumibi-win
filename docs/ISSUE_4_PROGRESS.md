@@ -54,13 +54,17 @@
   保留中と待機中の双方に通知し、旧要求を拒否して旧結果を公開しないことを確認した。
   失効後の再許可が一つの最新通知にまとめられても、旧要求の結果は復活せず、
   新版の要求だけを受け付けることも確認した。
+- `BrokerPolicyRelay`でHostの設定・同意状態からBrokerゲートとFanoutへ
+  同じ最新版を渡す。初期版の不一致を拒否し、成功時だけカーソルを進める。
+  2接続への許可と失効を検査した。pipe配送は呼出し側に残る
+  （[ADR 0060](adr/0060-host-to-broker-policy-relay.md)）。
 - Brokerの成功結果と固定エラーは要求番号・版の照合を共通化し、
   古いErrorの無視と未来ID・版違いの終端化を検査した。
 - Broker内の認可判定と接続通知を一つの`publish`操作で進める。
   更新前の認可ゲートとFanoutの版不一致、またはFanoutの更新拒否では
   認可版を進めない。旧版結果の書込guardとも直列化する。
   製品Brokerでも使えるよう、書込完了まで保持する公開guard APIを用意した。
-- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で189件成功。
+- `cargo test --workspace --locked --offline --quiet`は通常ユーザー環境で191件成功。
   期限切れと再接続の追加後のProtocol単体は40件成功。
   `tools/Test-Broker.ps1`で既定Host拒否、実子Channel 24件、Worker 14件を
   正しいビルド順で再確認した。
