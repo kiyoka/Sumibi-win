@@ -968,6 +968,52 @@ mod tests {
     }
 
     #[test]
+    fn slow_write_does_not_hold_a_second_pipe_notification() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let setup_stop = Stop::new().unwrap();
+        let slow_stop = Stop::new().unwrap();
+        let fast_stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut slow_server, _slow_client) = connected_one(&setup_stop, deadline);
+        let (mut fast_server, mut fast_client) = connected_one(&setup_stop, deadline);
+        let slow = slow_server
+            .start_write(vec![7; MAX_IO], &slow_stop, deadline)
+            .unwrap();
+        assert!(slow.is_pending());
+        let fast = fast_server
+            .start_write(vec![8], &fast_stop, deadline)
+            .unwrap();
+        assert_eq!(wait_any(&[&slow, &fast]).unwrap(), 1);
+        assert!(fast.advance_write().unwrap().is_none());
+        assert_eq!(
+            fast_client
+                .start_read(&fast_stop, deadline)
+                .unwrap()
+                .wait()
+                .unwrap()
+                .bytes,
+            [8]
+        );
+        slow_stop.cancel().unwrap();
+        assert!(matches!(slow.advance_write(), Err(Error::Cancelled)));
+        fast_server
+            .write_all(vec![9], &fast_stop, deadline)
+            .unwrap();
+        assert_eq!(
+            fast_client
+                .start_read(&fast_stop, deadline)
+                .unwrap()
+                .wait()
+                .unwrap()
+                .bytes,
+            [9]
+        );
+    }
+
+    #[test]
     fn bootstrap_values_cannot_be_paths_or_zero_ids() {
         for value in [
             "",
