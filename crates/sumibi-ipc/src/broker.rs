@@ -100,9 +100,11 @@ pub fn serve(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
 }
 
 mod fanout_diagnostic;
+mod policy_runtime_probe;
 pub use fanout_diagnostic::{
     probe as diagnostic_two_client_probe, probe_denied as diagnostic_fanout_denial_probe,
 };
+pub use policy_runtime_probe::diagnostic_policy_runtime_probe;
 
 pub fn serve_once(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
     if bootstrap.service != Service::Once {
@@ -547,7 +549,7 @@ fn wait_stop(stop: &Stop, milliseconds: u32) -> Result<bool> {
     }
 }
 
-pub(crate) fn read_message(pipe: &mut Pipe, stop: &Stop, deadline: Instant) -> Result<Envelope> {
+pub fn read_message(pipe: &mut Pipe, stop: &Stop, deadline: Instant) -> Result<Envelope> {
     let mut decoder = Decoder::default();
     loop {
         let read = pipe.start_read(stop, deadline)?.wait()?;

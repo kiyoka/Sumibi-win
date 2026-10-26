@@ -1,6 +1,9 @@
 //! Two authenticated pipe instances in one disposable Broker process.
 use sumibi_ipc::{
-    broker::{diagnostic_fanout_denial_probe, diagnostic_two_client_probe},
+    broker::{
+        diagnostic_fanout_denial_probe, diagnostic_policy_runtime_probe,
+        diagnostic_two_client_probe,
+    },
     Error, Result,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
@@ -32,6 +35,35 @@ pub(super) fn run(default_host: bool) -> Result<()> {
             assert_eq!(handle_count()?, baseline, "broker-fanout parent handle leak");
             println!("Broker fanout / parent handle cleanup: OK");
         }
+        Ok(())
+    })
+    .join()
+    .map_err(|_| Error::WorkerFailed)?
+}
+
+pub(super) fn run_policy_runtime(default_host: bool) -> Result<()> {
+    std::thread::spawn(move || {
+        let path = std::env::current_exe()
+            .map_err(|_| Error::InvalidArgument)?
+            .parent()
+            .ok_or(Error::InvalidArgument)?
+            .join("sumibi-host.exe");
+        diagnostic_policy_runtime_probe(&path, default_host)?;
+        let baseline = handle_count()?;
+        diagnostic_policy_runtime_probe(&path, default_host)?;
+        assert_eq!(
+            handle_count()?,
+            baseline,
+            "policy-runtime parent handle leak"
+        );
+        println!(
+            "Host policy runtime / {}: OK",
+            if default_host {
+                "default denial"
+            } else {
+                "two authenticated clients, grant and revoke"
+            }
+        );
         Ok(())
     })
     .join()

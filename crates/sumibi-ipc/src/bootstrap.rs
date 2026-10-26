@@ -1,7 +1,7 @@
 //! Restricted broker launch. This is not per-user broker discovery or
 //! executable signature verification. Callers must supply a trusted full path.
 use crate::support::{own, raw, Error, Nonce, Result};
-use crate::{PinnedProcess, Pipe, Stop};
+use crate::{PinnedProcess, Pipe, Server, Stop};
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle};
@@ -28,6 +28,7 @@ pub enum Mode {
     DiagnosticRevokeAtAccept,
     DiagnosticRegrantAtAccept,
     DiagnosticFutureReply,
+    DiagnosticPolicyRuntime,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Service {
@@ -64,6 +65,7 @@ impl Mode {
             Self::DiagnosticRevokeAtAccept => Ok("revoke-at-accept".into()),
             Self::DiagnosticRegrantAtAccept => Ok("regrant-at-accept".into()),
             Self::DiagnosticFutureReply => Ok("future-reply".into()),
+            Self::DiagnosticPolicyRuntime => Ok("policy-runtime".into()),
             _ => Err(Error::InvalidArgument),
         }
     }
@@ -168,6 +170,7 @@ impl Launched {
                 | Mode::DiagnosticFanoutLaggingNotice
                 | Mode::DiagnosticFanoutReadyFailure
                 | Mode::DiagnosticFanoutBadHello
+                | Mode::DiagnosticPolicyRuntime
         ) {
             return Err(Error::InvalidArgument);
         }
@@ -300,6 +303,34 @@ pub struct Bootstrap {
     pub(crate) service: Service,
 }
 impl Bootstrap {
+    pub fn is_policy_runtime_diagnostic(&self) -> bool {
+        self.service == Service::Fanout && self.mode == Mode::DiagnosticPolicyRuntime
+    }
+
+    pub fn boot_id(&self) -> sumibi_protocol::message::Id {
+        self.boot.id()
+    }
+
+    pub fn stop(&self) -> &Stop {
+        &self.stop
+    }
+
+    /// Create only the disposable two-client service launched by this parent.
+    /// Both accepted endpoints verify the pinned parent and desktop identities.
+    pub fn accept_policy_runtime_pair(&self, deadline: Instant) -> Result<(Pipe, Pipe)> {
+        if !self.is_policy_runtime_diagnostic() {
+            return Err(Error::PolicyDenied);
+        }
+        let first = Server::create_pair(&self.name)?;
+        let second = first.additional()?;
+        self.ready()?;
+        let first_peer = PinnedProcess::from_launch_handle(self.parent.as_handle())?;
+        let second_peer = PinnedProcess::from_launch_handle(self.parent.as_handle())?;
+        let first = first.accept(first_peer, &self.stop, deadline)?;
+        let second = second.accept(second_peer, &self.stop, deadline)?;
+        Ok((first, second))
+    }
+
     pub fn parse(args: &[OsString]) -> Result<Self> {
         if args.len() != 7
             || (args[0] != "serve" && args[0] != "serve-channel" && args[0] != "serve-fanout")
@@ -325,6 +356,7 @@ impl Bootstrap {
             "revoke-at-accept" => Mode::DiagnosticRevokeAtAccept,
             "regrant-at-accept" => Mode::DiagnosticRegrantAtAccept,
             "future-reply" => Mode::DiagnosticFutureReply,
+            "policy-runtime" => Mode::DiagnosticPolicyRuntime,
             "fanout-failed-notice" => Mode::DiagnosticFanoutFailedNotice,
             "fanout-lagging-notice" => Mode::DiagnosticFanoutLaggingNotice,
             "fanout-ready-failure" => Mode::DiagnosticFanoutReadyFailure,

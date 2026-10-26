@@ -10,6 +10,11 @@
 Readyを完全に書いてから接続を有効にし、HelloやReadyが失敗した試行のkeyも
 再利用しない。
 
+`reserve`はOS accept後、Helloを読む前に接続keyを確保する。未完了の
+Helloを持つpipeは要求を受け付けない。設定変更を公開した場合は、通知の
+宛先にならないこのpipeを実際に閉じてから配送完了を返す。keyは次の接続に
+再利用しない。製品のaccept loopは各accept直後に`reserve`を呼ぶ必要がある。
+
 Hostの最新政策版を公開すると、退役先のpipeを閉じ、生存先の通知を有限な
 `WriteBatch`で並行開始する。各接続の書込完了だけをFanoutと配送receiptへ
 報告する。失敗先はFanoutから退役させ、OS pipeを実際に閉じてからreceiptを
@@ -24,11 +29,18 @@ Relayでまだ公開されていない変更があれば、そのpipeを閉じ�
 拒否し、新しい世代の単調増加した要求だけを受け付けた。未来IDの不正Cancelは
 その接続だけを退役させ、他方の保留要求と次要求を維持した。
 
+登録を要しない`policy-runtime`診断モードで、製品Host EXEから同じ実行部を
+呼ぶ。既定Hostはモードを拒否し、`spike`ビルドだけが起動する。親から
+認証済みの2 pipeを接続し、Readyの拒否版、許可版、Convert受付、失効と
+該当要求の取消を実子process越しに検査する。2通りのpipe割当順と親handleの
+回収も確認する。資格情報は診断専用の固定値であり、HTTP送信は行わない。
+
 ## 残る境界
 
-この実行部は製品Host EXEのaccept/read/worker結果ループにはまだ接続していない。
-接続keyの発行は現在Helloを渡す`attach`の時点であり、OS accept直後の発行と
-Hello読取待ちが前後する場合の順序は未実装。異なるTIP processから共有Hostを
+この実行部は製品Host EXEの診断分岐にだけ接続した。継続する製品用の
+accept/read/worker結果ループはまだない。診断では2本ともOS acceptしてから
+`reserve`するため、各accept直後のkey発行と複数のHello読取待ちが重なる
+順序は未検査。異なるTIP processから共有Hostを
 発見・起動する経路、設定UIの完了待機、worker結果の公開guardとpipe書込、
 所有TSFへの適用前再検査も残る。
 

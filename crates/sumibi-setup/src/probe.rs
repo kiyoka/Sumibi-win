@@ -192,6 +192,13 @@ pub(super) fn run() -> Result<(), Failure> {
         return Ok(());
     }
     if args.len() == 1
+        && (args[0] == "broker-policy-runtime-test"
+            || args[0] == "broker-policy-runtime-denied-test")
+    {
+        crate::fanout_probe::run_policy_runtime(args[0] == "broker-policy-runtime-denied-test")?;
+        return Ok(());
+    }
+    if args.len() == 1
         && (args[0] == "broker-fanout-test" || args[0] == "broker-fanout-denied-test")
     {
         crate::fanout_probe::run(args[0] == "broker-fanout-denied-test")?;

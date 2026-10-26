@@ -50,6 +50,7 @@ pub struct BrokerPolicyRuntime<'a> {
     gate: BrokerPolicyGate,
     fanout: PolicyFanout,
     relay: BrokerPolicyRelay<'a>,
+    pending: Vec<Connection>,
     connections: Vec<Connection>,
     last_key: u64,
     failed: bool,
@@ -66,6 +67,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
             gate,
             fanout,
             relay,
+            pending: Vec::new(),
             connections: Vec::new(),
             last_key: 0,
             failed: false,
@@ -78,6 +80,44 @@ impl<'a> BrokerPolicyRuntime<'a> {
 
     pub fn active_count(&self) -> usize {
         self.connections.len()
+    }
+
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Reserve a never-reused key at OS accept, before reading Hello. Pending
+    /// endpoints cannot receive requests and are closed before a publication
+    /// can be acknowledged.
+    pub fn reserve(&mut self, pipe: Pipe) -> Result<u64, RuntimeError> {
+        if self.failed {
+            return Err(RuntimeError::Retired);
+        }
+        let key = self
+            .last_key
+            .checked_add(1)
+            .ok_or(RuntimeError::Exhausted)?;
+        self.last_key = key;
+        self.pending.push(Connection { key, pipe });
+        Ok(key)
+    }
+
+    /// Lockstep Hello reader for the launched diagnostic. A product loop may
+    /// instead schedule reads independently and pass the frame to `activate`.
+    pub fn read_reserved_hello(
+        &mut self,
+        key: u64,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<Envelope, RuntimeError> {
+        let Some(connection) = self.pending.iter_mut().find(|entry| entry.key == key) else {
+            return Err(RuntimeError::MissingPipe);
+        };
+        let result = sumibi_ipc::broker::read_message(&mut connection.pipe, stop, deadline);
+        if result.is_err() {
+            self.close(key);
+        }
+        result.map_err(RuntimeError::Transport)
     }
 
     /// Close a disconnected OS endpoint and retire only its session. The
@@ -105,19 +145,32 @@ impl<'a> BrokerPolicyRuntime<'a> {
     /// when Hello or Ready fails; no later callback may address a new pipe.
     pub fn attach(
         &mut self,
-        mut pipe: Pipe,
+        pipe: Pipe,
         hello: Envelope,
         stop: &Stop,
         deadline: Instant,
     ) -> Result<u64, RuntimeError> {
+        let key = self.reserve(pipe)?;
+        self.activate(key, hello, stop, deadline)?;
+        Ok(key)
+    }
+
+    /// Finish a reserved handshake. Any failure consumes the key and drops
+    /// its OS pipe. A source change before Ready rejects this old attempt.
+    pub fn activate(
+        &mut self,
+        key: u64,
+        hello: Envelope,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<(), RuntimeError> {
         if self.failed {
             return Err(RuntimeError::Retired);
         }
-        let key = self
-            .last_key
-            .checked_add(1)
-            .ok_or(RuntimeError::Exhausted)?;
-        self.last_key = key;
+        let Some(index) = self.pending.iter().position(|entry| entry.key == key) else {
+            return Err(RuntimeError::MissingPipe);
+        };
+        let mut pipe = self.pending.remove(index).pipe;
         self.require_current_source()?;
         let ready = self
             .fanout
@@ -139,7 +192,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
             return Err(RuntimeError::Fanout(error));
         }
         self.connections.push(Connection { key, pipe });
-        Ok(key)
+        Ok(())
     }
 
     /// Admit a frame only against the latest Host source epoch. A source
@@ -219,6 +272,10 @@ impl<'a> BrokerPolicyRuntime<'a> {
         };
         let broker = published.delivery.broker_id();
         let mut closed = Vec::new();
+        for connection in self.pending.drain(..) {
+            closed.push(connection.key);
+            drop(connection);
+        }
         for key in published.retired {
             if !self.close(key) {
                 return Err(RuntimeError::MissingPipe);
@@ -302,6 +359,10 @@ impl<'a> BrokerPolicyRuntime<'a> {
     }
 
     fn close(&mut self, key: u64) -> bool {
+        if let Some(index) = self.pending.iter().position(|entry| entry.key == key) {
+            drop(self.pending.remove(index));
+            return true;
+        }
         let Some(index) = self
             .connections
             .iter()
@@ -327,11 +388,124 @@ impl<'a> BrokerPolicyRuntime<'a> {
     }
 
     fn close_all(&mut self) {
+        self.pending.clear();
         for connection in self.connections.drain(..) {
             self.fanout.detach(connection.key);
             drop(connection);
         }
     }
+}
+
+/// Child-process fixture for the explicit spike build. It uses the same Host
+/// runtime and authenticated pipes as the product path, but no network, store,
+/// registration or persistent credential. The parent owns the stop event.
+pub fn serve_diagnostic(
+    bootstrap: &sumibi_ipc::bootstrap::Bootstrap,
+    diagnostic_enabled: bool,
+) -> sumibi_ipc::Result<()> {
+    use crate::manual::{Credential, Destination, Scheme};
+    use std::time::Duration;
+    use sumibi_ipc::broker::read_message;
+
+    if !diagnostic_enabled || !bootstrap.is_policy_runtime_diagnostic() {
+        return Err(IpcError::PolicyDenied);
+    }
+    let destination = Destination::new(Scheme::Https, "example.test", 443, "/")
+        .ok_or(IpcError::InvalidArgument)?;
+    let source = PolicyAuthority::new(destination.clone());
+    let mut runtime = BrokerPolicyRuntime::new(&source, bootstrap.boot_id())
+        .map_err(|_| IpcError::PolicyDenied)?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (first, second) = bootstrap.accept_policy_runtime_pair(deadline)?;
+    let first_key = runtime.reserve(first).map_err(|_| IpcError::PolicyDenied)?;
+    let second_key = runtime
+        .reserve(second)
+        .map_err(|_| IpcError::PolicyDenied)?;
+    let first_hello = runtime
+        .read_reserved_hello(first_key, bootstrap.stop(), deadline)
+        .map_err(|_| IpcError::InvalidMessage)?;
+    let second_hello = runtime
+        .read_reserved_hello(second_key, bootstrap.stop(), deadline)
+        .map_err(|_| IpcError::InvalidMessage)?;
+    let first_session = first_hello.session;
+    let second_session = second_hello.session;
+    runtime
+        .activate(first_key, first_hello, bootstrap.stop(), deadline)
+        .map_err(|_| IpcError::InvalidMessage)?;
+    runtime
+        .activate(second_key, second_hello, bootstrap.stop(), deadline)
+        .map_err(|_| IpcError::InvalidMessage)?;
+    let session_one = Id::new(1).ok_or(IpcError::InvalidMessage)?;
+    let session_two = Id::new(2).ok_or(IpcError::InvalidMessage)?;
+    let request_key = match (first_session, second_session) {
+        (first, second) if first == session_one && second == session_two => first_key,
+        (first, second) if first == session_two && second == session_one => second_key,
+        _ => return Err(IpcError::InvalidMessage),
+    };
+    let credential = Credential::new("diagnostic-only".into()).ok_or(IpcError::InvalidArgument)?;
+    source
+        .replace_credential(Some(credential))
+        .map_err(|_| IpcError::PolicyDenied)?;
+    publish_diagnostic(&mut runtime, bootstrap.stop(), deadline, 2, false, None)?;
+    source
+        .grant_manual_consent(&destination)
+        .map_err(|_| IpcError::PolicyDenied)?;
+    publish_diagnostic(&mut runtime, bootstrap.stop(), deadline, 3, true, None)?;
+    let request = {
+        let connection = runtime
+            .connections
+            .iter_mut()
+            .find(|connection| connection.key == request_key)
+            .ok_or(IpcError::InvalidMessage)?;
+        read_message(&mut connection.pipe, bootstrap.stop(), deadline)?
+    };
+    let Event::Convert(convert) = runtime
+        .receive(request_key, request, Instant::now())
+        .map_err(|_| IpcError::PolicyDenied)?
+    else {
+        return Err(IpcError::InvalidMessage);
+    };
+    if convert.request != 1 || convert.text != "nihongo" {
+        return Err(IpcError::InvalidMessage);
+    }
+    source
+        .revoke_manual_consent()
+        .map_err(|_| IpcError::PolicyDenied)?;
+    publish_diagnostic(
+        &mut runtime,
+        bootstrap.stop(),
+        deadline,
+        4,
+        false,
+        Some((request_key, convert.request)),
+    )?;
+    while !bootstrap.stop().is_cancelled()? && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+fn publish_diagnostic(
+    runtime: &mut BrokerPolicyRuntime<'_>,
+    stop: &Stop,
+    deadline: Instant,
+    authorization: u64,
+    allowed: bool,
+    expected_cancelled: Option<(u64, u64)>,
+) -> sumibi_ipc::Result<()> {
+    let outcome = runtime
+        .publish_current(stop, deadline)
+        .map_err(|_| IpcError::PolicyDenied)?
+        .ok_or(IpcError::InvalidMessage)?;
+    if outcome.policy.authorization != authorization
+        || outcome.policy.allowed != allowed
+        || outcome.delivered.len() != 2
+        || !outcome.closed.is_empty()
+        || outcome.cancelled != expected_cancelled.into_iter().collect::<Vec<_>>()
+    {
+        return Err(IpcError::InvalidMessage);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -413,6 +587,54 @@ mod tests {
     fn source() -> (PolicyAuthority, Destination) {
         let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
         (PolicyAuthority::new(destination.clone()), destination)
+    }
+
+    #[test]
+    fn pending_hello_closes_before_publication_completion_and_key_is_not_reused() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (active_server, mut active_client) = connected(&stop, deadline);
+        assert_eq!(
+            runtime.attach(active_server, hello(1, id(90)), &stop, deadline),
+            Ok(1)
+        );
+        read_frame(&mut active_client, &stop, deadline);
+        let (pending_server, _pending_client) = connected(&stop, deadline);
+        assert_eq!(runtime.reserve(pending_server), Ok(2));
+        assert_eq!(runtime.pending_count(), 1);
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let outcome = runtime.publish_current(&stop, deadline).unwrap().unwrap();
+        assert_eq!(outcome.delivered, [1]);
+        assert_eq!(outcome.closed, [2]);
+        assert_eq!(outcome.completion, DeliveryCompletion::ExactOrClosed);
+        assert_eq!(runtime.pending_count(), 0);
+        assert_eq!(runtime.active_count(), 1);
+        assert!(matches!(
+            read_frame(&mut active_client, &stop, deadline).message,
+            message::Message::PolicyChanged(policy) if policy == outcome.policy
+        ));
+        assert!(matches!(
+            runtime.activate(2, hello(2, id(90)), &stop, deadline),
+            Err(RuntimeError::MissingPipe)
+        ));
+        let (next_server, mut next_client) = connected(&stop, deadline);
+        assert_eq!(
+            runtime.attach(next_server, hello(2, id(90)), &stop, deadline),
+            Ok(3)
+        );
+        assert!(matches!(
+            read_frame(&mut next_client, &stop, deadline).message,
+            message::Message::Ready(ready) if ready.policy == outcome.policy
+        ));
     }
 
     #[test]

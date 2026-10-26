@@ -31,10 +31,12 @@ try {
     Invoke-Cargo -Arguments @('build', '--workspace', '--locked', '--offline')
     Invoke-Broker -Name 'broker-channel-denied-test'
     Invoke-Broker -Name 'broker-fanout-denied-test'
+    Invoke-Broker -Name 'broker-policy-runtime-denied-test'
     $restoreDefaultHost = $true
     Invoke-Cargo -Arguments @('build', '-p', 'sumibi-host', '--features', 'spike', '--locked', '--offline')
     Invoke-Broker -Name 'broker-channel-test'
     Invoke-Broker -Name 'broker-fanout-test'
+    Invoke-Broker -Name 'broker-policy-runtime-test'
     Invoke-Broker -Name 'broker-worker-test'
 }
 finally {
@@ -48,4 +50,4 @@ finally {
         Pop-Location
     }
 }
-Write-Output 'Default denial, Broker Channel, Broker Fanout, and Broker Worker checks passed; default Host restored.'
+Write-Output 'Default denial, Broker Channel, Broker Fanout, Host policy runtime, and Broker Worker checks passed; default Host restored.'

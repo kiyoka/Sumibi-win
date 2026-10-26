@@ -187,13 +187,22 @@
   未来IDの不正Cancelはその接続だけを退役させ、他方の保留要求と次要求を維持した。
   全Rustテスト222件が成功（[ADR 0063](adr/0063-host-policy-runtime.md)）。
   製品Host EXEの主ループと異なるTIP processへの接続は未実装。
+- 登録不要の`policy-runtime`診断モードをHost EXEへ接続した。既定Hostは拒否し、
+  `spike` Hostだけが親から認証した2本のpipeにReady、許可、失効を配送する。
+  許可版で受けたConvert要求は失効時に該当接続だけ取り消した。接続順を反転した
+  試行と親handleの回収も`tools/Test-Broker.ps1`で確認し、通常Hostへ復元した。
+- Host実行部はOS accept後、Hello読取前に接続keyを予約できる。政策公開中に
+  Hello待ちのpipeが残れば閉じてから完了を返し、そのkeyは再利用しない。
+  通常ユーザーの実pipe回帰を追加し、全Rustテスト223件とClippyが成功。
+  製品accept loopの各accept直後に予約する経路と継続運転は引き続き必要
+  （[ADR 0063](adr/0063-host-policy-runtime.md)）。
 
 ## 次の受入作業
 
 製品Brokerへ統合する責務と順序は
 [ADR 0062](adr/0062-product-broker-integration-sequence.md)に記録した。
 
-1. `BrokerPolicyRuntime`を製品Hostのaccept/read/worker結果ループへ接続する。OS accept時点のkey発行、異なる到着順のHello、設定UIの操作完了、送信開始と失効の順序、所有TSFでの適用前再検査を実証する。
+1. `BrokerPolicyRuntime`を製品Hostの継続するaccept/read/worker結果ループへ接続する。各OS accept直後のkey発行、並行するHello、設定UIの操作完了、送信開始と失効の順序、所有TSFでの適用前再検査を実証する。
 2. 配置されたBrokerの信頼できる発見・署名・更新・起動を実装する。
 3. 一般アプリへ製品TIPのキー配送と所有対象の失効を接続し、入力先ごとの保護情報を肯定的に検証する。
 4. Notepad等の実アプリで実打鍵、1回Undo、別欄・同長別本文・読取不能の拒否を確認する。
