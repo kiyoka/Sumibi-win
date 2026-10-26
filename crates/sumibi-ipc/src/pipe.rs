@@ -747,6 +747,35 @@ mod tests {
             assert_eq!(first_read.wait().unwrap().bytes, [11]);
         }
     }
+
+    #[test]
+    fn cancelling_one_pipe_does_not_cancel_another_pending_read() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let setup_stop = Stop::new().unwrap();
+        let first_stop = Stop::new().unwrap();
+        let second_stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut server_one, mut server_two, mut client_one, mut client_two) =
+            connected_pair(&setup_stop, deadline);
+        let first_read = server_one.start_read(&first_stop, deadline).unwrap();
+        let second_read = server_two.start_read(&second_stop, deadline).unwrap();
+        assert!(first_read.is_pending() && second_read.is_pending());
+        first_stop.cancel().unwrap();
+        assert_eq!(wait_any(&[&first_read, &second_read]).unwrap(), 0);
+        assert!(matches!(first_read.wait(), Err(Error::Cancelled)));
+        drop(server_one);
+        // Pipe assignment is decided by the OS, so only one client remains
+        // connected to the second server instance.
+        let one = client_one.write_all(vec![13], &setup_stop, deadline);
+        let two = client_two.write_all(vec![13], &setup_stop, deadline);
+        assert!(one.is_ok() || two.is_ok());
+        assert_eq!(wait_any(&[&second_read]).unwrap(), 0);
+        assert_eq!(second_read.wait().unwrap().bytes, [13]);
+    }
+
     #[test]
     fn bootstrap_values_cannot_be_paths_or_zero_ids() {
         for value in [
