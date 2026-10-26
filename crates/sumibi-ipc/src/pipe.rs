@@ -318,6 +318,53 @@ pub struct Completion {
     pub bytes: Vec<u8>,
     pub transferred: usize,
 }
+
+/// Wait for one of a bounded set of in-flight pipe operations. This never
+/// consumes an operation: the caller must run `wait` on the returned index
+/// before reusing that endpoint, and may keep the other operations pending.
+/// A stop, peer exit or deadline also selects its affected operation so its
+/// own `wait` performs the usual cancellation and drain.
+pub fn wait_any(operations: &[&Operation<'_>]) -> Result<usize> {
+    if operations.is_empty() || operations.len() > MAX_ENDPOINTS {
+        return Err(Error::InvalidArgument);
+    }
+    let mut handles = Vec::with_capacity(operations.len() * 3);
+    let mut earliest = (0, operations[0].deadline);
+    for (index, operation) in operations.iter().enumerate() {
+        let state = operation.state.as_ref().ok_or(Error::Closed)?;
+        if !state.pending {
+            return Ok(index);
+        }
+        if operation.deadline < earliest.1 {
+            earliest = (index, operation.deadline);
+        }
+        handles.extend([
+            operation.stop.raw(),
+            raw(&state.event),
+            state.resource.peer.raw(),
+        ]);
+    }
+    let remaining = earliest.1.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Ok(earliest.0);
+    }
+    let outcome = unsafe {
+        WaitForMultipleObjects(
+            &handles,
+            false,
+            remaining.as_millis().clamp(1, 60_000) as u32,
+        )
+    };
+    if outcome == WAIT_TIMEOUT {
+        return Ok(earliest.0);
+    }
+    let offset = outcome.0.wrapping_sub(WAIT_OBJECT_0.0) as usize;
+    if offset < handles.len() {
+        Ok(offset / 3)
+    } else {
+        Err(last_error())
+    }
+}
 impl Operation<'_> {
     fn start<'a>(
         owner: &'a mut Pipe,
@@ -560,14 +607,69 @@ fn classify(error: windows::core::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static PIPE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn endpoint_budget_is_reserved_before_creation_and_returned_on_drop() {
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
         let permits: Vec<_> = (0..MAX_ENDPOINTS)
             .map(|_| Permit::acquire().unwrap())
             .collect();
         assert!(matches!(Permit::acquire(), Err(Error::Capacity)));
         drop(permits);
         let _permit = Permit::acquire().unwrap();
+    }
+
+    #[test]
+    fn wait_any_selects_the_pipe_that_completes_after_both_reads_are_pending() {
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let first = Server::create_pair(&name).unwrap();
+        let second = first.additional().unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        std::thread::scope(|scope| {
+            let first_stop = stop.clone();
+            let second_stop = stop.clone();
+            let first_worker = scope.spawn(move || {
+                first.accept(PinnedProcess::current().unwrap(), &first_stop, deadline)
+            });
+            let second_worker = scope.spawn(move || {
+                second.accept(PinnedProcess::current().unwrap(), &second_stop, deadline)
+            });
+            let mut client_one = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+            let mut client_two = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+            let mut server_one = first_worker.join().unwrap().unwrap();
+            let mut server_two = second_worker.join().unwrap().unwrap();
+            let first_read = server_one.start_read(&stop, deadline).unwrap();
+            let second_read = server_two.start_read(&stop, deadline).unwrap();
+            assert!(first_read.is_pending() && second_read.is_pending());
+            client_one.write_all(vec![7], &stop, deadline).unwrap();
+            match wait_any(&[&first_read, &second_read]).unwrap() {
+                0 => {
+                    assert_eq!(first_read.wait().unwrap().bytes, [7]);
+                    client_two.write_all(vec![8], &stop, deadline).unwrap();
+                    assert_eq!(wait_any(&[&second_read]).unwrap(), 0);
+                    assert_eq!(second_read.wait().unwrap().bytes, [8]);
+                }
+                1 => {
+                    assert_eq!(second_read.wait().unwrap().bytes, [7]);
+                    client_two.write_all(vec![8], &stop, deadline).unwrap();
+                    assert_eq!(wait_any(&[&first_read]).unwrap(), 0);
+                    assert_eq!(first_read.wait().unwrap().bytes, [8]);
+                }
+                _ => panic!("only two pending pipe reads"),
+            }
+            let first_read = server_one.start_read(&stop, deadline).unwrap();
+            let second_read = server_two.start_read(&stop, deadline).unwrap();
+            assert!(first_read.is_pending() && second_read.is_pending());
+            stop.cancel().unwrap();
+            assert_eq!(wait_any(&[&first_read, &second_read]).unwrap(), 0);
+            assert!(matches!(first_read.wait(), Err(Error::Cancelled)));
+            assert!(matches!(second_read.wait(), Err(Error::Cancelled)));
+        });
     }
     #[test]
     fn bootstrap_values_cannot_be_paths_or_zero_ids() {

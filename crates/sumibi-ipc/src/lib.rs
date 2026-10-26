@@ -23,6 +23,6 @@ pub mod worker;
 #[cfg(windows)]
 pub use identity::PinnedProcess;
 #[cfg(windows)]
-pub use pipe::{Completion, Operation, Pipe, Server, Stop, MAX_ENDPOINTS};
+pub use pipe::{wait_any, Completion, Operation, Pipe, Server, Stop, MAX_ENDPOINTS};
 #[cfg(windows)]
 pub use support::{Error, Nonce, Result};

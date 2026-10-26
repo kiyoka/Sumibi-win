@@ -5,7 +5,8 @@
 ## 現在の境界
 
 `sumibi-ipc`には固定process handleによる相互認証、有限な非同期pipe、
-単発Job、再利用Channel、診断専用の2接続Brokerがある。
+最大8件の進行中I/Oから完了可能な接続を選ぶ待機処理、単発Job、再利用Channel、
+診断専用の2接続Brokerがある。
 `sumibi-protocol`には接続ごとの`BrokerSession`と、最大8接続・各1通知の
 `PolicyFanout`がある。`sumibi-host`には設定・資格情報・明示同意の
 `PolicyAuthority`、要求の前後を検査する`manual::convert`、
@@ -66,7 +67,8 @@ Brokerの結果だけではTSF編集を許可しない。所有STAに戻した�
 
 ## 実装と検証の順序
 
-1. Hostの調停点と接続key付きの有限I/O完了経路を作る。現行の2接続診断を
+1. Hostの調停点と接続key付きの有限I/O完了経路を作る。有限の待機処理と
+   現行の2接続診断を
    使い、Ready失敗、通知失敗、遅い接続、取消、期限切れ、再接続が他接続を
    巻き込まないことを検査する。
 2. 一つのHost内でPolicyAuthorityの変更をRelayから実pipeへ届ける。

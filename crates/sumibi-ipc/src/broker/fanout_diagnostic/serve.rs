@@ -719,23 +719,70 @@ fn write_fanout_notices(
     if notices.len() != 2 {
         return Err(Error::InvalidMessage);
     }
+    let mut frames = [None, None];
     for (key, notice) in notices {
-        let pipe = match key {
-            1 => &mut *first,
-            2 => &mut *second,
+        let slot = match key {
+            1 => &mut frames[0],
+            2 => &mut frames[1],
             _ => return Err(Error::InvalidMessage),
         };
-        if !matches!(notice.frame.message, Message::PolicyChanged(actual) if actual == policy) {
+        if slot.is_some()
+            || !matches!(notice.frame.message, Message::PolicyChanged(actual) if actual == policy)
+        {
             return Err(Error::InvalidMessage);
         }
-        pipe.write_all(
-            message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?,
-            stop,
-            deadline,
-        )?;
+        *slot = Some(message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?);
+    }
+    // Start both bounded overlapped writes before waiting on either endpoint.
+    // Complete whichever is ready first; one slow connection does not impose
+    // its wait on the other connection's notification.
+    let first_write = first.start_write(
+        frames[0].take().ok_or(Error::InvalidMessage)?,
+        stop,
+        deadline,
+    )?;
+    let second_write = second.start_write(
+        frames[1].take().ok_or(Error::InvalidMessage)?,
+        stop,
+        deadline,
+    )?;
+    let ready = crate::wait_any(&[&first_write, &second_write])?;
+    if ready == 1 {
+        let second_done = second_write.wait()?;
+        finish_started_write(second, second_done, stop, deadline)?;
         order
-            .notice_delivered(key, policy)
+            .notice_delivered(2, policy)
             .map_err(map_fanout_error)?;
+        let first_done = first_write.wait()?;
+        finish_started_write(first, first_done, stop, deadline)?;
+        order
+            .notice_delivered(1, policy)
+            .map_err(map_fanout_error)?;
+    } else {
+        let first_done = first_write.wait()?;
+        finish_started_write(first, first_done, stop, deadline)?;
+        order
+            .notice_delivered(1, policy)
+            .map_err(map_fanout_error)?;
+        let second_done = second_write.wait()?;
+        finish_started_write(second, second_done, stop, deadline)?;
+        order
+            .notice_delivered(2, policy)
+            .map_err(map_fanout_error)?;
+    }
+    Ok(())
+}
+
+fn finish_started_write(
+    pipe: &mut Pipe,
+    completion: crate::Completion,
+    stop: &Stop,
+    deadline: Instant,
+) -> Result<()> {
+    if completion.transferred < completion.bytes.len() {
+        let mut remaining = completion.bytes;
+        remaining.drain(..completion.transferred);
+        pipe.write_all(remaining, stop, deadline)?;
     }
     Ok(())
 }
