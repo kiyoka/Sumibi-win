@@ -7,6 +7,7 @@ pub(crate) fn serve_fanout(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Re
         Mode::DiagnosticFixed { delay_ms: 0 } if diagnostic_enabled => Scenario::Normal,
         Mode::DiagnosticFanoutFailedNotice if diagnostic_enabled => Scenario::FailedWrite,
         Mode::DiagnosticFanoutLaggingNotice if diagnostic_enabled => Scenario::Lagging,
+        Mode::DiagnosticFanoutReadyFailure if diagnostic_enabled => Scenario::ReadyFailure,
         _ => return Err(Error::PolicyDenied),
     };
     let first = Server::create_pair(&bootstrap.name)?;
@@ -40,6 +41,15 @@ pub(crate) fn serve_fanout(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Re
     };
     let gate = BrokerPolicyGate::new(policy)?;
     let mut order = PolicyFanout::new(bootstrap.boot.id(), policy).map_err(map_fanout_error)?;
+    if scenario == Scenario::ReadyFailure {
+        return serve_ready_failure(
+            bootstrap,
+            gate,
+            order,
+            [(first, first_hello), (second, second_hello)],
+            deadline,
+        );
+    }
     for (key, pipe, hello) in [(1, &mut first, first_hello), (2, &mut second, second_hello)] {
         let ready = order
             .attach(key, hello, Instant::now())
@@ -279,6 +289,70 @@ pub(crate) fn serve_fanout(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Re
     order
         .notice_delivered(1, final_policy)
         .map_err(map_fanout_error)?;
+    let _ = wait_stop(&bootstrap.stop, 10_000)?;
+    Ok(())
+}
+
+fn serve_ready_failure(
+    bootstrap: Bootstrap,
+    gate: BrokerPolicyGate,
+    mut order: PolicyFanout,
+    connections: [(Pipe, Envelope); 2],
+    deadline: Instant,
+) -> Result<()> {
+    let [(mut first, first_hello), (mut second, second_hello)] = connections;
+    let ready = order
+        .attach(1, first_hello, Instant::now())
+        .map_err(map_fanout_error)?;
+    first.write_all(
+        message::encode(&ready).map_err(|_| Error::InvalidMessage)?,
+        &bootstrap.stop,
+        deadline,
+    )?;
+    order.ready_delivered(1).map_err(map_fanout_error)?;
+    let request = read_message(&mut first, &bootstrap.stop, deadline)?;
+    let BrokerEvent::Convert(convert) = order
+        .receive(1, request, Instant::now())
+        .map_err(map_fanout_error)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    gate.authorize(convert.revision)?;
+    let ready = order
+        .attach(2, second_hello, Instant::now())
+        .map_err(map_fanout_error)?;
+    if !matches!(
+        second
+            .write_all(
+                message::encode(&ready).map_err(|_| Error::InvalidMessage)?,
+                &bootstrap.stop,
+                deadline,
+            )
+            .err(),
+        Some(Error::Disconnected)
+    ) || !order.detach(2)
+        || order.active_count() != 1
+    {
+        return Err(Error::InvalidMessage);
+    }
+    drop(second);
+    let result = order
+        .result(
+            1,
+            convert.request,
+            convert.revision,
+            "日本語".into(),
+            Instant::now(),
+        )
+        .map_err(map_fanout_error)?
+        .ok_or(Error::InvalidMessage)?;
+    let publication = gate.authorize_for_publish(convert.revision)?;
+    first.write_all(
+        message::encode(&result).map_err(|_| Error::InvalidMessage)?,
+        &bootstrap.stop,
+        deadline,
+    )?;
+    drop(publication);
     let _ = wait_stop(&bootstrap.stop, 10_000)?;
     Ok(())
 }

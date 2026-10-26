@@ -10,6 +10,7 @@ pub fn probe(path: &std::path::Path) -> Result<()> {
     }
     diagnostic_two_client_probe_once(path, false, Scenario::FailedWrite)?;
     diagnostic_two_client_probe_once(path, false, Scenario::Lagging)?;
+    diagnostic_two_client_probe_once(path, false, Scenario::ReadyFailure)?;
     Ok(())
 }
 
@@ -42,6 +43,9 @@ fn diagnostic_two_client_probe_once(
             &stop,
             deadline,
         )?;
+    }
+    if scenario == Scenario::ReadyFailure {
+        return probe_ready_failure(first, second, clients, inboxes, &stop, deadline);
     }
     for (index, client) in clients.iter_mut().enumerate() {
         let pipe = if index == 0 { &mut first } else { &mut second };
@@ -204,6 +208,42 @@ fn diagnostic_two_client_probe_once(
         .and_then(|operation| operation.wait())
         .err();
     if !matches!(closed, Some(Error::Disconnected | Error::Closed)) {
+        return Err(Error::InvalidMessage);
+    }
+    Ok(())
+}
+
+fn probe_ready_failure(
+    mut first: Pipe,
+    second: Pipe,
+    mut clients: [ClientSession; 2],
+    mut inboxes: [Inbox; 2],
+    stop: &Stop,
+    deadline: Instant,
+) -> Result<()> {
+    let ClientEvent::Ready(policy) =
+        read_event(&mut first, &mut clients[0], &mut inboxes[0], stop, deadline)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    if policy.authorization != 1 || !policy.allowed {
+        return Err(Error::InvalidMessage);
+    }
+    drop(second);
+    clients[1].disconnect();
+    let request = clients[0]
+        .begin(1, "nihongo", 5000, Instant::now())
+        .map_err(|_| Error::InvalidMessage)?;
+    first.write_all(request, stop, deadline)?;
+    let ClientEvent::Reply {
+        request: 1,
+        outcome: Outcome::Result(text),
+        ..
+    } = read_event(&mut first, &mut clients[0], &mut inboxes[0], stop, deadline)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    if text != "日本語" {
         return Err(Error::InvalidMessage);
     }
     Ok(())

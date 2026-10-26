@@ -6,6 +6,7 @@ enum Scenario {
     Normal,
     FailedWrite,
     Lagging,
+    ReadyFailure,
 }
 
 impl Scenario {
@@ -14,6 +15,7 @@ impl Scenario {
             Self::Normal => Mode::DiagnosticFixed { delay_ms: 0 },
             Self::FailedWrite => Mode::DiagnosticFanoutFailedNotice,
             Self::Lagging => Mode::DiagnosticFanoutLaggingNotice,
+            Self::ReadyFailure => Mode::DiagnosticFanoutReadyFailure,
         }
     }
 }
