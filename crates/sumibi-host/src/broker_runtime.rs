@@ -1216,6 +1216,69 @@ mod tests {
     }
 
     #[test]
+    fn overlong_result_write_budget_does_not_consume_request() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (server, mut client) = connected(&stop, deadline);
+        runtime
+            .attach(server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut client, &stop, deadline);
+        let policy = runtime.policy();
+        let Event::Convert(convert) = runtime
+            .receive(1, convert(1, 1, 1, policy), Instant::now())
+            .unwrap()
+        else {
+            panic!("expected convert");
+        };
+        let now = Instant::now();
+        let reply = ReplyContext {
+            broker: id(90),
+            key: 1,
+            request: convert.request,
+            revision: convert.revision,
+            completed_at: now,
+        };
+        assert_eq!(
+            runtime.publish_result(
+                reply,
+                "too long".into(),
+                &stop,
+                now + Duration::from_secs(1)
+            ),
+            Err(RuntimeError::Transport(IpcError::InvalidArgument))
+        );
+        assert_eq!(runtime.active_count(), 1);
+        let now = Instant::now();
+        assert_eq!(
+            runtime.publish_result(
+                ReplyContext {
+                    completed_at: now,
+                    ..reply
+                },
+                "成功".into(),
+                &stop,
+                now + Duration::from_millis(500)
+            ),
+            Ok(true)
+        );
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Result(result) if result.text == "成功"
+        ));
+    }
+
+    #[test]
     fn runtime_publishes_grant_and_revoke_to_two_pipes() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {
