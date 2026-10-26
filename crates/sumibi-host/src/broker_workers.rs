@@ -65,6 +65,8 @@ pub struct BrokerWorkers {
 
 /// One owner-thread step. The owner interleaves this with authenticated OS
 /// accept; only this thread may read the policy source or touch a pipe.
+/// Every completed publication uses `Published`, including one observed by
+/// `poll_once` after this step's initial source check.
 pub enum OwnerStep {
     Published(PublicationOutcome),
     Completed {
@@ -212,6 +214,9 @@ impl BrokerWorkLoop {
             };
         }
         let step = runtime.poll_once(stop, deadline)?;
+        if let PollStep::Published(outcome) = step {
+            return Ok(OwnerStep::Published(outcome));
+        }
         let PollStep::Received {
             key,
             event: Event::Convert(convert),
