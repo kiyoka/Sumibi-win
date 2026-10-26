@@ -16,6 +16,7 @@ pub enum Mode {
     Disabled,
     DiagnosticFixed { delay_ms: u32 },
     DiagnosticFanoutFailedNotice,
+    DiagnosticFanoutLaggingNotice,
     DiagnosticRevoke,
     DiagnosticRevokeIdle,
     DiagnosticRevokeCoalesced,
@@ -49,6 +50,7 @@ impl Mode {
                 Ok(format!("fixed:{delay_ms}"))
             }
             Self::DiagnosticFanoutFailedNotice => Ok("fanout-failed-notice".into()),
+            Self::DiagnosticFanoutLaggingNotice => Ok("fanout-lagging-notice".into()),
             Self::DiagnosticRevoke => Ok("revoke".into()),
             Self::DiagnosticRevokeIdle => Ok("revoke-idle".into()),
             Self::DiagnosticRevokeCoalesced => Ok("revoke-coalesced".into()),
@@ -157,7 +159,9 @@ impl Launched {
     ) -> Result<(Self, Pipe, Pipe, Nonce, Nonce)> {
         if !matches!(
             mode,
-            Mode::DiagnosticFixed { delay_ms: 0 } | Mode::DiagnosticFanoutFailedNotice
+            Mode::DiagnosticFixed { delay_ms: 0 }
+                | Mode::DiagnosticFanoutFailedNotice
+                | Mode::DiagnosticFanoutLaggingNotice
         ) {
             return Err(Error::InvalidArgument);
         }
@@ -316,6 +320,7 @@ impl Bootstrap {
             "regrant-at-accept" => Mode::DiagnosticRegrantAtAccept,
             "future-reply" => Mode::DiagnosticFutureReply,
             "fanout-failed-notice" => Mode::DiagnosticFanoutFailedNotice,
+            "fanout-lagging-notice" => Mode::DiagnosticFanoutLaggingNotice,
             value => {
                 let delay_ms = value
                     .strip_prefix("fixed:")
