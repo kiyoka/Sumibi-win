@@ -61,6 +61,10 @@ accept/read/worker結果ループはまだない。診断では各OS acceptの�
 複数のHello読取待ちと設定変更が重なる順序は未検査。異なるTIP processから共有Hostを
 発見・起動する経路、設定UIの完了待機、実worker完了の調停と結果公開、
 所有TSFへの適用前再検査も残る。
+製品のjob台帳は未接続。政策公開・期限・明示切断だけでなく、不正frame、
+Ready／結果書込失敗、peer終了、実行部全体の終端でも、接続keyに属する
+workerを漏れなく取消して回収する必要がある。遅延完了はBroker起動IDと
+接続keyで照合し、別接続へ再配送しない。
 
 政策元の二度の読直しは、外部の設定変更と送信開始を原子的にしない。
 実APIを有効にする前に、[ADR 0062](0062-product-broker-integration-sequence.md)の
