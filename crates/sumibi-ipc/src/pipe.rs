@@ -251,15 +251,12 @@ impl Pipe {
         }
         Operation::start(self, Kind::Write, bytes, stop, deadline)
     }
-    pub fn write_all(&mut self, mut bytes: Vec<u8>, stop: &Stop, deadline: Instant) -> Result<()> {
-        loop {
-            let completion = self.start_write(bytes, stop, deadline)?.wait()?;
-            if completion.transferred == completion.bytes.len() {
-                return Ok(());
-            }
-            bytes = completion.bytes;
-            bytes.drain(..completion.transferred);
+    pub fn write_all(&mut self, bytes: Vec<u8>, stop: &Stop, deadline: Instant) -> Result<()> {
+        let mut write = Some(self.start_write(bytes, stop, deadline)?);
+        while let Some(operation) = write.take() {
+            write = operation.advance_write()?;
         }
+        Ok(())
     }
     /// Check only for data already queued on this authenticated, asynchronous
     /// pipe. The caller still needs server-side policy enforcement for a change
