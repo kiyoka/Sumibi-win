@@ -49,8 +49,10 @@ Hostの設定変更はRelayが最新版へまとめて公開する。公開後�
 `DeliveryReceipt`に保存する。Ready書込中の接続と、公開時に退役した接続も
 対象に含める。通知frameの完全な書込をFanoutへ報告した後、またはOS pipeを
 実際に閉じた後にだけreceiptを進める。後続の版の配送は先の版のreceiptも
-満たせるが、単なるFanout退役やHost保存だけでは完了としない。設定UIから
-receiptへの待機・通知経路は、製品HostのI/O調停点で接続する。
+満たせるが、receiptはその場合`Superseded`を返し、古い版そのものが届いたと
+報告しない。単なるFanout退役やHost保存だけでも完了としない。設定UIは完了後に
+最新の政策元を読み、表示内容を決める。receiptへの待機・通知経路は、製品Hostの
+I/O調停点で接続する。
 
 `manual::convert`の送信直前snapshotと実際の送信開始は現在は原子的でない。
 実APIを有効にする前に、失効確定と未送信本文の送信開始を同じ順序で決める
