@@ -536,7 +536,7 @@ fn serve_failed_notice(
     if order.active_count() != 1 {
         return Err(Error::InvalidMessage);
     }
-    let replacement = Server::replacement_pair(&bootstrap.name)?;
+    let replacement = first.replacement_pair()?;
     let regranted = Policy {
         authorization: revoked.authorization + 1,
         allowed: true,

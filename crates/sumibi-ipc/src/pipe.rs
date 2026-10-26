@@ -100,11 +100,6 @@ impl Server {
     pub(crate) fn create_pair(name: &Nonce) -> Result<Self> {
         Self::create_instance(name, true, 2)
     }
-    /// Replenish a diagnostic pair after one instance has closed. The first
-    /// instance must remain open; the kernel enforces the two-instance limit.
-    pub(crate) fn replacement_pair(name: &Nonce) -> Result<Self> {
-        Self::create_instance(name, false, 2)
-    }
     /// Create another instance only while the first instance is still owned
     /// by this process. Every instance receives the same restricted ACL and
     /// consumes an endpoint permit before opening a kernel handle.
@@ -169,6 +164,7 @@ impl Server {
                 handle: self.handle,
                 peer,
                 _permit: self.permit,
+                pair_anchor: (self.max_instances == 2).then_some(self.name),
             }),
             closed: false,
             authenticated: false,
@@ -187,6 +183,7 @@ struct Resource {
     handle: OwnedHandle,
     peer: PinnedProcess,
     _permit: Permit,
+    pair_anchor: Option<Nonce>,
 }
 pub struct Pipe {
     resource: Arc<Resource>,
@@ -195,6 +192,17 @@ pub struct Pipe {
     busy: bool,
 }
 impl Pipe {
+    /// Replenish a disposable diagnostic pair only while its authenticated
+    /// server anchor remains live. The kernel still enforces two instances.
+    pub(crate) fn replacement_pair(&self) -> Result<Server> {
+        self.check()?;
+        let name = self
+            .resource
+            .pair_anchor
+            .as_ref()
+            .ok_or(Error::InvalidArgument)?;
+        Server::create_instance(name, false, 2)
+    }
     /// Opening does not wait/retry. The launcher must ensure that this exact
     /// expected server is ready; missing/busy pipes are terminal to this attempt.
     pub fn connect(name: &Nonce, peer: PinnedProcess) -> Result<Self> {
@@ -220,6 +228,7 @@ impl Pipe {
                 handle,
                 peer,
                 _permit: permit,
+                pair_anchor: None,
             }),
             closed: false,
             authenticated: true,
