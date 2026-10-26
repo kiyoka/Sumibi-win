@@ -129,14 +129,19 @@ impl PolicyFanout {
     }
 
     /// The transport must authenticate its OS peer before calling attach.
-    /// Keys increase for this Broker lifetime and are never reused after
-    /// detach, so delayed write callbacks cannot address a new connection.
+    /// Keys increase for this Broker lifetime. An attempted key is consumed
+    /// even if its Hello is rejected, so delayed callbacks cannot address a
+    /// later connection. The caller must close the rejected OS transport.
     pub fn attach(
         &mut self,
         key: u64,
         hello: Envelope,
         now: Instant,
     ) -> Result<Envelope, FanoutError> {
+        let fresh_key = key != 0 && key > self.last_key;
+        if fresh_key {
+            self.last_key = key;
+        }
         hello
             .validate()
             .map_err(|_| FanoutError::Broker(BrokerError::InvalidMessage))?;
@@ -156,7 +161,7 @@ impl PolicyFanout {
         {
             return Err(FanoutError::Duplicate);
         }
-        if key <= self.last_key {
+        if !fresh_key {
             return Err(FanoutError::StaleKey);
         }
         let session_id = hello.session;
@@ -208,7 +213,6 @@ impl PolicyFanout {
             notice: None,
             notice_claimed: false,
         });
-        self.last_key = key;
         self.attachments += 1;
         Ok(ready)
     }
@@ -526,7 +530,7 @@ mod tests {
             fanout.notice_delivered(2, second),
             Err(FanoutError::Unknown)
         );
-        let ready = attach_ready(&mut fanout, 9, 9, now);
+        let ready = attach_ready(&mut fanout, 10, 9, now);
         assert!(matches!(ready.message, Message::Ready(ready) if ready.policy.settings == 3));
     }
 
@@ -539,13 +543,17 @@ mod tests {
             fanout.attach(2, hello(1), now),
             Err(FanoutError::DuplicateSession)
         ));
+        assert!(matches!(
+            fanout.attach(2, hello(2), now),
+            Err(FanoutError::StaleKey)
+        ));
         assert_eq!(fanout.active_count(), 1);
         assert!(fanout.detach(1));
         assert!(matches!(
-            fanout.attach(2, hello(1), now),
+            fanout.attach(3, hello(1), now),
             Err(FanoutError::StaleGeneration)
         ));
-        assert!(fanout.attach(2, hello_generation(1, 2), now).is_ok());
+        assert!(fanout.attach(4, hello_generation(1, 2), now).is_ok());
     }
 
     #[test]
@@ -616,15 +624,19 @@ mod tests {
             greeting.broker = id(91);
         }
         assert!(matches!(
-            fanout.attach(2, wrong_broker, now),
+            fanout.attach(3, wrong_broker, now),
             Err(FanoutError::Broker(BrokerError::WrongBroker))
         ));
         assert!(matches!(
-            fanout.attach(2, convert(1, 1, policy()), now),
+            fanout.attach(4, convert(1, 1, policy()), now),
             Err(FanoutError::Broker(BrokerError::WrongState))
         ));
         assert_eq!(fanout.active_count(), 1);
-        attach_ready(&mut fanout, 2, 2, now);
+        assert!(matches!(
+            fanout.attach(4, hello(2), now),
+            Err(FanoutError::StaleKey)
+        ));
+        attach_ready(&mut fanout, 5, 2, now);
     }
 
     #[test]

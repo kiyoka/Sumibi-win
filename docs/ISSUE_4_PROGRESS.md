@@ -136,6 +136,8 @@
   全Rustテスト203件が成功。
 - 配送receiptにBroker起動IDを含めた。別Brokerで再利用された接続keyからの
   遅延した配送・close完了を拒否し、旧receiptの対象を誤って完了にしない。
+- Fanoutへの接続試行は、不正Hello・重複session・容量超過でも接続keyを消費する。
+  拒否されたkeyを次のpipeへ使わず、遅延した完了通知の宛先を固定する。
 
 ## 次の受入作業
 
