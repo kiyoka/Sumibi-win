@@ -141,7 +141,61 @@ pub(super) fn serve_fanout(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Re
         return Err(Error::InvalidMessage);
     };
     gate.authorize(convert.revision)?;
-    let invalid = read_message(&mut second, &bootstrap.stop, deadline)?;
+    let mut inbox = BrokerInbox::default();
+    let cancellable = inbox.read(&mut second, &bootstrap.stop, deadline)?;
+    let BrokerEvent::Convert(cancellable) = order
+        .receive(2, cancellable, Instant::now())
+        .map_err(map_fanout_error)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    gate.authorize(cancellable.revision)?;
+    let cancel = inbox.read(&mut second, &bootstrap.stop, deadline)?;
+    if !matches!(
+        order.receive(2, cancel, Instant::now()),
+        Ok(BrokerEvent::Cancelled(request)) if request == cancellable.request
+    ) {
+        return Err(Error::InvalidMessage);
+    }
+    if order
+        .result(
+            2,
+            cancellable.request,
+            cancellable.revision,
+            "取消済み".into(),
+            Instant::now(),
+        )
+        .map_err(map_fanout_error)?
+        .is_some()
+    {
+        return Err(Error::InvalidMessage);
+    }
+    let following = inbox.read(&mut second, &bootstrap.stop, deadline)?;
+    let BrokerEvent::Convert(following) = order
+        .receive(2, following, Instant::now())
+        .map_err(map_fanout_error)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    gate.authorize(following.revision)?;
+    let result = order
+        .result(
+            2,
+            following.request,
+            following.revision,
+            "継続".into(),
+            Instant::now(),
+        )
+        .map_err(map_fanout_error)?
+        .ok_or(Error::InvalidMessage)?;
+    let publication = gate.authorize_for_publish(following.revision)?;
+    second.write_all(
+        message::encode(&result).map_err(|_| Error::InvalidMessage)?,
+        &bootstrap.stop,
+        deadline,
+    )?;
+    drop(publication);
+    let invalid = inbox.read(&mut second, &bootstrap.stop, deadline)?;
     if !matches!(
         order.receive(2, invalid, Instant::now()),
         Err(FanoutError::Broker(BrokerError::InvalidMessage))
@@ -399,6 +453,30 @@ fn write_fanout_notices(
     Ok(())
 }
 
+#[derive(Default)]
+struct BrokerInbox {
+    decoder: Decoder,
+    unread: Vec<u8>,
+}
+
+impl BrokerInbox {
+    fn read(&mut self, pipe: &mut Pipe, stop: &Stop, deadline: Instant) -> Result<Envelope> {
+        loop {
+            if !self.unread.is_empty() {
+                let decoded = self
+                    .decoder
+                    .decode(&self.unread)
+                    .map_err(|_| Error::InvalidMessage)?;
+                self.unread.drain(..decoded.consumed);
+                if let Some(body) = decoded.body {
+                    return message::decode(body).map_err(|_| Error::InvalidMessage);
+                }
+            }
+            self.unread = pipe.start_read(stop, deadline)?.wait()?.bytes;
+        }
+    }
+}
+
 /// Fixed two-client child-process probe for the setup executable. Both client
 /// pipes authenticate the same launched Host and carry no external source.
 pub fn probe(path: &std::path::Path) -> Result<()> {
@@ -517,11 +595,41 @@ fn diagnostic_two_client_probe_once(
         .begin(3, "nihongo", 5000, Instant::now())
         .map_err(|_| Error::InvalidMessage)?;
     first.write_all(pending, &stop, deadline)?;
+    let cancellable = clients[1]
+        .begin(2, "nihongo", 5000, Instant::now())
+        .map_err(|_| Error::InvalidMessage)?;
+    second.write_all(cancellable, &stop, deadline)?;
+    let cancel = clients[1]
+        .cancel()
+        .map_err(|_| Error::InvalidMessage)?
+        .ok_or(Error::InvalidMessage)?;
+    second.write_all(cancel, &stop, deadline)?;
+    let following = clients[1]
+        .begin(3, "nihongo", 5000, Instant::now())
+        .map_err(|_| Error::InvalidMessage)?;
+    second.write_all(following, &stop, deadline)?;
+    let ClientEvent::Reply {
+        request: 3,
+        outcome: Outcome::Result(text),
+        ..
+    } = read_event(
+        &mut second,
+        &mut clients[1],
+        &mut inboxes[1],
+        &stop,
+        deadline,
+    )?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    if text != "継続" || clients[0].pending_request() != Some(2) {
+        return Err(Error::InvalidMessage);
+    }
     let invalid = Envelope {
         version: VERSION,
         session: Id::new(2).ok_or(Error::InvalidMessage)?,
         generation: 1,
-        message: Message::Cancel(Cancel { request: 2 }),
+        message: Message::Cancel(Cancel { request: 4 }),
     };
     second.write_all(
         message::encode(&invalid).map_err(|_| Error::InvalidMessage)?,
