@@ -152,14 +152,14 @@ impl Launched {
         mode: Mode,
         stop: &Stop,
         deadline: Instant,
-    ) -> Result<(Self, Pipe, Pipe, Nonce)> {
+    ) -> Result<(Self, Pipe, Pipe, Nonce, Nonce)> {
         if !matches!(mode, Mode::DiagnosticFixed { delay_ms: 0 | 1 }) {
             return Err(Error::InvalidArgument);
         }
         let (launched, first, name, boot) =
             Self::connect_service(path, mode, stop, deadline, Service::Fanout)?;
         let second = Pipe::connect(&name, launched.peer()?)?;
-        Ok((launched, first, second, boot))
+        Ok((launched, first, second, boot, name))
     }
     pub(crate) fn peer(&self) -> Result<PinnedProcess> {
         PinnedProcess::from_launch_handle(self.process.as_handle())

@@ -100,6 +100,11 @@ impl Server {
     pub(crate) fn create_pair(name: &Nonce) -> Result<Self> {
         Self::create_instance(name, true, 2)
     }
+    /// Replenish a diagnostic pair after one instance has closed. The first
+    /// instance must remain open; the kernel enforces the two-instance limit.
+    pub(crate) fn replacement_pair(name: &Nonce) -> Result<Self> {
+        Self::create_instance(name, false, 2)
+    }
     /// Create another instance only while the first instance is still owned
     /// by this process. Every instance receives the same restricted ACL and
     /// consumes an endpoint permit before opening a kernel handle.

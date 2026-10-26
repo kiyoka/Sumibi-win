@@ -254,6 +254,7 @@ fn serve_failed_notice(
     if order.active_count() != 1 {
         return Err(Error::InvalidMessage);
     }
+    let replacement = Server::replacement_pair(&bootstrap.name)?;
     let regranted = Policy {
         authorization: revoked.authorization + 1,
         allowed: true,
@@ -278,6 +279,46 @@ fn serve_failed_notice(
     order
         .notice_delivered(1, regranted)
         .map_err(map_fanout_error)?;
+    let peer = crate::PinnedProcess::from_launch_handle(bootstrap.parent.as_handle())?;
+    let mut second = replacement.accept(peer, &bootstrap.stop, deadline)?;
+    let hello = read_message(&mut second, &bootstrap.stop, deadline)?;
+    if hello.session != Id::new(2).ok_or(Error::InvalidMessage)? || hello.generation != 2 {
+        return Err(Error::InvalidMessage);
+    }
+    let ready = order
+        .attach(3, hello, Instant::now())
+        .map_err(map_fanout_error)?;
+    second.write_all(
+        message::encode(&ready).map_err(|_| Error::InvalidMessage)?,
+        &bootstrap.stop,
+        deadline,
+    )?;
+    order.ready_delivered(3).map_err(map_fanout_error)?;
+    let resumed = read_message(&mut second, &bootstrap.stop, deadline)?;
+    let BrokerEvent::Convert(resumed) = order
+        .receive(3, resumed, Instant::now())
+        .map_err(map_fanout_error)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    gate.authorize(resumed.revision)?;
+    let result = order
+        .result(
+            3,
+            resumed.request,
+            resumed.revision,
+            "再接続".into(),
+            Instant::now(),
+        )
+        .map_err(map_fanout_error)?
+        .ok_or(Error::InvalidMessage)?;
+    let publication = gate.authorize_for_publish(resumed.revision)?;
+    second.write_all(
+        message::encode(&result).map_err(|_| Error::InvalidMessage)?,
+        &bootstrap.stop,
+        deadline,
+    )?;
+    drop(publication);
     let next = read_message(&mut first, &bootstrap.stop, deadline)?;
     let BrokerEvent::Convert(convert) = order
         .receive(1, next, Instant::now())
@@ -362,7 +403,7 @@ fn diagnostic_two_client_probe_once(
     let mode = Mode::DiagnosticFixed {
         delay_ms: u32::from(write_failure),
     };
-    let (_child, mut first, mut second, boot) =
+    let (child, mut first, mut second, boot, name) =
         Launched::connect_fanout(path, mode, &stop, deadline)?;
     if reversed {
         // The first logical client uses the second opened pipe instance.
@@ -393,7 +434,12 @@ fn diagnostic_two_client_probe_once(
         }
     }
     if write_failure {
-        return probe_failed_notice(first, second, clients, inboxes, &stop, deadline);
+        let reconnect = ReconnectTarget {
+            child: &child,
+            name: &name,
+            boot: boot.id(),
+        };
+        return probe_failed_notice(first, second, clients, inboxes, &reconnect, &stop, deadline);
     }
     let old = clients[0]
         .begin(1, "nihongo", 5000, Instant::now())
@@ -485,11 +531,18 @@ fn diagnostic_two_client_probe_once(
     Ok(())
 }
 
+struct ReconnectTarget<'a> {
+    child: &'a crate::bootstrap::Launched,
+    name: &'a crate::support::Nonce,
+    boot: Id,
+}
+
 fn probe_failed_notice(
     mut first: Pipe,
     second: Pipe,
     mut clients: [ClientSession; 2],
     mut inboxes: [Inbox; 2],
+    reconnect: &ReconnectTarget<'_>,
     stop: &Stop,
     deadline: Instant,
 ) -> Result<()> {
@@ -512,6 +565,49 @@ fn probe_failed_notice(
         return Err(Error::InvalidMessage);
     };
     if policy.authorization != 3 || !policy.allowed || cancelled.is_some() {
+        return Err(Error::InvalidMessage);
+    }
+    clients[1].disconnect();
+    let mut second = Pipe::connect(reconnect.name, reconnect.child.peer()?)?;
+    second.write_all(
+        clients[1]
+            .reconnect(reconnect.boot)
+            .map_err(|_| Error::InvalidMessage)?,
+        stop,
+        deadline,
+    )?;
+    let ClientEvent::Ready(policy) = read_event(
+        &mut second,
+        &mut clients[1],
+        &mut inboxes[1],
+        stop,
+        deadline,
+    )?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    if policy.authorization != 3 || !policy.allowed {
+        return Err(Error::InvalidMessage);
+    }
+    let resumed = clients[1]
+        .begin(1, "nihongo", 5000, Instant::now())
+        .map_err(|_| Error::InvalidMessage)?;
+    second.write_all(resumed, stop, deadline)?;
+    let ClientEvent::Reply {
+        request: 1,
+        outcome: Outcome::Result(text),
+        ..
+    } = read_event(
+        &mut second,
+        &mut clients[1],
+        &mut inboxes[1],
+        stop,
+        deadline,
+    )?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    if text != "再接続" {
         return Err(Error::InvalidMessage);
     }
     let next = clients[0]

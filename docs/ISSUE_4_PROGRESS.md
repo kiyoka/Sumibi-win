@@ -92,6 +92,9 @@
   片方がReady後にpipeを閉じる診断も追加し、その接続への通知書込失敗を
   実I/Oで確認した。失敗先だけを退役し、残る接続へ失効・再許可を配送した後、
   新版の要求から結果を受け取った。
+  退役したpipe instanceを同じ子Brokerで作り直し、同じclient寿命IDの世代2を
+  改めて認証した。最新の認可版でReadyを受け、再接続側と継続側の両方で
+  新しい要求が成功した。旧要求の自動再送は行わない。
   既定Hostはこの診断serviceを拒否し、検査後に既定Hostへ戻した
   （[ADR 0061](adr/0061-two-client-broker-pipe-diagnostic.md)）。
   これは一つの親processの2本であり、常駐Brokerの異なるTIP process接続ではない。
