@@ -1039,9 +1039,16 @@ pub fn serve_diagnostic(
     let source = PolicyAuthority::new(destination.clone());
     let mut runtime = BrokerPolicyRuntime::new(&source, bootstrap.boot_id())
         .map_err(|_| IpcError::PolicyDenied)?;
+    let mut owner = BrokerWorkLoop::new();
     let deadline = Instant::now() + Duration::from_secs(10);
     let (first_key, second_key) = bootstrap.accept_policy_runtime_pair(deadline, |pipe| {
-        runtime.reserve(pipe).map_err(|_| IpcError::PolicyDenied)
+        let (key, published) = owner
+            .accept(&mut runtime, pipe, bootstrap.stop(), deadline)
+            .map_err(|_| IpcError::PolicyDenied)?;
+        if published.is_some() {
+            return Err(IpcError::InvalidMessage);
+        }
+        Ok(key)
     })?;
     let (first_hello, second_hello) = {
         let [first, second] = runtime.pending.as_mut_slice() else {
@@ -1197,7 +1204,6 @@ pub fn serve_diagnostic(
     publish_diagnostic(&mut runtime, bootstrap.stop(), deadline, 5, true, None)?;
     let mut resumed = false;
     let mut awaiting_resume = false;
-    let mut owner = BrokerWorkLoop::new();
     while !bootstrap.stop().is_cancelled()? && Instant::now() < deadline {
         match owner
             .advance(&mut runtime, bootstrap.stop(), deadline, |request| {
@@ -1864,6 +1870,39 @@ mod tests {
             message::Message::Result(result) if result.request == 1 && result.text == "日本語"
         ));
         assert_eq!(owner.active_count(), 0);
+    }
+
+    #[test]
+    fn owner_loop_publishes_pending_policy_before_reserving_new_pipe() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let old = runtime.policy();
+        assert!(!old.allowed);
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (server, mut client) = connected(&stop, deadline);
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut owner = BrokerWorkLoop::new();
+        let (key, published) = owner.accept(&mut runtime, server, &stop, deadline).unwrap();
+        assert_eq!(key, 1);
+        let published = published.expect("pending policy must publish before reservation");
+        assert!(published.policy.allowed);
+        assert!(published.delivered.is_empty());
+        assert_eq!(runtime.pending_keys(), [1]);
+        runtime
+            .activate(key, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Ready(ready) if ready.policy == published.policy
+        ));
     }
 
     #[test]

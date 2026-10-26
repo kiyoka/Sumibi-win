@@ -8,7 +8,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use sumibi_ipc::{Error as IpcError, Stop};
+use sumibi_ipc::{Error as IpcError, Pipe, Stop};
 use sumibi_protocol::broker_session::Event;
 use sumibi_protocol::message::{Convert, ErrorCode, Id};
 use sumibi_protocol::policy_fanout::MAX_SESSIONS;
@@ -108,6 +108,21 @@ impl BrokerWorkLoop {
 
     pub fn stop_and_reap(&mut self, deadline: Instant) -> bool {
         self.workers.stop_and_reap(deadline)
+    }
+
+    /// The caller has already authenticated this OS pipe. Bring older
+    /// subscribers up to date before reserving its never-reused key. The
+    /// returned receipt belongs to that publication, not to the new pipe.
+    pub fn accept(
+        &mut self,
+        runtime: &mut BrokerPolicyRuntime<'_>,
+        pipe: Pipe,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<(u64, Option<PublicationOutcome>), RuntimeError> {
+        let published = runtime.publish_current(stop, deadline)?;
+        let key = runtime.reserve(pipe)?;
+        Ok((key, published))
     }
 
     pub fn advance<F, W>(

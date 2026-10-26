@@ -110,6 +110,8 @@ workerの`completed_at`が要求期限内でも、Host回収後の実際の結�
 応答待機中の失効も同じ入口を通す結合検査にした。
 別接続の分割Helloが残っていても、既存接続のworker結果を先に返し、その後に
 Helloを完成させてReadyを届ける所有側ループの実pipe検査を通した。
+`BrokerWorkLoop::accept`はOS認証済みpipeのkey予約前に未公開政策を配送する。
+診断子Brokerの2接続受付もこの入口を使う。継続する製品acceptは別途接続する。
 
 ## 残る境界
 
