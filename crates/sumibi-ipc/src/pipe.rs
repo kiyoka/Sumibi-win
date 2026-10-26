@@ -939,6 +939,38 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_between_write_chunks_does_not_start_a_suffix() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut server, mut client) = connected_one(&stop, deadline);
+        let mut write = server
+            .start_write(vec![1, 2, 3, 4], &stop, deadline)
+            .unwrap();
+        write.finish().unwrap();
+        let state = write.state.as_mut().unwrap();
+        assert_eq!(state.transferred, 4);
+        state.transferred = 2;
+        stop.cancel().unwrap();
+        assert!(matches!(write.advance_write(), Err(Error::Cancelled)));
+        assert!(server.closed);
+        // Read with an independent Stop to inspect what was already sent.
+        let read_stop = Stop::new().unwrap();
+        assert_eq!(
+            client
+                .start_read(&read_stop, deadline)
+                .unwrap()
+                .wait()
+                .unwrap()
+                .bytes,
+            [1, 2, 3, 4]
+        );
+    }
+
+    #[test]
     fn bootstrap_values_cannot_be_paths_or_zero_ids() {
         for value in [
             "",
