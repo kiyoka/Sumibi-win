@@ -4,7 +4,11 @@
 use crate::policy::{ChangeError, PolicyAuthority, PolicyVersion};
 use std::time::Instant;
 use sumibi_ipc::{broker::BrokerPolicyGate, Error as IpcError};
-use sumibi_protocol::{broker_session::PolicyNotice, message::Policy, policy_fanout::PolicyFanout};
+use sumibi_protocol::{
+    broker_session::PolicyNotice,
+    message::{Id, Policy},
+    policy_fanout::PolicyFanout,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RelayError {
@@ -24,6 +28,7 @@ pub struct Published {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeliveryError {
+    WrongBroker,
     UnknownKey,
     StalePolicy,
 }
@@ -38,12 +43,17 @@ pub enum DeliveryCompletion {
 /// It intentionally does not infer completion from Fanout retirement: the
 /// caller must first close that OS pipe and then report `transport_closed`.
 pub struct DeliveryReceipt {
+    broker: Id,
     target: Policy,
     awaiting: Vec<u64>,
     superseded: bool,
 }
 
 impl DeliveryReceipt {
+    pub fn broker_id(&self) -> Id {
+        self.broker
+    }
+
     pub fn target(&self) -> Policy {
         self.target
     }
@@ -68,7 +78,15 @@ impl DeliveryReceipt {
 
     /// Call only after a complete frame write and Fanout's
     /// `notice_delivered`. A newer epoch also satisfies this publication.
-    pub fn notice_delivered(&mut self, key: u64, delivered: Policy) -> Result<(), DeliveryError> {
+    pub fn notice_delivered(
+        &mut self,
+        broker: Id,
+        key: u64,
+        delivered: Policy,
+    ) -> Result<(), DeliveryError> {
+        if broker != self.broker {
+            return Err(DeliveryError::WrongBroker);
+        }
         if !delivered.follows(self.target) {
             return Err(DeliveryError::StalePolicy);
         }
@@ -79,7 +97,10 @@ impl DeliveryReceipt {
 
     /// Call only after closing the transport, including a pipe retired by
     /// publication or a failed Ready/notification write.
-    pub fn transport_closed(&mut self, key: u64) -> Result<(), DeliveryError> {
+    pub fn transport_closed(&mut self, broker: Id, key: u64) -> Result<(), DeliveryError> {
+        if broker != self.broker {
+            return Err(DeliveryError::WrongBroker);
+        }
         self.finish(key)
     }
 
@@ -158,6 +179,7 @@ impl<'a> BrokerPolicyRelay<'a> {
             retired,
             notices,
             delivery: DeliveryReceipt {
+                broker: fanout.broker_id(),
                 target: policy,
                 awaiting,
                 superseded: false,
@@ -460,12 +482,12 @@ mod tests {
         fanout.notice_delivered(2, published.policy).unwrap();
         published
             .delivery
-            .notice_delivered(2, published.policy)
+            .notice_delivered(id(90), 2, published.policy)
             .unwrap();
         assert!(!published.delivery.is_complete());
         published
             .delivery
-            .notice_delivered(1, published.policy)
+            .notice_delivered(id(90), 1, published.policy)
             .unwrap();
         assert!(published.delivery.is_complete());
     }
@@ -500,17 +522,26 @@ mod tests {
         source.grant_manual_consent(&destination).unwrap();
         let mut granted = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
         assert_eq!(granted.delivery.awaiting(), [1, 2]);
+        assert!(granted.delivery.broker_id() == id(90));
         assert!(granted.delivery.target() == granted.policy);
         assert_eq!(granted.delivery.completion(), None);
         assert_eq!(
-            granted.delivery.notice_delivered(1, initial),
+            granted.delivery.notice_delivered(id(91), 1, granted.policy),
+            Err(DeliveryError::WrongBroker)
+        );
+        assert_eq!(
+            granted.delivery.transport_closed(id(91), 2),
+            Err(DeliveryError::WrongBroker)
+        );
+        assert_eq!(
+            granted.delivery.notice_delivered(id(90), 1, initial),
             Err(DeliveryError::StalePolicy)
         );
         assert_eq!(granted.delivery.awaiting(), [1, 2]);
         fanout.notice_delivered(1, granted.policy).unwrap();
         granted
             .delivery
-            .notice_delivered(1, granted.policy)
+            .notice_delivered(id(90), 1, granted.policy)
             .unwrap();
 
         source.revoke_manual_consent().unwrap();
@@ -522,18 +553,18 @@ mod tests {
         // Retirement is not a settings-UI completion until the I/O owner
         // actually closes the old pipe.
         assert!(!fanout.detach(2));
-        granted.delivery.transport_closed(2).unwrap();
-        revoked.delivery.transport_closed(2).unwrap();
+        granted.delivery.transport_closed(id(90), 2).unwrap();
+        revoked.delivery.transport_closed(id(90), 2).unwrap();
         assert!(granted.delivery.is_complete());
         assert!(!revoked.delivery.is_complete());
         fanout.notice_delivered(1, revoked.policy).unwrap();
         revoked
             .delivery
-            .notice_delivered(1, revoked.policy)
+            .notice_delivered(id(90), 1, revoked.policy)
             .unwrap();
         assert!(revoked.delivery.is_complete());
         assert_eq!(
-            revoked.delivery.transport_closed(2),
+            revoked.delivery.transport_closed(id(90), 2),
             Err(DeliveryError::UnknownKey)
         );
     }
@@ -604,11 +635,11 @@ mod tests {
         fanout.notice_delivered(1, revoked.policy).unwrap();
         granted
             .delivery
-            .notice_delivered(1, revoked.policy)
+            .notice_delivered(id(90), 1, revoked.policy)
             .unwrap();
         revoked
             .delivery
-            .notice_delivered(1, revoked.policy)
+            .notice_delivered(id(90), 1, revoked.policy)
             .unwrap();
         assert!(granted.delivery.is_complete());
         assert!(revoked.delivery.is_complete());

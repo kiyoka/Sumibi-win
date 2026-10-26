@@ -74,6 +74,10 @@ impl PolicyFanout {
         self.policy
     }
 
+    pub fn broker_id(&self) -> Id {
+        self.broker
+    }
+
     pub fn active_count(&self) -> usize {
         self.subscribers.len()
     }

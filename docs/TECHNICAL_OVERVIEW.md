@@ -467,9 +467,13 @@ COM参照・cookie・TSF座標・APIキー・アプリ名はConvertへ含めな�
 実子Channelに加え、同じ親processから開く2本の実pipeでも配送と退役を検査した。
 異なるTIP processからの製品接続と製品の容量値は未確定である。
 Hostの政策版からBrokerの認可ゲートと接続通知へ渡すRelayはI/O非依存で追加した。
-通知失敗時の切断は診断用の実pipeで確認した。HostのRelayからの配送と
-設定UIの操作完了は常駐Brokerへ接続する段階で確認する
-（[ADR 0060](adr/0060-host-to-broker-policy-relay.md)、[ADR 0061](adr/0061-two-client-broker-pipe-diagnostic.md)）。
+公開直前の接続keyを有限な配送receiptで追跡し、通知の完全な書込または実pipeの
+closeを確認する。後続版の通知で先のreceiptを満たす場合は`Superseded`と区別する。
+通知失敗時の切断と、期限後のWorker結果がtimerより先に届いても接続を維持する
+経路は診断用の実pipeで確認した。HostのRelayからの配送と設定UIの操作完了は
+常駐Brokerへ接続する段階で確認する（[ADR 0060](adr/0060-host-to-broker-policy-relay.md)、
+[ADR 0061](adr/0061-two-client-broker-pipe-diagnostic.md)、
+[ADR 0062](adr/0062-product-broker-integration-sequence.md)）。
 再接続時は保留要求を破棄し、利用者の新しい操作を待つ。
 
 AppContainerではDLLが入力先の制限を受けるため、通常デスクトップのIPC成功を一般化しない。
