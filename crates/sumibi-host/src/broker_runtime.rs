@@ -138,6 +138,35 @@ impl<'a> BrokerPolicyRuntime<'a> {
         self.close(key)
     }
 
+    /// Close one OS endpoint and return its pending request for worker
+    /// cancellation. Unknown/stale keys cannot address a later connection.
+    pub fn disconnect_with_pending(&mut self, key: u64) -> Result<Option<u64>, RuntimeError> {
+        if self.failed {
+            return Err(RuntimeError::Retired);
+        }
+        if self.pending.iter().any(|entry| entry.key == key) {
+            self.close(key);
+            return Ok(None);
+        }
+        if !self.connections.iter().any(|entry| entry.key == key) {
+            return Err(RuntimeError::MissingPipe);
+        }
+        let pending = match self.fanout.pending_request(key) {
+            Ok(pending) => pending,
+            Err(error) => {
+                self.failed = true;
+                self.close_all();
+                return Err(RuntimeError::Fanout(error));
+            }
+        };
+        if !self.close(key) {
+            self.failed = true;
+            self.close_all();
+            return Err(RuntimeError::MissingPipe);
+        }
+        Ok(pending)
+    }
+
     pub fn wait_for_change(&mut self, deadline: Instant) -> Result<bool, RuntimeError> {
         if self.failed {
             return Err(RuntimeError::Retired);
@@ -249,6 +278,24 @@ impl<'a> BrokerPolicyRuntime<'a> {
             }
         }
         Ok(event)
+    }
+
+    /// Retire only this connection's expired request. The caller uses the
+    /// returned ID to cancel its worker; a late completion publishes nothing.
+    pub fn expire(&mut self, key: u64, now: Instant) -> Result<Option<u64>, RuntimeError> {
+        if self.failed {
+            return Err(RuntimeError::Retired);
+        }
+        if !self.connections.iter().any(|entry| entry.key == key) {
+            return Err(RuntimeError::MissingPipe);
+        }
+        match self.fanout.expire(key, now) {
+            Ok(request) => Ok(request),
+            Err(error) => {
+                self.close(key);
+                Err(RuntimeError::Fanout(error))
+            }
+        }
     }
 
     /// Publish one worker result to its original authenticated connection.
@@ -529,11 +576,9 @@ pub fn serve_diagnostic(
     let mut runtime = BrokerPolicyRuntime::new(&source, bootstrap.boot_id())
         .map_err(|_| IpcError::PolicyDenied)?;
     let deadline = Instant::now() + Duration::from_secs(10);
-    let (first, second) = bootstrap.accept_policy_runtime_pair(deadline)?;
-    let first_key = runtime.reserve(first).map_err(|_| IpcError::PolicyDenied)?;
-    let second_key = runtime
-        .reserve(second)
-        .map_err(|_| IpcError::PolicyDenied)?;
+    let (first_key, second_key) = bootstrap.accept_policy_runtime_pair(deadline, |pipe| {
+        runtime.reserve(pipe).map_err(|_| IpcError::PolicyDenied)
+    })?;
     let first_hello = runtime
         .read_reserved_hello(first_key, bootstrap.stop(), deadline)
         .map_err(|_| IpcError::InvalidMessage)?;
@@ -887,6 +932,170 @@ mod tests {
         assert!(matches!(
             read_frame(&mut client, &stop, deadline).message,
             message::Message::PolicyChanged(policy) if policy == revoked.policy
+        ));
+    }
+
+    #[test]
+    fn expired_worker_result_is_silent_and_next_request_survives() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (server, mut client) = connected(&stop, deadline);
+        assert_eq!(
+            runtime.attach(server, hello(1, id(90)), &stop, deadline),
+            Ok(1)
+        );
+        read_frame(&mut client, &stop, deadline);
+        let policy = runtime.policy();
+        let mut timed = convert(1, 1, 1, policy);
+        if let message::Message::Convert(request) = &mut timed.message {
+            request.timeout_ms = 1;
+        }
+        let accepted = Instant::now();
+        assert!(matches!(
+            runtime.receive(1, timed, accepted),
+            Ok(Event::Convert(_))
+        ));
+        let expired = accepted + Duration::from_millis(2);
+        assert_eq!(runtime.expire(1, expired), Ok(Some(1)));
+        let revision = Revision {
+            input: 1,
+            settings: policy.settings,
+            authorization: policy.authorization,
+        };
+        let now = Instant::now();
+        assert_eq!(
+            runtime.publish_result(
+                ReplyContext {
+                    broker: id(90),
+                    key: 1,
+                    request: 1,
+                    revision,
+                    completed_at: expired,
+                },
+                "期限切れ".into(),
+                &stop,
+                now + Duration::from_millis(500)
+            ),
+            Ok(false)
+        );
+        assert!(matches!(
+            runtime.receive(1, convert(1, 1, 2, policy), Instant::now()),
+            Ok(Event::Convert(_))
+        ));
+        let now = Instant::now();
+        assert_eq!(
+            runtime.publish_result(
+                ReplyContext {
+                    broker: id(90),
+                    key: 1,
+                    request: 2,
+                    revision,
+                    completed_at: now,
+                },
+                "次の結果".into(),
+                &stop,
+                now + Duration::from_millis(500)
+            ),
+            Ok(true)
+        );
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Result(result)
+                if result.request == 2 && result.text == "次の結果"
+        ));
+    }
+
+    #[test]
+    fn disconnect_returns_only_its_pending_worker_and_keeps_other_pipe() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (first_server, mut first_client) = connected(&stop, deadline);
+        let (second_server, mut second_client) = connected(&stop, deadline);
+        assert_eq!(
+            runtime.attach(first_server, hello(1, id(90)), &stop, deadline),
+            Ok(1)
+        );
+        assert_eq!(
+            runtime.attach(second_server, hello(2, id(90)), &stop, deadline),
+            Ok(2)
+        );
+        read_frame(&mut first_client, &stop, deadline);
+        read_frame(&mut second_client, &stop, deadline);
+        let policy = runtime.policy();
+        assert!(matches!(
+            runtime.receive(1, convert(1, 1, 1, policy), Instant::now()),
+            Ok(Event::Convert(_))
+        ));
+        assert_eq!(runtime.disconnect_with_pending(1), Ok(Some(1)));
+        assert_eq!(
+            runtime.disconnect_with_pending(1),
+            Err(RuntimeError::MissingPipe)
+        );
+        assert_eq!(runtime.active_count(), 1);
+        let revision = Revision {
+            input: 1,
+            settings: policy.settings,
+            authorization: policy.authorization,
+        };
+        let now = Instant::now();
+        assert_eq!(
+            runtime.publish_result(
+                ReplyContext {
+                    broker: id(90),
+                    key: 1,
+                    request: 1,
+                    revision,
+                    completed_at: now,
+                },
+                "古い結果".into(),
+                &stop,
+                now + Duration::from_millis(500)
+            ),
+            Err(RuntimeError::MissingPipe)
+        );
+        assert!(matches!(
+            runtime.receive(2, convert(2, 1, 1, policy), Instant::now()),
+            Ok(Event::Convert(_))
+        ));
+        let now = Instant::now();
+        assert_eq!(
+            runtime.publish_result(
+                ReplyContext {
+                    broker: id(90),
+                    key: 2,
+                    request: 1,
+                    revision,
+                    completed_at: now,
+                },
+                "生存".into(),
+                &stop,
+                now + Duration::from_millis(500)
+            ),
+            Ok(true)
+        );
+        assert!(matches!(
+            read_frame(&mut second_client, &stop, deadline).message,
+            message::Message::Result(result) if result.text == "生存"
         ));
     }
 

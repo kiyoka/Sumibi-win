@@ -374,6 +374,11 @@ impl PolicyFanout {
         Ok(self.subscribers[index].session.expire(now))
     }
 
+    pub fn pending_request(&self, key: u64) -> Result<Option<u64>, FanoutError> {
+        let index = self.index(key)?;
+        Ok(self.subscribers[index].session.pending_request())
+    }
+
     pub fn detach(&mut self, key: u64) -> bool {
         if let Ok(index) = self.index(key) {
             let mut subscriber = self.subscribers.remove(index);

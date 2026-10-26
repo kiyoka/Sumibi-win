@@ -203,13 +203,22 @@
   子process診断でも一方へ成功結果を返し、他方の保留要求だけを失効時に取消した。
   全Rustテスト225件、Clippy、Broker回帰が成功し、通常Hostへ復元した。
   実worker完了の調停とAPI送信開始の失効競合はまだ未接続。
+- 子process診断の受付順序を変更し、各OS accept直後に接続keyを予約してから
+  次の接続を待つようにした。Broker回帰は両接続順で成功。複数Helloの並行読取と
+  設定変更の同時発生は製品用の継続ループで検査する。
+- Host実行部の期限timer入口が、接続ごとの取消対象要求番号を返す。期限後の
+  worker完了は本文を送らず、同じ認証済みpipeで次の要求を受け付けた。
+  通常ユーザーの実pipeで確認した。
+- 接続切断時にも対象の保留要求番号を返し、遅延完了を旧keyへ配送しない。
+  他方のpipeと結果配送は維持した。通常ユーザーの実pipeで確認し、
+  全Rustテスト227件。
 
 ## 次の受入作業
 
 製品Brokerへ統合する責務と順序は
 [ADR 0062](adr/0062-product-broker-integration-sequence.md)に記録した。
 
-1. `BrokerPolicyRuntime`を製品Hostの継続するaccept/read/worker結果ループへ接続する。各OS accept直後のkey発行、並行するHello、設定UIの操作完了、送信開始と失効の順序、所有TSFでの適用前再検査を実証する。
+1. `BrokerPolicyRuntime`を製品Hostの継続するaccept/read/worker結果ループへ接続する。並行するHello、設定UIの操作完了、送信開始と失効の順序、所有TSFでの適用前再検査を実証する。
 2. 配置されたBrokerの信頼できる発見・署名・更新・起動を実装する。
 3. 一般アプリへ製品TIPのキー配送と所有対象の失効を接続し、入力先ごとの保護情報を肯定的に検証する。
 4. Notepad等の実アプリで実打鍵、1回Undo、別欄・同長別本文・読取不能の拒否を確認する。

@@ -317,7 +317,12 @@ impl Bootstrap {
 
     /// Create only the disposable two-client service launched by this parent.
     /// Both accepted endpoints verify the pinned parent and desktop identities.
-    pub fn accept_policy_runtime_pair(&self, deadline: Instant) -> Result<(Pipe, Pipe)> {
+    /// `on_accept` reserves each key before the next OS accept begins.
+    pub fn accept_policy_runtime_pair(
+        &self,
+        deadline: Instant,
+        mut on_accept: impl FnMut(Pipe) -> Result<u64>,
+    ) -> Result<(u64, u64)> {
         if !self.is_policy_runtime_diagnostic() {
             return Err(Error::PolicyDenied);
         }
@@ -327,8 +332,10 @@ impl Bootstrap {
         let first_peer = PinnedProcess::from_launch_handle(self.parent.as_handle())?;
         let second_peer = PinnedProcess::from_launch_handle(self.parent.as_handle())?;
         let first = first.accept(first_peer, &self.stop, deadline)?;
+        let first_key = on_accept(first)?;
         let second = second.accept(second_peer, &self.stop, deadline)?;
-        Ok((first, second))
+        let second_key = on_accept(second)?;
+        Ok((first_key, second_key))
     }
 
     pub fn parse(args: &[OsString]) -> Result<Self> {
