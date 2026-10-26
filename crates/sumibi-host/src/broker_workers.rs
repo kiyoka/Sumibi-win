@@ -1,12 +1,16 @@
 //! Bounded EXE-side worker handoff. Workers own text and a cancellation ticket;
 //! only the Broker owner may touch policy fanout or authenticated pipes.
-use crate::broker_runtime::{BrokerPolicyRuntime, JobTicket, ReplyContext, RuntimeError};
+use crate::broker_runtime::{
+    BrokerPolicyRuntime, JobTicket, PollStep, PublicationOutcome, ReplyContext, RuntimeError,
+};
+use crate::policy::ChangeError;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use sumibi_ipc::Stop;
-use sumibi_protocol::message::{ErrorCode, Id};
+use sumibi_ipc::{Error as IpcError, Stop};
+use sumibi_protocol::broker_session::Event;
+use sumibi_protocol::message::{Convert, ErrorCode, Id};
 use sumibi_protocol::policy_fanout::MAX_SESSIONS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +56,149 @@ pub struct BrokerWorkers {
     send: SyncSender<WorkerCompletion>,
     receive: Receiver<WorkerCompletion>,
     slots: Vec<Slot>,
+}
+
+/// One owner-thread step. The owner interleaves this with authenticated OS
+/// accept; only this thread may read the policy source or touch a pipe.
+pub enum OwnerStep {
+    Published(PublicationOutcome),
+    Completed {
+        key: u64,
+        request: u64,
+        delivered: bool,
+        succeeded: bool,
+    },
+    Submitted {
+        key: u64,
+        request: u64,
+    },
+    Rejected {
+        key: u64,
+        request: u64,
+        cause: WorkerPoolError,
+        delivered: bool,
+    },
+    Broker(PollStep),
+}
+
+/// Serialize source publication, worker completion and the next pipe frame.
+/// A failed worker admission consumes the accepted request with a fixed error
+/// or closes its connection; no request is left waiting for a worker that was
+/// never started. The work factory receives text only after policy admission.
+pub struct BrokerWorkLoop {
+    workers: BrokerWorkers,
+}
+
+impl Default for BrokerWorkLoop {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BrokerWorkLoop {
+    pub fn new() -> Self {
+        Self {
+            workers: BrokerWorkers::new(),
+        }
+    }
+
+    pub fn active_count(&self) -> usize {
+        self.workers.active_count()
+    }
+
+    pub fn stop_and_reap(&mut self, deadline: Instant) -> bool {
+        self.workers.stop_and_reap(deadline)
+    }
+
+    pub fn advance<F, W>(
+        &mut self,
+        runtime: &mut BrokerPolicyRuntime<'_>,
+        stop: &Stop,
+        deadline: Instant,
+        make_work: F,
+    ) -> Result<OwnerStep, RuntimeError>
+    where
+        F: FnOnce(Convert) -> W,
+        W: FnOnce(JobTicket) -> Result<String, ErrorCode> + Send + 'static,
+    {
+        if let Some(outcome) = runtime.publish_current(stop, deadline)? {
+            return Ok(OwnerStep::Published(outcome));
+        }
+        if let Some(completion) = self.workers.try_completion() {
+            let key = completion.reply.key;
+            let request = completion.reply.request;
+            let succeeded = completion.outcome.is_ok();
+            let now = Instant::now();
+            let write_deadline = deadline.min(now + Duration::from_millis(500));
+            if write_deadline <= now {
+                runtime.disconnect(key);
+                return Err(RuntimeError::Transport(IpcError::Timeout));
+            }
+            return match completion.publish(runtime, stop, write_deadline) {
+                Ok(delivered) => Ok(OwnerStep::Completed {
+                    key,
+                    request,
+                    delivered,
+                    succeeded,
+                }),
+                Err(RuntimeError::Source(ChangeError::StalePolicy)) => {
+                    let outcome = runtime
+                        .publish_current(stop, deadline)?
+                        .ok_or(RuntimeError::Incomplete)?;
+                    Ok(OwnerStep::Published(outcome))
+                }
+                Err(error) => Err(error),
+            };
+        }
+        let step = runtime.poll_once(stop, deadline)?;
+        let PollStep::Received {
+            key,
+            event: Event::Convert(convert),
+        } = step
+        else {
+            return Ok(OwnerStep::Broker(step));
+        };
+        let request = convert.request;
+        let ticket = runtime
+            .job_ticket(key, request)
+            .ok_or(RuntimeError::Incomplete)?;
+        match self.workers.submit(ticket.clone(), make_work(convert)) {
+            Ok(()) => Ok(OwnerStep::Submitted { key, request }),
+            Err(WorkerPoolError::Duplicate) => {
+                runtime.disconnect(key);
+                Err(RuntimeError::Incomplete)
+            }
+            Err(cause) => {
+                let code = match cause {
+                    WorkerPoolError::Cancelled => ErrorCode::Cancelled,
+                    WorkerPoolError::Expired => ErrorCode::Timeout,
+                    WorkerPoolError::Full | WorkerPoolError::Spawn => ErrorCode::Unavailable,
+                    WorkerPoolError::Duplicate => unreachable!(),
+                };
+                let now = Instant::now();
+                let write_deadline = deadline.min(now + Duration::from_millis(500));
+                if write_deadline <= now {
+                    runtime.disconnect(key);
+                    return Err(RuntimeError::Transport(IpcError::Timeout));
+                }
+                match runtime.publish_error(ticket.reply_context(now), code, stop, write_deadline) {
+                    Ok(delivered) => Ok(OwnerStep::Rejected {
+                        key,
+                        request,
+                        cause,
+                        delivered,
+                    }),
+                    Err(RuntimeError::Source(ChangeError::StalePolicy)) => {
+                        let outcome = runtime
+                            .publish_current(stop, deadline)?
+                            .ok_or(RuntimeError::Incomplete)?;
+                        Ok(OwnerStep::Published(outcome))
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+        }
+    }
 }
 
 impl Default for BrokerWorkers {

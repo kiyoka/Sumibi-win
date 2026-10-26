@@ -25,6 +25,9 @@ OS受付時にFanoutへ接続keyを予約するため、先に受け付けたHel
 `poll_once`は公開を先頭に、期限切れ、Hello、active frameを順に1件進め、
 active接続は巡回して読む。診断の再許可後要求にこの入口を使う。
 Hello待ちとactiveは合わせて最大8本である。
+Host側の`BrokerWorkLoop`は政策公開、完了回収、`poll_once`とworker投入を一つの
+所有側入口で進める。診断の再許可後要求に接続した。取消済みworkerが8枠を占めても
+新要求へ固定エラーを返す。製品の継続acceptと送信workerはまだ接続していない。
 `sumibi-protocol`には接続ごとの`BrokerSession`と、最大8接続・各1通知の
 `PolicyFanout`がある。`sumibi-host`には設定・資格情報・明示同意の
 `PolicyAuthority`、送信開始順序を固定する`manual::convert_ordered`、

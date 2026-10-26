@@ -290,6 +290,12 @@
   比較する。期限内完了をHostが遅れて回収した場合、結果を送らずticketを取消し、
   同じpipeで次要求を受ける。版を偽った完了は接続を退役させる。全Rustテスト257件、
   Clippy、実pipeのBroker回帰が成功。
+- `BrokerWorkLoop::advance`が政策公開、worker完了、次のpipe frameを一つの所有側
+  入口で順序付ける。worker枠が取消済み仕事で埋まる場合は新要求へ固定の
+  `Unavailable`を返し、受け付けた要求を宙に浮かせない。待機中の完了より失効通知を
+  先に配送する実pipe検査を追加し、子Broker診断の再許可後の要求もこの入口へ接続。
+  全Rustテスト260件と実pipeのBroker回帰が成功。OSの継続acceptと製品送信workerは
+  まだ接続していない。
 
 ## 次の受入作業
 

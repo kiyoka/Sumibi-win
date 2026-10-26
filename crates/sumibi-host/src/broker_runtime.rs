@@ -1027,7 +1027,7 @@ pub fn serve_diagnostic(
     bootstrap: &sumibi_ipc::bootstrap::Bootstrap,
     diagnostic_enabled: bool,
 ) -> sumibi_ipc::Result<()> {
-    use crate::broker_workers::BrokerWorkers;
+    use crate::broker_workers::{BrokerWorkLoop, BrokerWorkers, OwnerStep};
     use crate::manual::{Credential, Destination, Scheme};
     use std::time::Duration;
 
@@ -1197,64 +1197,46 @@ pub fn serve_diagnostic(
     publish_diagnostic(&mut runtime, bootstrap.stop(), deadline, 5, true, None)?;
     let mut resumed = false;
     let mut awaiting_resume = false;
+    let mut owner = BrokerWorkLoop::new();
     while !bootstrap.stop().is_cancelled()? && Instant::now() < deadline {
-        if let Some(completion) = workers.try_completion() {
-            if !awaiting_resume
-                || completion.reply.key != request_key
-                || completion.reply.request != 2
-                || !matches!(completion.outcome.as_deref(), Ok("再開"))
-            {
-                return Err(IpcError::InvalidMessage);
-            }
-            let now = Instant::now();
-            if !completion
-                .publish(
-                    &mut runtime,
-                    bootstrap.stop(),
-                    now + Duration::from_millis(500),
-                )
-                .map_err(|_| IpcError::PolicyDenied)?
-            {
-                return Err(IpcError::InvalidMessage);
-            }
-            resumed = true;
-            break;
-        }
-        match runtime
-            .poll_once(bootstrap.stop(), deadline)
+        match owner
+            .advance(&mut runtime, bootstrap.stop(), deadline, |request| {
+                move |ticket: JobTicket| {
+                    if request.text != "again" {
+                        Err(ErrorCode::Rejected)
+                    } else if ticket.is_cancelled() {
+                        Err(ErrorCode::Cancelled)
+                    } else {
+                        Ok("再開".into())
+                    }
+                }
+            })
             .map_err(|_| IpcError::InvalidMessage)?
         {
-            PollStep::Idle => std::thread::sleep(Duration::from_millis(1)),
-            PollStep::Received {
-                key,
-                event: Event::Convert(request),
-            } => {
-                if awaiting_resume
-                    || key != request_key
-                    || request.request != 2
-                    || request.text != "again"
-                {
+            OwnerStep::Broker(PollStep::Idle) => std::thread::sleep(Duration::from_millis(1)),
+            OwnerStep::Submitted { key, request } => {
+                if awaiting_resume || key != request_key || request != 2 {
                     return Err(IpcError::InvalidMessage);
                 }
-                let ticket = runtime
-                    .job_ticket(key, request.request)
-                    .ok_or(IpcError::InvalidMessage)?;
-                workers
-                    .submit(ticket, |ticket| {
-                        if ticket.is_cancelled() {
-                            Err(ErrorCode::Cancelled)
-                        } else {
-                            Ok("再開".into())
-                        }
-                    })
-                    .map_err(|_| IpcError::WorkerFailed)?;
                 awaiting_resume = true;
+            }
+            OwnerStep::Completed {
+                key,
+                request,
+                delivered: true,
+                succeeded: true,
+            } if awaiting_resume && key == request_key && request == 2 => {
+                resumed = true;
+                break;
             }
             _ => return Err(IpcError::InvalidMessage),
         }
     }
     if !resumed {
         return Err(IpcError::Timeout);
+    }
+    if !owner.stop_and_reap(deadline) {
+        return Err(IpcError::WorkerFailed);
     }
     while !bootstrap.stop().is_cancelled()? && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
@@ -1288,7 +1270,7 @@ fn publish_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::broker_workers::{BrokerWorkers, WorkerPoolError};
+    use crate::broker_workers::{BrokerWorkLoop, BrokerWorkers, OwnerStep, WorkerPoolError};
     use crate::diagnostic_http::DiagnosticLoopbackHttp;
     use crate::manual::{
         self, Credential, Destination, ManualRequest, OrderedConversionTransport, Scheme, SendGate,
@@ -1818,6 +1800,231 @@ mod tests {
             Err(RuntimeError::Incomplete)
         );
         assert_eq!(runtime.active_count(), 0);
+    }
+
+    #[test]
+    fn owner_loop_dispatches_and_returns_a_worker_result() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (server, mut client) = connected(&stop, deadline);
+        runtime
+            .attach(server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut client, &stop, deadline);
+        client
+            .write_all(
+                message::encode(&convert(1, 1, 1, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        let mut owner = BrokerWorkLoop::new();
+        assert!(matches!(
+            owner.advance(&mut runtime, &stop, deadline, |request| {
+                move |ticket: JobTicket| {
+                    assert_eq!(request.text, "nihongo");
+                    assert!(!ticket.is_cancelled());
+                    Ok("日本語".into())
+                }
+            }),
+            Ok(OwnerStep::Submitted { key: 1, request: 1 })
+        ));
+        loop {
+            match owner
+                .advance(&mut runtime, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Completed {
+                    key: 1,
+                    request: 1,
+                    delivered: true,
+                    succeeded: true,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("unexpected owner step"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Result(result) if result.request == 1 && result.text == "日本語"
+        ));
+        assert_eq!(owner.active_count(), 0);
+    }
+
+    #[test]
+    fn owner_loop_publishes_revoke_before_a_queued_worker_completion() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (server, mut client) = connected(&stop, deadline);
+        runtime
+            .attach(server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut client, &stop, deadline);
+        client
+            .write_all(
+                message::encode(&convert(1, 1, 1, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let worker_done = done.clone();
+        let mut owner = BrokerWorkLoop::new();
+        assert!(matches!(
+            owner.advance(&mut runtime, &stop, deadline, |_| {
+                move |_: JobTicket| {
+                    worker_done.store(true, Ordering::Release);
+                    Ok("旧結果".into())
+                }
+            }),
+            Ok(OwnerStep::Submitted { key: 1, request: 1 })
+        ));
+        while !done.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        source.revoke_manual_consent().unwrap();
+        let ticket = runtime.job_ticket(1, 1).unwrap();
+        assert!(matches!(
+            owner.advance(&mut runtime, &stop, deadline, |_| {
+                |_: JobTicket| Err(ErrorCode::Unavailable)
+            }),
+            Ok(OwnerStep::Published(outcome))
+                if outcome.cancelled == [(1, 1)] && outcome.delivered == [1]
+        ));
+        assert!(ticket.is_cancelled());
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::PolicyChanged(next) if !next.allowed
+        ));
+        assert!(owner.stop_and_reap(deadline));
+        assert!(runtime.job_ticket(1, 1).is_none());
+    }
+
+    #[test]
+    fn owner_loop_rejects_new_request_when_cancelled_workers_fill_pool() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (server, mut client) = connected(&stop, deadline);
+        runtime
+            .attach(server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut client, &stop, deadline);
+        let mut owner = BrokerWorkLoop::new();
+        let release = Arc::new(AtomicBool::new(false));
+        for request in 1..=MAX_SESSIONS as u64 {
+            client
+                .write_all(
+                    message::encode(&convert(1, 1, request, policy)).unwrap(),
+                    &stop,
+                    deadline,
+                )
+                .unwrap();
+            let worker_release = release.clone();
+            assert!(matches!(
+                owner.advance(&mut runtime, &stop, deadline, move |_| {
+                    move |ticket: JobTicket| {
+                        while !worker_release.load(Ordering::Acquire)
+                            && Instant::now() < ticket.deadline()
+                        {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        Err(ErrorCode::Cancelled)
+                    }
+                }),
+                Ok(OwnerStep::Submitted { key: 1, request: accepted }) if accepted == request
+            ));
+            client
+                .write_all(
+                    message::encode(&Envelope {
+                        version: message::VERSION,
+                        session: id(1),
+                        generation: 1,
+                        message: message::Message::Cancel(Cancel { request }),
+                    })
+                    .unwrap(),
+                    &stop,
+                    deadline,
+                )
+                .unwrap();
+            assert!(matches!(
+                owner.advance(&mut runtime, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                }),
+                Ok(OwnerStep::Broker(PollStep::Received {
+                    key: 1,
+                    event: Event::Cancelled(cancelled)
+                })) if cancelled == request
+            ));
+        }
+        assert_eq!(owner.active_count(), MAX_SESSIONS);
+        client
+            .write_all(
+                message::encode(&convert(1, 1, 9, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        assert!(matches!(
+            owner.advance(&mut runtime, &stop, deadline, |_| {
+                |_: JobTicket| Err(ErrorCode::Unavailable)
+            }),
+            Ok(OwnerStep::Rejected {
+                key: 1,
+                request: 9,
+                cause: WorkerPoolError::Full,
+                delivered: true
+            })
+        ));
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Error(error)
+                if error.request == 9 && error.code == ErrorCode::Unavailable
+        ));
+        assert!(runtime.job_ticket(1, 9).is_none());
+        release.store(true, Ordering::Release);
+        assert!(owner.stop_and_reap(deadline));
     }
 
     #[test]
