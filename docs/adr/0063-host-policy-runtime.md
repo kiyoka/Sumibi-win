@@ -14,6 +14,8 @@ Readyを完全に書いてから接続を有効にし、HelloやReadyが失敗�
 Helloを持つpipeは要求を受け付けない。設定変更を公開した場合は、通知の
 宛先にならないこのpipeを実際に閉じてから配送完了を返す。keyは次の接続に
 再利用しない。製品のaccept loopは各accept直後に`reserve`を呼ぶ必要がある。
+OS accept後、Helloを処理する前にHost政策が変わった試行はReadyを出さずに
+閉じ、公開後の新しい接続だけが新版のReadyを受け取ることを実pipeで確認した。
 
 Hostの最新政策版を公開すると、退役先のpipeを閉じ、生存先の通知を有限な
 `WriteBatch`で並行開始する。各接続の書込完了だけをFanoutと配送receiptへ

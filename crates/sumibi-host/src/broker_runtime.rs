@@ -831,6 +831,43 @@ mod tests {
     }
 
     #[test]
+    fn source_change_before_hello_rejects_old_pipe_and_new_ready_uses_latest_epoch() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (old_server, _old_client) = connected(&stop, deadline);
+        assert_eq!(runtime.reserve(old_server), Ok(1));
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        assert_eq!(
+            runtime.activate(1, hello(1, id(90)), &stop, deadline),
+            Err(RuntimeError::PolicyPending)
+        );
+        assert_eq!(runtime.pending_count(), 0);
+        assert_eq!(runtime.active_count(), 0);
+        let publication = runtime.publish_current(&stop, deadline).unwrap().unwrap();
+        assert!(publication.policy.allowed);
+        assert!(publication.delivered.is_empty());
+        assert!(publication.closed.is_empty());
+        let (new_server, mut new_client) = connected(&stop, deadline);
+        assert_eq!(
+            runtime.attach(new_server, hello(2, id(90)), &stop, deadline),
+            Ok(2)
+        );
+        assert!(matches!(
+            read_frame(&mut new_client, &stop, deadline).message,
+            message::Message::Ready(ready) if ready.policy == publication.policy
+        ));
+    }
+
+    #[test]
     fn result_write_uses_host_epoch_and_revocation_cancels_unsent_result() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {
