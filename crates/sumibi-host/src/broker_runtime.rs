@@ -79,7 +79,11 @@ impl JobTicket {
         }
     }
 
-    fn cancel(&self) {
+    pub fn identity(&self) -> (Id, u64, u64) {
+        (self.broker, self.key, self.request)
+    }
+
+    pub(crate) fn cancel(&self) {
         // Wake any cancellable I/O immediately. The mutex below fixes the
         // cancellation order against a request write already in progress.
         let _ = self.stop.cancel();
@@ -924,6 +928,7 @@ pub fn serve_diagnostic(
     bootstrap: &sumibi_ipc::bootstrap::Bootstrap,
     diagnostic_enabled: bool,
 ) -> sumibi_ipc::Result<()> {
+    use crate::broker_workers::BrokerWorkers;
     use crate::manual::{Credential, Destination, Scheme};
     use std::time::Duration;
 
@@ -1010,29 +1015,53 @@ pub fn serve_diagnostic(
     let cancelled_ticket = runtime
         .job_ticket(request_key, convert.request)
         .ok_or(IpcError::InvalidMessage)?;
-    let cancelled_worker = {
-        let stop = cancelled_ticket.stop();
-        std::thread::spawn(move || stop.wait_until(Instant::now() + Duration::from_secs(5)))
-    };
-    let result_worker = {
-        let ticket = result_ticket.clone();
-        std::thread::spawn(move || {
+    let mut workers = BrokerWorkers::new();
+    workers
+        .submit(cancelled_ticket.clone(), |ticket| {
             if ticket
                 .stop()
-                .wait_until(Instant::now() + Duration::from_millis(10))?
+                .wait_until(Instant::now() + Duration::from_secs(5))
+                .unwrap_or(false)
+            {
+                Err(ErrorCode::Cancelled)
+            } else {
+                Err(ErrorCode::Unavailable)
+            }
+        })
+        .map_err(|_| IpcError::WorkerFailed)?;
+    workers
+        .submit(result_ticket.clone(), |ticket| {
+            if ticket
+                .stop()
+                .wait_until(Instant::now() + Duration::from_millis(10))
+                .unwrap_or(true)
                 || ticket.is_cancelled()
             {
-                return Err(IpcError::Cancelled);
+                Err(ErrorCode::Cancelled)
+            } else {
+                Ok("完了".into())
             }
-            Ok(ticket.reply_context(Instant::now()))
         })
+        .map_err(|_| IpcError::WorkerFailed)?;
+    let completion = loop {
+        if let Some(completion) = workers.try_completion() {
+            break completion;
+        }
+        if Instant::now() >= deadline {
+            return Err(IpcError::Timeout);
+        }
+        std::thread::sleep(Duration::from_millis(1));
     };
-    let reply = result_worker.join().map_err(|_| IpcError::WorkerFailed)??;
+    if completion.reply.key != result_key
+        || completion.reply.request != second.request
+        || !matches!(completion.outcome.as_deref(), Ok("完了"))
+    {
+        return Err(IpcError::InvalidMessage);
+    }
     let now = Instant::now();
-    if !runtime
-        .publish_result(
-            reply,
-            "完了".into(),
+    if !completion
+        .publish(
+            &mut runtime,
             bootstrap.stop(),
             now + Duration::from_millis(500),
         )
@@ -1051,11 +1080,14 @@ pub fn serve_diagnostic(
         false,
         Some((request_key, convert.request)),
     )?;
-    if !cancelled_worker
-        .join()
-        .map_err(|_| IpcError::WorkerFailed)??
-    {
-        return Err(IpcError::InvalidMessage);
+    while workers.active_count() != 0 {
+        if workers.try_completion().is_some() {
+            return Err(IpcError::InvalidMessage);
+        }
+        if Instant::now() >= deadline {
+            return Err(IpcError::Timeout);
+        }
+        std::thread::sleep(Duration::from_millis(1));
     }
     if !cancelled_ticket.is_cancelled() || result_ticket.is_cancelled() {
         return Err(IpcError::InvalidMessage);
@@ -1065,7 +1097,30 @@ pub fn serve_diagnostic(
         .map_err(|_| IpcError::PolicyDenied)?;
     publish_diagnostic(&mut runtime, bootstrap.stop(), deadline, 5, true, None)?;
     let mut resumed = false;
+    let mut awaiting_resume = false;
     while !bootstrap.stop().is_cancelled()? && Instant::now() < deadline {
+        if let Some(completion) = workers.try_completion() {
+            if !awaiting_resume
+                || completion.reply.key != request_key
+                || completion.reply.request != 2
+                || !matches!(completion.outcome.as_deref(), Ok("再開"))
+            {
+                return Err(IpcError::InvalidMessage);
+            }
+            let now = Instant::now();
+            if !completion
+                .publish(
+                    &mut runtime,
+                    bootstrap.stop(),
+                    now + Duration::from_millis(500),
+                )
+                .map_err(|_| IpcError::PolicyDenied)?
+            {
+                return Err(IpcError::InvalidMessage);
+            }
+            resumed = true;
+            break;
+        }
         match runtime
             .poll_once(bootstrap.stop(), deadline)
             .map_err(|_| IpcError::InvalidMessage)?
@@ -1075,26 +1130,26 @@ pub fn serve_diagnostic(
                 key,
                 event: Event::Convert(request),
             } => {
-                if key != request_key || request.request != 2 || request.text != "again" {
+                if awaiting_resume
+                    || key != request_key
+                    || request.request != 2
+                    || request.text != "again"
+                {
                     return Err(IpcError::InvalidMessage);
                 }
                 let ticket = runtime
                     .job_ticket(key, request.request)
                     .ok_or(IpcError::InvalidMessage)?;
-                let now = Instant::now();
-                if !runtime
-                    .publish_result(
-                        ticket.reply_context(now),
-                        "再開".into(),
-                        bootstrap.stop(),
-                        now + Duration::from_millis(500),
-                    )
-                    .map_err(|_| IpcError::PolicyDenied)?
-                {
-                    return Err(IpcError::InvalidMessage);
-                }
-                resumed = true;
-                break;
+                workers
+                    .submit(ticket, |ticket| {
+                        if ticket.is_cancelled() {
+                            Err(ErrorCode::Cancelled)
+                        } else {
+                            Ok("再開".into())
+                        }
+                    })
+                    .map_err(|_| IpcError::WorkerFailed)?;
+                awaiting_resume = true;
             }
             _ => return Err(IpcError::InvalidMessage),
         }
@@ -1134,10 +1189,14 @@ fn publish_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::broker_workers::BrokerWorkers;
+    use crate::diagnostic_http::DiagnosticLoopbackHttp;
     use crate::manual::{
         self, Credential, Destination, ManualRequest, OrderedConversionTransport, Scheme, SendGate,
     };
     use std::cell::Cell;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::time::Duration;
     use sumibi_ipc::{Nonce, PinnedProcess, Server};
     use sumibi_protocol::{
@@ -1451,6 +1510,207 @@ mod tests {
         ));
         assert!(runtime.job_ticket(1, 1).is_some());
         assert!(runtime.job_ticket(2, 1).is_some());
+    }
+
+    #[test]
+    fn bounded_worker_shutdown_wakes_and_reaps_a_pending_job() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (server, mut client) = connected(&stop, deadline);
+        runtime
+            .attach(server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut client, &stop, deadline);
+        runtime
+            .receive(1, convert(1, 1, 1, policy), Instant::now())
+            .unwrap();
+        let ticket = runtime.job_ticket(1, 1).unwrap();
+        let mut workers = BrokerWorkers::new();
+        workers
+            .submit(ticket.clone(), |ticket| {
+                if ticket
+                    .stop()
+                    .wait_until(Instant::now() + Duration::from_secs(2))
+                    .unwrap()
+                {
+                    Err(ErrorCode::Cancelled)
+                } else {
+                    Err(ErrorCode::Unavailable)
+                }
+            })
+            .unwrap();
+        assert!(workers.stop_and_reap(Instant::now() + Duration::from_millis(500)));
+        assert_eq!(workers.active_count(), 0);
+        assert!(ticket.is_cancelled());
+        assert!(ticket.stop().is_cancelled().unwrap());
+    }
+
+    #[test]
+    fn authenticated_pipe_worker_and_loopback_http_return_one_result() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            let header_end = loop {
+                let size = stream.read(&mut chunk).unwrap();
+                assert!(size > 0);
+                request.extend_from_slice(&chunk[..size]);
+                if let Some(index) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    break index + 4;
+                }
+            };
+            let headers = std::str::from_utf8(&request[..header_end]).unwrap();
+            let length: usize = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            while request.len() - header_end < length {
+                let size = stream.read(&mut chunk).unwrap();
+                assert!(size > 0);
+                request.extend_from_slice(&chunk[..size]);
+            }
+            let body = r#"{"text":"日本語"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            request
+        });
+        let destination =
+            Destination::new(Scheme::HttpLoopback, "127.0.0.1", port, "/convert").unwrap();
+        let source = Arc::new(PolicyAuthority::new(destination.clone()));
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (pipe, mut client) = connected(&stop, deadline);
+        runtime
+            .attach(pipe, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut client, &stop, deadline);
+        client
+            .write_all(
+                message::encode(&convert(1, 1, 1, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        let PollStep::Received {
+            key: 1,
+            event: Event::Convert(request),
+        } = runtime.poll_once(&stop, deadline).unwrap()
+        else {
+            panic!("authenticated Convert must reach the owner");
+        };
+        let ticket = runtime.job_ticket(1, request.request).unwrap();
+        let worker_source = source.clone();
+        let worker_destination = destination.clone();
+        let mut workers = BrokerWorkers::new();
+        workers
+            .submit(ticket, move |ticket| {
+                manual::convert_ordered(
+                    ManualRequest {
+                        revision: request.revision,
+                        destination: &worker_destination,
+                        source: &request.text,
+                        deadline: Instant::now() + Duration::from_secs(1),
+                    },
+                    &worker_source,
+                    &ticket,
+                    &DiagnosticLoopbackHttp,
+                )
+                .map_err(|_| ErrorCode::Unavailable)
+            })
+            .unwrap();
+        let completion = loop {
+            if let Some(completion) = workers.try_completion() {
+                break completion;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(matches!(completion.outcome.as_deref(), Ok("日本語")));
+        let now = Instant::now();
+        assert_eq!(
+            completion.publish(&mut runtime, &stop, now + Duration::from_millis(500)),
+            Ok(true)
+        );
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Result(result) if result.text == "日本語"
+        ));
+        let request = server.join().unwrap();
+        assert!(request
+            .windows(b"Authorization: Bearer fixture".len())
+            .any(|part| part == b"Authorization: Bearer fixture"));
+        assert!(request
+            .windows(b"nihongo".len())
+            .any(|part| part == b"nihongo"));
+        client
+            .write_all(
+                message::encode(&convert(1, 1, 2, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        assert!(matches!(
+            runtime.poll_once(&stop, deadline),
+            Ok(PollStep::Received {
+                key: 1,
+                event: Event::Convert(_)
+            })
+        ));
+        workers
+            .submit(runtime.job_ticket(1, 2).unwrap(), |_| {
+                Err(ErrorCode::Unavailable)
+            })
+            .unwrap();
+        let failure = loop {
+            if let Some(completion) = workers.try_completion() {
+                break completion;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        let now = Instant::now();
+        assert_eq!(
+            failure.publish(&mut runtime, &stop, now + Duration::from_millis(500)),
+            Ok(true)
+        );
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Error(error)
+                if error.request == 2 && error.code == ErrorCode::Unavailable
+        ));
+        assert_eq!(workers.active_count(), 0);
     }
 
     #[test]

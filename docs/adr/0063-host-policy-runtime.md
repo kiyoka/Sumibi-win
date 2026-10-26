@@ -85,6 +85,11 @@ OS accept時にはFanoutにも接続keyを予約する。後のHelloが先に完
 `poll_once`はHost公開、期限切れ、Hello、active frameを順に1件進める。
 active接続は巡回し、同一pipeに連結された後続frameがあっても他の接続を
 先に読める。子process診断の再許可後要求もこの入口を通した。
+`BrokerWorkers`は最大8件のEXE workerを所有し、`JobTicket`のStopを渡す。
+完了はBroker起動ID・接続key・要求番号・政策版・完了時刻を伴って元の
+`BrokerPolicyRuntime`へ戻す。取消済み完了は配送前に破棄し、成功と固定エラーは
+同じ政策・期限・有界pipe書込の入口へ渡す。診断の実pipeからloopback HTTPを
+経た成功結果と、次要求の固定エラーを検査した。製品HTTPS workerは未接続。
 
 ## 残る境界
 

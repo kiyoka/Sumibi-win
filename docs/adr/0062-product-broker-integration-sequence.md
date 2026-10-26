@@ -33,7 +33,8 @@ Host側の`BrokerPolicyRuntime`は、認証済みpipeのReady、有限な政策�
 失敗先の物理切断と配送receiptを一つのworker側で処理する
 （[ADR 0063](0063-host-policy-runtime.md)）。製品Host EXEの主ループは未接続。
 Convert受付時の`JobTicket`は接続単位のStopイベントを持ち、失効・期限・
-切断・不正frame・終端で取消される。実workerでの待機と回収は未接続。
+切断・不正frame・終端で取消される。有限な`BrokerWorkers`へ診断workerを渡し、
+失効したworkerの完了破棄と回収を子processで確認した。製品HTTPS workerは未接続。
 登録不要の`spike`診断分岐ではHost EXEからこの実行部を起動し、各OS accept
 直後の接続key予約、2接続への政策配送、許可中の結果と失効時の取消を実pipeで
 検査した。既定Hostは同じ診断モードを拒否する。結果公開はHost政策元とBroker

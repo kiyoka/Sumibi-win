@@ -266,6 +266,14 @@
   子process診断の再許可後要求もこの入口を使う。OS acceptと実worker完了を含む
   製品の常駐ループはまだ接続していない。全Rustテスト250件、Clippy、
   Broker子process回帰が成功し、既定Hostへ復元した。
+- EXE側の`BrokerWorkers`は最大8 workerと8完了を保持し、`JobTicket`のStopを
+  workerへ渡す。取消された完了は破棄し、成功と固定エラーは同じ
+  `WorkerCompletion::publish`から元のBroker起動ID・接続key・要求番号の検査へ
+  戻す。子process診断は失効したworkerを回収し、再許可後の要求もworker完了と
+  `poll_once`を交互に進める。通常ユーザーの実pipe→worker→loopback HTTP→
+  元のpipeの成功結果と、次要求の固定エラーを確認した。実HTTPS adapter、
+  永続的な設定・資格情報、製品Hostの継続acceptループは未接続。
+  全Rustテスト252件、Clippy、Broker子process回帰が成功し、既定Hostへ復元した。
 
 ## 次の受入作業
 

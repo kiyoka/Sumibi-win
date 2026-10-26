@@ -6,6 +6,8 @@
 pub mod broker_policy;
 #[cfg(windows)]
 pub mod broker_runtime;
+#[cfg(windows)]
+pub mod broker_workers;
 #[cfg(all(test, windows))]
 pub(crate) static HOST_PIPE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub mod diagnostic_http;
