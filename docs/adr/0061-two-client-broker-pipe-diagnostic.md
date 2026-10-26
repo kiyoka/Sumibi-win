@@ -32,7 +32,8 @@ HelloのID自体はOS peer認証の代わりではない。
 退役したinstanceを同じ子Broker内で作り直し、同じclient寿命IDが世代2で
 再接続する。OS peerを改めて認証した後、現在の認可版3でReadyを送り、
 再接続先と生き残った先の両方で新しい要求の結果を確認する。再接続は
-元の要求の自動再送を含まない。
+元の要求の自動再送を含まない。切断前に再接続側の要求1を完了させ、
+再接続後の要求が番号2であることも実pipeで確認する。
 
 通常Hostはこの診断serviceを拒否し、`spike` featureを明示したHostだけが
 固定本文を扱う。`tools/Test-Broker.ps1`は拒否、2接続、既存Channel/Workerを

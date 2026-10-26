@@ -95,6 +95,7 @@
   退役したpipe instanceを同じ子Brokerで作り直し、同じclient寿命IDの世代2を
   改めて認証した。最新の認可版でReadyを受け、再接続側と継続側の両方で
   新しい要求が成功した。旧要求の自動再送は行わない。
+  再接続側は切断前に要求1を完了し、世代2で要求2へ進めた。
   既定Hostはこの診断serviceを拒否し、検査後に既定Hostへ戻した
   （[ADR 0061](adr/0061-two-client-broker-pipe-diagnostic.md)）。
   これは一つの親processの2本であり、常駐Brokerの異なるTIP process接続ではない。

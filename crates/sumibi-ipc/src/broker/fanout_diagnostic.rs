@@ -8,7 +8,7 @@ use sumibi_protocol::session::{ClientSession, Event as ClientEvent, Outcome};
 pub(super) fn serve_fanout(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
     let write_failure = match bootstrap.mode {
         Mode::DiagnosticFixed { delay_ms: 0 } if diagnostic_enabled => false,
-        Mode::DiagnosticFixed { delay_ms: 1 } if diagnostic_enabled => true,
+        Mode::DiagnosticFanoutFailedNotice if diagnostic_enabled => true,
         _ => return Err(Error::PolicyDenied),
     };
     let first = Server::create_pair(&bootstrap.name)?;
@@ -186,6 +186,31 @@ fn serve_failed_notice(
     mut second: Pipe,
     deadline: Instant,
 ) -> Result<()> {
+    let initial_request = read_message(&mut second, &bootstrap.stop, deadline)?;
+    let BrokerEvent::Convert(initial_request) = order
+        .receive(2, initial_request, Instant::now())
+        .map_err(map_fanout_error)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    gate.authorize(initial_request.revision)?;
+    let initial_result = order
+        .result(
+            2,
+            initial_request.request,
+            initial_request.revision,
+            "初回".into(),
+            Instant::now(),
+        )
+        .map_err(map_fanout_error)?
+        .ok_or(Error::InvalidMessage)?;
+    let publication = gate.authorize_for_publish(initial_request.revision)?;
+    second.write_all(
+        message::encode(&initial_result).map_err(|_| Error::InvalidMessage)?,
+        &bootstrap.stop,
+        deadline,
+    )?;
+    drop(publication);
     let request = read_message(&mut first, &bootstrap.stop, deadline)?;
     let BrokerEvent::Convert(convert) = order
         .receive(1, request, Instant::now())
@@ -400,8 +425,10 @@ fn diagnostic_two_client_probe_once(
 
     let stop = Stop::new()?;
     let deadline = Instant::now() + Duration::from_secs(10);
-    let mode = Mode::DiagnosticFixed {
-        delay_ms: u32::from(write_failure),
+    let mode = if write_failure {
+        Mode::DiagnosticFanoutFailedNotice
+    } else {
+        Mode::DiagnosticFixed { delay_ms: 0 }
     };
     let (child, mut first, mut second, boot, name) =
         Launched::connect_fanout(path, mode, &stop, deadline)?;
@@ -539,13 +566,34 @@ struct ReconnectTarget<'a> {
 
 fn probe_failed_notice(
     mut first: Pipe,
-    second: Pipe,
+    mut second: Pipe,
     mut clients: [ClientSession; 2],
     mut inboxes: [Inbox; 2],
     reconnect: &ReconnectTarget<'_>,
     stop: &Stop,
     deadline: Instant,
 ) -> Result<()> {
+    let initial = clients[1]
+        .begin(1, "nihongo", 5000, Instant::now())
+        .map_err(|_| Error::InvalidMessage)?;
+    second.write_all(initial, stop, deadline)?;
+    let ClientEvent::Reply {
+        request: 1,
+        outcome: Outcome::Result(text),
+        ..
+    } = read_event(
+        &mut second,
+        &mut clients[1],
+        &mut inboxes[1],
+        stop,
+        deadline,
+    )?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    if text != "初回" {
+        return Err(Error::InvalidMessage);
+    }
     drop(second);
     let old = clients[0]
         .begin(1, "nihongo", 5000, Instant::now())
@@ -590,11 +638,11 @@ fn probe_failed_notice(
         return Err(Error::InvalidMessage);
     }
     let resumed = clients[1]
-        .begin(1, "nihongo", 5000, Instant::now())
+        .begin(2, "nihongo", 5000, Instant::now())
         .map_err(|_| Error::InvalidMessage)?;
     second.write_all(resumed, stop, deadline)?;
     let ClientEvent::Reply {
-        request: 1,
+        request: 2,
         outcome: Outcome::Result(text),
         ..
     } = read_event(

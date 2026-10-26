@@ -15,6 +15,7 @@ use windows::Win32::System::Threading::*;
 pub enum Mode {
     Disabled,
     DiagnosticFixed { delay_ms: u32 },
+    DiagnosticFanoutFailedNotice,
     DiagnosticRevoke,
     DiagnosticRevokeIdle,
     DiagnosticRevokeCoalesced,
@@ -47,6 +48,7 @@ impl Mode {
             Self::DiagnosticFixed { delay_ms } if delay_ms <= 2000 => {
                 Ok(format!("fixed:{delay_ms}"))
             }
+            Self::DiagnosticFanoutFailedNotice => Ok("fanout-failed-notice".into()),
             Self::DiagnosticRevoke => Ok("revoke".into()),
             Self::DiagnosticRevokeIdle => Ok("revoke-idle".into()),
             Self::DiagnosticRevokeCoalesced => Ok("revoke-coalesced".into()),
@@ -153,7 +155,10 @@ impl Launched {
         stop: &Stop,
         deadline: Instant,
     ) -> Result<(Self, Pipe, Pipe, Nonce, Nonce)> {
-        if !matches!(mode, Mode::DiagnosticFixed { delay_ms: 0 | 1 }) {
+        if !matches!(
+            mode,
+            Mode::DiagnosticFixed { delay_ms: 0 } | Mode::DiagnosticFanoutFailedNotice
+        ) {
             return Err(Error::InvalidArgument);
         }
         let (launched, first, name, boot) =
@@ -310,6 +315,7 @@ impl Bootstrap {
             "revoke-at-accept" => Mode::DiagnosticRevokeAtAccept,
             "regrant-at-accept" => Mode::DiagnosticRegrantAtAccept,
             "future-reply" => Mode::DiagnosticFutureReply,
+            "fanout-failed-notice" => Mode::DiagnosticFanoutFailedNotice,
             value => {
                 let delay_ms = value
                     .strip_prefix("fixed:")
