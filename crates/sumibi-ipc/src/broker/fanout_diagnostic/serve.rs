@@ -88,15 +88,20 @@ pub(crate) fn serve_fanout(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Re
     if wait_stop(&bootstrap.stop, 150)? {
         return Err(Error::Cancelled);
     }
-    if order.expire(1, Instant::now()).map_err(map_fanout_error)? != Some(expiring.request)
+    // Let the late worker completion reach Fanout before its timer callback.
+    // This race must consume only the expired request and keep the pipe alive.
+    if order
+        .result(
+            1,
+            expiring.request,
+            expiring.revision,
+            "期限切れ".into(),
+            Instant::now(),
+        )
+        .map_err(map_fanout_error)?
+        .is_some()
         || order
-            .result(
-                1,
-                expiring.request,
-                expiring.revision,
-                "期限切れ".into(),
-                Instant::now(),
-            )
+            .expire(1, Instant::now())
             .map_err(map_fanout_error)?
             .is_some()
     {
