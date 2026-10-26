@@ -299,6 +299,9 @@
 - 認証pipeから`BrokerWorkLoop`で受けた本文をloopback HTTP workerへ渡し、元のpipeへ
   結果と固定エラーを戻す結合検査に切り替えた。HTTP応答待機中の政策失効も同じ
   所有側ループで先に通知し、workerを取消す経路で確認した。
+- 別の接続が分割Helloの途中でも、所有側ループが先の接続のworker結果を返し、
+  後からHelloを完成させて最新版のReadyを送れる実pipe検査を追加した。
+  全Rustテスト261件が成功。
 
 ## 次の受入作業
 

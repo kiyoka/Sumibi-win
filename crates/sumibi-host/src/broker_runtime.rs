@@ -1930,6 +1930,85 @@ mod tests {
     }
 
     #[test]
+    fn owner_loop_returns_a_worker_result_while_another_hello_is_partial() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (first_server, mut first_client) = connected(&stop, deadline);
+        runtime
+            .attach(first_server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut first_client, &stop, deadline);
+        let (second_server, mut second_client) = connected(&stop, deadline);
+        assert_eq!(runtime.reserve(second_server), Ok(2));
+        let second_hello = message::encode(&hello(2, id(90))).unwrap();
+        second_client
+            .write_all(second_hello[..5].to_vec(), &stop, deadline)
+            .unwrap();
+        first_client
+            .write_all(
+                message::encode(&convert(1, 1, 1, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        let mut owner = BrokerWorkLoop::new();
+        assert!(matches!(
+            owner.advance(&mut runtime, &stop, deadline, |_| {
+                |_: JobTicket| Ok("完了".into())
+            }),
+            Ok(OwnerStep::Submitted { key: 1, request: 1 })
+        ));
+        loop {
+            match owner
+                .advance(&mut runtime, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Completed {
+                    key: 1,
+                    request: 1,
+                    delivered: true,
+                    succeeded: true,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("partial Hello blocked or changed another connection"),
+            }
+        }
+        assert_eq!(runtime.pending_keys(), [2]);
+        assert!(matches!(
+            read_frame(&mut first_client, &stop, deadline).message,
+            message::Message::Result(result) if result.text == "完了"
+        ));
+        second_client
+            .write_all(second_hello[5..].to_vec(), &stop, deadline)
+            .unwrap();
+        assert!(matches!(
+            owner.advance(&mut runtime, &stop, deadline, |_| {
+                |_: JobTicket| Err(ErrorCode::Unavailable)
+            }),
+            Ok(OwnerStep::Broker(PollStep::Activated(2)))
+        ));
+        assert!(matches!(
+            read_frame(&mut second_client, &stop, deadline).message,
+            message::Message::Ready(ready) if ready.policy == policy
+        ));
+    }
+
+    #[test]
     fn owner_loop_rejects_new_request_when_cancelled_workers_fill_pool() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
