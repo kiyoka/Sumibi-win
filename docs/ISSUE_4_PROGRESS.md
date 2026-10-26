@@ -310,6 +310,9 @@
   worker内で現行の宛先を取得する。実pipe→loopback HTTP→元のpipeの結果と、
   HTTP応答待機中の失効をこの入口で検査した。全Rustテスト263件とClippyが成功。
   製品HTTPS adapterは未接続。
+- 同じ認証pipeの次要求を実際のloopback HTTP 503へ送り、workerが固定の
+  `Unavailable`だけを元のpipeへ返すことを検査した。2要求とも送信に同じ資格情報と
+  元本文を使い、結果成功の後も接続が有効なことを確認した。
 
 ## 次の受入作業
 

@@ -2172,7 +2172,7 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_pipe_worker_and_loopback_http_return_one_result() {
+    fn authenticated_pipe_worker_and_loopback_http_return_result_and_error() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {
             return;
@@ -2180,15 +2180,20 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let request = read_http_request(&mut stream);
+            let (mut first, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut first);
             let body = r#"{"text":"日本語"}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
-            stream.write_all(response.as_bytes()).unwrap();
-            request
+            first.write_all(response.as_bytes()).unwrap();
+            let (mut second, _) = listener.accept().unwrap();
+            let failed_request = read_http_request(&mut second);
+            second
+                .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            (request, failed_request)
         });
         let destination =
             Destination::new(Scheme::HttpLoopback, "127.0.0.1", port, "/convert").unwrap();
@@ -2247,13 +2252,6 @@ mod tests {
             read_frame(&mut client, &stop, deadline).message,
             message::Message::Result(result) if result.text == "日本語"
         ));
-        let request = server.join().unwrap();
-        assert!(request
-            .windows(b"Authorization: Bearer fixture".len())
-            .any(|part| part == b"Authorization: Bearer fixture"));
-        assert!(request
-            .windows(b"nihongo".len())
-            .any(|part| part == b"nihongo"));
         client
             .write_all(
                 message::encode(&convert(1, 1, 2, policy)).unwrap(),
@@ -2262,9 +2260,13 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
-            owner.advance(&mut runtime, &stop, deadline, |_| {
-                |_: JobTicket| Err(ErrorCode::Unavailable)
-            }),
+            owner.advance_manual(
+                &mut runtime,
+                source.clone(),
+                Arc::new(DiagnosticLoopbackHttp),
+                &stop,
+                deadline
+            ),
             Ok(OwnerStep::Submitted { key: 1, request: 2 })
         ));
         loop {
@@ -2291,6 +2293,15 @@ mod tests {
             message::Message::Error(error)
                 if error.request == 2 && error.code == ErrorCode::Unavailable
         ));
+        let (first_request, second_request) = server.join().unwrap();
+        for request in [&first_request, &second_request] {
+            assert!(request
+                .windows(b"Authorization: Bearer fixture".len())
+                .any(|part| part == b"Authorization: Bearer fixture"));
+            assert!(request
+                .windows(b"nihongo".len())
+                .any(|part| part == b"nihongo"));
+        }
         assert_eq!(owner.active_count(), 0);
     }
 
