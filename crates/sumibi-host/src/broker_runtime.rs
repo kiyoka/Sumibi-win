@@ -134,6 +134,8 @@ pub struct PublicationOutcome {
 
 /// Settings-side completion after the requested Host version has reached the
 /// admission gate and every prior endpoint has received it or been closed.
+/// This receipt does not prove that a cancelled worker's OS I/O has exited;
+/// the product settings path must also await bounded worker retirement.
 pub struct PolicyAcknowledgment {
     pub requested: PolicyVersion,
     pub current: Policy,
