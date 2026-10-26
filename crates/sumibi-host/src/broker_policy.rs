@@ -199,7 +199,12 @@ fn version(policy: Policy) -> PolicyVersion {
 mod tests {
     use super::*;
     use crate::manual::{Credential, Destination, Scheme};
+    use std::time::Duration;
+    use sumibi_ipc::{
+        Error as IpcError, Nonce, PinnedProcess, Pipe, Server, Stop, WriteBatch, WriteRequest,
+    };
     use sumibi_protocol::message::{Convert, Envelope, Hello, Id, Message, Revision, VERSION};
+    use sumibi_protocol::{message, Decoder};
 
     fn id(value: u128) -> Id {
         Id::new(value).unwrap()
@@ -207,6 +212,118 @@ mod tests {
 
     fn notice_keys(published: &Published) -> Vec<u64> {
         published.notices.iter().map(|(key, _)| *key).collect()
+    }
+
+    fn connected_pipe(stop: &Stop, deadline: Instant) -> (Pipe, Pipe) {
+        let name = Nonce::random().unwrap();
+        let server = Server::create(&name).unwrap();
+        std::thread::scope(|scope| {
+            let server_stop = stop.clone();
+            let accepted = scope.spawn(move || {
+                server.accept(PinnedProcess::current().unwrap(), &server_stop, deadline)
+            });
+            let client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+            (accepted.join().unwrap().unwrap(), client)
+        })
+    }
+
+    fn read_frame(pipe: &mut Pipe, stop: &Stop, deadline: Instant) -> Envelope {
+        let mut decoder = Decoder::default();
+        loop {
+            let read = pipe.start_read(stop, deadline).unwrap().wait().unwrap();
+            let decoded = decoder.decode(&read.bytes).unwrap();
+            assert_eq!(decoded.consumed, read.bytes.len());
+            if let Some(body) = decoded.body {
+                return message::decode(body).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn host_publication_reaches_two_real_pipes_before_receipt_completes() {
+        match PinnedProcess::current() {
+            Ok(_) => {}
+            Err(IpcError::UnsupportedElevation | IpcError::UnsupportedAppContainer) => return,
+            Err(error) => panic!("current process identity failed: {error:?}"),
+        }
+        let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
+        let source = PolicyAuthority::new(destination.clone());
+        let initial = source.wire_policy().unwrap();
+        let gate = BrokerPolicyGate::new(initial).unwrap();
+        let mut fanout = PolicyFanout::new(id(90), initial).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut server_one, mut client_one) = connected_pipe(&stop, deadline);
+        let (mut server_two, mut client_two) = connected_pipe(&stop, deadline);
+        for (key, server, client) in [
+            (1, &mut server_one, &mut client_one),
+            (2, &mut server_two, &mut client_two),
+        ] {
+            let ready = fanout
+                .attach(
+                    key,
+                    Envelope {
+                        version: VERSION,
+                        session: id(key.into()),
+                        generation: 1,
+                        message: Message::Hello(Hello { broker: id(90) }),
+                    },
+                    Instant::now(),
+                )
+                .unwrap();
+            server
+                .write_all(message::encode(&ready).unwrap(), &stop, deadline)
+                .unwrap();
+            assert!(matches!(
+                read_frame(client, &stop, deadline).message,
+                Message::Ready(_)
+            ));
+            fanout.ready_delivered(key).unwrap();
+        }
+        let mut relay = BrokerPolicyRelay::new(&source, &gate, &fanout).unwrap();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut published = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
+        assert_eq!(notice_keys(&published), [1, 2]);
+        assert!(!published.delivery.is_complete());
+        let mut batch = WriteBatch::new(vec![
+            WriteRequest {
+                pipe: &mut server_one,
+                bytes: message::encode(&published.notices[0].1.frame).unwrap(),
+                stop: &stop,
+                deadline,
+            },
+            WriteRequest {
+                pipe: &mut server_two,
+                bytes: message::encode(&published.notices[1].1.frame).unwrap(),
+                stop: &stop,
+                deadline,
+            },
+        ])
+        .unwrap();
+        for _ in 0..2 {
+            let (index, result) = batch.wait_next().unwrap().unwrap();
+            result.unwrap();
+            let key = published.notices[index].0;
+            fanout.notice_delivered(key, published.policy).unwrap();
+            published
+                .delivery
+                .notice_delivered(id(90), key, published.policy)
+                .unwrap();
+        }
+        assert!(batch.wait_next().unwrap().is_none());
+        assert_eq!(
+            published.delivery.completion(),
+            Some(DeliveryCompletion::ExactOrClosed)
+        );
+        for client in [&mut client_one, &mut client_two] {
+            assert!(matches!(
+                read_frame(client, &stop, deadline).message,
+                Message::PolicyChanged(policy) if policy == published.policy
+            ));
+        }
     }
 
     #[test]

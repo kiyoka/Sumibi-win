@@ -15,6 +15,8 @@
 `PolicyFanout`がある。`sumibi-host`には設定・資格情報・明示同意の
 `PolicyAuthority`、要求の前後を検査する`manual::convert`、
 Hostの版をBrokerの受付ゲートとFanoutへ渡す`BrokerPolicyRelay`がある。
+Hostの単体結合検査では、Relayの公開通知を同一processの認証済み2本の
+実pipeへ書き、各完了で配送receiptを進め、client側の受信版を照合した。
 実子Brokerの2接続検査は、同じ親processから開いた2本のpipeである。
 異なるTIP processによる共有Hostの発見と接続、Hostの政策元から実pipeへの
 配送、設定UIの完了通知はまだ製品で結ばれていない。
