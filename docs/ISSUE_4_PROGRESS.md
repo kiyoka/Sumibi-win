@@ -184,7 +184,8 @@
   物理切断、配送receipt、取消対象の接続keyと要求番号、誤ったHelloやReady失敗後の
   key消費、未公開の設定変更での旧本文拒否、内部状態不一致後の終端を実pipeで確認。
   同じclient寿命IDの再接続では、旧世代Helloと要求番号の再使用を拒否した。
-  全Rustテスト221件が成功（[ADR 0063](adr/0063-host-policy-runtime.md)）。
+  未来IDの不正Cancelはその接続だけを退役させ、他方の保留要求と次要求を維持した。
+  全Rustテスト222件が成功（[ADR 0063](adr/0063-host-policy-runtime.md)）。
   製品Host EXEの主ループと異なるTIP processへの接続は未実装。
 
 ## 次の受入作業

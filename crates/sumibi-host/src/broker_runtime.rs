@@ -342,7 +342,7 @@ mod tests {
     use sumibi_ipc::{Nonce, PinnedProcess, Server};
     use sumibi_protocol::{
         broker_session::{BrokerError, Event},
-        message::{Convert, Hello, Revision},
+        message::{Cancel, Convert, Hello, Revision},
         Decoder,
     };
 
@@ -714,6 +714,68 @@ mod tests {
         read_frame(&mut third_client, &stop, deadline);
         assert!(matches!(
             runtime.receive(4, convert(1, 3, 2, policy), Instant::now()),
+            Ok(Event::Convert(_))
+        ));
+    }
+
+    #[test]
+    fn invalid_cancel_retires_only_its_connection() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (first_server, mut first_client) = connected(&stop, deadline);
+        let (second_server, mut second_client) = connected(&stop, deadline);
+        runtime
+            .attach(first_server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        runtime
+            .attach(second_server, hello(2, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut first_client, &stop, deadline);
+        read_frame(&mut second_client, &stop, deadline);
+        assert!(matches!(
+            runtime.receive(1, convert(1, 1, 1, policy), Instant::now()),
+            Ok(Event::Convert(_))
+        ));
+        assert!(matches!(
+            runtime.receive(2, convert(2, 1, 1, policy), Instant::now()),
+            Ok(Event::Convert(_))
+        ));
+        let future_cancel = Envelope {
+            version: message::VERSION,
+            session: id(2),
+            generation: 1,
+            message: message::Message::Cancel(Cancel { request: 2 }),
+        };
+        assert!(matches!(
+            runtime.receive(2, future_cancel, Instant::now()),
+            Err(RuntimeError::Fanout(FanoutError::Broker(
+                BrokerError::InvalidMessage
+            )))
+        ));
+        assert_eq!(runtime.active_count(), 1);
+        let valid_cancel = Envelope {
+            version: message::VERSION,
+            session: id(1),
+            generation: 1,
+            message: message::Message::Cancel(Cancel { request: 1 }),
+        };
+        assert!(matches!(
+            runtime.receive(1, valid_cancel, Instant::now()),
+            Ok(Event::Cancelled(1))
+        ));
+        assert!(matches!(
+            runtime.receive(1, convert(1, 1, 2, policy), Instant::now()),
             Ok(Event::Convert(_))
         ));
     }
