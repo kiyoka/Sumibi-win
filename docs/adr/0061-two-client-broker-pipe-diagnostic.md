@@ -40,6 +40,8 @@ HelloのID自体はOS peer認証の代わりではない。
 Brokerはもう片方へのReadyを完了させた後、切断先へのReadyの`WriteFile`が
 失敗することを確認し、その接続だけを退役させる。生き残った接続の新しい
 要求は固定結果を受ける。
+さらに片方が誤ったBroker起動IDのHelloを送った場合、その認証済みpipeだけを
+拒否・切断する。もう片方の正しいHelloはReadyと結果へ進む。
 
 別の診断では、Ready後に片方のclientがpipeを閉じる。Brokerはその切断を
 閉じた後にもう一方のclientが要求を送る。Brokerは切断した接続をまだ通知先として

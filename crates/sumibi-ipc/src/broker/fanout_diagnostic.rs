@@ -7,6 +7,7 @@ enum Scenario {
     FailedWrite,
     Lagging,
     ReadyFailure,
+    BadHello,
 }
 
 impl Scenario {
@@ -16,6 +17,7 @@ impl Scenario {
             Self::FailedWrite => Mode::DiagnosticFanoutFailedNotice,
             Self::Lagging => Mode::DiagnosticFanoutLaggingNotice,
             Self::ReadyFailure => Mode::DiagnosticFanoutReadyFailure,
+            Self::BadHello => Mode::DiagnosticFanoutBadHello,
         }
     }
 }

@@ -10,6 +10,7 @@ pub fn probe(path: &std::path::Path) -> Result<()> {
         Scenario::FailedWrite,
         Scenario::Lagging,
         Scenario::ReadyFailure,
+        Scenario::BadHello,
     ] {
         for reversed in [false, true] {
             diagnostic_two_client_probe_once(path, reversed, scenario)?;
@@ -42,14 +43,25 @@ fn diagnostic_two_client_probe_once(
     let mut inboxes = [Inbox::default(), Inbox::default()];
     for (index, client) in clients.iter_mut().enumerate() {
         let pipe = if index == 0 { &mut first } else { &mut second };
-        pipe.write_all(
-            client.hello().map_err(|_| Error::InvalidMessage)?,
-            &stop,
-            deadline,
-        )?;
+        let hello = if index == 1 && scenario == Scenario::BadHello {
+            message::encode(&Envelope {
+                version: VERSION,
+                session: Id::new(2).ok_or(Error::InvalidMessage)?,
+                generation: 1,
+                message: Message::Hello(Hello {
+                    broker: Id::new(999).ok_or(Error::InvalidMessage)?,
+                }),
+            })
+            .map_err(|_| Error::InvalidMessage)?
+        } else {
+            client.hello().map_err(|_| Error::InvalidMessage)?
+        };
+        pipe.write_all(hello, &stop, deadline)?;
     }
-    if scenario == Scenario::ReadyFailure {
-        return probe_ready_failure(first, second, clients, inboxes, &stop, deadline);
+    if matches!(scenario, Scenario::ReadyFailure | Scenario::BadHello) {
+        return probe_second_handshake_failure(
+            first, second, clients, inboxes, scenario, &stop, deadline,
+        );
     }
     for (index, client) in clients.iter_mut().enumerate() {
         let pipe = if index == 0 { &mut first } else { &mut second };
@@ -217,14 +229,16 @@ fn diagnostic_two_client_probe_once(
     Ok(())
 }
 
-fn probe_ready_failure(
+fn probe_second_handshake_failure(
     mut first: Pipe,
     second: Pipe,
     mut clients: [ClientSession; 2],
     mut inboxes: [Inbox; 2],
+    scenario: Scenario,
     stop: &Stop,
     deadline: Instant,
 ) -> Result<()> {
+    let mut second = Some(second);
     let ClientEvent::Ready(policy) =
         read_event(&mut first, &mut clients[0], &mut inboxes[0], stop, deadline)?
     else {
@@ -233,12 +247,26 @@ fn probe_ready_failure(
     if policy.authorization != 1 || !policy.allowed {
         return Err(Error::InvalidMessage);
     }
-    drop(second);
-    clients[1].disconnect();
+    if scenario == Scenario::ReadyFailure {
+        drop(second.take());
+        clients[1].disconnect();
+    }
     let request = clients[0]
         .begin(1, "nihongo", 5000, Instant::now())
         .map_err(|_| Error::InvalidMessage)?;
     first.write_all(request, stop, deadline)?;
+    if scenario == Scenario::BadHello {
+        let closed = second
+            .as_mut()
+            .ok_or(Error::InvalidMessage)?
+            .start_read(stop, deadline)
+            .and_then(|operation| operation.wait())
+            .err();
+        if !matches!(closed, Some(Error::Disconnected | Error::Closed)) {
+            return Err(Error::InvalidMessage);
+        }
+        clients[1].disconnect();
+    }
     let ClientEvent::Reply {
         request: 1,
         outcome: Outcome::Result(text),

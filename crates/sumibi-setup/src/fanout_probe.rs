@@ -26,7 +26,7 @@ pub(super) fn run(default_host: bool) -> Result<()> {
             println!("Broker fanout / default Host rejects two-client diagnostic service: OK");
         } else {
             result?;
-            println!("Broker fanout / two pipe orders, isolated expiry, revoke, regrant, cancel, lagging retirement, failed Ready and notice writes, reconnect: OK");
+            println!("Broker fanout / two pipe orders, isolated expiry, revoke, regrant, cancel, lagging retirement, bad Hello, failed Ready and notice writes, reconnect: OK");
             let baseline = handle_count()?;
             diagnostic_two_client_probe(&path)?;
             assert_eq!(handle_count()?, baseline, "broker-fanout parent handle leak");

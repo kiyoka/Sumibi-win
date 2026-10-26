@@ -8,6 +8,7 @@ pub(crate) fn serve_fanout(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Re
         Mode::DiagnosticFanoutFailedNotice if diagnostic_enabled => Scenario::FailedWrite,
         Mode::DiagnosticFanoutLaggingNotice if diagnostic_enabled => Scenario::Lagging,
         Mode::DiagnosticFanoutReadyFailure if diagnostic_enabled => Scenario::ReadyFailure,
+        Mode::DiagnosticFanoutBadHello if diagnostic_enabled => Scenario::BadHello,
         _ => return Err(Error::PolicyDenied),
     };
     let first = Server::create_pair(&bootstrap.name)?;
@@ -41,12 +42,13 @@ pub(crate) fn serve_fanout(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Re
     };
     let gate = BrokerPolicyGate::new(policy)?;
     let mut order = PolicyFanout::new(bootstrap.boot.id(), policy).map_err(map_fanout_error)?;
-    if scenario == Scenario::ReadyFailure {
-        return serve_ready_failure(
+    if matches!(scenario, Scenario::ReadyFailure | Scenario::BadHello) {
+        return serve_second_handshake_failure(
             bootstrap,
             gate,
             order,
             [(first, first_hello), (second, second_hello)],
+            scenario,
             deadline,
         );
     }
@@ -293,11 +295,12 @@ pub(crate) fn serve_fanout(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Re
     Ok(())
 }
 
-fn serve_ready_failure(
+fn serve_second_handshake_failure(
     bootstrap: Bootstrap,
     gate: BrokerPolicyGate,
     mut order: PolicyFanout,
     connections: [(Pipe, Envelope); 2],
+    scenario: Scenario,
     deadline: Instant,
 ) -> Result<()> {
     let [(mut first, first_hello), (mut second, second_hello)] = connections;
@@ -318,21 +321,36 @@ fn serve_ready_failure(
         return Err(Error::InvalidMessage);
     };
     gate.authorize(convert.revision)?;
-    let ready = order
-        .attach(2, second_hello, Instant::now())
-        .map_err(map_fanout_error)?;
-    if !matches!(
-        second
-            .write_all(
-                message::encode(&ready).map_err(|_| Error::InvalidMessage)?,
-                &bootstrap.stop,
-                deadline,
-            )
-            .err(),
-        Some(Error::Disconnected)
-    ) || !order.detach(2)
-        || order.active_count() != 1
-    {
+    match scenario {
+        Scenario::ReadyFailure => {
+            let ready = order
+                .attach(2, second_hello, Instant::now())
+                .map_err(map_fanout_error)?;
+            if !matches!(
+                second
+                    .write_all(
+                        message::encode(&ready).map_err(|_| Error::InvalidMessage)?,
+                        &bootstrap.stop,
+                        deadline,
+                    )
+                    .err(),
+                Some(Error::Disconnected)
+            ) || !order.detach(2)
+            {
+                return Err(Error::InvalidMessage);
+            }
+        }
+        Scenario::BadHello => {
+            if !matches!(
+                order.attach(2, second_hello, Instant::now()),
+                Err(FanoutError::Broker(BrokerError::WrongBroker))
+            ) {
+                return Err(Error::InvalidMessage);
+            }
+        }
+        _ => return Err(Error::InvalidMessage),
+    }
+    if order.active_count() != 1 {
         return Err(Error::InvalidMessage);
     }
     drop(second);

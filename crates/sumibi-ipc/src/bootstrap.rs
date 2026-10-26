@@ -18,6 +18,7 @@ pub enum Mode {
     DiagnosticFanoutFailedNotice,
     DiagnosticFanoutLaggingNotice,
     DiagnosticFanoutReadyFailure,
+    DiagnosticFanoutBadHello,
     DiagnosticRevoke,
     DiagnosticRevokeIdle,
     DiagnosticRevokeCoalesced,
@@ -53,6 +54,7 @@ impl Mode {
             Self::DiagnosticFanoutFailedNotice => Ok("fanout-failed-notice".into()),
             Self::DiagnosticFanoutLaggingNotice => Ok("fanout-lagging-notice".into()),
             Self::DiagnosticFanoutReadyFailure => Ok("fanout-ready-failure".into()),
+            Self::DiagnosticFanoutBadHello => Ok("fanout-bad-hello".into()),
             Self::DiagnosticRevoke => Ok("revoke".into()),
             Self::DiagnosticRevokeIdle => Ok("revoke-idle".into()),
             Self::DiagnosticRevokeCoalesced => Ok("revoke-coalesced".into()),
@@ -165,6 +167,7 @@ impl Launched {
                 | Mode::DiagnosticFanoutFailedNotice
                 | Mode::DiagnosticFanoutLaggingNotice
                 | Mode::DiagnosticFanoutReadyFailure
+                | Mode::DiagnosticFanoutBadHello
         ) {
             return Err(Error::InvalidArgument);
         }
@@ -325,6 +328,7 @@ impl Bootstrap {
             "fanout-failed-notice" => Mode::DiagnosticFanoutFailedNotice,
             "fanout-lagging-notice" => Mode::DiagnosticFanoutLaggingNotice,
             "fanout-ready-failure" => Mode::DiagnosticFanoutReadyFailure,
+            "fanout-bad-hello" => Mode::DiagnosticFanoutBadHello,
             value => {
                 let delay_ms = value
                     .strip_prefix("fixed:")
