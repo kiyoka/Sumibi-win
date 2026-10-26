@@ -219,15 +219,8 @@ fn serve_failed_notice(
         return Err(Error::InvalidMessage);
     };
     gate.authorize(convert.revision)?;
-    // Observe the other client's close before publication so the write failure
-    // is deterministic, while leaving its Fanout entry until that write fails.
-    let closed = second
-        .start_read(&bootstrap.stop, deadline)
-        .and_then(|operation| operation.wait())
-        .err();
-    if !matches!(closed, Some(Error::Disconnected | Error::Closed)) {
-        return Err(Error::InvalidMessage);
-    }
+    // The parent closes its second handle before sending the first client's
+    // request. Keep the stale Fanout entry so the notice reaches WriteFile.
     let initial = gate.snapshot()?;
     let revoked = Policy {
         authorization: initial.authorization + 1,
@@ -265,7 +258,7 @@ fn serve_failed_notice(
             }
             2 if notice.cancelled.is_none() => {
                 let failed = second.write_all(frame, &bootstrap.stop, deadline).err();
-                if !matches!(failed, Some(Error::Disconnected | Error::Closed)) {
+                if !matches!(failed, Some(Error::Disconnected)) {
                     return Err(Error::InvalidMessage);
                 }
                 if !order.detach(2) {
