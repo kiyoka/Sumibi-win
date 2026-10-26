@@ -322,10 +322,17 @@ impl PolicyFanout {
         let result = self.subscribers[index]
             .session
             .result(request, revision, text, now);
-        if result.is_err() {
-            self.subscribers.remove(index);
+        match result {
+            // A worker can complete after the deadline but before the timer
+            // calls expire. The request is consumed; the session is still
+            // valid and can accept its next monotonically numbered request.
+            Err(BrokerError::Expired) => Ok(None),
+            Err(error) => {
+                self.subscribers.remove(index);
+                Err(FanoutError::Broker(error))
+            }
+            Ok(reply) => Ok(reply),
         }
-        result.map_err(FanoutError::Broker)
     }
 
     pub fn error(
@@ -340,10 +347,14 @@ impl PolicyFanout {
         let result = self.subscribers[index]
             .session
             .error(request, revision, code, now);
-        if result.is_err() {
-            self.subscribers.remove(index);
+        match result {
+            Err(BrokerError::Expired) => Ok(None),
+            Err(error) => {
+                self.subscribers.remove(index);
+                Err(FanoutError::Broker(error))
+            }
+            Ok(reply) => Ok(reply),
         }
-        result.map_err(FanoutError::Broker)
     }
 
     /// Retire one request silently when its local deadline passes. The caller
@@ -899,6 +910,47 @@ mod tests {
         ));
         assert!(matches!(
             fanout.receive(1, convert(1, 2, policy()), deadline),
+            Ok(Event::Convert(_))
+        ));
+    }
+
+    #[test]
+    fn late_worker_completion_before_timer_keeps_connection_reusable() {
+        let now = Instant::now();
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        attach_ready(&mut fanout, 1, 1, now);
+        attach_ready(&mut fanout, 2, 2, now);
+        fanout.receive(1, convert(1, 1, policy()), now).unwrap();
+        fanout.receive(2, convert(2, 1, policy()), now).unwrap();
+        let deadline = now + std::time::Duration::from_millis(1000);
+        let revision = Revision {
+            input: 1,
+            settings: 1,
+            authorization: 1,
+        };
+        // The worker wins the scheduler race with expire, but its success is
+        // already too late for the client. It must not retire this transport.
+        assert!(fanout
+            .result(1, 1, revision, "遅延".into(), deadline)
+            .unwrap()
+            .is_none());
+        assert_eq!(fanout.active_count(), 2);
+        assert_eq!(fanout.expire(1, deadline).unwrap(), None);
+        assert!(fanout
+            .result(2, 1, revision, "継続".into(), now)
+            .unwrap()
+            .is_some());
+        fanout
+            .receive(1, convert(1, 2, policy()), deadline)
+            .unwrap();
+        let second_deadline = deadline + std::time::Duration::from_millis(1000);
+        assert!(fanout
+            .error(1, 2, revision, ErrorCode::Unavailable, second_deadline)
+            .unwrap()
+            .is_none());
+        assert_eq!(fanout.active_count(), 2);
+        assert!(matches!(
+            fanout.receive(1, convert(1, 3, policy()), second_deadline),
             Ok(Event::Convert(_))
         ));
     }
