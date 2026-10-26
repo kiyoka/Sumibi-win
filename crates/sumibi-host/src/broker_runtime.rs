@@ -721,6 +721,20 @@ impl<'a> BrokerPolicyRuntime<'a> {
         if deadline <= started || deadline > started + Duration::from_millis(500) {
             return Err(RuntimeError::Transport(IpcError::InvalidArgument));
         }
+        let ticket = self.job_ticket(reply.key, reply.request);
+        if ticket
+            .as_ref()
+            .is_some_and(|ticket| ticket.revision != reply.revision)
+        {
+            self.close(reply.key);
+            return Err(RuntimeError::Incomplete);
+        }
+        let ticket_deadline = ticket.map(|ticket| ticket.deadline());
+        if ticket_deadline.is_some_and(|limit| started >= limit) {
+            self.expire(reply.key, started)?;
+            self.remove_job(reply.key, reply.request, true);
+            return Ok(false);
+        }
         let result = (|| {
             let _source = self
                 .source
@@ -730,6 +744,9 @@ impl<'a> BrokerPolicyRuntime<'a> {
                 .gate
                 .authorize_for_publish(reply.revision)
                 .map_err(RuntimeError::Transport)?;
+            if ticket_deadline.is_some_and(|limit| Instant::now() >= limit) {
+                return Ok(false);
+            }
             let Some(prepared) = prepare(&mut self.fanout).map_err(RuntimeError::Fanout)? else {
                 return Ok(false);
             };
@@ -741,12 +758,21 @@ impl<'a> BrokerPolicyRuntime<'a> {
                 .ok_or(RuntimeError::MissingPipe)?;
             connection
                 .pipe
-                .write_all(frame, stop, deadline)
+                .write_all(
+                    frame,
+                    stop,
+                    ticket_deadline.map_or(deadline, |limit| deadline.min(limit)),
+                )
                 .map_err(RuntimeError::Transport)?;
             Ok(true)
         })();
         match result {
-            Ok(delivered) => self.remove_job(reply.key, reply.request, !delivered),
+            Ok(delivered) => {
+                if !delivered && ticket_deadline.is_some_and(|limit| Instant::now() >= limit) {
+                    self.expire(reply.key, Instant::now())?;
+                }
+                self.remove_job(reply.key, reply.request, !delivered);
+            }
             Err(
                 RuntimeError::Source(ChangeError::Unavailable)
                 | RuntimeError::Transport(IpcError::PolicyDenied),
@@ -1722,6 +1748,76 @@ mod tests {
             workers.submit(runtime.job_ticket(1, 2).unwrap(), |_| Ok("遅延".into())),
             Err(WorkerPoolError::Expired)
         );
+    }
+
+    #[test]
+    fn result_completed_before_deadline_is_not_written_after_owner_delay() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (server, mut client) = connected(&stop, deadline);
+        runtime
+            .attach(server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut client, &stop, deadline);
+        let accepted_at = Instant::now() - Duration::from_secs(2);
+        runtime
+            .receive(1, convert(1, 1, 1, policy), accepted_at)
+            .unwrap();
+        let ticket = runtime.job_ticket(1, 1).unwrap();
+        let finished_early = ticket.reply_context(accepted_at + Duration::from_millis(100));
+        let now = Instant::now();
+        assert_eq!(
+            runtime.publish_result(
+                finished_early,
+                "古い結果".into(),
+                &stop,
+                now + Duration::from_millis(500)
+            ),
+            Ok(false)
+        );
+        assert!(ticket.is_cancelled());
+        assert_eq!(runtime.active_keys(), [1]);
+        client
+            .write_all(
+                message::encode(&convert(1, 1, 2, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        assert!(matches!(
+            runtime.poll_once(&stop, deadline),
+            Ok(PollStep::Received {
+                key: 1,
+                event: Event::Convert(request)
+            }) if request.request == 2
+        ));
+        let mut forged = runtime
+            .job_ticket(1, 2)
+            .unwrap()
+            .reply_context(Instant::now());
+        forged.revision.authorization += 1;
+        let now = Instant::now();
+        assert_eq!(
+            runtime.publish_result(
+                forged,
+                "不一致".into(),
+                &stop,
+                now + Duration::from_millis(500)
+            ),
+            Err(RuntimeError::Incomplete)
+        );
+        assert_eq!(runtime.active_count(), 0);
     }
 
     #[test]
