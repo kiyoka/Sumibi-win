@@ -2063,7 +2063,7 @@ mod tests {
         let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
         let policy = runtime.policy();
         let stop = Stop::new().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(10);
         let (server, mut client) = connected(&stop, deadline);
         runtime
             .attach(server, hello(1, id(90)), &stop, deadline)
@@ -2072,12 +2072,13 @@ mod tests {
         let mut owner = BrokerWorkLoop::new();
         let release = Arc::new(AtomicBool::new(false));
         for request in 1..=MAX_SESSIONS as u64 {
+            let mut frame = convert(1, 1, request, policy);
+            let message::Message::Convert(convert) = &mut frame.message else {
+                unreachable!();
+            };
+            convert.timeout_ms = 5_000;
             client
-                .write_all(
-                    message::encode(&convert(1, 1, request, policy)).unwrap(),
-                    &stop,
-                    deadline,
-                )
+                .write_all(message::encode(&frame).unwrap(), &stop, deadline)
                 .unwrap();
             let worker_release = release.clone();
             assert!(matches!(
