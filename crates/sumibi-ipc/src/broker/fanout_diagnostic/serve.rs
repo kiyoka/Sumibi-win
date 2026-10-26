@@ -733,47 +733,27 @@ fn write_fanout_notices(
         }
         *slot = Some(message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?);
     }
-    // Start both bounded overlapped writes before waiting on either endpoint.
-    // Complete whichever is ready first; one slow connection does not impose
-    // its wait on the other connection's notification.
-    let mut first_write = Some(first.start_write(
-        frames[0].take().ok_or(Error::InvalidMessage)?,
-        stop,
-        deadline,
-    )?);
-    let mut second_write = Some(second.start_write(
-        frames[1].take().ok_or(Error::InvalidMessage)?,
-        stop,
-        deadline,
-    )?);
-    while first_write.is_some() || second_write.is_some() {
-        let ready = match (&first_write, &second_write) {
-            (Some(first), Some(second)) => crate::wait_any(&[first, second])?,
-            (Some(first), None) => crate::wait_any(&[first])?,
-            (None, Some(second)) => 1 + crate::wait_any(&[second])?,
-            (None, None) => break,
-        };
-        if ready == 0 {
-            first_write = first_write
-                .take()
-                .ok_or(Error::InvalidMessage)?
-                .advance_write()?;
-            if first_write.is_none() {
-                order
-                    .notice_delivered(1, policy)
-                    .map_err(map_fanout_error)?;
-            }
-        } else {
-            second_write = second_write
-                .take()
-                .ok_or(Error::InvalidMessage)?
-                .advance_write()?;
-            if second_write.is_none() {
-                order
-                    .notice_delivered(2, policy)
-                    .map_err(map_fanout_error)?;
-            }
-        }
+    // Start both overlapped writes before waiting. Keep the Fanout outside
+    // pipe borrows and acknowledge each exact epoch only after its full write.
+    let mut batch = crate::WriteBatch::new(vec![
+        crate::WriteRequest {
+            pipe: first,
+            bytes: frames[0].take().ok_or(Error::InvalidMessage)?,
+            stop,
+            deadline,
+        },
+        crate::WriteRequest {
+            pipe: second,
+            bytes: frames[1].take().ok_or(Error::InvalidMessage)?,
+            stop,
+            deadline,
+        },
+    ])?;
+    while let Some((index, result)) = batch.wait_next()? {
+        result?;
+        order
+            .notice_delivered(index as u64 + 1, policy)
+            .map_err(map_fanout_error)?;
     }
     Ok(())
 }

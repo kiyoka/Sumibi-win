@@ -362,6 +362,99 @@ pub fn wait_any(operations: &[&Operation<'_>]) -> Result<usize> {
         Err(last_error())
     }
 }
+
+/// One bounded write per authenticated endpoint. The batch owns the live
+/// operations until the caller receives each completion or drops the batch.
+pub struct WriteRequest<'a> {
+    pub pipe: &'a mut Pipe,
+    pub bytes: Vec<u8>,
+    pub stop: &'a Stop,
+    pub deadline: Instant,
+}
+
+#[must_use = "collect each endpoint result or dropping the batch cancels pending writes"]
+pub struct WriteBatch<'a> {
+    writes: Vec<Option<Operation<'a>>>,
+    start_errors: Vec<Option<Error>>,
+    remaining: usize,
+    cursor: usize,
+}
+
+impl<'a> WriteBatch<'a> {
+    /// Start all writes before waiting. Individual start failures are returned
+    /// by `wait_next`, so one bad endpoint does not discard another live write.
+    pub fn new(requests: Vec<WriteRequest<'a>>) -> Result<Self> {
+        if requests.is_empty() || requests.len() > MAX_ENDPOINTS {
+            return Err(Error::InvalidArgument);
+        }
+        let remaining = requests.len();
+        let mut writes = Vec::with_capacity(remaining);
+        let mut start_errors = Vec::with_capacity(remaining);
+        for request in requests {
+            match request
+                .pipe
+                .start_write(request.bytes, request.stop, request.deadline)
+            {
+                Ok(write) => {
+                    writes.push(Some(write));
+                    start_errors.push(None);
+                }
+                Err(error) => {
+                    writes.push(None);
+                    start_errors.push(Some(error));
+                }
+            }
+        }
+        Ok(Self {
+            writes,
+            start_errors,
+            remaining,
+            cursor: 0,
+        })
+    }
+
+    /// Return the next completed endpoint in input order coordinates. A
+    /// partial transfer is restarted and goes to the back of the ready scan.
+    /// The caller decides whether a failed endpoint should be detached.
+    pub fn wait_next(&mut self) -> Result<Option<(usize, Result<()>)>> {
+        if self.remaining == 0 {
+            return Ok(None);
+        }
+        if let Some((index, error)) = self
+            .start_errors
+            .iter_mut()
+            .enumerate()
+            .find_map(|(index, error)| error.take().map(|error| (index, error)))
+        {
+            self.remaining -= 1;
+            return Ok(Some((index, Err(error))));
+        }
+        loop {
+            let index = {
+                let live: Vec<_> = (0..self.writes.len())
+                    .map(|offset| (self.cursor + offset) % self.writes.len())
+                    .filter_map(|index| self.writes[index].as_ref().map(|write| (index, write)))
+                    .collect();
+                let selected = wait_any(&live.iter().map(|(_, write)| *write).collect::<Vec<_>>())?;
+                live[selected].0
+            };
+            self.cursor = (index + 1) % self.writes.len();
+            let write = self.writes[index].take().expect("selected live write");
+            match write.advance_write() {
+                Ok(Some(remaining)) => self.writes[index] = Some(remaining),
+                Ok(None) => {
+                    self.remaining -= 1;
+                    return Ok(Some((index, Ok(()))));
+                }
+                Err(error) => {
+                    self.remaining -= 1;
+                    return Ok(Some((index, Err(error))));
+                }
+            }
+        }
+    }
+}
+
 impl Operation<'_> {
     fn start<'a>(
         owner: &'a mut Pipe,
@@ -979,15 +1072,22 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         let (mut slow_server, _slow_client) = connected_one(&setup_stop, deadline);
         let (mut fast_server, mut fast_client) = connected_one(&setup_stop, deadline);
-        let slow = slow_server
-            .start_write(vec![7; MAX_IO], &slow_stop, deadline)
-            .unwrap();
-        assert!(slow.is_pending());
-        let fast = fast_server
-            .start_write(vec![8], &fast_stop, deadline)
-            .unwrap();
-        assert_eq!(wait_any(&[&slow, &fast]).unwrap(), 1);
-        assert!(fast.advance_write().unwrap().is_none());
+        let mut batch = WriteBatch::new(vec![
+            WriteRequest {
+                pipe: &mut slow_server,
+                bytes: vec![7; MAX_IO],
+                stop: &slow_stop,
+                deadline,
+            },
+            WriteRequest {
+                pipe: &mut fast_server,
+                bytes: vec![8],
+                stop: &fast_stop,
+                deadline,
+            },
+        ])
+        .unwrap();
+        assert!(matches!(batch.wait_next(), Ok(Some((1, Ok(()))))));
         assert_eq!(
             fast_client
                 .start_read(&fast_stop, deadline)
@@ -998,7 +1098,12 @@ mod tests {
             [8]
         );
         slow_stop.cancel().unwrap();
-        assert!(matches!(slow.advance_write(), Err(Error::Cancelled)));
+        assert!(matches!(
+            batch.wait_next(),
+            Ok(Some((0, Err(Error::Cancelled))))
+        ));
+        assert!(matches!(batch.wait_next(), Ok(None)));
+        drop(batch);
         fast_server
             .write_all(vec![9], &fast_stop, deadline)
             .unwrap();
@@ -1010,6 +1115,51 @@ mod tests {
                 .unwrap()
                 .bytes,
             [9]
+        );
+    }
+
+    #[test]
+    fn failed_write_start_does_not_discard_another_pipe_notification() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let setup_stop = Stop::new().unwrap();
+        let failed_stop = Stop::new().unwrap();
+        let live_stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut failed_server, _failed_client) = connected_one(&setup_stop, deadline);
+        let (mut live_server, mut live_client) = connected_one(&setup_stop, deadline);
+        failed_stop.cancel().unwrap();
+        let mut batch = WriteBatch::new(vec![
+            WriteRequest {
+                pipe: &mut failed_server,
+                bytes: vec![1],
+                stop: &failed_stop,
+                deadline,
+            },
+            WriteRequest {
+                pipe: &mut live_server,
+                bytes: vec![2],
+                stop: &live_stop,
+                deadline,
+            },
+        ])
+        .unwrap();
+        assert!(matches!(
+            batch.wait_next(),
+            Ok(Some((0, Err(Error::Cancelled))))
+        ));
+        assert!(matches!(batch.wait_next(), Ok(Some((1, Ok(()))))));
+        assert!(matches!(batch.wait_next(), Ok(None)));
+        assert_eq!(
+            live_client
+                .start_read(&live_stop, deadline)
+                .unwrap()
+                .wait()
+                .unwrap()
+                .bytes,
+            [2]
         );
     }
 
