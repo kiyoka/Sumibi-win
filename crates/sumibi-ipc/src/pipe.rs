@@ -877,16 +877,65 @@ mod tests {
             let receiver = scope.spawn(|| {
                 let mut received = Vec::new();
                 while received.len() < expected.len() {
-                    received.extend(client.start_read(&stop, deadline).unwrap().wait().unwrap().bytes);
+                    received.extend(
+                        client
+                            .start_read(&stop, deadline)
+                            .unwrap()
+                            .wait()
+                            .unwrap()
+                            .bytes,
+                    );
                 }
                 received
             });
-            let mut write = Some(server.start_write(expected.clone(), &stop, deadline).unwrap());
+            let mut write = Some(
+                server
+                    .start_write(expected.clone(), &stop, deadline)
+                    .unwrap(),
+            );
             while let Some(operation) = write.take() {
                 write = operation.advance_write().unwrap();
             }
             assert_eq!(receiver.join().unwrap(), expected);
         });
+    }
+
+    #[test]
+    fn partial_write_restarts_only_the_unwritten_suffix() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut server, mut client) = connected_one(&stop, deadline);
+        let mut write = server
+            .start_write(vec![1, 2, 3, 4], &stop, deadline)
+            .unwrap();
+        write.finish().unwrap();
+        let state = write.state.as_mut().unwrap();
+        assert_eq!(state.transferred, 4);
+        // A four-byte write completes atomically on this fixture. Model a
+        // two-byte kernel completion to exercise the otherwise rare restart.
+        // The first four bytes are already on the wire in this test.
+        state.transferred = 2;
+        let mut write = write.advance_write().unwrap();
+        assert!(write.is_some());
+        while let Some(operation) = write.take() {
+            write = operation.advance_write().unwrap();
+        }
+        let mut received = Vec::new();
+        while received.len() < 6 {
+            received.extend(
+                client
+                    .start_read(&stop, deadline)
+                    .unwrap()
+                    .wait()
+                    .unwrap()
+                    .bytes,
+            );
+        }
+        assert_eq!(received, [1, 2, 3, 4, 3, 4]);
     }
 
     #[test]

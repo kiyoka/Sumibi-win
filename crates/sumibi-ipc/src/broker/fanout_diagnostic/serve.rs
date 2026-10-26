@@ -754,14 +754,20 @@ fn write_fanout_notices(
             (None, None) => break,
         };
         if ready == 0 {
-            first_write = first_write.take().ok_or(Error::InvalidMessage)?.advance_write()?;
+            first_write = first_write
+                .take()
+                .ok_or(Error::InvalidMessage)?
+                .advance_write()?;
             if first_write.is_none() {
                 order
                     .notice_delivered(1, policy)
                     .map_err(map_fanout_error)?;
             }
         } else {
-            second_write = second_write.take().ok_or(Error::InvalidMessage)?.advance_write()?;
+            second_write = second_write
+                .take()
+                .ok_or(Error::InvalidMessage)?
+                .advance_write()?;
             if second_write.is_none() {
                 order
                     .notice_delivered(2, policy)
