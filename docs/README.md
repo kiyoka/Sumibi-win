@@ -60,6 +60,7 @@
 - [ADR 0057](adr/0057-broker-side-session-order.md)〜[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)：Broker側の要求順序、結果と政策更新の公開順序、有限の複数接続通知。
 - [ADR 0060](adr/0060-host-to-broker-policy-relay.md)：Hostの政策版をBrokerの受付と接続通知へ渡す境界。
 - [ADR 0061](adr/0061-two-client-broker-pipe-diagnostic.md)：同じ親processから開く2本の認証済みpipeでの通知・退役・再接続診断。
+- [ADR 0062](adr/0062-product-broker-integration-sequence.md)：製品Brokerの接続、政策配送、TSF適用までの統合順序と完了条件。
 
 ## 更新の規則
 
