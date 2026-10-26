@@ -385,7 +385,10 @@ impl<'a> BrokerPolicyRuntime<'a> {
             Ok(true)
         })();
         match result {
-            Err(RuntimeError::Transport(IpcError::PolicyDenied)) => {
+            Err(
+                RuntimeError::Source(ChangeError::Unavailable)
+                | RuntimeError::Transport(IpcError::PolicyDenied),
+            ) => {
                 self.failed = true;
                 self.close_all();
             }
@@ -1114,6 +1117,82 @@ mod tests {
             runtime.receive(2, convert(2, 1, 1, policy), Instant::now()),
             Ok(Event::Convert(_))
         ));
+        let now = Instant::now();
+        assert_eq!(
+            runtime.publish_result(
+                ReplyContext {
+                    broker: id(90),
+                    key: 2,
+                    request: 1,
+                    revision,
+                    completed_at: now,
+                },
+                "生存".into(),
+                &stop,
+                now + Duration::from_millis(500)
+            ),
+            Ok(true)
+        );
+        assert!(matches!(
+            read_frame(&mut second_client, &stop, deadline).message,
+            message::Message::Result(result) if result.text == "生存"
+        ));
+    }
+
+    #[test]
+    fn failed_result_write_retires_only_target_pipe() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (first_server, mut first_client) = connected(&stop, deadline);
+        let (second_server, mut second_client) = connected(&stop, deadline);
+        runtime
+            .attach(first_server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        runtime
+            .attach(second_server, hello(2, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut first_client, &stop, deadline);
+        read_frame(&mut second_client, &stop, deadline);
+        let policy = runtime.policy();
+        for (key, session) in [(1, 1), (2, 2)] {
+            assert!(matches!(
+                runtime.receive(key, convert(session, 1, 1, policy), Instant::now()),
+                Ok(Event::Convert(_))
+            ));
+        }
+        drop(first_client);
+        let revision = Revision {
+            input: 1,
+            settings: policy.settings,
+            authorization: policy.authorization,
+        };
+        let now = Instant::now();
+        assert!(matches!(
+            runtime.publish_result(
+                ReplyContext {
+                    broker: id(90),
+                    key: 1,
+                    request: 1,
+                    revision,
+                    completed_at: now,
+                },
+                "送信失敗".into(),
+                &stop,
+                now + Duration::from_millis(500)
+            ),
+            Err(RuntimeError::Transport(_))
+        ));
+        assert_eq!(runtime.active_count(), 1);
         let now = Instant::now();
         assert_eq!(
             runtime.publish_result(
