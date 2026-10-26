@@ -58,6 +58,8 @@
 - [ADR 0043](adr/0043-interactive-native-key-activation.md)：診断windowを手動で前面化し、実TSFキー検証を続ける専用コマンド。
 - [ADR 0045](adr/0045-machine-registration-boundary.md)：恒久登録前の配置・署名・更新条件。
 - [ADR 0057](adr/0057-broker-side-session-order.md)〜[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)：Broker側の要求順序、結果と政策更新の公開順序、有限の複数接続通知。
+- [ADR 0060](adr/0060-host-to-broker-policy-relay.md)：Hostの政策版をBrokerの受付と接続通知へ渡す境界。
+- [ADR 0061](adr/0061-two-client-broker-pipe-diagnostic.md)：同じ親processから開く2本の認証済みpipeでの通知・退役・再接続診断。
 
 ## 更新の規則
 

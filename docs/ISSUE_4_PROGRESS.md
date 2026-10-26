@@ -106,6 +106,10 @@
   既定Hostはこの診断serviceを拒否し、検査後に既定Hostへ戻した
   （[ADR 0061](adr/0061-two-client-broker-pipe-diagnostic.md)）。
   これは一つの親processの2本であり、常駐Brokerの異なるTIP process接続ではない。
+- `cargo test --workspace --locked --offline --quiet`は199件成功。
+  `tools/Test-Broker.ps1`で既定Hostの拒否と2接続診断を含むBroker回帰が成功し、
+  通常Hostへ復元した。`tools/Test-Spike.ps1 -SkipDesktop`も成功し、
+  パッシブTIPと通常Hostへ復元した。恒久的なTSF登録は行っていない。
 
 ## 次の受入作業
 

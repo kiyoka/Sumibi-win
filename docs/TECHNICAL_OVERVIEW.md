@@ -24,7 +24,7 @@ Mac技術解説自身の実装照合基準 `d2b96fc` と区別する。Macの機
 | 入力保護 | scope/status/compartmentと取得・送信前・適用時の検査を実装。専用ACPで39ケース。status診断と標準RichEditの拒否7構成を確認（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)）。一般アプリの全機密欄の識別は未検証 |
 | 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。`nihongo`→F7→待機入力や救済画面の実打鍵を一部確認。一般アプリの実打鍵と標準Undoは未確認 |
 | 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮/初回選択46・選択composition 18・他サービス拒否16・同期入力取引174（選択Delete20・記録内移動/前方Delete26・内部挿入20・Shift選択27・記録内選択編集33・文書端移動/選択26を含む）・書記素Backspace 55（内部caret18を含む）ケースを確認。所有editorの救済48ケースとEXE共有4枠、window境界を含む通知30ケースも確認。専用ホストの書記素移動/削除22ケースも確認。一般アプリの行端移動・待機・製品統合・候補UIは未実装 |
-| Protocol / IPC | 有限フレーム・版付きJSON・Client/Broker状態、最大8接続・各1通知の配信状態、固定process相互検査・overlapped pipe。接続keyと同じclientの要求番号を再利用せず、Readyと政策通知の書込完了前に次要求を受けない。実DLLのキー・Core・所有TSFから診断用EXE bridge経由で再利用Brokerへ接続。診断用の配信状態は実子Channelを1接続として通す。複数clientの実I/Oと一般アプリは未接続（[ADR 0057](adr/0057-broker-side-session-order.md)、[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)） |
+| Protocol / IPC | 有限フレーム・版付きJSON・Client/Broker状態、最大8接続・各1通知の配信状態、固定process相互検査・overlapped pipe。接続keyと同じclientの要求番号を再利用せず、Readyと政策通知の書込完了前に次要求を受けない。実DLLのキー・Core・所有TSFから診断用EXE bridge経由で再利用Brokerへ接続。診断用の配信状態を実子Channelの1接続と、同じ親processから開く2本の実pipeで検査した。異なるTIP processの製品接続と一般アプリは未接続（[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)、[ADR 0061](adr/0061-two-client-broker-pipe-diagnostic.md)） |
 | Host・HTTP・キー保存・設定UI | 単発/有限連続要求の診断Host EXEを実装。既定では変換拒否。Host内に送信前/返却前の手動認可ゲート、一貫したメモリー政策と期限付き変更待機を追加。Hostの政策版をBrokerの受付ゲートと接続通知へ渡すRelayを追加したが、実pipe配送は未接続（[ADR 0047](adr/0047-host-manual-send-gate.md)、[ADR 0049](adr/0049-host-in-memory-policy-authority.md)、[ADR 0060](adr/0060-host-to-broker-policy-relay.md)）。常駐Host・製品HTTP・キー保存・設定UIは未実装 |
 | Decisions・辞書・署名付き配布 | 未実装。後続段階 |
 
@@ -464,10 +464,12 @@ COM参照・cookie・TSF座標・APIキー・アプリ名はConvertへ含めな�
 整数の範囲・必須フィールド・候補件数・文字列長・総容量も検証し、未対応版は拒否する。
 切断・不正フレーム・過大要求は要求を終端化し、本文をログに出さない。
 診断実装の接続配信状態は最大8接続、Broker寿命中の追加64回、各接続で未配送通知1件とする。
-実子Channelは1接続として通しており、複数clientの実pipe配送と製品の容量値は未確定である。
+実子Channelに加え、同じ親processから開く2本の実pipeでも配送と退役を検査した。
+異なるTIP processからの製品接続と製品の容量値は未確定である。
 Hostの政策版からBrokerの認可ゲートと接続通知へ渡すRelayはI/O非依存で追加した。
-通知失敗時のpipe切断と設定UIの操作完了は常駐Brokerへ接続する段階で確認する
-（[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)、[ADR 0060](adr/0060-host-to-broker-policy-relay.md)）。
+通知失敗時の切断は診断用の実pipeで確認した。HostのRelayからの配送と
+設定UIの操作完了は常駐Brokerへ接続する段階で確認する
+（[ADR 0060](adr/0060-host-to-broker-policy-relay.md)、[ADR 0061](adr/0061-two-client-broker-pipe-diagnostic.md)）。
 再接続時は保留要求を破棄し、利用者の新しい操作を待つ。
 
 AppContainerではDLLが入力先の制限を受けるため、通常デスクトップのIPC成功を一般化しない。

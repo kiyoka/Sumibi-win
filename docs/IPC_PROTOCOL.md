@@ -131,8 +131,10 @@ Broker内の更新との公開順序を固定する。Hostの通知カーソル�
 再利用しない。同じclient寿命IDの要求番号も引き継ぎ、世代更新ではリセットしない。
 Readyと政策通知の書込完了前に要求を受け付けず、遅い接続を
 退役させる（[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)）。
-診断用の単一Channelはこの状態を1接続として通す。複数clientの実I/Oと
-製品の政策変更元はまだ接続していない。
+診断用の単一Channelはこの状態を1接続として通す。さらに同じ親processから
+開く2本の認証済みpipeで、失効・再許可・取消・通知失敗・退役・再接続を
+検査する（[ADR 0061](adr/0061-two-client-broker-pipe-diagnostic.md)）。
+異なるTIP processからの製品接続と製品の政策変更元はまだ接続していない。
 別の、OS検証済みBroker起動へ接続する場合だけpolicy版の新しいepochを許す。
 世代や要求番号が上限へ達したらラップせず拒否する。
 
