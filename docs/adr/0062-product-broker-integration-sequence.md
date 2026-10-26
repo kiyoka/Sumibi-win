@@ -27,7 +27,11 @@ active接続は巡回して読む。診断の再許可後要求にこの入口�
 Hello待ちとactiveは合わせて最大8本である。
 Host側の`BrokerWorkLoop`は政策公開、完了回収、`poll_once`とworker投入を一つの
 所有側入口で進める。診断の再許可後要求に接続した。取消済みworkerが8枠を占めても
-新要求へ固定エラーを返す。製品の継続acceptと送信workerはまだ接続していない。
+新要求へ固定エラーを返す。製品の継続acceptとHTTPS送信adapterはまだ接続していない。
+`accept`は認証済みpipeのkey予約前に未公開政策を配送する。`advance_manual`は
+Runtimeとworkerが同じHost政策元を参照することを確認し、現行宛先を使って
+`convert_ordered`へ渡す。実loopback HTTPの成功、503、失効、宛先変更を通した。
+製品HTTPS adapterと長寿命のOS accept調停は引き続き必要である。
 `sumibi-protocol`には接続ごとの`BrokerSession`と、最大8接続・各1通知の
 `PolicyFanout`がある。`sumibi-host`には設定・資格情報・明示同意の
 `PolicyAuthority`、送信開始順序を固定する`manual::convert_ordered`、

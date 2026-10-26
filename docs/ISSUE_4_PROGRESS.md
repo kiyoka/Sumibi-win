@@ -322,7 +322,10 @@
 製品Brokerへ統合する責務と順序は
 [ADR 0062](adr/0062-product-broker-integration-sequence.md)に記録した。
 
-1. `BrokerPolicyRuntime`を製品Hostの継続するaccept/read/worker結果ループへ接続する。並行するHello、設定UIの操作完了、送信開始と失効の順序、所有TSFでの適用前再検査を実証する。
+1. `BrokerWorkLoop`と`BrokerPolicyRuntime`を製品Hostの継続するOS acceptへ接続する。
+   現在の子Brokerは診断用の2接続を順番に受け付ける。長寿命の受付中も政策通知、
+   worker完了、別接続の部分Helloを進める調停が必要。設定UIの操作完了と
+   所有TSFでの結果適用前再検査も製品経路で実証する。
 2. 配置されたBrokerの信頼できる発見・署名・更新・起動を実装する。
 3. 一般アプリへ製品TIPのキー配送と所有対象の失効を接続し、入力先ごとの保護情報を肯定的に検証する。
 4. Notepad等の実アプリで実打鍵、1回Undo、別欄・同長別本文・読取不能の拒否を確認する。
