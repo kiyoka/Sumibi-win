@@ -3,9 +3,14 @@
 //! policy publication, bounded writes, and physical close receipts together.
 use crate::broker_policy::{BrokerPolicyRelay, DeliveryCompletion, DeliveryError, RelayError};
 use crate::policy::{ChangeError, PolicyAuthority};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 use sumibi_ipc::{
-    broker::BrokerPolicyGate, Error as IpcError, Pipe, Stop, WriteBatch, WriteRequest,
+    broker::BrokerPolicyGate, framed::FrameInbox, Error as IpcError, Pipe, ReadBatch, ReadRequest,
+    Stop, WriteBatch, WriteRequest,
 };
 use sumibi_protocol::{
     broker_session::Event,
@@ -39,6 +44,45 @@ pub struct ReplyContext {
     pub completed_at: Instant,
 }
 
+/// A worker's admission belongs to exactly one Broker boot and connection.
+/// Clones observe every retirement path without carrying source text.
+#[derive(Clone)]
+pub struct JobTicket {
+    broker: Id,
+    key: u64,
+    request: u64,
+    revision: Revision,
+    cancelled: Arc<AtomicBool>,
+    stop: Stop,
+}
+
+impl JobTicket {
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// A worker may include this event in its bounded I/O wait. It belongs
+    /// only to this request, so retiring another connection cannot signal it.
+    pub fn stop(&self) -> Stop {
+        self.stop.clone()
+    }
+
+    pub fn reply_context(&self, completed_at: Instant) -> ReplyContext {
+        ReplyContext {
+            broker: self.broker,
+            key: self.key,
+            request: self.request,
+            revision: self.revision,
+            completed_at,
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        let _ = self.stop.cancel();
+    }
+}
+
 pub struct PublicationOutcome {
     pub policy: Policy,
     pub delivered: Vec<u64>,
@@ -52,6 +96,7 @@ pub struct PublicationOutcome {
 struct Connection {
     key: u64,
     pipe: Pipe,
+    inbox: FrameInbox,
 }
 
 /// One Broker boot's serialized policy path. The caller must use the same
@@ -64,6 +109,7 @@ pub struct BrokerPolicyRuntime<'a> {
     relay: BrokerPolicyRelay<'a>,
     pending: Vec<Connection>,
     connections: Vec<Connection>,
+    jobs: Vec<JobTicket>,
     last_key: u64,
     failed: bool,
 }
@@ -81,6 +127,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
             relay,
             pending: Vec::new(),
             connections: Vec::new(),
+            jobs: Vec::new(),
             last_key: 0,
             failed: false,
         })
@@ -98,6 +145,39 @@ impl<'a> BrokerPolicyRuntime<'a> {
         self.pending.len()
     }
 
+    /// Clone the admission token after `receive` returns Convert. A worker
+    /// checks it before sending and again before handing back its completion.
+    pub fn job_ticket(&self, key: u64, request: u64) -> Option<JobTicket> {
+        self.jobs
+            .iter()
+            .find(|job| job.key == key && job.request == request)
+            .cloned()
+    }
+
+    fn remove_job(&mut self, key: u64, request: u64, cancel: bool) {
+        if let Some(index) = self
+            .jobs
+            .iter()
+            .position(|job| job.key == key && job.request == request)
+        {
+            let job = self.jobs.remove(index);
+            if cancel {
+                job.cancel();
+            }
+        }
+    }
+
+    fn cancel_connection_jobs(&mut self, key: u64) {
+        self.jobs.retain(|job| {
+            if job.key == key {
+                job.cancel();
+                false
+            } else {
+                true
+            }
+        });
+    }
+
     /// Reserve a never-reused key at OS accept, before reading Hello. Pending
     /// endpoints cannot receive requests and are closed before a publication
     /// can be acknowledged.
@@ -110,7 +190,11 @@ impl<'a> BrokerPolicyRuntime<'a> {
             .checked_add(1)
             .ok_or(RuntimeError::Exhausted)?;
         self.last_key = key;
-        self.pending.push(Connection { key, pipe });
+        self.pending.push(Connection {
+            key,
+            pipe,
+            inbox: FrameInbox::default(),
+        });
         Ok(key)
     }
 
@@ -125,7 +209,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
         let Some(connection) = self.pending.iter_mut().find(|entry| entry.key == key) else {
             return Err(RuntimeError::MissingPipe);
         };
-        let result = sumibi_ipc::broker::read_message(&mut connection.pipe, stop, deadline);
+        let result = connection.inbox.read(&mut connection.pipe, stop, deadline);
         if result.is_err() {
             self.close(key);
         }
@@ -211,7 +295,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
         let Some(index) = self.pending.iter().position(|entry| entry.key == key) else {
             return Err(RuntimeError::MissingPipe);
         };
-        let mut pipe = self.pending.remove(index).pipe;
+        let mut connection = self.pending.remove(index);
         self.require_current_source()?;
         let ready = self
             .fanout
@@ -224,7 +308,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
                 return Err(RuntimeError::Incomplete);
             }
         };
-        if let Err(error) = pipe.write_all(frame, stop, deadline) {
+        if let Err(error) = connection.pipe.write_all(frame, stop, deadline) {
             self.fanout.detach(key);
             return Err(RuntimeError::Transport(error));
         }
@@ -232,8 +316,26 @@ impl<'a> BrokerPolicyRuntime<'a> {
             self.fanout.detach(key);
             return Err(RuntimeError::Fanout(error));
         }
-        self.connections.push(Connection { key, pipe });
+        self.connections.push(connection);
         Ok(())
+    }
+
+    /// Read the next active frame, preserving any tail from a previous Read.
+    /// On transport or framing failure retire this endpoint and its job.
+    pub fn read_active_message(
+        &mut self,
+        key: u64,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<Envelope, RuntimeError> {
+        let Some(connection) = self.connections.iter_mut().find(|entry| entry.key == key) else {
+            return Err(RuntimeError::MissingPipe);
+        };
+        let result = connection.inbox.read(&mut connection.pipe, stop, deadline);
+        if result.is_err() {
+            self.close(key);
+        }
+        result.map_err(RuntimeError::Transport)
     }
 
     /// Admit a frame only against the latest Host source epoch. A source
@@ -276,6 +378,27 @@ impl<'a> BrokerPolicyRuntime<'a> {
                 self.close(key);
                 return Err(error);
             }
+            if self.jobs.iter().any(|job| job.key == key) {
+                self.close(key);
+                return Err(RuntimeError::Incomplete);
+            }
+            let stop = match Stop::new() {
+                Ok(stop) => stop,
+                Err(error) => {
+                    self.close(key);
+                    return Err(RuntimeError::Transport(error));
+                }
+            };
+            self.jobs.push(JobTicket {
+                broker: self.fanout.broker_id(),
+                key,
+                request: convert.request,
+                revision: convert.revision,
+                cancelled: Arc::new(AtomicBool::new(false)),
+                stop,
+            });
+        } else if let Event::Cancelled(request) = &event {
+            self.remove_job(key, *request, true);
         }
         Ok(event)
     }
@@ -290,7 +413,12 @@ impl<'a> BrokerPolicyRuntime<'a> {
             return Err(RuntimeError::MissingPipe);
         }
         match self.fanout.expire(key, now) {
-            Ok(request) => Ok(request),
+            Ok(request) => {
+                if let Some(request) = request {
+                    self.remove_job(key, request, true);
+                }
+                Ok(request)
+            }
             Err(error) => {
                 self.close(key);
                 Err(RuntimeError::Fanout(error))
@@ -385,6 +513,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
             Ok(true)
         })();
         match result {
+            Ok(_) => self.remove_job(reply.key, reply.request, false),
             Err(
                 RuntimeError::Source(ChangeError::Unavailable)
                 | RuntimeError::Transport(IpcError::PolicyDenied),
@@ -453,6 +582,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
         let mut cancelled = Vec::new();
         for (key, notice) in published.notices {
             if let Some(request) = notice.cancelled {
+                self.remove_job(key, request, true);
                 cancelled.push((key, request));
             }
             let frame = message::encode(&notice.frame).map_err(|_| RuntimeError::Incomplete)?;
@@ -522,6 +652,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
     }
 
     fn close(&mut self, key: u64) -> bool {
+        self.cancel_connection_jobs(key);
         if let Some(index) = self.pending.iter().position(|entry| entry.key == key) {
             drop(self.pending.remove(index));
             return true;
@@ -551,10 +682,77 @@ impl<'a> BrokerPolicyRuntime<'a> {
     }
 
     fn close_all(&mut self) {
+        for job in self.jobs.drain(..) {
+            job.cancel();
+        }
         self.pending.clear();
         for connection in self.connections.drain(..) {
             self.fanout.detach(connection.key);
             drop(connection);
+        }
+    }
+}
+
+impl Drop for BrokerPolicyRuntime<'_> {
+    fn drop(&mut self) {
+        self.close_all();
+    }
+}
+
+/// The disposable two-client fixture reads one frame from each pipe concurrently.
+/// Complete each batch before touching either pipe again; a partially decoded
+/// frame stays in its connection's inbox for the next bounded read.
+fn read_frame_pair(
+    first: &mut Connection,
+    second: &mut Connection,
+    stop: &Stop,
+    deadline: Instant,
+) -> sumibi_ipc::Result<(Envelope, Envelope)> {
+    let mut first_hello = None;
+    let mut second_hello = None;
+    loop {
+        if first_hello.is_none() {
+            first_hello = first.inbox.next_frame()?;
+        }
+        if second_hello.is_none() {
+            second_hello = second.inbox.next_frame()?;
+        }
+        if let Some(first_frame) = first_hello.take() {
+            if let Some(second_frame) = second_hello.take() {
+                return Ok((first_frame, second_frame));
+            }
+            first_hello = Some(first_frame);
+        }
+        let mut slots = Vec::new();
+        let mut requests = Vec::new();
+        if first_hello.is_none() {
+            slots.push(0);
+            requests.push(ReadRequest {
+                pipe: &mut first.pipe,
+                stop,
+                deadline,
+            });
+        }
+        if second_hello.is_none() {
+            slots.push(1);
+            requests.push(ReadRequest {
+                pipe: &mut second.pipe,
+                stop,
+                deadline,
+            });
+        }
+        let mut batch = ReadBatch::new(requests)?;
+        let mut chunks = Vec::new();
+        while let Some((index, result)) = batch.wait_next()? {
+            chunks.push((slots[index], result?));
+        }
+        drop(batch);
+        for (slot, bytes) in chunks {
+            if slot == 0 {
+                first.inbox.push(bytes)?;
+            } else {
+                second.inbox.push(bytes)?;
+            }
         }
     }
 }
@@ -568,7 +766,6 @@ pub fn serve_diagnostic(
 ) -> sumibi_ipc::Result<()> {
     use crate::manual::{Credential, Destination, Scheme};
     use std::time::Duration;
-    use sumibi_ipc::broker::read_message;
 
     if !diagnostic_enabled || !bootstrap.is_policy_runtime_diagnostic() {
         return Err(IpcError::PolicyDenied);
@@ -582,12 +779,15 @@ pub fn serve_diagnostic(
     let (first_key, second_key) = bootstrap.accept_policy_runtime_pair(deadline, |pipe| {
         runtime.reserve(pipe).map_err(|_| IpcError::PolicyDenied)
     })?;
-    let first_hello = runtime
-        .read_reserved_hello(first_key, bootstrap.stop(), deadline)
-        .map_err(|_| IpcError::InvalidMessage)?;
-    let second_hello = runtime
-        .read_reserved_hello(second_key, bootstrap.stop(), deadline)
-        .map_err(|_| IpcError::InvalidMessage)?;
+    let (first_hello, second_hello) = {
+        let [first, second] = runtime.pending.as_mut_slice() else {
+            return Err(IpcError::InvalidMessage);
+        };
+        if first.key != first_key || second.key != second_key {
+            return Err(IpcError::InvalidMessage);
+        }
+        read_frame_pair(first, second, bootstrap.stop(), deadline)?
+    };
     let first_session = first_hello.session;
     let second_session = second_hello.session;
     runtime
@@ -612,13 +812,19 @@ pub fn serve_diagnostic(
         .grant_manual_consent(&destination)
         .map_err(|_| IpcError::PolicyDenied)?;
     publish_diagnostic(&mut runtime, bootstrap.stop(), deadline, 3, true, None)?;
-    let request = {
-        let connection = runtime
-            .connections
-            .iter_mut()
-            .find(|connection| connection.key == request_key)
-            .ok_or(IpcError::InvalidMessage)?;
-        read_message(&mut connection.pipe, bootstrap.stop(), deadline)?
+    let (request, second_request) = {
+        let [first, second] = runtime.connections.as_mut_slice() else {
+            return Err(IpcError::InvalidMessage);
+        };
+        let (first_frame, second_frame) =
+            read_frame_pair(first, second, bootstrap.stop(), deadline)?;
+        if first.key == request_key && second.key == result_key {
+            (first_frame, second_frame)
+        } else if first.key == result_key && second.key == request_key {
+            (second_frame, first_frame)
+        } else {
+            return Err(IpcError::InvalidMessage);
+        }
     };
     let Event::Convert(convert) = runtime
         .receive(request_key, request, Instant::now())
@@ -629,14 +835,6 @@ pub fn serve_diagnostic(
     if convert.request != 1 || convert.text != "nihongo" {
         return Err(IpcError::InvalidMessage);
     }
-    let second_request = {
-        let connection = runtime
-            .connections
-            .iter_mut()
-            .find(|connection| connection.key == result_key)
-            .ok_or(IpcError::InvalidMessage)?;
-        read_message(&mut connection.pipe, bootstrap.stop(), deadline)?
-    };
     let Event::Convert(second) = runtime
         .receive(result_key, second_request, Instant::now())
         .map_err(|_| IpcError::PolicyDenied)?
@@ -646,16 +844,16 @@ pub fn serve_diagnostic(
     if second.request != 1 || second.text != "second" {
         return Err(IpcError::InvalidMessage);
     }
+    let result_ticket = runtime
+        .job_ticket(result_key, second.request)
+        .ok_or(IpcError::InvalidMessage)?;
+    let cancelled_ticket = runtime
+        .job_ticket(request_key, convert.request)
+        .ok_or(IpcError::InvalidMessage)?;
     let now = Instant::now();
     if !runtime
         .publish_result(
-            ReplyContext {
-                broker: bootstrap.boot_id(),
-                key: result_key,
-                request: second.request,
-                revision: second.revision,
-                completed_at: now,
-            },
+            result_ticket.reply_context(now),
             "完了".into(),
             bootstrap.stop(),
             now + Duration::from_millis(500),
@@ -675,6 +873,9 @@ pub fn serve_diagnostic(
         false,
         Some((request_key, convert.request)),
     )?;
+    if !cancelled_ticket.is_cancelled() || result_ticket.is_cancelled() {
+        return Err(IpcError::InvalidMessage);
+    }
     while !bootstrap.stop().is_cancelled()? && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -783,6 +984,99 @@ mod tests {
     fn source() -> (PolicyAuthority, Destination) {
         let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
         (PolicyAuthority::new(destination.clone()), destination)
+    }
+
+    #[test]
+    fn reserved_hello_keeps_coalesced_request_for_active_connection() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (server, mut client) = connected(&stop, deadline);
+        let key = runtime.reserve(server).unwrap();
+        let mut combined = message::encode(&hello(1, id(90))).unwrap();
+        combined.extend(message::encode(&convert(1, 1, 1, policy)).unwrap());
+        client.write_all(combined, &stop, deadline).unwrap();
+        let received = runtime.read_reserved_hello(key, &stop, deadline).unwrap();
+        runtime.activate(key, received, &stop, deadline).unwrap();
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Ready(_)
+        ));
+        let request = runtime.read_active_message(key, &stop, deadline).unwrap();
+        assert!(matches!(
+            runtime.receive(key, request, Instant::now()),
+            Ok(Event::Convert(convert)) if convert.request == 1
+        ));
+        assert!(runtime.job_ticket(key, 1).is_some());
+    }
+
+    #[test]
+    fn malformed_active_frame_cancels_only_its_worker() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (bad_server, mut bad_client) = connected(&stop, deadline);
+        let (good_server, mut good_client) = connected(&stop, deadline);
+        runtime
+            .attach(bad_server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        runtime
+            .attach(good_server, hello(2, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut bad_client, &stop, deadline);
+        read_frame(&mut good_client, &stop, deadline);
+        runtime
+            .receive(1, convert(1, 1, 1, policy), Instant::now())
+            .unwrap();
+        runtime
+            .receive(2, convert(2, 1, 1, policy), Instant::now())
+            .unwrap();
+        let bad_job = runtime.job_ticket(1, 1).unwrap();
+        let good_job = runtime.job_ticket(2, 1).unwrap();
+        bad_client
+            .write_all(sumibi_protocol::encode("{").unwrap(), &stop, deadline)
+            .unwrap();
+        assert!(matches!(
+            runtime.read_active_message(1, &stop, deadline),
+            Err(RuntimeError::Transport(IpcError::InvalidMessage))
+        ));
+        assert!(bad_job.is_cancelled());
+        assert!(!good_job.is_cancelled());
+        assert_eq!(runtime.active_count(), 1);
+        let now = Instant::now();
+        assert_eq!(
+            runtime.publish_result(
+                good_job.reply_context(now),
+                "日本語".into(),
+                &stop,
+                now + Duration::from_millis(500)
+            ),
+            Ok(true)
+        );
+        assert!(matches!(
+            read_frame(&mut good_client, &stop, deadline).message,
+            message::Message::Result(result) if result.text == "日本語"
+        ));
     }
 
     #[test]
@@ -907,6 +1201,9 @@ mod tests {
             runtime.receive(1, convert(1, 1, 1, policy), Instant::now()),
             Ok(Event::Convert(_))
         ));
+        let first_job = runtime.job_ticket(1, 1).unwrap();
+        assert!(first_job.reply_context(Instant::now()).broker == id(90));
+        assert!(!first_job.is_cancelled());
         let now = Instant::now();
         assert_eq!(
             runtime.publish_result(
@@ -929,6 +1226,8 @@ mod tests {
             ),
             Ok(true)
         );
+        assert!(!first_job.is_cancelled());
+        assert!(runtime.job_ticket(1, 1).is_none());
         assert!(matches!(
             read_frame(&mut client, &stop, deadline).message,
             message::Message::Result(result) if result.request == 1 && result.text == "日本語"
@@ -956,6 +1255,7 @@ mod tests {
             runtime.receive(1, convert(1, 1, 3, policy), Instant::now()),
             Ok(Event::Convert(_))
         ));
+        let revoked_job = runtime.job_ticket(1, 3).unwrap();
         source.revoke_manual_consent().unwrap();
         let now = Instant::now();
         assert_eq!(
@@ -969,6 +1269,8 @@ mod tests {
         );
         let revoked = runtime.publish_current(&stop, deadline).unwrap().unwrap();
         assert_eq!(revoked.cancelled, [(1, 3)]);
+        assert!(revoked_job.is_cancelled());
+        assert!(runtime.job_ticket(1, 3).is_none());
         assert!(matches!(
             read_frame(&mut client, &stop, deadline).message,
             message::Message::PolicyChanged(policy) if policy == revoked.policy
@@ -1005,8 +1307,11 @@ mod tests {
             runtime.receive(1, timed, accepted),
             Ok(Event::Convert(_))
         ));
+        let expired_job = runtime.job_ticket(1, 1).unwrap();
         let expired = accepted + Duration::from_millis(2);
         assert_eq!(runtime.expire(1, expired), Ok(Some(1)));
+        assert!(expired_job.is_cancelled());
+        assert!(runtime.job_ticket(1, 1).is_none());
         let revision = Revision {
             input: 1,
             settings: policy.settings,
@@ -1542,7 +1847,9 @@ mod tests {
             runtime.receive(1, convert(1, 1, 1, policy), Instant::now()),
             Ok(Event::Convert(_))
         ));
+        let disconnected_job = runtime.job_ticket(1, 1).unwrap();
         assert!(runtime.disconnect(1));
+        assert!(disconnected_job.is_cancelled());
         drop(first_client);
         let (second_server, mut second_client) = connected(&stop, deadline);
         let mut second_hello = hello(1, id(90));
@@ -1579,6 +1886,9 @@ mod tests {
             runtime.receive(4, convert(1, 3, 2, policy), Instant::now()),
             Ok(Event::Convert(_))
         ));
+        let shutdown_job = runtime.job_ticket(4, 2).unwrap();
+        drop(runtime);
+        assert!(shutdown_job.is_cancelled());
     }
 
     #[test]
@@ -1614,6 +1924,12 @@ mod tests {
             runtime.receive(2, convert(2, 1, 1, policy), Instant::now()),
             Ok(Event::Convert(_))
         ));
+        let first_job = runtime.job_ticket(1, 1).unwrap();
+        let second_job = runtime.job_ticket(2, 1).unwrap();
+        let first_stop = first_job.stop();
+        let second_stop = second_job.stop();
+        assert!(!first_stop.is_cancelled().unwrap());
+        assert!(!second_stop.is_cancelled().unwrap());
         let future_cancel = Envelope {
             version: message::VERSION,
             session: id(2),
@@ -1627,6 +1943,10 @@ mod tests {
             )))
         ));
         assert_eq!(runtime.active_count(), 1);
+        assert!(!first_job.is_cancelled());
+        assert!(second_job.is_cancelled());
+        assert!(!first_stop.is_cancelled().unwrap());
+        assert!(second_stop.is_cancelled().unwrap());
         let valid_cancel = Envelope {
             version: message::VERSION,
             session: id(1),
@@ -1637,6 +1957,9 @@ mod tests {
             runtime.receive(1, valid_cancel, Instant::now()),
             Ok(Event::Cancelled(1))
         ));
+        assert!(first_job.is_cancelled());
+        assert!(first_stop.is_cancelled().unwrap());
+        assert!(runtime.job_ticket(1, 1).is_none());
         assert!(matches!(
             runtime.receive(1, convert(1, 1, 2, policy), Instant::now()),
             Ok(Event::Convert(_))

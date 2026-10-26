@@ -222,6 +222,19 @@
   結果を配送できた。通常ユーザーの実pipeで確認し、全Rustテスト230件。
   `sumibi-host/spike`構成の全テストとClippy、登録不要の
   `tools/Test-Spike.ps1 -SkipDesktop`も成功し、通常TIPとHostへ復元した。
+- Host実行部がConvert受付ごとにBroker起動ID・接続key・要求番号・政策版を持つ
+  `JobTicket`と専用Stopイベントを発行する。明示Cancel、期限、失効、切断、
+  不正frame、実行部終了時に該当ticketを取消し、別接続のticketを維持する。
+  結果が正常に配送されたticketは取消さず台帳から外す。実workerとtransportの
+  Stop待機への接続は次段階。
+- `FrameInbox`をHostと診断Brokerで共用し、分割frameと同一Readに連結された
+  後続frameを保持する。HostのHello後に連結された要求、active接続の不正本文に
+  よる当該pipeのみの退役を実pipeで確認した。
+- 最大8本の`ReadBatch`で各pipeのoverlapped Readを先に開始し、完了と開始失敗を
+  接続別に回収する。実pipeで遅い接続と開始失敗の独立性を確認した。子processの
+  2接続Host診断はHelloとConvertの双方を並行受信し、接続順・要求到着順を変えて
+  成功。全Rustテスト237件、Broker回帰、Clippyが成功し、通常Hostへ復元した。
+  製品Hostの継続accept/read/worker調停ループは引き続き必要。
 
 ## 次の受入作業
 

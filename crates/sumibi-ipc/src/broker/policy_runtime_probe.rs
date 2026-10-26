@@ -72,14 +72,16 @@ fn probe_once(path: &Path, default_host: bool, reversed: bool) -> Result<()> {
             }
         }
     }
-    let request = clients[0]
-        .begin(1, "nihongo", 5000, Instant::now())
-        .map_err(|_| Error::InvalidMessage)?;
-    first.write_all(request, &stop, deadline)?;
+    // The second connection may become readable first; the Host must retain
+    // its frame while waiting for the other authenticated request.
     let second_request = clients[1]
         .begin(1, "second", 5000, Instant::now())
         .map_err(|_| Error::InvalidMessage)?;
     second.write_all(second_request, &stop, deadline)?;
+    let request = clients[0]
+        .begin(1, "nihongo", 5000, Instant::now())
+        .map_err(|_| Error::InvalidMessage)?;
+    first.write_all(request, &stop, deadline)?;
     let Event::Reply {
         request: 1,
         outcome: Outcome::Result(text),

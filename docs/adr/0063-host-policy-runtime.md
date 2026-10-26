@@ -53,6 +53,19 @@ Broker受付ゲートのguardを結果frameの有限な書込が終わるまで�
 切断入口は、その接続の保留要求番号を返す。呼出し側は対応workerを取消し、
 旧keyの遅延完了は送らない。他方の認証済みpipeは維持する。
 
+Convert受付後は`JobTicket`を台帳に登録し、同一Broker起動ID・接続key・
+要求番号・政策版をworkerへ渡せる。ticketの専用Stopイベントと取消状態は、
+明示Cancel、期限切れ、失効、切断、不正frame、実行部の終端で更新する。
+別接続のStopには触れない。正常に配送された結果は台帳から外す。
+実worker側がticketのStopをI/O待機に組み込む接続はまだない。
+
+`FrameInbox`はPipeの1回のReadに複数frameが入った場合の未読suffixを保持する。
+Hello後の連結要求をHostのactive接続へ引き継ぎ、不正本文はそのpipeを退役させる。
+有限の`ReadBatch`は最大8本の非同期Readを先に開始し、完了可能な接続と
+開始失敗を個別に回収する。子processの2接続診断ではHelloとConvertをそれぞれ
+並行受信する。全接続から1frameずつ集める有限診断であり、製品の継続する
+I/O調停ループの代わりではない。
+
 ## 残る境界
 
 この実行部は製品Host EXEの診断分岐にだけ接続した。継続する製品用の
@@ -61,10 +74,9 @@ accept/read/worker結果ループはまだない。診断では各OS acceptの�
 複数のHello読取待ちと設定変更が重なる順序は未検査。異なるTIP processから共有Hostを
 発見・起動する経路、設定UIの完了待機、実worker完了の調停と結果公開、
 所有TSFへの適用前再検査も残る。
-製品のjob台帳は未接続。政策公開・期限・明示切断だけでなく、不正frame、
-Ready／結果書込失敗、peer終了、実行部全体の終端でも、接続keyに属する
-workerを漏れなく取消して回収する必要がある。遅延完了はBroker起動IDと
-接続keyで照合し、別接続へ再配送しない。
+製品の実workerは`JobTicket`台帳にまだ接続していない。各workerがticketの
+StopをI/O待機へ組み込み、取消後に回収されることを確認する必要がある。
+遅延完了はBroker起動IDと接続keyで照合し、別接続へ再配送しない。
 
 政策元の二度の読直しは、外部の設定変更と送信開始を原子的にしない。
 実APIを有効にする前に、[ADR 0062](0062-product-broker-integration-sequence.md)の

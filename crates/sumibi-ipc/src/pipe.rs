@@ -363,6 +363,85 @@ pub fn wait_any(operations: &[&Operation<'_>]) -> Result<usize> {
     }
 }
 
+/// One bounded read per authenticated endpoint. The caller must collect all
+/// results before reusing any pipe; dropping a live batch retires its pending
+/// endpoints through `Operation::drop`.
+pub struct ReadRequest<'a> {
+    pub pipe: &'a mut Pipe,
+    pub stop: &'a Stop,
+    pub deadline: Instant,
+}
+
+#[must_use = "collect each endpoint result or dropping the batch retires pending reads"]
+pub struct ReadBatch<'a> {
+    reads: Vec<Option<Operation<'a>>>,
+    start_errors: Vec<Option<Error>>,
+    remaining: usize,
+    cursor: usize,
+}
+
+impl<'a> ReadBatch<'a> {
+    pub fn new(requests: Vec<ReadRequest<'a>>) -> Result<Self> {
+        if requests.is_empty() || requests.len() > MAX_ENDPOINTS {
+            return Err(Error::InvalidArgument);
+        }
+        let remaining = requests.len();
+        let mut reads = Vec::with_capacity(remaining);
+        let mut start_errors = Vec::with_capacity(remaining);
+        for request in requests {
+            match request.pipe.start_read(request.stop, request.deadline) {
+                Ok(read) => {
+                    reads.push(Some(read));
+                    start_errors.push(None);
+                }
+                Err(error) => {
+                    reads.push(None);
+                    start_errors.push(Some(error));
+                }
+            }
+        }
+        Ok(Self {
+            reads,
+            start_errors,
+            remaining,
+            cursor: 0,
+        })
+    }
+
+    /// Return input-order coordinates and exactly one completed read. A failed
+    /// endpoint does not consume another's bytes. On an outer selector error,
+    /// drop the batch and retire every still-pending endpoint.
+    pub fn wait_next(&mut self) -> Result<Option<(usize, Result<Vec<u8>>)>> {
+        if self.remaining == 0 {
+            return Ok(None);
+        }
+        if let Some((index, error)) = self
+            .start_errors
+            .iter_mut()
+            .enumerate()
+            .find_map(|(index, error)| error.take().map(|error| (index, error)))
+        {
+            self.remaining -= 1;
+            return Ok(Some((index, Err(error))));
+        }
+        let index = {
+            let live: Vec<_> = (0..self.reads.len())
+                .map(|offset| (self.cursor + offset) % self.reads.len())
+                .filter_map(|index| self.reads[index].as_ref().map(|read| (index, read)))
+                .collect();
+            let selected = wait_any(&live.iter().map(|(_, read)| *read).collect::<Vec<_>>())?;
+            live[selected].0
+        };
+        self.cursor = (index + 1) % self.reads.len();
+        self.remaining -= 1;
+        let read = self.reads[index].take().expect("selected live read");
+        Ok(Some((
+            index,
+            read.wait().map(|completion| completion.bytes),
+        )))
+    }
+}
+
 /// One bounded write per authenticated endpoint. The batch owns the live
 /// operations until the caller receives each completion or drops the batch.
 pub struct WriteRequest<'a> {
@@ -834,6 +913,76 @@ mod tests {
         assert!(matches!(Permit::acquire(), Err(Error::Capacity)));
         drop(permits);
         let _permit = Permit::acquire().unwrap();
+    }
+
+    #[test]
+    fn read_batch_delivers_each_pending_pipe_without_consuming_the_other() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut first, mut second, mut client_one, mut client_two) =
+            connected_pair(&stop, deadline);
+        let mut batch = ReadBatch::new(vec![
+            ReadRequest {
+                pipe: &mut first,
+                stop: &stop,
+                deadline,
+            },
+            ReadRequest {
+                pipe: &mut second,
+                stop: &stop,
+                deadline,
+            },
+        ])
+        .unwrap();
+        client_one.write_all(vec![17], &stop, deadline).unwrap();
+        let (first_index, first_result) = batch.wait_next().unwrap().unwrap();
+        assert_eq!(first_result.unwrap(), [17]);
+        client_two.write_all(vec![19], &stop, deadline).unwrap();
+        let (second_index, second_result) = batch.wait_next().unwrap().unwrap();
+        assert_ne!(first_index, second_index);
+        assert_eq!(second_result.unwrap(), [19]);
+        assert!(batch.wait_next().unwrap().is_none());
+    }
+
+    #[test]
+    fn read_batch_start_failure_leaves_other_pipe_live() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let setup_stop = Stop::new().unwrap();
+        let failed_stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut first, mut second, mut client_one, mut client_two) =
+            connected_pair(&setup_stop, deadline);
+        failed_stop.cancel().unwrap();
+        let mut batch = ReadBatch::new(vec![
+            ReadRequest {
+                pipe: &mut first,
+                stop: &failed_stop,
+                deadline,
+            },
+            ReadRequest {
+                pipe: &mut second,
+                stop: &setup_stop,
+                deadline,
+            },
+        ])
+        .unwrap();
+        assert!(matches!(
+            batch.wait_next().unwrap(),
+            Some((0, Err(Error::Cancelled)))
+        ));
+        let one = client_one.write_all(vec![23], &setup_stop, deadline);
+        let two = client_two.write_all(vec![23], &setup_stop, deadline);
+        assert!(one.is_ok() || two.is_ok());
+        let (index, result) = batch.wait_next().unwrap().unwrap();
+        assert_eq!(index, 1);
+        assert_eq!(result.unwrap(), [23]);
     }
 
     #[test]

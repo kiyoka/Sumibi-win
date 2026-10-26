@@ -10,6 +10,8 @@ pub mod broker;
 #[cfg(windows)]
 pub mod channel;
 #[cfg(windows)]
+pub mod framed;
+#[cfg(windows)]
 mod identity;
 #[cfg(windows)]
 pub mod job;
@@ -24,7 +26,8 @@ pub mod worker;
 pub use identity::PinnedProcess;
 #[cfg(windows)]
 pub use pipe::{
-    wait_any, Completion, Operation, Pipe, Server, Stop, WriteBatch, WriteRequest, MAX_ENDPOINTS,
+    wait_any, Completion, Operation, Pipe, ReadBatch, ReadRequest, Server, Stop, WriteBatch,
+    WriteRequest, MAX_ENDPOINTS,
 };
 #[cfg(windows)]
 pub use support::{Error, Nonce, Result};

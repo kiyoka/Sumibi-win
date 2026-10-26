@@ -13,6 +13,9 @@
 要求・通知・切断・Host側の設定変更を一緒に扱う製品のI/O調停点はまだない。
 `WriteBatch`が返すのは投入時の位置であり、製品の呼出し側がその位置を
 接続key・世代・政策版・Broker起動IDへ結び付けて完了を処理する。
+受信側は`FrameInbox`で分割・連結frameの未読部分を接続ごとに保持し、
+`ReadBatch`で最大8本のReadを先に開始する。子process診断の2接続Helloと
+Convertは並行受信するが、製品の継続調停ループには未接続。
 `sumibi-protocol`には接続ごとの`BrokerSession`と、最大8接続・各1通知の
 `PolicyFanout`がある。`sumibi-host`には設定・資格情報・明示同意の
 `PolicyAuthority`、要求の前後を検査する`manual::convert`、
@@ -20,6 +23,8 @@ Hostの版をBrokerの受付ゲートとFanoutへ渡す`BrokerPolicyRelay`があ
 Host側の`BrokerPolicyRuntime`は、認証済みpipeのReady、有限な政策通知、
 失敗先の物理切断と配送receiptを一つのworker側で処理する
 （[ADR 0063](0063-host-policy-runtime.md)）。製品Host EXEの主ループは未接続。
+Convert受付時の`JobTicket`は接続単位のStopイベントを持ち、失効・期限・
+切断・不正frame・終端で取消される。実workerでの待機と回収は未接続。
 登録不要の`spike`診断分岐ではHost EXEからこの実行部を起動し、各OS accept
 直後の接続key予約、2接続への政策配送、許可中の結果と失効時の取消を実pipeで
 検査した。既定Hostは同じ診断モードを拒否する。結果公開はHost政策元とBroker

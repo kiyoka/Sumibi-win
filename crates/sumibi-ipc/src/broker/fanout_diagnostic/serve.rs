@@ -209,7 +209,7 @@ pub(crate) fn serve_fanout(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Re
         return Err(Error::InvalidMessage);
     };
     gate.authorize(convert.revision)?;
-    let mut inbox = BrokerInbox::default();
+    let mut inbox = crate::framed::FrameInbox::default();
     let cancellable = inbox.read(&mut second, &bootstrap.stop, deadline)?;
     let BrokerEvent::Convert(cancellable) = order
         .receive(2, cancellable, Instant::now())
@@ -756,28 +756,4 @@ fn write_fanout_notices(
             .map_err(map_fanout_error)?;
     }
     Ok(())
-}
-
-#[derive(Default)]
-struct BrokerInbox {
-    decoder: Decoder,
-    unread: Vec<u8>,
-}
-
-impl BrokerInbox {
-    fn read(&mut self, pipe: &mut Pipe, stop: &Stop, deadline: Instant) -> Result<Envelope> {
-        loop {
-            if !self.unread.is_empty() {
-                let decoded = self
-                    .decoder
-                    .decode(&self.unread)
-                    .map_err(|_| Error::InvalidMessage)?;
-                self.unread.drain(..decoded.consumed);
-                if let Some(body) = decoded.body {
-                    return message::decode(body).map_err(|_| Error::InvalidMessage);
-                }
-            }
-            self.unread = pipe.start_read(stop, deadline)?.wait()?.bytes;
-        }
-    }
 }
