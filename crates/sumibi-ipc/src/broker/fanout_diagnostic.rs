@@ -11,6 +11,16 @@ enum Scenario {
 }
 
 impl Scenario {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::FailedWrite => "failed-notice",
+            Self::Lagging => "lagging-notice",
+            Self::ReadyFailure => "failed-ready",
+            Self::BadHello => "bad-hello",
+        }
+    }
+
     fn mode(self) -> Mode {
         match self {
             Self::Normal => Mode::DiagnosticFixed { delay_ms: 0 },
@@ -25,5 +35,5 @@ impl Scenario {
 mod probe;
 mod serve;
 
-pub use probe::probe;
+pub use probe::{probe, probe_denied};
 pub(super) use serve::serve_fanout;

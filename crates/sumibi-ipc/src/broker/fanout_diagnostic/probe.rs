@@ -2,18 +2,46 @@ use super::*;
 use crate::job::{read_event, Inbox};
 use sumibi_protocol::session::{ClientSession, Event as ClientEvent, Outcome};
 
+const SCENARIOS: [Scenario; 5] = [
+    Scenario::Normal,
+    Scenario::FailedWrite,
+    Scenario::Lagging,
+    Scenario::ReadyFailure,
+    Scenario::BadHello,
+];
+
+/// The default Host must reject every disposable fanout mode before serving
+/// even Hello. Keep this distinct from the spike-only success probe.
+pub fn probe_denied(path: &std::path::Path) -> Result<()> {
+    use crate::bootstrap::Launched;
+
+    for scenario in SCENARIOS {
+        let stop = Stop::new()?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        if !matches!(
+            Launched::connect_fanout(path, scenario.mode(), &stop, deadline).err(),
+            Some(Error::Disconnected | Error::PolicyDenied)
+        ) {
+            return Err(Error::InvalidMessage);
+        }
+    }
+    Ok(())
+}
+
 /// Fixed two-client child-process probe for the setup executable. Both client
 /// pipes authenticate the same launched Host and carry no external source.
 pub fn probe(path: &std::path::Path) -> Result<()> {
-    for scenario in [
-        Scenario::Normal,
-        Scenario::FailedWrite,
-        Scenario::Lagging,
-        Scenario::ReadyFailure,
-        Scenario::BadHello,
-    ] {
+    for scenario in SCENARIOS {
         for reversed in [false, true] {
-            diagnostic_two_client_probe_once(path, reversed, scenario)?;
+            if let Err(error) = diagnostic_two_client_probe_once(path, reversed, scenario) {
+                if scenario != Scenario::Normal || reversed {
+                    eprintln!(
+                        "broker fanout scenario {} / reversed={reversed} failed",
+                        scenario.label()
+                    );
+                }
+                return Err(error);
+            }
         }
     }
     Ok(())

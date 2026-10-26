@@ -61,7 +61,8 @@ Brokerはもう片方へのReadyを完了させた後、切断先へのReadyの`
 診断をウォームアップ後に繰り返し、親processのhandle件数が元へ戻ることを確認する。
 
 通常Hostはこの診断serviceを拒否し、`spike` featureを明示したHostだけが
-固定本文を扱う。`tools/Test-Broker.ps1`は拒否、2接続、既存Channel/Workerを
+固定本文を扱う。通常Hostによる拒否は5種類の診断モードそれぞれで検査する。
+`tools/Test-Broker.ps1`は拒否、2接続、既存Channel/Workerを
 順に実行し、終了時に通常Hostへ戻す。マシン全体のTSF登録と実API送信は
 行わない。
 

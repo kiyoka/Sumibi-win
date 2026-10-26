@@ -1,5 +1,8 @@
 //! Two authenticated pipe instances in one disposable Broker process.
-use sumibi_ipc::{broker::diagnostic_two_client_probe, Error, Result};
+use sumibi_ipc::{
+    broker::{diagnostic_fanout_denial_probe, diagnostic_two_client_probe},
+    Error, Result,
+};
 use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
 
 fn handle_count() -> Result<u32> {
@@ -18,14 +21,11 @@ pub(super) fn run(default_host: bool) -> Result<()> {
             .parent()
             .ok_or(Error::InvalidArgument)?
             .join("sumibi-host.exe");
-        let result = diagnostic_two_client_probe(&path);
         if default_host {
-            if !matches!(result, Err(Error::Disconnected | Error::PolicyDenied)) {
-                return Err(Error::InvalidMessage);
-            }
-            println!("Broker fanout / default Host rejects two-client diagnostic service: OK");
+            diagnostic_fanout_denial_probe(&path)?;
+            println!("Broker fanout / default Host rejects all two-client diagnostic modes: OK");
         } else {
-            result?;
+            diagnostic_two_client_probe(&path)?;
             println!("Broker fanout / two pipe orders, isolated expiry, revoke, regrant, cancel, lagging retirement, bad Hello, failed Ready and notice writes, reconnect: OK");
             let baseline = handle_count()?;
             diagnostic_two_client_probe(&path)?;

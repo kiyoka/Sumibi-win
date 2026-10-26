@@ -100,7 +100,9 @@ pub fn serve(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
 }
 
 mod fanout_diagnostic;
-pub use fanout_diagnostic::probe as diagnostic_two_client_probe;
+pub use fanout_diagnostic::{
+    probe as diagnostic_two_client_probe, probe_denied as diagnostic_fanout_denial_probe,
+};
 
 pub fn serve_once(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
     if bootstrap.service != Service::Once {
