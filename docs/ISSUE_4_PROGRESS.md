@@ -281,6 +281,11 @@
   他の要求を受けられる接続を維持した。TCP接続中と書込中の取消は各有限期限で
   境界を定める。製品HTTPS adapterにも取消待機が必要。全Rustテスト255件、
   Clippy、Broker子process回帰が成功し、既定Hostへ復元した。
+- 設定操作が返した版を`acknowledge_version`へ渡すと、政策公開を完了してから
+  `ExactOrClosed`または`Superseded`を返す。2本への通知とHello待ちpipeの切断、
+  失効後の再許可をまとめた新版への置換、未来の不正な版の拒否を実pipeで確認。
+  全Rustテスト256件とClippyが成功。製品設定UIからこの入口を呼ぶ経路と、
+  完了後の表示更新はまだ未接続。
 
 ## 次の受入作業
 

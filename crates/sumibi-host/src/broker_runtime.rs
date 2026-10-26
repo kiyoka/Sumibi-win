@@ -3,7 +3,7 @@
 //! policy publication, bounded writes, and physical close receipts together.
 use crate::broker_policy::{BrokerPolicyRelay, DeliveryCompletion, DeliveryError, RelayError};
 use crate::manual::{SendAdmission, SendError, TransportError};
-use crate::policy::{ChangeError, PolicyAuthority};
+use crate::policy::{ChangeError, PolicyAuthority, PolicyVersion};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -32,6 +32,7 @@ pub enum RuntimeError {
     Retired,
     PolicyPending,
     WrongBroker,
+    InvalidTarget,
 }
 
 /// Bind a worker completion to the Broker boot and original connection.
@@ -131,6 +132,14 @@ pub struct PublicationOutcome {
     pub completion: DeliveryCompletion,
 }
 
+/// Settings-side completion after the requested Host version has reached the
+/// admission gate and every prior endpoint has received it or been closed.
+pub struct PolicyAcknowledgment {
+    pub requested: PolicyVersion,
+    pub current: Policy,
+    pub completion: DeliveryCompletion,
+}
+
 /// One bounded unit of progress from already authenticated connections.
 /// The owner interleaves this with OS accept and worker completions.
 pub enum PollStep {
@@ -186,6 +195,55 @@ impl<'a> BrokerPolicyRuntime<'a> {
 
     pub fn policy(&self) -> Policy {
         self.fanout.policy()
+    }
+
+    /// Complete a finished settings mutation. The caller supplies the version
+    /// returned by PolicyAuthority and reads that authority again for display
+    /// after this receipt. Coalescing to a newer version reports Superseded.
+    pub fn acknowledge_version(
+        &mut self,
+        requested: PolicyVersion,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<PolicyAcknowledgment, RuntimeError> {
+        if self.failed {
+            return Err(RuntimeError::Retired);
+        }
+        if requested.settings == 0 || requested.authorization == 0 {
+            return Err(RuntimeError::InvalidTarget);
+        }
+        if Instant::now() >= deadline {
+            return Err(RuntimeError::Transport(IpcError::Timeout));
+        }
+        let source = match self.source.wire_policy() {
+            Ok(policy) => policy,
+            Err(error) => {
+                self.failed = true;
+                self.close_all();
+                return Err(RuntimeError::Source(error));
+            }
+        };
+        if requested.settings > source.settings || requested.authorization > source.authorization {
+            return Err(RuntimeError::InvalidTarget);
+        }
+        let _ = self.publish_current(stop, deadline)?;
+        let current = self.policy();
+        if current.settings < requested.settings || current.authorization < requested.authorization
+        {
+            return Err(RuntimeError::Incomplete);
+        }
+        let completion = if current.settings == requested.settings
+            && current.authorization == requested.authorization
+        {
+            DeliveryCompletion::ExactOrClosed
+        } else {
+            DeliveryCompletion::Superseded
+        };
+        Ok(PolicyAcknowledgment {
+            requested,
+            current,
+            completion,
+        })
     }
 
     pub fn active_count(&self) -> usize {
@@ -2115,6 +2173,73 @@ mod tests {
             read_frame(&mut new_client, &stop, deadline).message,
             message::Message::Ready(ready) if ready.policy == outcome.policy
         ));
+    }
+
+    #[test]
+    fn settings_acknowledgment_waits_for_pipe_delivery_and_reports_coalescing() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (first_server, mut first_client) = connected(&stop, deadline);
+        let (second_server, mut second_client) = connected(&stop, deadline);
+        runtime
+            .attach(first_server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        runtime
+            .attach(second_server, hello(2, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut first_client, &stop, deadline);
+        read_frame(&mut second_client, &stop, deadline);
+        let (pending_server, _pending_client) = connected(&stop, deadline);
+        assert_eq!(runtime.reserve(pending_server), Ok(3));
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        let granted = source.grant_manual_consent(&destination).unwrap();
+        let receipt = runtime
+            .acknowledge_version(granted, &stop, deadline)
+            .unwrap();
+        assert_eq!(receipt.requested, granted);
+        assert_eq!(receipt.completion, DeliveryCompletion::ExactOrClosed);
+        assert!(receipt.current.allowed);
+        assert_eq!(runtime.pending_count(), 0);
+        for client in [&mut first_client, &mut second_client] {
+            assert!(matches!(
+                read_frame(client, &stop, deadline).message,
+                message::Message::PolicyChanged(policy) if policy == receipt.current
+            ));
+        }
+        let revoked = source.revoke_manual_consent().unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let superseded = runtime
+            .acknowledge_version(revoked, &stop, deadline)
+            .unwrap();
+        assert_eq!(superseded.completion, DeliveryCompletion::Superseded);
+        assert!(superseded.current.allowed);
+        assert!(superseded.current.authorization > revoked.authorization);
+        for client in [&mut first_client, &mut second_client] {
+            assert!(matches!(
+                read_frame(client, &stop, deadline).message,
+                message::Message::PolicyChanged(policy) if policy == superseded.current
+            ));
+        }
+        assert!(matches!(
+            runtime.acknowledge_version(
+                PolicyVersion {
+                    settings: 1,
+                    authorization: superseded.current.authorization + 1,
+                },
+                &stop,
+                deadline,
+            ),
+            Err(RuntimeError::InvalidTarget)
+        ));
+        assert_eq!(runtime.active_count(), 2);
     }
 
     #[test]
