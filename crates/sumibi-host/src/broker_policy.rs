@@ -327,6 +327,106 @@ mod tests {
     }
 
     #[test]
+    fn failed_host_notice_closes_only_that_pipe_before_receipt_completes() {
+        match PinnedProcess::current() {
+            Ok(_) => {}
+            Err(IpcError::UnsupportedElevation | IpcError::UnsupportedAppContainer) => return,
+            Err(error) => panic!("current process identity failed: {error:?}"),
+        }
+        let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
+        let source = PolicyAuthority::new(destination.clone());
+        let initial = source.wire_policy().unwrap();
+        let gate = BrokerPolicyGate::new(initial).unwrap();
+        let mut fanout = PolicyFanout::new(id(90), initial).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut live_server, mut live_client) = connected_pipe(&stop, deadline);
+        let (mut failed_server, mut failed_client) = connected_pipe(&stop, deadline);
+        for (key, server, client) in [
+            (1, &mut live_server, &mut live_client),
+            (2, &mut failed_server, &mut failed_client),
+        ] {
+            let ready = fanout
+                .attach(
+                    key,
+                    Envelope {
+                        version: VERSION,
+                        session: id(key.into()),
+                        generation: 1,
+                        message: Message::Hello(Hello { broker: id(90) }),
+                    },
+                    Instant::now(),
+                )
+                .unwrap();
+            server
+                .write_all(message::encode(&ready).unwrap(), &stop, deadline)
+                .unwrap();
+            assert!(matches!(
+                read_frame(client, &stop, deadline).message,
+                Message::Ready(_)
+            ));
+            fanout.ready_delivered(key).unwrap();
+        }
+        let mut relay = BrokerPolicyRelay::new(&source, &gate, &fanout).unwrap();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut published = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
+        assert_eq!(notice_keys(&published), [1, 2]);
+        drop(failed_client);
+        let mut batch = WriteBatch::new(vec![
+            WriteRequest {
+                pipe: &mut live_server,
+                bytes: message::encode(&published.notices[0].1.frame).unwrap(),
+                stop: &stop,
+                deadline,
+            },
+            WriteRequest {
+                pipe: &mut failed_server,
+                bytes: message::encode(&published.notices[1].1.frame).unwrap(),
+                stop: &stop,
+                deadline,
+            },
+        ])
+        .unwrap();
+        let mut saw_delivery = false;
+        let mut saw_failure = false;
+        for _ in 0..2 {
+            let (index, result) = batch.wait_next().unwrap().unwrap();
+            let key = published.notices[index].0;
+            match (key, result) {
+                (1, Ok(())) => {
+                    fanout.notice_delivered(1, published.policy).unwrap();
+                    published
+                        .delivery
+                        .notice_delivered(id(90), 1, published.policy)
+                        .unwrap();
+                    saw_delivery = true;
+                }
+                (2, Err(IpcError::Disconnected)) => {
+                    assert!(fanout.detach(2));
+                    saw_failure = true;
+                }
+                other => panic!("unexpected notice completion: {other:?}"),
+            }
+        }
+        assert!(saw_delivery && saw_failure);
+        assert_eq!(published.delivery.awaiting(), [2]);
+        drop(batch);
+        drop(failed_server);
+        published.delivery.transport_closed(id(90), 2).unwrap();
+        assert_eq!(
+            published.delivery.completion(),
+            Some(DeliveryCompletion::ExactOrClosed)
+        );
+        assert!(matches!(
+            read_frame(&mut live_client, &stop, deadline).message,
+            Message::PolicyChanged(policy) if policy == published.policy
+        ));
+    }
+
+    #[test]
     fn host_consent_changes_publish_to_two_broker_sessions() {
         let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
         let source = PolicyAuthority::new(destination.clone());

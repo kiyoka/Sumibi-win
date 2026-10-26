@@ -176,6 +176,9 @@
   Fanoutと配送receiptを進め、両clientが同じ版を受信したことを通常ユーザーの
   実pipeで検査した。
   全Rustテスト213件が成功。常駐製品Brokerへの接続と設定UIは未実装。
+- Host公開後、片方のclientがpipeを閉じた場合はその通知だけが切断失敗と
+  なり、Fanoutから退役した。生存側には同じ版が届き、失敗したserver pipeを
+  実際に閉じた後にだけ配送receiptが完了した。全Rustテスト214件が成功。
 
 ## 次の受入作業
 

@@ -17,6 +17,8 @@
 Hostの版をBrokerの受付ゲートとFanoutへ渡す`BrokerPolicyRelay`がある。
 Hostの単体結合検査では、Relayの公開通知を同一processの認証済み2本の
 実pipeへ書き、各完了で配送receiptを進め、client側の受信版を照合した。
+片方が通知前に閉じた場合も、生存側の配送と失敗先の退役を維持し、
+失敗先のserver pipeを実際に閉じるまでreceiptを完了させなかった。
 実子Brokerの2接続検査は、同じ親processから開いた2本のpipeである。
 異なるTIP processによる共有Hostの発見と接続、Hostの政策元から実pipeへの
 配送、設定UIの完了通知はまだ製品で結ばれていない。
