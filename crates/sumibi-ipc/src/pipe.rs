@@ -164,7 +164,7 @@ impl Server {
                 handle: self.handle,
                 peer,
                 _permit: self.permit,
-                pair_anchor: (self.max_instances == 2).then_some(self.name),
+                pair_name: (self.max_instances == 2).then_some(self.name),
             }),
             closed: false,
             authenticated: false,
@@ -183,7 +183,7 @@ struct Resource {
     handle: OwnedHandle,
     peer: PinnedProcess,
     _permit: Permit,
-    pair_anchor: Option<Nonce>,
+    pair_name: Option<Nonce>,
 }
 pub struct Pipe {
     resource: Arc<Resource>,
@@ -192,13 +192,13 @@ pub struct Pipe {
     busy: bool,
 }
 impl Pipe {
-    /// Replenish a disposable diagnostic pair only while its authenticated
-    /// server anchor remains live. The kernel still enforces two instances.
+    /// Replenish a disposable diagnostic pair only while an authenticated
+    /// server instance remains live. The kernel still enforces two instances.
     pub(crate) fn replacement_pair(&self) -> Result<Server> {
         self.check()?;
         let name = self
             .resource
-            .pair_anchor
+            .pair_name
             .as_ref()
             .ok_or(Error::InvalidArgument)?;
         Server::create_instance(name, false, 2)
@@ -228,7 +228,7 @@ impl Pipe {
                 handle,
                 peer,
                 _permit: permit,
-                pair_anchor: None,
+                pair_name: None,
             }),
             closed: false,
             authenticated: true,

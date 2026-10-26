@@ -5,12 +5,16 @@ use sumibi_protocol::session::{ClientSession, Event as ClientEvent, Outcome};
 /// Fixed two-client child-process probe for the setup executable. Both client
 /// pipes authenticate the same launched Host and carry no external source.
 pub fn probe(path: &std::path::Path) -> Result<()> {
-    for reversed in [false, true] {
-        diagnostic_two_client_probe_once(path, reversed, Scenario::Normal)?;
+    for scenario in [
+        Scenario::Normal,
+        Scenario::FailedWrite,
+        Scenario::Lagging,
+        Scenario::ReadyFailure,
+    ] {
+        for reversed in [false, true] {
+            diagnostic_two_client_probe_once(path, reversed, scenario)?;
+        }
     }
-    diagnostic_two_client_probe_once(path, false, Scenario::FailedWrite)?;
-    diagnostic_two_client_probe_once(path, false, Scenario::Lagging)?;
-    diagnostic_two_client_probe_once(path, false, Scenario::ReadyFailure)?;
     Ok(())
 }
 
