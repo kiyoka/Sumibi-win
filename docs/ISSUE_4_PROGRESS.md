@@ -220,6 +220,8 @@
   全Rustテスト229件。
 - 500msを超える結果書込期限は要求を消費せず拒否し、適正な期限で同じ要求の
   結果を配送できた。通常ユーザーの実pipeで確認し、全Rustテスト230件。
+  `sumibi-host/spike`構成の全テストとClippy、登録不要の
+  `tools/Test-Spike.ps1 -SkipDesktop`も成功し、通常TIPとHostへ復元した。
 
 ## 次の受入作業
 

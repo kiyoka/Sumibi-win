@@ -20,6 +20,10 @@ Hostの版をBrokerの受付ゲートとFanoutへ渡す`BrokerPolicyRelay`があ
 Host側の`BrokerPolicyRuntime`は、認証済みpipeのReady、有限な政策通知、
 失敗先の物理切断と配送receiptを一つのworker側で処理する
 （[ADR 0063](0063-host-policy-runtime.md)）。製品Host EXEの主ループは未接続。
+登録不要の`spike`診断分岐ではHost EXEからこの実行部を起動し、各OS accept
+直後の接続key予約、2接続への政策配送、許可中の結果と失効時の取消を実pipeで
+検査した。既定Hostは同じ診断モードを拒否する。結果公開はHost政策元とBroker
+ゲートを最大500msの書込完了まで保持し、別Broker起動IDの遅延完了を拒否する。
 Hostの単体結合検査では、Relayの公開通知を同一processの認証済み2本の
 実pipeへ書き、各完了で配送receiptを進め、client側の受信版を照合した。
 片方が通知前に閉じた場合も、生存側の配送と失敗先の退役を維持し、
@@ -49,8 +53,9 @@ pipeの読書き中にFanoutを借用し続けない。各接続のI/O作業は�
 処理し、完了を接続key・世代・政策版付きで調停点へ返す。遅い接続のI/Oが他の
 接続の通知配送を無期限に止めない。通知frameは一度だけ取得し、書込が完全に
 終わった版だけを`notice_delivered`へ渡す。失敗した接続は退役・closeし、
-同じ通知を再送しない。結果の書込は`BrokerPolicyGate::authorize_for_publish`の
-guardを完全な書込まで保持し、政策公開との順序を固定する。調停点のFanout
+同じ通知を再送しない。結果の書込はHost政策元の`authorize_result`と
+`BrokerPolicyGate::authorize_for_publish`のguardを完全な書込まで保持し、
+政策変更との順序を固定する。調停点のFanout
 操作と結果側のguard取得でlock順序を逆にしない。
 
 Hostの設定変更はRelayが最新版へまとめて公開する。公開後に退役keyのpipeを
