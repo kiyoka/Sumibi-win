@@ -2069,46 +2069,47 @@ mod tests {
                 deadline,
             )
             .unwrap();
-        let PollStep::Received {
-            key: 1,
-            event: Event::Convert(request),
-        } = runtime.poll_once(&stop, deadline).unwrap()
-        else {
-            panic!("authenticated Convert must reach the owner");
-        };
-        let ticket = runtime.job_ticket(1, request.request).unwrap();
         let worker_source = source.clone();
         let worker_destination = destination.clone();
-        let mut workers = BrokerWorkers::new();
-        workers
-            .submit(ticket, move |ticket| {
-                manual::convert_ordered(
-                    ManualRequest {
-                        revision: request.revision,
-                        destination: &worker_destination,
-                        source: &request.text,
-                        deadline: ticket.deadline(),
-                    },
-                    &worker_source,
-                    &ticket,
-                    &DiagnosticLoopbackHttp,
-                )
-                .map_err(|_| ErrorCode::Unavailable)
-            })
-            .unwrap();
-        let completion = loop {
-            if let Some(completion) = workers.try_completion() {
-                break completion;
+        let mut owner = BrokerWorkLoop::new();
+        assert!(matches!(
+            owner.advance(&mut runtime, &stop, deadline, move |request| {
+                move |ticket: JobTicket| {
+                    manual::convert_ordered(
+                        ManualRequest {
+                            revision: request.revision,
+                            destination: &worker_destination,
+                            source: &request.text,
+                            deadline: ticket.deadline(),
+                        },
+                        &worker_source,
+                        &ticket,
+                        &DiagnosticLoopbackHttp,
+                    )
+                    .map_err(|_| ErrorCode::Unavailable)
+                }
+            }),
+            Ok(OwnerStep::Submitted { key: 1, request: 1 })
+        ));
+        loop {
+            match owner
+                .advance(&mut runtime, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Completed {
+                    key: 1,
+                    request: 1,
+                    delivered: true,
+                    succeeded: true,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("unexpected owner step"),
             }
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(1));
-        };
-        assert!(matches!(completion.outcome.as_deref(), Ok("日本語")));
-        let now = Instant::now();
-        assert_eq!(
-            completion.publish(&mut runtime, &stop, now + Duration::from_millis(500)),
-            Ok(true)
-        );
+        }
         assert!(matches!(
             read_frame(&mut client, &stop, deadline).message,
             message::Message::Result(result) if result.text == "日本語"
@@ -2128,35 +2129,36 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
-            runtime.poll_once(&stop, deadline),
-            Ok(PollStep::Received {
-                key: 1,
-                event: Event::Convert(_)
-            })
+            owner.advance(&mut runtime, &stop, deadline, |_| {
+                |_: JobTicket| Err(ErrorCode::Unavailable)
+            }),
+            Ok(OwnerStep::Submitted { key: 1, request: 2 })
         ));
-        workers
-            .submit(runtime.job_ticket(1, 2).unwrap(), |_| {
-                Err(ErrorCode::Unavailable)
-            })
-            .unwrap();
-        let failure = loop {
-            if let Some(completion) = workers.try_completion() {
-                break completion;
+        loop {
+            match owner
+                .advance(&mut runtime, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Completed {
+                    key: 1,
+                    request: 2,
+                    delivered: true,
+                    succeeded: false,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("unexpected owner step"),
             }
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(1));
-        };
-        let now = Instant::now();
-        assert_eq!(
-            failure.publish(&mut runtime, &stop, now + Duration::from_millis(500)),
-            Ok(true)
-        );
+        }
         assert!(matches!(
             read_frame(&mut client, &stop, deadline).message,
             message::Message::Error(error)
                 if error.request == 2 && error.code == ErrorCode::Unavailable
         ));
-        assert_eq!(workers.active_count(), 0);
+        assert_eq!(owner.active_count(), 0);
     }
 
     #[test]
@@ -2199,38 +2201,41 @@ mod tests {
                 deadline,
             )
             .unwrap();
-        let PollStep::Received {
-            key: 1,
-            event: Event::Convert(request),
-        } = runtime.poll_once(&stop, deadline).unwrap()
-        else {
-            panic!("authenticated Convert must reach the owner");
-        };
-        let ticket = runtime.job_ticket(1, request.request).unwrap();
         let worker_source = source.clone();
         let worker_destination = destination.clone();
-        let mut workers = BrokerWorkers::new();
-        workers
-            .submit(ticket.clone(), move |ticket| {
-                manual::convert_ordered(
-                    ManualRequest {
-                        revision: request.revision,
-                        destination: &worker_destination,
-                        source: &request.text,
-                        deadline: ticket.deadline(),
-                    },
-                    &worker_source,
-                    &ticket,
-                    &DiagnosticLoopbackHttp,
-                )
-                .map_err(|_| ErrorCode::Unavailable)
-            })
-            .unwrap();
+        let mut owner = BrokerWorkLoop::new();
+        assert!(matches!(
+            owner.advance(&mut runtime, &stop, deadline, move |request| {
+                move |ticket: JobTicket| {
+                    manual::convert_ordered(
+                        ManualRequest {
+                            revision: request.revision,
+                            destination: &worker_destination,
+                            source: &request.text,
+                            deadline: ticket.deadline(),
+                        },
+                        &worker_source,
+                        &ticket,
+                        &DiagnosticLoopbackHttp,
+                    )
+                    .map_err(|_| ErrorCode::Unavailable)
+                }
+            }),
+            Ok(OwnerStep::Submitted { key: 1, request: 1 })
+        ));
+        let ticket = runtime.job_ticket(1, 1).unwrap();
         received_receive
             .recv_timeout(Duration::from_secs(1))
             .unwrap();
         source.revoke_manual_consent().unwrap();
-        let outcome = runtime.publish_current(&stop, deadline).unwrap().unwrap();
+        let OwnerStep::Published(outcome) = owner
+            .advance(&mut runtime, &stop, deadline, |_| {
+                |_: JobTicket| Err(ErrorCode::Unavailable)
+            })
+            .unwrap()
+        else {
+            panic!("policy must be published before the worker completion");
+        };
         assert_eq!(outcome.cancelled, [(1, 1)]);
         assert_eq!(outcome.delivered, [1]);
         assert!(ticket.is_cancelled());
@@ -2239,8 +2244,13 @@ mod tests {
             message::Message::PolicyChanged(next) if !next.allowed
         ));
         let waiting_started = Instant::now();
-        while workers.active_count() != 0 {
-            assert!(workers.try_completion().is_none());
+        while owner.active_count() != 0 {
+            assert!(matches!(
+                owner.advance(&mut runtime, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                }),
+                Ok(OwnerStep::Broker(PollStep::Idle))
+            ));
             assert!(waiting_started.elapsed() < Duration::from_millis(500));
             std::thread::sleep(Duration::from_millis(1));
         }
