@@ -415,7 +415,9 @@ impl<'a> WriteBatch<'a> {
 
     /// Return the next completed endpoint in input order coordinates. A
     /// partial transfer is restarted and goes to the back of the ready scan.
-    /// The caller decides whether a failed endpoint should be detached.
+    /// An inner error belongs only to that endpoint; the caller closes it.
+    /// An outer selector error requires dropping the batch and closing every
+    /// still-pending endpoint before reporting a publication complete.
     pub fn wait_next(&mut self) -> Result<Option<(usize, Result<()>)>> {
         if self.remaining == 0 {
             return Ok(None);
