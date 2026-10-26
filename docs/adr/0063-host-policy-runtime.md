@@ -78,21 +78,29 @@ I/O調停ループの代わりではない。
 処理できる。2本のHelloが部分受信中に変更した場合、両pipeを閉じてから
 配送receiptを完了し、後の新接続だけが新版Readyを受けた。Convertのchunk間に
 失効した旧本文も要求として受理せず、そのpipeだけを退役させた。
+OS accept時にはFanoutにも接続keyを予約する。後のHelloが先に完成しても先の
+予約keyを有効化でき、閉じた予約keyは再利用しない。activeとHello待ちは
+合わせて最大8本。ReadyはHost政策元のguardを最大500msの書込まで保持し、
+書込前に変更が確定した旧版Readyを拒否する。
+`poll_once`はHost公開、期限切れ、Hello、active frameを順に1件進める。
+active接続は巡回し、同一pipeに連結された後続frameがあっても他の接続を
+先に読める。子process診断の再許可後要求もこの入口を通した。
 
 ## 残る境界
 
 この実行部は製品Host EXEの診断分岐にだけ接続した。継続する製品用の
 accept/read/worker結果ループはまだない。診断では各OS acceptの直後に
 `reserve`を呼び、2本目の接続を待つ間も1本目のkeyを固定する。
-複数のHello読取待ちと設定変更が重なる順序は未検査。異なるTIP processから共有Hostを
+複数Helloと設定変更の順序は実pipeで確認した。異なるTIP processから共有Hostを
 発見・起動する経路、設定UIの完了待機、実worker完了の調停と結果公開、
 所有TSFへの適用前再検査も残る。
 製品の実workerは`JobTicket`台帳にまだ接続していない。各workerがticketの
 StopをI/O待機へ組み込み、取消後に回収されることを確認する必要がある。
 遅延完了はBroker起動IDと接続keyで照合し、別接続へ再配送しない。
 
-政策元の二度の読直しは、外部の設定変更と送信開始を原子的にしない。
-実APIを有効にする前に、[ADR 0062](0062-product-broker-integration-sequence.md)の
-送信開始・失効の順序を実装する。製品の要求受付時は、公開すべきHost変更を
+政策元の二度の読直しだけでは、外部の設定変更と送信開始を原子的にできない。
+診断loopback HTTPには[ADR 0064](0064-outbound-send-start-order.md)の
+送信開始guardを接続した。製品HTTPS adapterにも同じ順序を適用する必要がある。
+製品の要求受付時は、公開すべきHost変更を
 先に処理し、接続key・世代・政策版・Broker起動IDをworker完了に保持する。
 恒久的なTSF登録と実API送信は今回行っていない。

@@ -27,6 +27,12 @@ pub struct ResultPublicationGuard<'a> {
     _state: MutexGuard<'a, PolicySnapshot>,
 }
 
+/// Orders a Ready frame against a concurrent Host policy mutation.
+#[must_use = "hold through the complete Ready write"]
+pub struct ReadyPublicationGuard<'a> {
+    _state: MutexGuard<'a, PolicySnapshot>,
+}
+
 /// Orders the first outbound request bytes and revocation under the Host's
 /// policy lock. Hold through every byte containing the credential or source.
 #[must_use = "hold through the complete outbound request write"]
@@ -61,6 +67,17 @@ impl PolicyAuthority {
     pub fn wire_policy(&self) -> Result<Policy, ChangeError> {
         let state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
         Ok(wire_policy(&state))
+    }
+
+    pub fn authorize_ready(
+        &self,
+        expected: Policy,
+    ) -> Result<ReadyPublicationGuard<'_>, ChangeError> {
+        let state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        if wire_policy(&state) != expected {
+            return Err(ChangeError::StalePolicy);
+        }
+        Ok(ReadyPublicationGuard { _state: state })
     }
 
     pub fn authorize_result(
@@ -307,6 +324,37 @@ mod tests {
             authority.authorize_result(revision).err(),
             Some(ChangeError::StalePolicy)
         );
+    }
+
+    #[test]
+    fn ready_guard_orders_a_denied_ready_before_policy_mutation() {
+        let authority = PolicyAuthority::new(destination("api.example.test"));
+        let original = authority.wire_policy().unwrap();
+        assert!(!original.allowed);
+        let ready = authority.authorize_ready(original).unwrap();
+        std::thread::scope(|scope| {
+            let (started_send, started_receive) = std::sync::mpsc::channel();
+            let (finished_send, finished_receive) = std::sync::mpsc::channel();
+            let source = &authority;
+            scope.spawn(move || {
+                started_send.send(()).unwrap();
+                source.revoke_manual_consent().unwrap();
+                finished_send.send(()).unwrap();
+            });
+            started_receive.recv().unwrap();
+            assert!(matches!(
+                finished_receive.recv_timeout(Duration::from_millis(20)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            drop(ready);
+            finished_receive
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+        });
+        assert!(matches!(
+            authority.authorize_ready(original),
+            Err(ChangeError::StalePolicy)
+        ));
     }
 
     #[test]

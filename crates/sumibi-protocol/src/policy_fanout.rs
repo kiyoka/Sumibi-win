@@ -51,6 +51,7 @@ pub struct PolicyFanout {
     policy: Policy,
     subscribers: Vec<Subscriber>,
     last_key: u64,
+    reserved_keys: Vec<u64>,
     seen: Vec<SeenSession>,
     attachments: usize,
 }
@@ -65,6 +66,7 @@ impl PolicyFanout {
             policy,
             subscribers: Vec::new(),
             last_key: 0,
+            reserved_keys: Vec::new(),
             seen: Vec::new(),
             attachments: 0,
         })
@@ -80,6 +82,37 @@ impl PolicyFanout {
 
     pub fn active_count(&self) -> usize {
         self.subscribers.len()
+    }
+
+    /// Claim a monotonic key at OS accept, before its Hello is complete.
+    /// Reserved Hellos may then complete in either order. Dropping a pending
+    /// pipe must abandon its reservation; the key still cannot be reused.
+    pub fn reserve_key(&mut self, key: u64) -> Result<(), FanoutError> {
+        if key == 0 {
+            return Err(FanoutError::InvalidKey);
+        }
+        if key <= self.last_key {
+            return Err(FanoutError::StaleKey);
+        }
+        if self.subscribers.len() + self.reserved_keys.len() >= MAX_SESSIONS {
+            return Err(FanoutError::Full);
+        }
+        self.last_key = key;
+        self.reserved_keys.push(key);
+        Ok(())
+    }
+
+    pub fn abandon_key(&mut self, key: u64) -> bool {
+        if let Some(index) = self
+            .reserved_keys
+            .iter()
+            .position(|reserved| *reserved == key)
+        {
+            self.reserved_keys.remove(index);
+            true
+        } else {
+            false
+        }
     }
 
     /// Snapshot the connection keys present before a policy publication.
@@ -138,8 +171,14 @@ impl PolicyFanout {
         hello: Envelope,
         now: Instant,
     ) -> Result<Envelope, FanoutError> {
-        let fresh_key = key != 0 && key > self.last_key;
-        if fresh_key {
+        let reserved = self
+            .reserved_keys
+            .iter()
+            .position(|reserved| *reserved == key);
+        let fresh_key = key != 0 && (reserved.is_some() || key > self.last_key);
+        if let Some(index) = reserved {
+            self.reserved_keys.remove(index);
+        } else if fresh_key {
             self.last_key = key;
         }
         hello
@@ -172,7 +211,7 @@ impl PolicyFanout {
         {
             return Err(FanoutError::DuplicateSession);
         }
-        if self.subscribers.len() == MAX_SESSIONS {
+        if self.subscribers.len() + self.reserved_keys.len() == MAX_SESSIONS {
             return Err(FanoutError::Full);
         }
         if self.attachments == MAX_ATTACHMENTS {
@@ -537,6 +576,34 @@ mod tests {
         );
         let ready = attach_ready(&mut fanout, 10, 9, now);
         assert!(matches!(ready.message, Message::Ready(ready) if ready.policy.settings == 3));
+    }
+
+    #[test]
+    fn reserved_keys_allow_hello_completion_out_of_accept_order() {
+        let now = Instant::now();
+        let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
+        assert_eq!(fanout.reserve_key(1), Ok(()));
+        assert_eq!(fanout.reserve_key(2), Ok(()));
+        attach_ready(&mut fanout, 2, 2, now);
+        attach_ready(&mut fanout, 1, 1, now);
+        assert_eq!(fanout.active_count(), 2);
+        assert!(matches!(
+            fanout.attach(1, hello(3), now),
+            Err(FanoutError::Duplicate)
+        ));
+        for key in 3..=8 {
+            assert_eq!(fanout.reserve_key(key), Ok(()));
+        }
+        assert_eq!(fanout.reserve_key(9), Err(FanoutError::Full));
+        assert!(fanout.abandon_key(3));
+        assert!(!fanout.abandon_key(3));
+        assert!(matches!(
+            fanout.attach(3, hello(3), now),
+            Err(FanoutError::StaleKey)
+        ));
+        assert_eq!(fanout.reserve_key(10), Ok(()));
+        attach_ready(&mut fanout, 10, 10, now);
+        assert_eq!(fanout.active_count(), 3);
     }
 
     #[test]

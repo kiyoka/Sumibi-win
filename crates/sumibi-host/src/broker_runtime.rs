@@ -16,7 +16,7 @@ use sumibi_ipc::{
 use sumibi_protocol::{
     broker_session::Event,
     message::{self, Envelope, ErrorCode, Id, Policy, Revision},
-    policy_fanout::{FanoutError, PolicyFanout},
+    policy_fanout::{FanoutError, PolicyFanout, MAX_SESSIONS},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +118,17 @@ pub struct PublicationOutcome {
     pub completion: DeliveryCompletion,
 }
 
+/// One bounded unit of progress from already authenticated connections.
+/// The owner interleaves this with OS accept and worker completions.
+pub enum PollStep {
+    Published(PublicationOutcome),
+    Activated(u64),
+    Received { key: u64, event: Event },
+    Expired { key: u64, request: u64 },
+    Closed { key: u64, error: RuntimeError },
+    Idle,
+}
+
 struct Connection {
     key: u64,
     pipe: Pipe,
@@ -136,6 +147,7 @@ pub struct BrokerPolicyRuntime<'a> {
     connections: Vec<Connection>,
     jobs: Vec<JobTicket>,
     last_key: u64,
+    last_polled_key: u64,
     failed: bool,
 }
 
@@ -154,6 +166,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
             connections: Vec::new(),
             jobs: Vec::new(),
             last_key: 0,
+            last_polled_key: 0,
             failed: false,
         })
     }
@@ -220,10 +233,14 @@ impl<'a> BrokerPolicyRuntime<'a> {
         if self.failed {
             return Err(RuntimeError::Retired);
         }
+        if self.pending.len() + self.connections.len() >= MAX_SESSIONS {
+            return Err(RuntimeError::Fanout(FanoutError::Full));
+        }
         let key = self
             .last_key
             .checked_add(1)
             .ok_or(RuntimeError::Exhausted)?;
+        self.fanout.reserve_key(key).map_err(RuntimeError::Fanout)?;
         self.last_key = key;
         self.pending.push(Connection {
             key,
@@ -231,6 +248,55 @@ impl<'a> BrokerPolicyRuntime<'a> {
             inbox: FrameInbox::default(),
         });
         Ok(key)
+    }
+
+    /// Publish first, then expire jobs and poll one frame per connection in
+    /// round-robin order. A peer error closes only that endpoint. Source or
+    /// runtime failure remains terminal and is returned to the owner.
+    pub fn poll_once(&mut self, stop: &Stop, deadline: Instant) -> Result<PollStep, RuntimeError> {
+        if let Some(outcome) = self.publish_current(stop, deadline)? {
+            return Ok(PollStep::Published(outcome));
+        }
+        for key in self.active_keys() {
+            match self.expire(key, Instant::now()) {
+                Ok(Some(request)) => return Ok(PollStep::Expired { key, request }),
+                Ok(None) => {}
+                Err(error) if self.failed => return Err(error),
+                Err(error) => return Ok(PollStep::Closed { key, error }),
+            }
+        }
+        for key in self.pending_keys() {
+            match self.poll_reserved_hello(key, stop, deadline) {
+                Ok(Some(hello)) => match self.activate(key, hello, stop, deadline) {
+                    Ok(()) => return Ok(PollStep::Activated(key)),
+                    Err(error) if self.failed => return Err(error),
+                    Err(error) => return Ok(PollStep::Closed { key, error }),
+                },
+                Ok(None) => {}
+                Err(error) if self.failed => return Err(error),
+                Err(error) => return Ok(PollStep::Closed { key, error }),
+            }
+        }
+        let mut keys = self.active_keys();
+        keys.sort_unstable();
+        let split = keys.partition_point(|key| *key <= self.last_polled_key);
+        keys.rotate_left(split);
+        for key in keys {
+            match self.poll_active_message(key, stop, deadline) {
+                Ok(Some(frame)) => {
+                    self.last_polled_key = key;
+                    return match self.receive(key, frame, Instant::now()) {
+                        Ok(event) => Ok(PollStep::Received { key, event }),
+                        Err(error) if self.failed => Err(error),
+                        Err(error) => Ok(PollStep::Closed { key, error }),
+                    };
+                }
+                Ok(None) => {}
+                Err(error) if self.failed => return Err(error),
+                Err(error) => return Ok(PollStep::Closed { key, error }),
+            }
+        }
+        Ok(PollStep::Idle)
     }
 
     /// Lockstep Hello reader for the launched diagnostic. A product loop may
@@ -351,7 +417,20 @@ impl<'a> BrokerPolicyRuntime<'a> {
             return Err(RuntimeError::MissingPipe);
         };
         let mut connection = self.pending.remove(index);
-        self.require_current_source()?;
+        let _source = match self.source.authorize_ready(self.fanout.policy()) {
+            Ok(guard) => guard,
+            Err(ChangeError::StalePolicy) => {
+                self.fanout.abandon_key(key);
+                return Err(RuntimeError::PolicyPending);
+            }
+            Err(error) => {
+                self.fanout.abandon_key(key);
+                self.failed = true;
+                self.close_all();
+                return Err(RuntimeError::Source(error));
+            }
+        };
+        let ready_deadline = deadline.min(Instant::now() + Duration::from_millis(500));
         let ready = self
             .fanout
             .attach(key, hello, Instant::now())
@@ -363,7 +442,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
                 return Err(RuntimeError::Incomplete);
             }
         };
-        if let Err(error) = connection.pipe.write_all(frame, stop, deadline) {
+        if let Err(error) = connection.pipe.write_all(frame, stop, ready_deadline) {
             self.fanout.detach(key);
             return Err(RuntimeError::Transport(error));
         }
@@ -590,7 +669,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
             Ok(true)
         })();
         match result {
-            Ok(_) => self.remove_job(reply.key, reply.request, false),
+            Ok(delivered) => self.remove_job(reply.key, reply.request, !delivered),
             Err(
                 RuntimeError::Source(ChangeError::Unavailable)
                 | RuntimeError::Transport(IpcError::PolicyDenied),
@@ -642,6 +721,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
         let broker = published.delivery.broker_id();
         let mut closed = Vec::new();
         for connection in self.pending.drain(..) {
+            self.fanout.abandon_key(connection.key);
             closed.push(connection.key);
             drop(connection);
         }
@@ -731,6 +811,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
     fn close(&mut self, key: u64) -> bool {
         self.cancel_connection_jobs(key);
         if let Some(index) = self.pending.iter().position(|entry| entry.key == key) {
+            self.fanout.abandon_key(key);
             drop(self.pending.remove(index));
             return true;
         }
@@ -762,7 +843,9 @@ impl<'a> BrokerPolicyRuntime<'a> {
         for job in self.jobs.drain(..) {
             job.cancel();
         }
-        self.pending.clear();
+        for connection in self.pending.drain(..) {
+            self.fanout.abandon_key(connection.key);
+        }
         for connection in self.connections.drain(..) {
             self.fanout.detach(connection.key);
             drop(connection);
@@ -983,44 +1066,38 @@ pub fn serve_diagnostic(
     publish_diagnostic(&mut runtime, bootstrap.stop(), deadline, 5, true, None)?;
     let mut resumed = false;
     while !bootstrap.stop().is_cancelled()? && Instant::now() < deadline {
-        for key in runtime.active_keys() {
-            let Some(frame) = runtime
-                .poll_active_message(key, bootstrap.stop(), deadline)
-                .map_err(|_| IpcError::InvalidMessage)?
-            else {
-                continue;
-            };
-            let Event::Convert(request) = runtime
-                .receive(key, frame, Instant::now())
-                .map_err(|_| IpcError::InvalidMessage)?
-            else {
-                return Err(IpcError::InvalidMessage);
-            };
-            if key != request_key || request.request != 2 || request.text != "again" {
-                return Err(IpcError::InvalidMessage);
+        match runtime
+            .poll_once(bootstrap.stop(), deadline)
+            .map_err(|_| IpcError::InvalidMessage)?
+        {
+            PollStep::Idle => std::thread::sleep(Duration::from_millis(1)),
+            PollStep::Received {
+                key,
+                event: Event::Convert(request),
+            } => {
+                if key != request_key || request.request != 2 || request.text != "again" {
+                    return Err(IpcError::InvalidMessage);
+                }
+                let ticket = runtime
+                    .job_ticket(key, request.request)
+                    .ok_or(IpcError::InvalidMessage)?;
+                let now = Instant::now();
+                if !runtime
+                    .publish_result(
+                        ticket.reply_context(now),
+                        "再開".into(),
+                        bootstrap.stop(),
+                        now + Duration::from_millis(500),
+                    )
+                    .map_err(|_| IpcError::PolicyDenied)?
+                {
+                    return Err(IpcError::InvalidMessage);
+                }
+                resumed = true;
+                break;
             }
-            let ticket = runtime
-                .job_ticket(key, request.request)
-                .ok_or(IpcError::InvalidMessage)?;
-            let now = Instant::now();
-            if !runtime
-                .publish_result(
-                    ticket.reply_context(now),
-                    "再開".into(),
-                    bootstrap.stop(),
-                    now + Duration::from_millis(500),
-                )
-                .map_err(|_| IpcError::PolicyDenied)?
-            {
-                return Err(IpcError::InvalidMessage);
-            }
-            resumed = true;
-            break;
+            _ => return Err(IpcError::InvalidMessage),
         }
-        if resumed {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(1));
     }
     if !resumed {
         return Err(IpcError::Timeout);
@@ -1373,6 +1450,169 @@ mod tests {
             Ok(Event::Convert(convert)) if convert.request == 1
         ));
         assert!(runtime.job_ticket(1, 1).is_some());
+        assert!(runtime.job_ticket(2, 1).is_some());
+    }
+
+    #[test]
+    fn poll_once_interleaves_hello_partial_requests_and_policy_publication() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (first_server, mut first_client) = connected(&stop, deadline);
+        let (second_server, mut second_client) = connected(&stop, deadline);
+        assert_eq!(runtime.reserve(first_server), Ok(1));
+        assert_eq!(runtime.reserve(second_server), Ok(2));
+        let first_hello = message::encode(&hello(1, id(90))).unwrap();
+        first_client
+            .write_all(first_hello[..5].to_vec(), &stop, deadline)
+            .unwrap();
+        assert!(matches!(
+            runtime.poll_once(&stop, deadline),
+            Ok(PollStep::Idle)
+        ));
+        second_client
+            .write_all(message::encode(&hello(2, id(90))).unwrap(), &stop, deadline)
+            .unwrap();
+        assert!(matches!(
+            runtime.poll_once(&stop, deadline),
+            Ok(PollStep::Activated(2))
+        ));
+        read_frame(&mut second_client, &stop, deadline);
+        first_client
+            .write_all(first_hello[5..].to_vec(), &stop, deadline)
+            .unwrap();
+        assert!(matches!(
+            runtime.poll_once(&stop, deadline),
+            Ok(PollStep::Activated(1))
+        ));
+        read_frame(&mut first_client, &stop, deadline);
+
+        let first_request = message::encode(&convert(1, 1, 1, policy)).unwrap();
+        first_client
+            .write_all(first_request[..7].to_vec(), &stop, deadline)
+            .unwrap();
+        second_client
+            .write_all(
+                message::encode(&convert(2, 1, 1, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        assert!(matches!(
+            runtime.poll_once(&stop, deadline),
+            Ok(PollStep::Received {
+                key: 2,
+                event: Event::Convert(_)
+            })
+        ));
+        first_client
+            .write_all(first_request[7..].to_vec(), &stop, deadline)
+            .unwrap();
+        assert!(matches!(
+            runtime.poll_once(&stop, deadline),
+            Ok(PollStep::Received {
+                key: 1,
+                event: Event::Convert(_)
+            })
+        ));
+        let (pending_server, _pending_client) = connected(&stop, deadline);
+        assert_eq!(runtime.reserve(pending_server), Ok(3));
+        source.revoke_manual_consent().unwrap();
+        let PollStep::Published(outcome) = runtime.poll_once(&stop, deadline).unwrap() else {
+            panic!("policy publication must lead the poll pass");
+        };
+        assert_eq!(outcome.closed, [3]);
+        assert_eq!(outcome.cancelled.len(), 2);
+        assert_eq!(runtime.pending_count(), 0);
+        assert_eq!(runtime.active_count(), 2);
+        assert!(matches!(
+            read_frame(&mut first_client, &stop, deadline).message,
+            message::Message::PolicyChanged(policy) if !policy.allowed
+        ));
+        assert!(matches!(
+            read_frame(&mut second_client, &stop, deadline).message,
+            message::Message::PolicyChanged(policy) if !policy.allowed
+        ));
+    }
+
+    #[test]
+    fn poll_once_rotates_away_from_a_coalesced_connection() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (first_server, mut first_client) = connected(&stop, deadline);
+        let (second_server, mut second_client) = connected(&stop, deadline);
+        runtime
+            .attach(first_server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        runtime
+            .attach(second_server, hello(2, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut first_client, &stop, deadline);
+        read_frame(&mut second_client, &stop, deadline);
+        runtime
+            .receive(1, convert(1, 1, 1, policy), Instant::now())
+            .unwrap();
+        let cancelled = runtime.job_ticket(1, 1).unwrap();
+        let cancel = Envelope {
+            version: message::VERSION,
+            session: id(1),
+            generation: 1,
+            message: message::Message::Cancel(Cancel { request: 1 }),
+        };
+        let mut coalesced = message::encode(&cancel).unwrap();
+        coalesced.extend(message::encode(&convert(1, 1, 2, policy)).unwrap());
+        first_client.write_all(coalesced, &stop, deadline).unwrap();
+        second_client
+            .write_all(
+                message::encode(&convert(2, 1, 1, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        assert!(matches!(
+            runtime.poll_once(&stop, deadline),
+            Ok(PollStep::Received {
+                key: 1,
+                event: Event::Cancelled(1)
+            })
+        ));
+        assert!(cancelled.is_cancelled());
+        assert!(matches!(
+            runtime.poll_once(&stop, deadline),
+            Ok(PollStep::Received {
+                key: 2,
+                event: Event::Convert(_)
+            })
+        ));
+        assert!(matches!(
+            runtime.poll_once(&stop, deadline),
+            Ok(PollStep::Received {
+                key: 1,
+                event: Event::Convert(_)
+            })
+        ));
+        assert!(runtime.job_ticket(1, 2).is_some());
         assert!(runtime.job_ticket(2, 1).is_some());
     }
 

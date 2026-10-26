@@ -10,7 +10,7 @@
 診断の政策通知は有限な`WriteBatch`で先に2本の書込を開始し、完了した
 接続ごとに結果を返す。部分書込の残りは同じ接続で再開して、次回は別接続を
 先に確認する。開始・完了に失敗した接続だけの結果も返せる。診断の2接続以外で
-要求・通知・切断・Host側の設定変更を一緒に扱う製品のI/O調停点はまだない。
+OS acceptと実worker完了を一緒に扱う製品の継続I/O調停ループはまだない。
 `WriteBatch`が返すのは投入時の位置であり、製品の呼出し側がその位置を
 接続key・世代・政策版・Broker起動IDへ結び付けて完了を処理する。
 受信側は`FrameInbox`で分割・連結frameの未読部分を接続ごとに保持し、
@@ -20,6 +20,11 @@ Convertは並行受信する。`poll_active_message`は分割frameの途中で�
 再許可後の次要求に使用したが、製品の継続調停ループには未接続。
 `poll_reserved_hello`はHello途中にも政策公開を挟める。2本の部分Helloを
 公開時に切断してreceiptを完了する実pipe検査を通した。
+OS受付時にFanoutへ接続keyを予約するため、先に受け付けたHelloが分割されていても
+後のHelloを先に有効化できる。予約の退役後もkeyは再利用しない。
+`poll_once`は公開を先頭に、期限切れ、Hello、active frameを順に1件進め、
+active接続は巡回して読む。診断の再許可後要求にこの入口を使う。
+Hello待ちとactiveは合わせて最大8本である。
 `sumibi-protocol`には接続ごとの`BrokerSession`と、最大8接続・各1通知の
 `PolicyFanout`がある。`sumibi-host`には設定・資格情報・明示同意の
 `PolicyAuthority`、送信開始順序を固定する`manual::convert_ordered`、
@@ -33,6 +38,8 @@ Convert受付時の`JobTicket`は接続単位のStopイベントを持ち、失�
 直後の接続key予約、2接続への政策配送、許可中の結果と失効時の取消を実pipeで
 検査した。既定Hostは同じ診断モードを拒否する。結果公開はHost政策元とBroker
 ゲートを最大500msの書込完了まで保持し、別Broker起動IDの遅延完了を拒否する。
+ReadyもHost政策元のguardを最大500msの書込まで保持し、変更が先に確定した
+旧版Readyを拒否する。
 Hostの単体結合検査では、Relayの公開通知を同一processの認証済み2本の
 実pipeへ書き、各完了で配送receiptを進め、client側の受信版を照合した。
 片方が通知前に閉じた場合も、生存側の配送と失敗先の退役を維持し、

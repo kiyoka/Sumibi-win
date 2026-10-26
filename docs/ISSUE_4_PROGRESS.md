@@ -257,6 +257,15 @@
   次接続は新版Readyで始まる。Convertも分割chunk間に失効した旧本文を拒否し、
   生存する別pipeだけに失効通知を届けた。通常ユーザーの実pipeで確認し、
   全Rustテスト246件。製品のacceptとworker結果を含む継続調停はまだ必要。
+- OS受付時の接続key予約をFanoutにも記録し、先のHelloが分割されていても後の
+  Helloを先に有効化できるようにした。退役した予約keyは再利用せず、activeと
+  Hello待ちを合わせて最大8本に制限する。設定変更はReadyの有界書込とHost側で
+  順序付け、変更が先なら旧Readyを拒否する。
+- `poll_once`は公開、期限切れ、Hello、active frameを1回ずつ進める調停入口。
+  同一pipe内にCancelと次要求が連結されても、別pipeの完成要求を間に処理する。
+  子process診断の再許可後要求もこの入口を使う。OS acceptと実worker完了を含む
+  製品の常駐ループはまだ接続していない。全Rustテスト250件、Clippy、
+  Broker子process回帰が成功し、既定Hostへ復元した。
 
 ## 次の受入作業
 
