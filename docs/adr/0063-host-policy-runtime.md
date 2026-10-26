@@ -58,6 +58,10 @@ Convert受付後は`JobTicket`を台帳に登録し、同一Broker起動ID・接
 明示Cancel、期限切れ、失効、切断、不正frame、実行部の終端で更新する。
 別接続のStopには触れない。正常に配送された結果は台帳から外す。
 実worker側がticketのStopをI/O待機に組み込む接続はまだない。
+送信許可にはticketごとのmutexも使用する。取消はStopイベントを先に通知して
+待機中のI/Oを起こし、送信書込と同じmutexを取得してから取消を確定する。
+このため、切断が先に確定した場合は旧ticketから本文を送れず、書込が先なら
+切断側がその有限な書込を待つ。実pipe上の競合検査で確認した。
 
 `FrameInbox`はPipeの1回のReadに複数frameが入った場合の未読suffixを保持する。
 Hello後の連結要求をHostのactive接続へ引き継ぎ、不正本文はそのpipeを退役させる。

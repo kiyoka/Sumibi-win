@@ -1,6 +1,7 @@
 //! Fail-closed policy checks around one worker-only conversion transport call.
 //! Snapshot acquisition must be coherent; the host will later supply it from
 //! its settings/credential authority. No implicit retry or destination fallback.
+use crate::policy::PolicyAuthority;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -134,8 +135,9 @@ pub enum TransportError {
     InvalidResponse,
 }
 
-/// Implementations must enforce HTTPS (or explicit loopback HTTP), reject
-/// redirects and retries, and bound response size. This port has no network I/O.
+/// Snapshot-only transport used by policy unit tests. Shipping adapters use
+/// `OrderedConversionTransport` so revocation orders the outbound bytes.
+#[cfg(test)]
 pub trait ConversionTransport {
     fn convert(
         &self,
@@ -144,6 +146,36 @@ pub trait ConversionTransport {
         source: &str,
         deadline: Instant,
     ) -> Result<String, TransportError>;
+}
+
+/// A trusted adapter must place every outbound request byte, including the
+/// credential header, inside this callback. It may connect before calling it.
+pub trait SendGate {
+    fn write_authorized(
+        &mut self,
+        write: &mut dyn FnMut() -> Result<(), TransportError>,
+    ) -> Result<(), SendError>;
+}
+
+/// Connection-local cancellation must be ordered with the outbound write,
+/// independently of Host policy revocation.
+pub trait SendAdmission {
+    fn is_cancelled(&self) -> bool;
+    fn write_if_active(
+        &self,
+        write: &mut dyn FnMut() -> Result<(), TransportError>,
+    ) -> Result<(), SendError>;
+}
+
+pub trait OrderedConversionTransport {
+    fn convert_ordered(
+        &self,
+        destination: &Destination,
+        credential: &str,
+        source: &str,
+        deadline: Instant,
+        gate: &mut dyn SendGate,
+    ) -> Result<String, SendError>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,6 +187,12 @@ pub enum SendError {
     Transport(TransportError),
 }
 
+impl From<TransportError> for SendError {
+    fn from(error: TransportError) -> Self {
+        Self::Transport(error)
+    }
+}
+
 pub struct ManualRequest<'a> {
     pub revision: Revision,
     pub destination: &'a Destination,
@@ -162,8 +200,9 @@ pub struct ManualRequest<'a> {
     pub deadline: Instant,
 }
 
-/// Call only on a Host worker after input protection and capacity reservation.
-/// The returned text remains provisional until the owner rechecks its TSF target.
+/// Snapshot-only policy model for unit tests. A real outbound adapter must
+/// call `convert_ordered` after input protection and capacity reservation.
+#[cfg(test)]
 pub fn convert(
     request: ManualRequest<'_>,
     policy: &impl PolicySource,
@@ -208,6 +247,112 @@ pub fn convert(
     Ok(result)
 }
 
+struct AuthoritySendGate<'a> {
+    authority: &'a PolicyAuthority,
+    revision: Revision,
+    destination: &'a Destination,
+    credential: &'a Arc<Credential>,
+    admission: &'a dyn SendAdmission,
+    deadline: Instant,
+    used: bool,
+    sent: bool,
+}
+
+impl SendGate for AuthoritySendGate<'_> {
+    fn write_authorized(
+        &mut self,
+        write: &mut dyn FnMut() -> Result<(), TransportError>,
+    ) -> Result<(), SendError> {
+        if self.used {
+            return Err(SendError::InvalidRequest);
+        }
+        self.used = true;
+        if Instant::now() >= self.deadline {
+            return Err(SendError::Timeout);
+        }
+        let _guard = self
+            .authority
+            .authorize_send_start(self.revision, self.destination, self.credential)
+            .map_err(|_| SendError::PolicyDenied)?;
+        if Instant::now() >= self.deadline {
+            return Err(SendError::Timeout);
+        }
+        self.admission.write_if_active(write)?;
+        self.sent = true;
+        Ok(())
+    }
+}
+
+/// Product-facing send boundary. The adapter must call `write_authorized`
+/// exactly once around its outbound request write. Revocation that finishes
+/// before the callback starts denies all request bytes; a concurrent revoke
+/// waits for the bounded write to finish before acknowledging the new policy.
+pub fn convert_ordered(
+    request: ManualRequest<'_>,
+    authority: &PolicyAuthority,
+    admission: &impl SendAdmission,
+    transport: &impl OrderedConversionTransport,
+) -> Result<String, SendError> {
+    if admission.is_cancelled() {
+        return Err(SendError::PolicyDenied);
+    }
+    let remaining = request.deadline.saturating_duration_since(Instant::now());
+    if request.revision.input == 0
+        || request.revision.settings == 0
+        || request.revision.authorization == 0
+        || !message::valid_text(request.source)
+        || remaining > Duration::from_secs(60)
+    {
+        return Err(SendError::InvalidRequest);
+    }
+    let before = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    let credential = authorized(&before, &request)?;
+    if Instant::now() >= request.deadline {
+        return Err(SendError::Timeout);
+    }
+    let mut gate = AuthoritySendGate {
+        authority,
+        revision: request.revision,
+        destination: request.destination,
+        credential: &credential,
+        admission,
+        deadline: request.deadline,
+        used: false,
+        sent: false,
+    };
+    let result = transport.convert_ordered(
+        request.destination,
+        credential.expose(),
+        request.source,
+        request.deadline,
+        &mut gate,
+    )?;
+    if !gate.sent {
+        return Err(SendError::InvalidResponse);
+    }
+    if admission.is_cancelled() {
+        return Err(SendError::PolicyDenied);
+    }
+    if Instant::now() >= request.deadline {
+        return Err(SendError::Timeout);
+    }
+    let after = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    let current_credential = authorized(&after, &request)?;
+    if !Arc::ptr_eq(&credential, &current_credential) {
+        return Err(SendError::PolicyDenied);
+    }
+    if !message::valid_text(&result) {
+        return Err(SendError::InvalidResponse);
+    }
+    if admission.is_cancelled() {
+        return Err(SendError::PolicyDenied);
+    }
+    if Instant::now() >= request.deadline {
+        return Err(SendError::Timeout);
+    }
+    Ok(result)
+}
+
 fn authorized(
     snapshot: &PolicySnapshot,
     request: &ManualRequest<'_>,
@@ -228,6 +373,19 @@ mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
     use std::time::Duration;
+
+    struct Active;
+    impl SendAdmission for Active {
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+        fn write_if_active(
+            &self,
+            write: &mut dyn FnMut() -> Result<(), TransportError>,
+        ) -> Result<(), SendError> {
+            write().map_err(SendError::Transport)
+        }
+    }
 
     struct Source(RefCell<PolicySnapshot>);
     impl PolicySource for Source {
@@ -291,6 +449,147 @@ mod tests {
             result: "日本語",
             during: None,
         }
+    }
+
+    struct OrderedMock<'a> {
+        authority: &'a PolicyAuthority,
+        revoke_before: bool,
+        revoke_after: bool,
+        omit_gate: bool,
+        bytes_written: Cell<usize>,
+    }
+
+    impl OrderedConversionTransport for OrderedMock<'_> {
+        fn convert_ordered(
+            &self,
+            _: &Destination,
+            _: &str,
+            _: &str,
+            _: Instant,
+            gate: &mut dyn SendGate,
+        ) -> Result<String, SendError> {
+            if self.revoke_before {
+                self.authority
+                    .revoke_manual_consent()
+                    .map_err(|_| SendError::PolicyDenied)?;
+            }
+            if !self.omit_gate {
+                gate.write_authorized(&mut || {
+                    self.bytes_written.set(self.bytes_written.get() + 1);
+                    Ok(())
+                })?;
+            }
+            if self.revoke_after {
+                self.authority
+                    .revoke_manual_consent()
+                    .map_err(|_| SendError::PolicyDenied)?;
+            }
+            Ok("日本語".into())
+        }
+    }
+
+    fn ordered_authority(destination: &Destination) -> PolicyAuthority {
+        let authority = PolicyAuthority::new(destination.clone());
+        authority
+            .replace_credential(Some(Credential::new("synthetic-key".into()).unwrap()))
+            .unwrap();
+        authority.grant_manual_consent(destination).unwrap();
+        authority
+    }
+
+    fn ordered_request<'a>(
+        destination: &'a Destination,
+        authority: &PolicyAuthority,
+    ) -> ManualRequest<'a> {
+        let policy = authority.wire_policy().unwrap();
+        ManualRequest {
+            revision: Revision {
+                input: 1,
+                settings: policy.settings,
+                authorization: policy.authorization,
+            },
+            destination,
+            source: "nihongo",
+            deadline: Instant::now() + Duration::from_secs(1),
+        }
+    }
+
+    #[test]
+    fn ordered_send_denies_revocation_before_first_byte_and_later_result() {
+        let destination = destination();
+        let authority = ordered_authority(&destination);
+        let transport = OrderedMock {
+            authority: &authority,
+            revoke_before: true,
+            revoke_after: false,
+            omit_gate: false,
+            bytes_written: Cell::new(0),
+        };
+        assert_eq!(
+            convert_ordered(
+                ordered_request(&destination, &authority),
+                &authority,
+                &Active,
+                &transport
+            ),
+            Err(SendError::PolicyDenied)
+        );
+        assert_eq!(transport.bytes_written.get(), 0);
+
+        let authority = ordered_authority(&destination);
+        let transport = OrderedMock {
+            authority: &authority,
+            revoke_before: false,
+            revoke_after: true,
+            omit_gate: false,
+            bytes_written: Cell::new(0),
+        };
+        assert_eq!(
+            convert_ordered(
+                ordered_request(&destination, &authority),
+                &authority,
+                &Active,
+                &transport
+            ),
+            Err(SendError::PolicyDenied)
+        );
+        assert_eq!(transport.bytes_written.get(), 1);
+    }
+
+    #[test]
+    fn ordered_adapter_must_use_gate_before_success() {
+        let destination = destination();
+        let authority = ordered_authority(&destination);
+        let transport = OrderedMock {
+            authority: &authority,
+            revoke_before: false,
+            revoke_after: false,
+            omit_gate: true,
+            bytes_written: Cell::new(0),
+        };
+        assert_eq!(
+            convert_ordered(
+                ordered_request(&destination, &authority),
+                &authority,
+                &Active,
+                &transport
+            ),
+            Err(SendError::InvalidResponse)
+        );
+        let transport = OrderedMock {
+            omit_gate: false,
+            ..transport
+        };
+        assert_eq!(
+            convert_ordered(
+                ordered_request(&destination, &authority),
+                &authority,
+                &Active,
+                &transport
+            ),
+            Ok("日本語".into())
+        );
+        assert_eq!(transport.bytes_written.get(), 1);
     }
 
     #[test]

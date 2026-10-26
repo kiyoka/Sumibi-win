@@ -235,6 +235,17 @@
   2接続Host診断はHelloとConvertの双方を並行受信し、接続順・要求到着順を変えて
   成功。全Rustテスト237件、Broker回帰、Clippyが成功し、通常Hostへ復元した。
   製品Hostの継続accept/read/worker調停ループは引き続き必要。
+- Host政策元に送信開始guardを追加。`manual::convert_ordered`と診断loopback
+  HTTPは、資格情報headerと本文の書込全体を同じguard内で行う。
+  TCP接続後・最初のbyte前の失効ではserver受信量0を実ソケットで確認。
+  送信後の失効では結果を破棄し、同一byte列の資格情報差替えも旧識別子では
+  拒否した。旧snapshot専用送信経路は単体テスト構成に限定。
+  全Rustテスト241件とClippyが成功（[ADR 0064](adr/0064-outbound-send-start-order.md)）。
+  製品HTTPS adapter、workerのI/O取消、設定UI完了待機は未接続。
+- `JobTicket`を`convert_ordered`の送信許可にも結び付けた。接続が先に退役した
+  ticketではHost同意が残っていても書込を0回に抑え、送信が先に始まった場合は
+  切断の確定が有限な書込終了を待つ。取消イベントは待機中のworkerへ直ちに通知。
+  実pipeを使うHostの競合検査を追加し、全Rustテスト242件。
 
 ## 次の受入作業
 

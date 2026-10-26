@@ -27,6 +27,13 @@ pub struct ResultPublicationGuard<'a> {
     _state: MutexGuard<'a, PolicySnapshot>,
 }
 
+/// Orders the first outbound request bytes and revocation under the Host's
+/// policy lock. Hold through every byte containing the credential or source.
+#[must_use = "hold through the complete outbound request write"]
+pub struct SendStartGuard<'a> {
+    _state: MutexGuard<'a, PolicySnapshot>,
+}
+
 /// Mutations publish the complete new state under one lock. A failed or
 /// poisoned update cannot expose a partly changed policy to a worker.
 pub struct PolicyAuthority {
@@ -68,6 +75,28 @@ impl PolicyAuthority {
             return Err(ChangeError::StalePolicy);
         }
         Ok(ResultPublicationGuard { _state: state })
+    }
+
+    pub fn authorize_send_start(
+        &self,
+        revision: Revision,
+        destination: &Destination,
+        credential: &Arc<Credential>,
+    ) -> Result<SendStartGuard<'_>, ChangeError> {
+        let state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        if !state.allowed
+            || revision.settings != state.settings
+            || revision.authorization != state.authorization
+            || state.destination != *destination
+            || state.manual_consent.as_ref() != Some(destination)
+            || !state
+                .credential
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, credential))
+        {
+            return Err(ChangeError::StalePolicy);
+        }
+        Ok(SendStartGuard { _state: state })
     }
 
     /// A bounded publisher can keep just one cursor and coalesce changes into
@@ -278,6 +307,70 @@ mod tests {
             authority.authorize_result(revision).err(),
             Some(ChangeError::StalePolicy)
         );
+    }
+
+    #[test]
+    fn send_guard_orders_revoke_and_rejects_replaced_credential_identity() {
+        let destination = destination("api.example.test");
+        let authority = PolicyAuthority::new(destination.clone());
+        authority
+            .replace_credential(Credential::new("same-key".into()))
+            .unwrap();
+        authority.grant_manual_consent(&destination).unwrap();
+        let first = authority.snapshot().unwrap();
+        let credential = first.credential.unwrap();
+        let revision = Revision {
+            input: 1,
+            settings: first.settings,
+            authorization: first.authorization,
+        };
+        let send = authority
+            .authorize_send_start(revision, &destination, &credential)
+            .unwrap();
+        std::thread::scope(|scope| {
+            let (started_send, started_receive) = std::sync::mpsc::channel();
+            let (finished_send, finished_receive) = std::sync::mpsc::channel();
+            let source = &authority;
+            scope.spawn(move || {
+                started_send.send(()).unwrap();
+                source.revoke_manual_consent().unwrap();
+                finished_send.send(()).unwrap();
+            });
+            started_receive.recv().unwrap();
+            assert!(matches!(
+                finished_receive.recv_timeout(Duration::from_millis(20)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            drop(send);
+            finished_receive
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+        });
+        assert!(matches!(
+            authority.authorize_send_start(revision, &destination, &credential),
+            Err(ChangeError::StalePolicy)
+        ));
+        authority
+            .replace_credential(Credential::new("same-key".into()))
+            .unwrap();
+        authority.grant_manual_consent(&destination).unwrap();
+        let current = authority.snapshot().unwrap();
+        let current_revision = Revision {
+            input: 1,
+            settings: current.settings,
+            authorization: current.authorization,
+        };
+        assert!(matches!(
+            authority.authorize_send_start(current_revision, &destination, &credential),
+            Err(ChangeError::StalePolicy)
+        ));
+        assert!(authority
+            .authorize_send_start(
+                current_revision,
+                &destination,
+                current.credential.as_ref().unwrap()
+            )
+            .is_ok());
     }
 
     fn request(destination: &Destination, version: PolicyVersion) -> ManualRequest<'_> {

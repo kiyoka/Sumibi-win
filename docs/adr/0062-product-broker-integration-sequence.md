@@ -18,7 +18,7 @@
 Convertは並行受信するが、製品の継続調停ループには未接続。
 `sumibi-protocol`には接続ごとの`BrokerSession`と、最大8接続・各1通知の
 `PolicyFanout`がある。`sumibi-host`には設定・資格情報・明示同意の
-`PolicyAuthority`、要求の前後を検査する`manual::convert`、
+`PolicyAuthority`、送信開始順序を固定する`manual::convert_ordered`、
 Hostの版をBrokerの受付ゲートとFanoutへ渡す`BrokerPolicyRelay`がある。
 Host側の`BrokerPolicyRuntime`は、認証済みpipeのReady、有限な政策通知、
 失敗先の物理切断と配送receiptを一つのworker側で処理する
@@ -81,15 +81,15 @@ Hostの設定変更はRelayが最新版へまとめて公開する。公開後�
 I/O調停点で接続する。
 別Brokerの同じ接続keyからの遅延完了は、起動IDが違うため拒否する。
 
-`manual::convert`の送信直前snapshotと実際の送信開始は現在は原子的でない。
-実APIを有効にする前に、失効確定と未送信本文の送信開始を同じ順序で決める
-境界、または失効時に送信を取消す境界を実装・検査する。
+Hostの送信開始guardは、診断loopback HTTPの資格情報headerと本文の
+書込を失効と順序付けた（[ADR 0064](0064-outbound-send-start-order.md)）。
+製品HTTPS adapter、worker I/Oの取消、設定UIの完了待機への接続は残る。
 
 ### 実送信と失効の順序
 
 製品transportは最初の要求byteを書き始める直前を`SendStarted`の順序点にする。
 Hostの政策元が許可版・接続key・要求番号・資格情報の同一性を確認し、
-その順序点までの間に失効が確定した場合は本文を送らない。順序点より先に
+その順序点までの間に失効が確定した場合はheaderも本文も送らない。順序点より先に
 失効が来た場合はworkerとsocketを取消し、旧結果の公開を拒否する。ただし
 すでに送信されたbyteは取り戻せないため、UIへ「失効前から進行中の送信を
 取り消した」と「未送信の要求を拒否した」を混同して報告しない。

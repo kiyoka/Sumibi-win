@@ -81,6 +81,25 @@ impl Stop {
             _ => Err(last_error()),
         }
     }
+
+    /// Worker-only bounded wait for a cancellation signal. `false` means the
+    /// deadline elapsed; a worker must still apply its own request deadline.
+    pub fn wait_until(&self, deadline: Instant) -> Result<bool> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return self.is_cancelled();
+        }
+        if remaining > Duration::from_secs(60) {
+            return Err(Error::InvalidArgument);
+        }
+        match unsafe {
+            WaitForSingleObject(self.raw(), remaining.as_millis().clamp(1, 60_000) as u32)
+        } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(last_error()),
+        }
+    }
 }
 
 /// One local first-instance server. No application I/O is exposed until accept

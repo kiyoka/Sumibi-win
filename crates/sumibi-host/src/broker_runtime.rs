@@ -2,10 +2,11 @@
 //! The caller owns accept/read scheduling; this layer keeps connection keys,
 //! policy publication, bounded writes, and physical close receipts together.
 use crate::broker_policy::{BrokerPolicyRelay, DeliveryCompletion, DeliveryError, RelayError};
+use crate::manual::{SendAdmission, SendError, TransportError};
 use crate::policy::{ChangeError, PolicyAuthority};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::time::{Duration, Instant};
 use sumibi_ipc::{
@@ -54,6 +55,7 @@ pub struct JobTicket {
     revision: Revision,
     cancelled: Arc<AtomicBool>,
     stop: Stop,
+    send_lock: Arc<Mutex<()>>,
 }
 
 impl JobTicket {
@@ -78,8 +80,31 @@ impl JobTicket {
     }
 
     fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
+        // Wake any cancellable I/O immediately. The mutex below fixes the
+        // cancellation order against a request write already in progress.
         let _ = self.stop.cancel();
+        let _guard = self
+            .send_lock
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        self.cancelled.store(true, Ordering::Release);
+    }
+}
+
+impl SendAdmission for JobTicket {
+    fn is_cancelled(&self) -> bool {
+        JobTicket::is_cancelled(self)
+    }
+
+    fn write_if_active(
+        &self,
+        write: &mut dyn FnMut() -> Result<(), TransportError>,
+    ) -> Result<(), SendError> {
+        let _guard = self.send_lock.lock().map_err(|_| SendError::PolicyDenied)?;
+        if self.is_cancelled() {
+            return Err(SendError::PolicyDenied);
+        }
+        write().map_err(SendError::Transport)
     }
 }
 
@@ -396,6 +421,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
                 revision: convert.revision,
                 cancelled: Arc::new(AtomicBool::new(false)),
                 stop,
+                send_lock: Arc::new(Mutex::new(())),
             });
         } else if let Event::Cancelled(request) = &event {
             self.remove_job(key, *request, true);
@@ -850,10 +876,28 @@ pub fn serve_diagnostic(
     let cancelled_ticket = runtime
         .job_ticket(request_key, convert.request)
         .ok_or(IpcError::InvalidMessage)?;
+    let cancelled_worker = {
+        let stop = cancelled_ticket.stop();
+        std::thread::spawn(move || stop.wait_until(Instant::now() + Duration::from_secs(5)))
+    };
+    let result_worker = {
+        let ticket = result_ticket.clone();
+        std::thread::spawn(move || {
+            if ticket
+                .stop()
+                .wait_until(Instant::now() + Duration::from_millis(10))?
+                || ticket.is_cancelled()
+            {
+                return Err(IpcError::Cancelled);
+            }
+            Ok(ticket.reply_context(Instant::now()))
+        })
+    };
+    let reply = result_worker.join().map_err(|_| IpcError::WorkerFailed)??;
     let now = Instant::now();
     if !runtime
         .publish_result(
-            result_ticket.reply_context(now),
+            reply,
             "完了".into(),
             bootstrap.stop(),
             now + Duration::from_millis(500),
@@ -873,6 +917,12 @@ pub fn serve_diagnostic(
         false,
         Some((request_key, convert.request)),
     )?;
+    if !cancelled_worker
+        .join()
+        .map_err(|_| IpcError::WorkerFailed)??
+    {
+        return Err(IpcError::InvalidMessage);
+    }
     if !cancelled_ticket.is_cancelled() || result_ticket.is_cancelled() {
         return Err(IpcError::InvalidMessage);
     }
@@ -908,7 +958,10 @@ fn publish_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manual::{Credential, Destination, Scheme};
+    use crate::manual::{
+        self, Credential, Destination, ManualRequest, OrderedConversionTransport, Scheme, SendGate,
+    };
+    use std::cell::Cell;
     use std::time::Duration;
     use sumibi_ipc::{Nonce, PinnedProcess, Server};
     use sumibi_protocol::{
@@ -984,6 +1037,138 @@ mod tests {
     fn source() -> (PolicyAuthority, Destination) {
         let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
         (PolicyAuthority::new(destination.clone()), destination)
+    }
+
+    struct CountingTransport(Cell<usize>);
+    impl OrderedConversionTransport for CountingTransport {
+        fn convert_ordered(
+            &self,
+            _: &Destination,
+            _: &str,
+            _: &str,
+            _: Instant,
+            gate: &mut dyn SendGate,
+        ) -> Result<String, SendError> {
+            gate.write_authorized(&mut || {
+                self.0.set(self.0.get() + 1);
+                Ok(())
+            })?;
+            Ok("日本語".into())
+        }
+    }
+
+    struct BlockingTransport {
+        entered: std::sync::mpsc::Sender<()>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+        wrote: AtomicBool,
+    }
+    impl OrderedConversionTransport for BlockingTransport {
+        fn convert_ordered(
+            &self,
+            _: &Destination,
+            _: &str,
+            _: &str,
+            _: Instant,
+            gate: &mut dyn SendGate,
+        ) -> Result<String, SendError> {
+            gate.write_authorized(&mut || {
+                self.entered
+                    .send(())
+                    .map_err(|_| TransportError::Connection)?;
+                self.release
+                    .lock()
+                    .map_err(|_| TransportError::Connection)?
+                    .recv()
+                    .map_err(|_| TransportError::Connection)?;
+                self.wrote.store(true, Ordering::Release);
+                Ok(())
+            })?;
+            Ok("日本語".into())
+        }
+    }
+
+    #[test]
+    fn disconnect_waits_for_an_already_started_bounded_send() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (server, mut client) = connected(&stop, deadline);
+        runtime
+            .attach(server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut client, &stop, deadline);
+        runtime
+            .receive(1, convert(1, 1, 1, policy), Instant::now())
+            .unwrap();
+        let ticket = runtime.job_ticket(1, 1).unwrap();
+        let (entered_send, entered_receive) = std::sync::mpsc::channel();
+        let (release_send, release_receive) = std::sync::mpsc::channel();
+        let transport = BlockingTransport {
+            entered: entered_send,
+            release: Mutex::new(release_receive),
+            wrote: AtomicBool::new(false),
+        };
+        std::thread::scope(|scope| {
+            let worker_ticket = ticket.clone();
+            let source_ref = &source;
+            let destination_ref = &destination;
+            let transport_ref = &transport;
+            let worker = scope.spawn(move || {
+                manual::convert_ordered(
+                    ManualRequest {
+                        revision: Revision {
+                            input: 1,
+                            settings: policy.settings,
+                            authorization: policy.authorization,
+                        },
+                        destination: destination_ref,
+                        source: "nihongo",
+                        deadline: Instant::now() + Duration::from_secs(2),
+                    },
+                    source_ref,
+                    &worker_ticket,
+                    transport_ref,
+                )
+            });
+            entered_receive
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+            let (started_send, started_receive) = std::sync::mpsc::channel();
+            let (closed_send, closed_receive) = std::sync::mpsc::channel();
+            let runtime_ref = &mut runtime;
+            scope.spawn(move || {
+                started_send.send(()).unwrap();
+                closed_send
+                    .send(runtime_ref.disconnect_with_pending(1))
+                    .unwrap();
+            });
+            started_receive
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+            assert!(matches!(
+                closed_receive.recv_timeout(Duration::from_millis(20)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            release_send.send(()).unwrap();
+            assert_eq!(
+                closed_receive.recv_timeout(Duration::from_secs(1)).unwrap(),
+                Ok(Some(1))
+            );
+            let _ = worker.join().unwrap();
+        });
+        assert!(transport.wrote.load(Ordering::Acquire));
+        assert!(ticket.is_cancelled());
+        assert_eq!(runtime.active_count(), 0);
     }
 
     #[test]
@@ -1930,6 +2115,10 @@ mod tests {
         let second_stop = second_job.stop();
         assert!(!first_stop.is_cancelled().unwrap());
         assert!(!second_stop.is_cancelled().unwrap());
+        let waiting_worker = {
+            let stop = second_stop.clone();
+            std::thread::spawn(move || stop.wait_until(Instant::now() + Duration::from_secs(2)))
+        };
         let future_cancel = Envelope {
             version: message::VERSION,
             session: id(2),
@@ -1947,6 +2136,27 @@ mod tests {
         assert!(second_job.is_cancelled());
         assert!(!first_stop.is_cancelled().unwrap());
         assert!(second_stop.is_cancelled().unwrap());
+        assert!(waiting_worker.join().unwrap().unwrap());
+        let transport = CountingTransport(Cell::new(0));
+        assert_eq!(
+            manual::convert_ordered(
+                ManualRequest {
+                    revision: Revision {
+                        input: 1,
+                        settings: policy.settings,
+                        authorization: policy.authorization,
+                    },
+                    destination: &destination,
+                    source: "nihongo",
+                    deadline: Instant::now() + Duration::from_secs(1),
+                },
+                &source,
+                &second_job,
+                &transport,
+            ),
+            Err(SendError::PolicyDenied)
+        );
+        assert_eq!(transport.0.get(), 0);
         let valid_cancel = Envelope {
             version: message::VERSION,
             session: id(1),
