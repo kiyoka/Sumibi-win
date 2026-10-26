@@ -736,53 +736,38 @@ fn write_fanout_notices(
     // Start both bounded overlapped writes before waiting on either endpoint.
     // Complete whichever is ready first; one slow connection does not impose
     // its wait on the other connection's notification.
-    let first_write = first.start_write(
+    let mut first_write = Some(first.start_write(
         frames[0].take().ok_or(Error::InvalidMessage)?,
         stop,
         deadline,
-    )?;
-    let second_write = second.start_write(
+    )?);
+    let mut second_write = Some(second.start_write(
         frames[1].take().ok_or(Error::InvalidMessage)?,
         stop,
         deadline,
-    )?;
-    let ready = crate::wait_any(&[&first_write, &second_write])?;
-    if ready == 1 {
-        let second_done = second_write.wait()?;
-        finish_started_write(second, second_done, stop, deadline)?;
-        order
-            .notice_delivered(2, policy)
-            .map_err(map_fanout_error)?;
-        let first_done = first_write.wait()?;
-        finish_started_write(first, first_done, stop, deadline)?;
-        order
-            .notice_delivered(1, policy)
-            .map_err(map_fanout_error)?;
-    } else {
-        let first_done = first_write.wait()?;
-        finish_started_write(first, first_done, stop, deadline)?;
-        order
-            .notice_delivered(1, policy)
-            .map_err(map_fanout_error)?;
-        let second_done = second_write.wait()?;
-        finish_started_write(second, second_done, stop, deadline)?;
-        order
-            .notice_delivered(2, policy)
-            .map_err(map_fanout_error)?;
-    }
-    Ok(())
-}
-
-fn finish_started_write(
-    pipe: &mut Pipe,
-    completion: crate::Completion,
-    stop: &Stop,
-    deadline: Instant,
-) -> Result<()> {
-    if completion.transferred < completion.bytes.len() {
-        let mut remaining = completion.bytes;
-        remaining.drain(..completion.transferred);
-        pipe.write_all(remaining, stop, deadline)?;
+    )?);
+    while first_write.is_some() || second_write.is_some() {
+        let ready = match (&first_write, &second_write) {
+            (Some(first), Some(second)) => crate::wait_any(&[first, second])?,
+            (Some(first), None) => crate::wait_any(&[first])?,
+            (None, Some(second)) => 1 + crate::wait_any(&[second])?,
+            (None, None) => break,
+        };
+        if ready == 0 {
+            first_write = first_write.take().ok_or(Error::InvalidMessage)?.advance_write()?;
+            if first_write.is_none() {
+                order
+                    .notice_delivered(1, policy)
+                    .map_err(map_fanout_error)?;
+            }
+        } else {
+            second_write = second_write.take().ok_or(Error::InvalidMessage)?.advance_write()?;
+            if second_write.is_none() {
+                order
+                    .notice_delivered(2, policy)
+                    .map_err(map_fanout_error)?;
+            }
+        }
     }
     Ok(())
 }

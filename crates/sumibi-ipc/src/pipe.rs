@@ -485,6 +485,80 @@ impl Operation<'_> {
             transferred,
         })
     }
+
+    /// Complete one write chunk and, if the kernel accepted only a prefix,
+    /// start its remainder without releasing this endpoint's exclusive borrow.
+    /// The caller can then wait across other endpoints before advancing again.
+    pub fn advance_write(mut self) -> Result<Option<Self>> {
+        if !self
+            .state
+            .as_ref()
+            .is_some_and(|state| matches!(state.kind, Kind::Write))
+        {
+            return Err(Error::InvalidArgument);
+        }
+        if let Err(error) = self.finish() {
+            if !self.abort() {
+                return Err(Error::Retired);
+            }
+            return Err(error);
+        }
+        let state = self.state.as_mut().expect("completed write state");
+        let transferred = state.transferred;
+        if transferred == 0 || transferred > state.bytes.len() {
+            self.owner.closed = true;
+            return Err(Error::Disconnected);
+        }
+        if transferred == state.bytes.len() {
+            self.state.take();
+            self.owner.busy = false;
+            return Ok(None);
+        }
+        state.bytes.drain(..transferred);
+        let next = (|| {
+            remaining(self.deadline)?;
+            if self.stop.is_cancelled()? {
+                return Err(Error::Cancelled);
+            }
+            self.owner.resource.peer.alive()
+        })();
+        if let Err(error) = next {
+            self.owner.closed = true;
+            return Err(error);
+        }
+        let state = self.state.as_mut().expect("partial write state");
+        if let Err(error) = unsafe { ResetEvent(raw(&state.event)) } {
+            self.owner.closed = true;
+            return Err(classify(error));
+        }
+        state.overlapped = OVERLAPPED {
+            hEvent: raw(&state.event),
+            ..Default::default()
+        };
+        state.transferred = 0;
+        state.pending = true;
+        let mut count = 0;
+        let started = unsafe {
+            WriteFile(
+                raw(&state.resource.handle),
+                Some(&state.bytes),
+                Some(&mut count),
+                Some(&mut state.overlapped),
+            )
+        };
+        match started {
+            Ok(()) => {
+                state.pending = false;
+                state.transferred = count as usize;
+            }
+            Err(error) if error.code() == HRESULT::from_win32(ERROR_IO_PENDING.0) => {}
+            Err(error) => {
+                state.pending = false;
+                return Err(classify(error));
+            }
+        }
+        Ok(Some(self))
+    }
     fn finish(&mut self) -> Result<()> {
         let remaining = remaining(self.deadline)?;
         if self.stop.is_cancelled()? {
@@ -646,6 +720,19 @@ mod tests {
         })
     }
 
+    fn connected_one(stop: &Stop, deadline: Instant) -> (Pipe, Pipe) {
+        let name = Nonce::random().unwrap();
+        let server = Server::create(&name).unwrap();
+        std::thread::scope(|scope| {
+            let server_stop = stop.clone();
+            let accepted = scope.spawn(move || {
+                server.accept(PinnedProcess::current().unwrap(), &server_stop, deadline)
+            });
+            let client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+            (accepted.join().unwrap().unwrap(), client)
+        })
+    }
+
     #[test]
     fn endpoint_budget_is_reserved_before_creation_and_returned_on_drop() {
         let _guard = PIPE_TEST_LOCK.lock().unwrap();
@@ -774,6 +861,32 @@ mod tests {
         assert!(one.is_ok() || two.is_ok());
         assert_eq!(wait_any(&[&second_read]).unwrap(), 0);
         assert_eq!(second_read.wait().unwrap().bytes, [13]);
+    }
+
+    #[test]
+    fn advancing_a_large_write_preserves_exact_bytes() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut server, mut client) = connected_one(&stop, deadline);
+        let expected: Vec<u8> = (0..64 * 1024).map(|index| index as u8).collect();
+        std::thread::scope(|scope| {
+            let receiver = scope.spawn(|| {
+                let mut received = Vec::new();
+                while received.len() < expected.len() {
+                    received.extend(client.start_read(&stop, deadline).unwrap().wait().unwrap().bytes);
+                }
+                received
+            });
+            let mut write = Some(server.start_write(expected.clone(), &stop, deadline).unwrap());
+            while let Some(operation) = write.take() {
+                write = operation.advance_write().unwrap();
+            }
+            assert_eq!(receiver.join().unwrap(), expected);
+        });
     }
 
     #[test]
