@@ -296,6 +296,8 @@
   先に配送する実pipe検査を追加し、子Broker診断の再許可後の要求もこの入口へ接続。
   全Rustテスト260件と実pipeのBroker回帰が成功。OSの継続acceptと製品送信workerは
   まだ接続していない。
+- 容量超過を`Unavailable`で返した後、取消済みworkerを回収して枠が空けば、
+  同じ認証pipeで次の要求を受け、結果を返せることも実pipeで確認した。
 - 認証pipeから`BrokerWorkLoop`で受けた本文をloopback HTTP workerへ渡し、元のpipeへ
   結果と固定エラーを戻す結合検査に切り替えた。HTTP応答待機中の政策失効も同じ
   所有側ループで先に通知し、workerを取消す経路で確認した。

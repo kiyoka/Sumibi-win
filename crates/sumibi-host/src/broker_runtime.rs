@@ -2274,6 +2274,45 @@ mod tests {
         assert!(runtime.job_ticket(1, 9).is_none());
         release.store(true, Ordering::Release);
         assert!(owner.stop_and_reap(deadline));
+        client
+            .write_all(
+                message::encode(&convert(1, 1, 10, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        assert!(matches!(
+            owner.advance(&mut runtime, &stop, deadline, |_| {
+                |_: JobTicket| Ok("再開".into())
+            }),
+            Ok(OwnerStep::Submitted {
+                key: 1,
+                request: 10
+            })
+        ));
+        loop {
+            match owner
+                .advance(&mut runtime, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Completed {
+                    key: 1,
+                    request: 10,
+                    delivered: true,
+                    succeeded: true,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("worker capacity did not recover"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Result(result) if result.request == 10 && result.text == "再開"
+        ));
     }
 
     #[test]
