@@ -77,6 +77,56 @@ pub(super) fn serve_fanout(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Re
     if scenario == Scenario::Lagging {
         return serve_lagging_notice(bootstrap, gate, order, first, second, deadline);
     }
+    let expiring = read_message(&mut first, &bootstrap.stop, deadline)?;
+    let BrokerEvent::Convert(expiring) = order
+        .receive(1, expiring, Instant::now())
+        .map_err(map_fanout_error)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    gate.authorize(expiring.revision)?;
+    let independent = read_message(&mut second, &bootstrap.stop, deadline)?;
+    let BrokerEvent::Convert(independent) = order
+        .receive(2, independent, Instant::now())
+        .map_err(map_fanout_error)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    gate.authorize(independent.revision)?;
+    if wait_stop(&bootstrap.stop, 150)? {
+        return Err(Error::Cancelled);
+    }
+    if order.expire(1, Instant::now()).map_err(map_fanout_error)? != Some(expiring.request)
+        || order
+            .result(
+                1,
+                expiring.request,
+                expiring.revision,
+                "期限切れ".into(),
+                Instant::now(),
+            )
+            .map_err(map_fanout_error)?
+            .is_some()
+    {
+        return Err(Error::InvalidMessage);
+    }
+    let result = order
+        .result(
+            2,
+            independent.request,
+            independent.revision,
+            "継続".into(),
+            Instant::now(),
+        )
+        .map_err(map_fanout_error)?
+        .ok_or(Error::InvalidMessage)?;
+    let publication = gate.authorize_for_publish(independent.revision)?;
+    second.write_all(
+        message::encode(&result).map_err(|_| Error::InvalidMessage)?,
+        &bootstrap.stop,
+        deadline,
+    )?;
+    drop(publication);
     let request = read_message(&mut first, &bootstrap.stop, deadline)?;
     let BrokerEvent::Convert(convert) = order
         .receive(1, request, Instant::now())
@@ -678,8 +728,33 @@ fn diagnostic_two_client_probe_once(
     if scenario == Scenario::Lagging {
         return probe_lagging_notice(first, second, clients, inboxes, &stop, deadline);
     }
-    let old = clients[0]
+    let expiring = clients[0]
+        .begin(1, "nihongo", 100, Instant::now())
+        .map_err(|_| Error::InvalidMessage)?;
+    first.write_all(expiring, &stop, deadline)?;
+    let independent = clients[1]
         .begin(1, "nihongo", 5000, Instant::now())
+        .map_err(|_| Error::InvalidMessage)?;
+    second.write_all(independent, &stop, deadline)?;
+    let ClientEvent::Reply {
+        request: 1,
+        outcome: Outcome::Result(text),
+        ..
+    } = read_event(
+        &mut second,
+        &mut clients[1],
+        &mut inboxes[1],
+        &stop,
+        deadline,
+    )?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    if text != "継続" || clients[0].expire(Instant::now()) != Some(1) {
+        return Err(Error::InvalidMessage);
+    }
+    let old = clients[0]
+        .begin(2, "nihongo", 5000, Instant::now())
         .map_err(|_| Error::InvalidMessage)?;
     first.write_all(old, &stop, deadline)?;
     for (index, client) in clients.iter_mut().enumerate() {
@@ -690,7 +765,7 @@ fn diagnostic_two_client_probe_once(
         else {
             return Err(Error::InvalidMessage);
         };
-        if policy.authorization != 2 || policy.allowed || cancelled != (index == 0).then_some(1) {
+        if policy.authorization != 2 || policy.allowed || cancelled != (index == 0).then_some(2) {
             return Err(Error::InvalidMessage);
         }
     }
@@ -714,7 +789,7 @@ fn diagnostic_two_client_probe_once(
         .map_err(|_| Error::InvalidMessage)?;
     second.write_all(current, &stop, deadline)?;
     let ClientEvent::Reply {
-        request: 1,
+        request: 2,
         outcome: Outcome::Result(text),
         ..
     } = read_event(
@@ -735,7 +810,7 @@ fn diagnostic_two_client_probe_once(
         .map_err(|_| Error::InvalidMessage)?;
     first.write_all(pending, &stop, deadline)?;
     let cancellable = clients[1]
-        .begin(2, "nihongo", 5000, Instant::now())
+        .begin(3, "nihongo", 5000, Instant::now())
         .map_err(|_| Error::InvalidMessage)?;
     second.write_all(cancellable, &stop, deadline)?;
     let cancel = clients[1]
@@ -744,11 +819,11 @@ fn diagnostic_two_client_probe_once(
         .ok_or(Error::InvalidMessage)?;
     second.write_all(cancel, &stop, deadline)?;
     let following = clients[1]
-        .begin(3, "nihongo", 5000, Instant::now())
+        .begin(4, "nihongo", 5000, Instant::now())
         .map_err(|_| Error::InvalidMessage)?;
     second.write_all(following, &stop, deadline)?;
     let ClientEvent::Reply {
-        request: 3,
+        request: 4,
         outcome: Outcome::Result(text),
         ..
     } = read_event(
@@ -761,14 +836,14 @@ fn diagnostic_two_client_probe_once(
     else {
         return Err(Error::InvalidMessage);
     };
-    if text != "継続" || clients[0].pending_request() != Some(2) {
+    if text != "継続" || clients[0].pending_request() != Some(3) {
         return Err(Error::InvalidMessage);
     }
     let invalid = Envelope {
         version: VERSION,
         session: Id::new(2).ok_or(Error::InvalidMessage)?,
         generation: 1,
-        message: Message::Cancel(Cancel { request: 4 }),
+        message: Message::Cancel(Cancel { request: 5 }),
     };
     second.write_all(
         message::encode(&invalid).map_err(|_| Error::InvalidMessage)?,
@@ -785,7 +860,7 @@ fn diagnostic_two_client_probe_once(
     else {
         return Err(Error::InvalidMessage);
     };
-    if policy.authorization != 4 || policy.allowed || cancelled != Some(2) {
+    if policy.authorization != 4 || policy.allowed || cancelled != Some(3) {
         return Err(Error::InvalidMessage);
     }
     let closed = second
