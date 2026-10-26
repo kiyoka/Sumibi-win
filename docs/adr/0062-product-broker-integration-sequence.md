@@ -23,8 +23,9 @@ Hostの版をBrokerの受付ゲートとFanoutへ渡す`BrokerPolicyRelay`があ
 接続と要求の順序を判定する。
 
 Brokerは接続keyとpipeを対応付け、OS peerを検証してからHelloをFanoutへ渡す。
-Readyの完全な書込後にだけ`ready_delivered`を呼ぶ。接続keyはBrokerの寿命中に
-再利用しない。同じclient寿命IDの再接続は新しい世代と単調増加した要求番号を
+Readyの完全な書込後にだけ`ready_delivered`を呼ぶ。接続keyはOS pipeを受け付けた
+時点で発行し、不正Helloで閉じた接続のkeyもBrokerの寿命中に再利用しない。
+同じclient寿命IDの再接続は新しい世代と単調増加した要求番号を
 要求する。接続数、待機要求、I/O、通知の各容量を受付前に確保する。
 認証失敗、Ready書込失敗、不正frame、切断、通知書込失敗は対象接続だけを閉じる。
 Brokerの政策元や状態機械そのものが失敗した場合は、本文受付を停止する。

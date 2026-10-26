@@ -33,8 +33,10 @@ wireへ出さず、TSFの所有スレッドを待機させない。
 再確認する。ただし送信直前のsnapshotとHTTPの実際の送信開始は原子的ではない。
 製品HTTPを有効にする前に、失効の確定と未送信本文の送出を同じ順序で決める
 送信開始境界、または失効時の送信取消を設計・検証する必要がある。
-製品の設定UIでは、Relayの公開と各接続の通知・切断を待つ完了条件が
-別途必要である。複数I/O workerへ拡張する際は、ゲートの読取guardとFanoutの
+公開直前の接続をBroker起動IDとkeyで記録する有限な`DeliveryReceipt`を追加した。
+通知の完全な書込または実pipeのcloseで進め、後続版の配送は`Superseded`と区別する。
+製品の設定UIがこのreceiptを待つ経路は未接続である。複数I/O workerへ
+拡張する際は、ゲートの読取guardとFanoutの
 lockを逆順に取らない構成も必要になる。現段階のRelayはI/Oやlock取得を
 所有しない。結果側の具体的な取得順序は[ADR 0058](0058-policy-publication-order.md)に記録する。
 
