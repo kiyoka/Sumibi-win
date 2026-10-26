@@ -119,6 +119,11 @@
   `tools/Test-Broker.ps1`で既定Hostの拒否と2接続診断を含むBroker回帰が成功し、
   通常Hostへ復元した。`tools/Test-Spike.ps1 -SkipDesktop`も成功し、
   パッシブTIPと通常Hostへ復元した。恒久的なTSF登録は行っていない。
+- Host側の政策公開に、公開直前の全接続keyを保持する有限な配送receiptを追加。
+  Ready書込中の接続も含み、通知の完全な書込または実pipeのcloseまで設定変更の
+  完了を保留する。公開時に退役した接続もcloseを待ち、古い版の通知や重複した
+  完了報告は受け付けない。Hostの該当単体検査を追加し、全Rustテスト200件が成功。
+  設定UIへの実際の完了通知と製品pipeへの配送は未接続。
 
 ## 次の受入作業
 

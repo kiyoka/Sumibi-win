@@ -17,6 +17,62 @@ pub struct Published {
     pub policy: Policy,
     pub retired: Vec<u64>,
     pub notices: Vec<(u64, PolicyNotice)>,
+    /// Complete this only after each transport from before publication has
+    /// either written a suitable policy frame or actually closed.
+    pub delivery: DeliveryReceipt,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliveryError {
+    UnknownKey,
+    StalePolicy,
+}
+
+/// A bounded, one-publication acknowledgement for the future settings UI.
+/// It intentionally does not infer completion from Fanout retirement: the
+/// caller must first close that OS pipe and then report `transport_closed`.
+pub struct DeliveryReceipt {
+    target: Policy,
+    awaiting: Vec<u64>,
+}
+
+impl DeliveryReceipt {
+    pub fn target(&self) -> Policy {
+        self.target
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.awaiting.is_empty()
+    }
+
+    pub fn awaiting(&self) -> &[u64] {
+        &self.awaiting
+    }
+
+    /// Call only after a complete frame write and Fanout's
+    /// `notice_delivered`. A newer epoch also satisfies this publication.
+    pub fn notice_delivered(&mut self, key: u64, delivered: Policy) -> Result<(), DeliveryError> {
+        if !delivered.follows(self.target) {
+            return Err(DeliveryError::StalePolicy);
+        }
+        self.finish(key)
+    }
+
+    /// Call only after closing the transport, including a pipe retired by
+    /// publication or a failed Ready/notification write.
+    pub fn transport_closed(&mut self, key: u64) -> Result<(), DeliveryError> {
+        self.finish(key)
+    }
+
+    fn finish(&mut self, key: u64) -> Result<(), DeliveryError> {
+        let index = self
+            .awaiting
+            .iter()
+            .position(|pending| *pending == key)
+            .ok_or(DeliveryError::UnknownKey)?;
+        self.awaiting.remove(index);
+        Ok(())
+    }
 }
 
 /// One serialized publisher per Broker. Keep the cursor only after the
@@ -73,6 +129,7 @@ impl<'a> BrokerPolicyRelay<'a> {
         else {
             return Ok(None);
         };
+        let awaiting = fanout.subscriber_keys();
         let retired = gate.publish(fanout, policy).map_err(RelayError::Broker)?;
         let notices = fanout.pending_writes();
         self.cursor = version(policy);
@@ -81,6 +138,10 @@ impl<'a> BrokerPolicyRelay<'a> {
             policy,
             retired,
             notices,
+            delivery: DeliveryReceipt {
+                target: policy,
+                awaiting,
+            },
         }))
     }
 }
@@ -364,8 +425,9 @@ mod tests {
             .replace_credential(Credential::new("fixture".into()))
             .unwrap();
         source.grant_manual_consent(&destination).unwrap();
-        let published = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
+        let mut published = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
         assert_eq!(notice_keys(&published), [2]);
+        assert_eq!(published.delivery.awaiting(), [1, 2]);
         assert!(fanout.pending_writes().is_empty());
         fanout.ready_delivered(1).unwrap();
         let writes = fanout.pending_writes();
@@ -376,5 +438,82 @@ mod tests {
         );
         fanout.notice_delivered(1, published.policy).unwrap();
         fanout.notice_delivered(2, published.policy).unwrap();
+        published
+            .delivery
+            .notice_delivered(2, published.policy)
+            .unwrap();
+        assert!(!published.delivery.is_complete());
+        published
+            .delivery
+            .notice_delivered(1, published.policy)
+            .unwrap();
+        assert!(published.delivery.is_complete());
+    }
+
+    #[test]
+    fn publication_receipt_requires_delivery_or_actual_transport_close() {
+        let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
+        let source = PolicyAuthority::new(destination.clone());
+        let initial = source.wire_policy().unwrap();
+        let gate = BrokerPolicyGate::new(initial).unwrap();
+        let mut fanout = PolicyFanout::new(id(90), initial).unwrap();
+        let now = Instant::now();
+        for key in 1..=2 {
+            fanout
+                .attach(
+                    key,
+                    Envelope {
+                        version: VERSION,
+                        session: id(key.into()),
+                        generation: 1,
+                        message: Message::Hello(Hello { broker: id(90) }),
+                    },
+                    now,
+                )
+                .unwrap();
+            fanout.ready_delivered(key).unwrap();
+        }
+        let mut relay = BrokerPolicyRelay::new(&source, &gate, &fanout).unwrap();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut granted = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
+        assert_eq!(granted.delivery.awaiting(), [1, 2]);
+        assert!(granted.delivery.target() == granted.policy);
+        assert_eq!(
+            granted.delivery.notice_delivered(1, initial),
+            Err(DeliveryError::StalePolicy)
+        );
+        assert_eq!(granted.delivery.awaiting(), [1, 2]);
+        fanout.notice_delivered(1, granted.policy).unwrap();
+        granted
+            .delivery
+            .notice_delivered(1, granted.policy)
+            .unwrap();
+
+        source.revoke_manual_consent().unwrap();
+        let mut revoked = relay.publish_current(&gate, &mut fanout).unwrap().unwrap();
+        assert_eq!(revoked.retired, [2]);
+        assert_eq!(revoked.delivery.awaiting(), [1, 2]);
+        assert!(!granted.delivery.is_complete());
+        assert!(!revoked.delivery.is_complete());
+        // Retirement is not a settings-UI completion until the I/O owner
+        // actually closes the old pipe.
+        assert!(!fanout.detach(2));
+        granted.delivery.transport_closed(2).unwrap();
+        revoked.delivery.transport_closed(2).unwrap();
+        assert!(granted.delivery.is_complete());
+        assert!(!revoked.delivery.is_complete());
+        fanout.notice_delivered(1, revoked.policy).unwrap();
+        revoked
+            .delivery
+            .notice_delivered(1, revoked.policy)
+            .unwrap();
+        assert!(revoked.delivery.is_complete());
+        assert_eq!(
+            revoked.delivery.transport_closed(2),
+            Err(DeliveryError::UnknownKey)
+        );
     }
 }

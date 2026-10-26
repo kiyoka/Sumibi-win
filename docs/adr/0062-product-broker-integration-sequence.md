@@ -45,6 +45,13 @@ Hostの設定変更はRelayが最新版へまとめて公開する。公開後�
 場合も、古い版の通知が届いたと偽らず、最新版の配送・切断を完了条件にする。
 新しい接続はその時点の最新版でReadyを受ける。
 
+`BrokerPolicyRelay::publish_current`は公開直前の接続keyを有限な
+`DeliveryReceipt`に保存する。Ready書込中の接続と、公開時に退役した接続も
+対象に含める。通知frameの完全な書込をFanoutへ報告した後、またはOS pipeを
+実際に閉じた後にだけreceiptを進める。後続の版の配送は先の版のreceiptも
+満たせるが、単なるFanout退役やHost保存だけでは完了としない。設定UIから
+receiptへの待機・通知経路は、製品HostのI/O調停点で接続する。
+
 `manual::convert`の送信直前snapshotと実際の送信開始は現在は原子的でない。
 実APIを有効にする前に、失効確定と未送信本文の送信開始を同じ順序で決める
 境界、または失効時に送信を取消す境界を実装・検査する。

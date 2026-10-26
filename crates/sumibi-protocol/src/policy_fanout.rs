@@ -78,6 +78,16 @@ impl PolicyFanout {
         self.subscribers.len()
     }
 
+    /// Snapshot the connection keys present before a policy publication.
+    /// A publication receipt must wait for each of these transports to
+    /// receive the new epoch or be closed, including a pending Ready write.
+    pub fn subscriber_keys(&self) -> Vec<u64> {
+        self.subscribers
+            .iter()
+            .map(|subscriber| subscriber.key)
+            .collect()
+    }
+
     /// Claim each unscheduled notice for a connection whose Ready write has
     /// completed. Release the Fanout lock before pipe I/O, then confirm the
     /// exact policy epoch after each complete write. A failed write requires
