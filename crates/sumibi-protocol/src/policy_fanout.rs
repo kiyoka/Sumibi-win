@@ -944,10 +944,11 @@ mod tests {
             settings: 1,
             authorization: 1,
         };
-        // The worker wins the scheduler race with expire, but its success is
-        // already too late for the client. It must not retire this transport.
+        // The worker wins the scheduler race with expire. Even a malformed
+        // result body is irrelevant after the request deadline; it must not
+        // retire this transport or inspect the expired response as current.
         assert!(fanout
-            .result(1, 1, revision, "遅延".into(), deadline)
+            .result(1, 1, revision, "a\u{fffc}b".into(), deadline)
             .unwrap()
             .is_none());
         assert_eq!(fanout.active_count(), 2);

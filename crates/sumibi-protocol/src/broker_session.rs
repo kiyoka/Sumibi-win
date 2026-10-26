@@ -221,12 +221,12 @@ impl BrokerSession {
         let Some(pending) = self.take_matching_request(request, revision)? else {
             return Ok(None);
         };
+        if now >= pending.deadline {
+            return Err(BrokerError::Expired);
+        }
         if !message::valid_text(&text) {
             self.disconnect();
             return Err(BrokerError::InvalidReply);
-        }
-        if now >= pending.deadline {
-            return Err(BrokerError::Expired);
         }
         if !self.policy.allowed
             || revision.settings != self.policy.settings
