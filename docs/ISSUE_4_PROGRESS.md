@@ -318,6 +318,11 @@
 - 設定先を別のloopback HTTP宛先へ変更し、最新版の政策通知を配送してから
   次要求を送る検査を追加した。workerが旧宛先を使わず、新しいパスに送って
   結果を元のpipeへ返すことを確認した。全Rustテスト264件とClippyが成功。
+- `BrokerWorkLoop::acknowledge_version`は政策通知・切断のreceiptに加え、
+  取消済みworkerの実際の終了を有限期限で待つ。政策通知が先に済んでいた場合も待機し、
+  HTTP応答待機workerの取消後に同じpipeで再許可の次要求を受けることを確認した。
+  workerが期限内に終わらなければ設定完了を成功とせずTimeoutを返す。
+  全Rustテスト265件と診断featureのClippyが成功。
 
 ## 次の受入作業
 

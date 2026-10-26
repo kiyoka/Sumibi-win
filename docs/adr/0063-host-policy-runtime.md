@@ -101,6 +101,10 @@ workerを回収し、旧結果をpipeへ戻さない実I/O検査を通した。T
 政策元が読めなければ実行部を終端する。このreceiptだけでは取消済みworkerの
 OS I/O終了を証明しないため、製品設定UIの操作完了は有限期限のworker回収も待つ。
 設定UIからの呼出しは今後接続する。
+所有側の`BrokerWorkLoop::acknowledge_version`はこのreceipt後に取消済みworkerだけを
+有限期限で回収し、残存すればTimeoutを返す。通知が先に配送済みの場合も同じ条件を
+適用する。回収したworkerの遅延完了は次の所有側pollで破棄し、再許可後の別要求へ
+誤配送しない。設定UIはRuntime単独のreceiptではなくこの所有側入口を使う。
 workerの`completed_at`が要求期限内でも、Host回収後の実際の結果書込が期限後なら
 配送しない。書込期限も元の要求期限で切り、途中の失敗先は接続ごと閉じる。
 完了の政策版がticketと一致しなければ、その接続を退役させる。

@@ -1,13 +1,14 @@
 //! Bounded EXE-side worker handoff. Workers own text and a cancellation ticket;
 //! only the Broker owner may touch policy fanout or authenticated pipes.
 use crate::broker_runtime::{
-    BrokerPolicyRuntime, JobTicket, PollStep, PublicationOutcome, ReplyContext, RuntimeError,
+    BrokerPolicyRuntime, JobTicket, PolicyAcknowledgment, PollStep, PublicationOutcome,
+    ReplyContext, RuntimeError,
 };
 use crate::manual::{
     self, ManualRequest, OrderedConversionTransport, PolicySource, SendError, TransportError,
 };
 use crate::policy::ChangeError;
-use crate::policy::PolicyAuthority;
+use crate::policy::{PolicyAuthority, PolicyVersion};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::sync::Arc;
@@ -115,6 +116,23 @@ impl BrokerWorkLoop {
 
     pub fn stop_and_reap(&mut self, deadline: Instant) -> bool {
         self.workers.stop_and_reap(deadline)
+    }
+
+    /// Settings completion includes transport publication and the exit of
+    /// workers cancelled by that publication. A previously completed policy
+    /// version may still have cancelled workers awaiting bounded I/O exit.
+    pub fn acknowledge_version(
+        &mut self,
+        runtime: &mut BrokerPolicyRuntime<'_>,
+        requested: PolicyVersion,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<PolicyAcknowledgment, RuntimeError> {
+        let acknowledgment = runtime.acknowledge_version(requested, stop, deadline)?;
+        if !self.workers.reap_cancelled(deadline) {
+            return Err(RuntimeError::Transport(IpcError::Timeout));
+        }
+        Ok(acknowledgment)
     }
 
     /// The caller has already authenticated this OS pipe. Bring older
@@ -353,15 +371,41 @@ impl BrokerWorkers {
                 completion.reply.key,
                 completion.reply.request,
             );
-            let index = self
-                .slots
-                .iter()
-                .position(|slot| slot.identity == identity)?;
+            let Some(index) = self.slots.iter().position(|slot| slot.identity == identity) else {
+                // A cancelled thread may have been joined while its already
+                // queued completion was still waiting in the bounded channel.
+                continue;
+            };
             let slot = self.slots.remove(index);
             let _ = slot.thread.join();
             if !slot.ticket.is_cancelled() {
                 return Some(completion);
             }
+        }
+    }
+
+    /// Reap only tickets the runtime has already cancelled. A live worker's
+    /// completion remains queued for the next owner step. At most eight jobs
+    /// can send into the eight-slot channel, so an exit cannot block on send.
+    pub fn reap_cancelled(&mut self, deadline: Instant) -> bool {
+        loop {
+            let mut index = 0;
+            while index < self.slots.len() {
+                if self.slots[index].ticket.is_cancelled() && self.slots[index].thread.is_finished()
+                {
+                    let slot = self.slots.remove(index);
+                    let _ = slot.thread.join();
+                } else {
+                    index += 1;
+                }
+            }
+            if self.slots.iter().all(|slot| !slot.ticket.is_cancelled()) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(1));
         }
     }
 

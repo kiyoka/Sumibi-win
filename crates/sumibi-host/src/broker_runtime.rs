@@ -2506,39 +2506,141 @@ mod tests {
         received_receive
             .recv_timeout(Duration::from_secs(1))
             .unwrap();
-        source.revoke_manual_consent().unwrap();
-        let OwnerStep::Published(outcome) = owner
-            .advance(&mut runtime, &stop, deadline, |_| {
-                |_: JobTicket| Err(ErrorCode::Unavailable)
-            })
-            .unwrap()
-        else {
-            panic!("policy must be published before the worker completion");
-        };
+        let revoked = source.revoke_manual_consent().unwrap();
+        let outcome = runtime.publish_current(&stop, deadline).unwrap().unwrap();
         assert_eq!(outcome.cancelled, [(1, 1)]);
         assert_eq!(outcome.delivered, [1]);
+        let acknowledged = owner
+            .acknowledge_version(&mut runtime, revoked, &stop, deadline)
+            .unwrap();
+        assert!(!acknowledged.current.allowed);
+        assert_eq!(acknowledged.completion, DeliveryCompletion::ExactOrClosed);
         assert!(ticket.is_cancelled());
         assert!(matches!(
             read_frame(&mut client, &stop, deadline).message,
             message::Message::PolicyChanged(next) if !next.allowed
         ));
-        let waiting_started = Instant::now();
-        while owner.active_count() != 0 {
-            assert!(matches!(
-                owner.advance(&mut runtime, &stop, deadline, |_| {
-                    |_: JobTicket| Err(ErrorCode::Unavailable)
-                }),
-                Ok(OwnerStep::Broker(PollStep::Idle))
-            ));
-            assert!(waiting_started.elapsed() < Duration::from_millis(500));
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        assert_eq!(owner.active_count(), 0);
         assert_eq!(runtime.active_keys(), [1]);
         release_send.send(()).unwrap();
         let request = server.join().unwrap();
         assert!(request
             .windows(b"nihongo".len())
             .any(|part| part == b"nihongo"));
+        source.grant_manual_consent(&destination).unwrap();
+        assert!(matches!(
+            owner.advance(&mut runtime, &stop, deadline, |_| {
+                |_: JobTicket| Err(ErrorCode::Unavailable)
+            }),
+            Ok(OwnerStep::Published(outcome)) if outcome.policy.allowed
+        ));
+        let current = runtime.policy();
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::PolicyChanged(policy) if policy == current
+        ));
+        client
+            .write_all(
+                message::encode(&convert(1, 1, 2, current)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        assert!(matches!(
+            owner.advance(&mut runtime, &stop, deadline, |_| {
+                |_: JobTicket| Ok("再開".into())
+            }),
+            Ok(OwnerStep::Submitted { key: 1, request: 2 })
+        ));
+        loop {
+            match owner
+                .advance(&mut runtime, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Completed {
+                    key: 1,
+                    request: 2,
+                    delivered: true,
+                    succeeded: true,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("regrant after worker retirement did not complete"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Result(result) if result.request == 2 && result.text == "再開"
+        ));
+    }
+
+    #[test]
+    fn settings_acknowledgment_times_out_while_cancelled_worker_is_still_running() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (server, mut client) = connected(&stop, deadline);
+        runtime
+            .attach(server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut client, &stop, deadline);
+        let mut frame = convert(1, 1, 1, policy);
+        let message::Message::Convert(convert) = &mut frame.message else {
+            unreachable!();
+        };
+        convert.timeout_ms = 5_000;
+        client
+            .write_all(message::encode(&frame).unwrap(), &stop, deadline)
+            .unwrap();
+        let release = Arc::new(AtomicBool::new(false));
+        let worker_release = release.clone();
+        let mut owner = BrokerWorkLoop::new();
+        assert!(matches!(
+            owner.advance(&mut runtime, &stop, deadline, |_| {
+                move |ticket: JobTicket| {
+                    while !worker_release.load(Ordering::Acquire)
+                        && Instant::now() < ticket.deadline()
+                    {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(ErrorCode::Cancelled)
+                }
+            }),
+            Ok(OwnerStep::Submitted { key: 1, request: 1 })
+        ));
+        let revoked = source.revoke_manual_consent().unwrap();
+        assert!(runtime.publish_current(&stop, deadline).unwrap().is_some());
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::PolicyChanged(next) if !next.allowed
+        ));
+        assert!(matches!(
+            owner.acknowledge_version(
+                &mut runtime,
+                revoked,
+                &stop,
+                Instant::now() + Duration::from_millis(20)
+            ),
+            Err(RuntimeError::Transport(IpcError::Timeout))
+        ));
+        assert_eq!(owner.active_count(), 1);
+        release.store(true, Ordering::Release);
+        assert!(owner.stop_and_reap(deadline));
     }
 
     #[test]
