@@ -15,7 +15,11 @@
 接続key・世代・政策版・Broker起動IDへ結び付けて完了を処理する。
 受信側は`FrameInbox`で分割・連結frameの未読部分を接続ごとに保持し、
 `ReadBatch`で最大8本のReadを先に開始する。子process診断の2接続Helloと
-Convertは並行受信するが、製品の継続調停ループには未接続。
+Convertは並行受信する。`poll_active_message`は分割frameの途中でも別接続の
+完成frameを先に処理でき、部分frameを10秒で退役させる。診断では失効・
+再許可後の次要求に使用したが、製品の継続調停ループには未接続。
+`poll_reserved_hello`はHello途中にも政策公開を挟める。2本の部分Helloを
+公開時に切断してreceiptを完了する実pipe検査を通した。
 `sumibi-protocol`には接続ごとの`BrokerSession`と、最大8接続・各1通知の
 `PolicyFanout`がある。`sumibi-host`には設定・資格情報・明示同意の
 `PolicyAuthority`、送信開始順序を固定する`manual::convert_ordered`、

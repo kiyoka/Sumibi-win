@@ -1,14 +1,17 @@
 //! One authenticated pipe's bounded frame reader. A completed read may hold
 //! more than one frame; only the first is decoded until its caller is ready.
 use crate::{Error, Pipe, Result, Stop};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use sumibi_protocol::{message, Decoder};
+
+const MAX_PARTIAL_AGE: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 pub struct FrameInbox {
     decoder: Decoder,
     unread: Vec<u8>,
     closed: bool,
+    partial_since: Option<Instant>,
 }
 
 impl FrameInbox {
@@ -48,6 +51,8 @@ impl FrameInbox {
             }
         };
         if decoded.consumed == 0 {
+            self.closed = true;
+            self.unread.clear();
             return Err(Error::InvalidMessage);
         }
         let envelope = decoded.body.map(message::decode).transpose().map_err(|_| {
@@ -56,6 +61,11 @@ impl FrameInbox {
             Error::InvalidMessage
         })?;
         self.unread.drain(..decoded.consumed);
+        if envelope.is_some() {
+            self.partial_since = None;
+        } else {
+            self.partial_since.get_or_insert_with(Instant::now);
+        }
         Ok(envelope)
     }
 
@@ -73,6 +83,38 @@ impl FrameInbox {
             }
             self.push(pipe.start_read(stop, deadline)?.wait()?.bytes)?;
         }
+    }
+
+    /// Poll bytes already queued on this authenticated pipe. A partial frame
+    /// stays in the decoder while another connection can make progress. The
+    /// partial frame is retired after ten seconds; idle connections are not.
+    pub fn read_queued(
+        &mut self,
+        pipe: &mut Pipe,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<Option<message::Envelope>> {
+        self.check_partial_age(Instant::now())?;
+        if let Some(envelope) = self.next_frame()? {
+            return Ok(Some(envelope));
+        }
+        if !pipe.has_data()? {
+            return Ok(None);
+        }
+        self.push(pipe.start_read(stop, deadline)?.wait()?.bytes)?;
+        self.next_frame()
+    }
+
+    fn check_partial_age(&mut self, now: Instant) -> Result<()> {
+        if self
+            .partial_since
+            .is_some_and(|started| now.saturating_duration_since(started) >= MAX_PARTIAL_AGE)
+        {
+            self.closed = true;
+            self.unread.clear();
+            return Err(Error::Timeout);
+        }
+        Ok(())
     }
 }
 
@@ -129,5 +171,25 @@ mod tests {
         assert!(!inbox.has_unread());
         assert!(matches!(inbox.next_frame(), Err(Error::Closed)));
         assert!(matches!(inbox.push(vec![1]), Err(Error::Closed)));
+    }
+
+    #[test]
+    fn partial_frame_expires_without_timing_out_an_idle_connection() {
+        let mut idle = FrameInbox::default();
+        assert!(idle
+            .check_partial_age(Instant::now() + MAX_PARTIAL_AGE)
+            .is_ok());
+        let mut partial = FrameInbox::default();
+        partial.push(vec![1]).unwrap();
+        assert!(partial.next_frame().unwrap().is_none());
+        let started = partial.partial_since.unwrap();
+        assert!(partial
+            .check_partial_age(started + MAX_PARTIAL_AGE - Duration::from_millis(1))
+            .is_ok());
+        assert!(matches!(
+            partial.check_partial_age(started + MAX_PARTIAL_AGE),
+            Err(Error::Timeout)
+        ));
+        assert!(matches!(partial.next_frame(), Err(Error::Closed)));
     }
 }

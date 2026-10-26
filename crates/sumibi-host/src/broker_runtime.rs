@@ -166,8 +166,18 @@ impl<'a> BrokerPolicyRuntime<'a> {
         self.connections.len()
     }
 
+    /// Snapshot keys for a bounded round-robin read pass. Keys never repeat
+    /// within this Broker boot, so a later close cannot retarget a result.
+    pub fn active_keys(&self) -> Vec<u64> {
+        self.connections.iter().map(|entry| entry.key).collect()
+    }
+
     pub fn pending_count(&self) -> usize {
         self.pending.len()
+    }
+
+    pub fn pending_keys(&self) -> Vec<u64> {
+        self.pending.iter().map(|entry| entry.key).collect()
     }
 
     /// Clone the admission token after `receive` returns Convert. A worker
@@ -235,6 +245,26 @@ impl<'a> BrokerPolicyRuntime<'a> {
             return Err(RuntimeError::MissingPipe);
         };
         let result = connection.inbox.read(&mut connection.pipe, stop, deadline);
+        if result.is_err() {
+            self.close(key);
+        }
+        result.map_err(RuntimeError::Transport)
+    }
+
+    /// Poll an incomplete Hello without blocking the policy publisher. A
+    /// source change may close this key between chunks before Ready is sent.
+    pub fn poll_reserved_hello(
+        &mut self,
+        key: u64,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<Option<Envelope>, RuntimeError> {
+        let Some(connection) = self.pending.iter_mut().find(|entry| entry.key == key) else {
+            return Err(RuntimeError::MissingPipe);
+        };
+        let result = connection
+            .inbox
+            .read_queued(&mut connection.pipe, stop, deadline);
         if result.is_err() {
             self.close(key);
         }
@@ -357,6 +387,27 @@ impl<'a> BrokerPolicyRuntime<'a> {
             return Err(RuntimeError::MissingPipe);
         };
         let result = connection.inbox.read(&mut connection.pipe, stop, deadline);
+        if result.is_err() {
+            self.close(key);
+        }
+        result.map_err(RuntimeError::Transport)
+    }
+
+    /// Read at most one queued frame without waiting on an idle connection.
+    /// The caller still bounds partial-frame age and interleaves publication,
+    /// worker completion, expiry, and new accepts between read passes.
+    pub fn poll_active_message(
+        &mut self,
+        key: u64,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<Option<Envelope>, RuntimeError> {
+        let Some(connection) = self.connections.iter_mut().find(|entry| entry.key == key) else {
+            return Err(RuntimeError::MissingPipe);
+        };
+        let result = connection
+            .inbox
+            .read_queued(&mut connection.pipe, stop, deadline);
         if result.is_err() {
             self.close(key);
         }
@@ -926,6 +977,54 @@ pub fn serve_diagnostic(
     if !cancelled_ticket.is_cancelled() || result_ticket.is_cancelled() {
         return Err(IpcError::InvalidMessage);
     }
+    source
+        .grant_manual_consent(&destination)
+        .map_err(|_| IpcError::PolicyDenied)?;
+    publish_diagnostic(&mut runtime, bootstrap.stop(), deadline, 5, true, None)?;
+    let mut resumed = false;
+    while !bootstrap.stop().is_cancelled()? && Instant::now() < deadline {
+        for key in runtime.active_keys() {
+            let Some(frame) = runtime
+                .poll_active_message(key, bootstrap.stop(), deadline)
+                .map_err(|_| IpcError::InvalidMessage)?
+            else {
+                continue;
+            };
+            let Event::Convert(request) = runtime
+                .receive(key, frame, Instant::now())
+                .map_err(|_| IpcError::InvalidMessage)?
+            else {
+                return Err(IpcError::InvalidMessage);
+            };
+            if key != request_key || request.request != 2 || request.text != "again" {
+                return Err(IpcError::InvalidMessage);
+            }
+            let ticket = runtime
+                .job_ticket(key, request.request)
+                .ok_or(IpcError::InvalidMessage)?;
+            let now = Instant::now();
+            if !runtime
+                .publish_result(
+                    ticket.reply_context(now),
+                    "再開".into(),
+                    bootstrap.stop(),
+                    now + Duration::from_millis(500),
+                )
+                .map_err(|_| IpcError::PolicyDenied)?
+            {
+                return Err(IpcError::InvalidMessage);
+            }
+            resumed = true;
+            break;
+        }
+        if resumed {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    if !resumed {
+        return Err(IpcError::Timeout);
+    }
     while !bootstrap.stop().is_cancelled()? && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -1203,6 +1302,196 @@ mod tests {
             Ok(Event::Convert(convert)) if convert.request == 1
         ));
         assert!(runtime.job_ticket(key, 1).is_some());
+    }
+
+    #[test]
+    fn queued_poll_advances_complete_peer_while_other_frame_is_partial() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (first_server, mut first_client) = connected(&stop, deadline);
+        let (second_server, mut second_client) = connected(&stop, deadline);
+        runtime
+            .attach(first_server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        runtime
+            .attach(second_server, hello(2, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut first_client, &stop, deadline);
+        read_frame(&mut second_client, &stop, deadline);
+        assert_eq!(runtime.active_keys(), [1, 2]);
+        assert!(runtime
+            .poll_active_message(1, &stop, deadline)
+            .unwrap()
+            .is_none());
+        let first_frame = message::encode(&convert(1, 1, 1, policy)).unwrap();
+        first_client
+            .write_all(first_frame[..6].to_vec(), &stop, deadline)
+            .unwrap();
+        assert!(runtime
+            .poll_active_message(1, &stop, deadline)
+            .unwrap()
+            .is_none());
+        second_client
+            .write_all(
+                message::encode(&convert(2, 1, 1, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        assert!(runtime
+            .poll_active_message(1, &stop, deadline)
+            .unwrap()
+            .is_none());
+        let second = runtime
+            .poll_active_message(2, &stop, deadline)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            runtime.receive(2, second, Instant::now()),
+            Ok(Event::Convert(convert)) if convert.text == "nihongo"
+        ));
+        first_client
+            .write_all(first_frame[6..].to_vec(), &stop, deadline)
+            .unwrap();
+        let first = runtime
+            .poll_active_message(1, &stop, deadline)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            runtime.receive(1, first, Instant::now()),
+            Ok(Event::Convert(convert)) if convert.request == 1
+        ));
+        assert!(runtime.job_ticket(1, 1).is_some());
+        assert!(runtime.job_ticket(2, 1).is_some());
+    }
+
+    #[test]
+    fn publication_closes_two_partial_hellos_before_acknowledging_change() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (active_server, mut active_client) = connected(&stop, deadline);
+        runtime
+            .attach(active_server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut active_client, &stop, deadline);
+        let (first_server, mut first_client) = connected(&stop, deadline);
+        let (second_server, mut second_client) = connected(&stop, deadline);
+        assert_eq!(runtime.reserve(first_server), Ok(2));
+        assert_eq!(runtime.reserve(second_server), Ok(3));
+        let first = message::encode(&hello(2, id(90))).unwrap();
+        let second = message::encode(&hello(3, id(90))).unwrap();
+        first_client
+            .write_all(first[..3].to_vec(), &stop, deadline)
+            .unwrap();
+        second_client
+            .write_all(second[..7].to_vec(), &stop, deadline)
+            .unwrap();
+        assert_eq!(runtime.pending_keys(), [2, 3]);
+        assert!(runtime
+            .poll_reserved_hello(2, &stop, deadline)
+            .unwrap()
+            .is_none());
+        assert!(runtime
+            .poll_reserved_hello(3, &stop, deadline)
+            .unwrap()
+            .is_none());
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let outcome = runtime.publish_current(&stop, deadline).unwrap().unwrap();
+        assert_eq!(outcome.closed, [2, 3]);
+        assert_eq!(outcome.delivered, [1]);
+        assert_eq!(runtime.pending_count(), 0);
+        assert!(matches!(
+            runtime.poll_reserved_hello(2, &stop, deadline),
+            Err(RuntimeError::MissingPipe)
+        ));
+        assert!(matches!(
+            read_frame(&mut active_client, &stop, deadline).message,
+            message::Message::PolicyChanged(policy) if policy == outcome.policy
+        ));
+        let (new_server, mut new_client) = connected(&stop, deadline);
+        assert_eq!(
+            runtime.attach(new_server, hello(4, id(90)), &stop, deadline),
+            Ok(4)
+        );
+        assert!(matches!(
+            read_frame(&mut new_client, &stop, deadline).message,
+            message::Message::Ready(ready) if ready.policy == outcome.policy
+        ));
+    }
+
+    #[test]
+    fn source_change_between_request_chunks_rejects_old_text_only_on_that_pipe() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let granted = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (old_server, mut old_client) = connected(&stop, deadline);
+        let (live_server, mut live_client) = connected(&stop, deadline);
+        runtime
+            .attach(old_server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        runtime
+            .attach(live_server, hello(2, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut old_client, &stop, deadline);
+        read_frame(&mut live_client, &stop, deadline);
+        let frame = message::encode(&convert(1, 1, 1, granted)).unwrap();
+        old_client
+            .write_all(frame[..8].to_vec(), &stop, deadline)
+            .unwrap();
+        assert!(runtime
+            .poll_active_message(1, &stop, deadline)
+            .unwrap()
+            .is_none());
+        source.revoke_manual_consent().unwrap();
+        old_client
+            .write_all(frame[8..].to_vec(), &stop, deadline)
+            .unwrap();
+        let completed = runtime
+            .poll_active_message(1, &stop, deadline)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            runtime.receive(1, completed, Instant::now()),
+            Err(RuntimeError::PolicyPending)
+        ));
+        assert!(runtime.job_ticket(1, 1).is_none());
+        assert_eq!(runtime.active_keys(), [2]);
+        let outcome = runtime.publish_current(&stop, deadline).unwrap().unwrap();
+        assert_eq!(outcome.delivered, [2]);
+        assert!(matches!(
+            read_frame(&mut live_client, &stop, deadline).message,
+            message::Message::PolicyChanged(policy) if policy == outcome.policy && !policy.allowed
+        ));
     }
 
     #[test]

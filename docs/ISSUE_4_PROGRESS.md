@@ -246,6 +246,17 @@
   ticketではHost同意が残っていても書込を0回に抑え、送信が先に始まった場合は
   切断の確定が有限な書込終了を待つ。取消イベントは待機中のworkerへ直ちに通知。
   実pipeを使うHostの競合検査を追加し、全Rustテスト242件。
+- Hostに接続別のキュー済みframeだけを処理する`poll_active_message`を追加。
+  片方が分割frameの途中でも他方のConvertを先に受理し、後続chunkで元の
+  frameも受理する実pipe検査を通した。部分frameは10秒で退役し、
+  byte未到着のアイドル接続は維持する。子process診断は失効後に再許可し、
+  同じ接続の単調増加した次要求をこの入口で読み、結果を返した。
+  全Rustテスト244件、Broker回帰が成功し、通常Hostへ復元した。
+- Helloの分割受信を`poll_reserved_hello`で扱い、2本とも読取途中にHost政策が
+  変わった場合は両pipeを閉じてから公開receiptを完了する。旧Readyは送らず、
+  次接続は新版Readyで始まる。Convertも分割chunk間に失効した旧本文を拒否し、
+  生存する別pipeだけに失効通知を届けた。通常ユーザーの実pipeで確認し、
+  全Rustテスト246件。製品のacceptとworker結果を含む継続調停はまだ必要。
 
 ## 次の受入作業
 

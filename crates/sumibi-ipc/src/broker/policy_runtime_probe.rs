@@ -114,5 +114,41 @@ fn probe_once(path: &Path, default_host: bool, reversed: bool) -> Result<()> {
             return Err(Error::InvalidMessage);
         }
     }
+    for (index, client) in clients.iter_mut().enumerate() {
+        let pipe = if index == 0 { &mut first } else { &mut second };
+        let Event::PolicyChanged { policy, cancelled } =
+            read_event(pipe, client, &mut inboxes[index], &stop, deadline)?
+        else {
+            return Err(Error::InvalidMessage);
+        };
+        if policy.settings != 1
+            || policy.authorization != 5
+            || !policy.allowed
+            || cancelled.is_some()
+        {
+            return Err(Error::InvalidMessage);
+        }
+    }
+    let resumed = clients[0]
+        .begin(2, "again", 5000, Instant::now())
+        .map_err(|_| Error::InvalidMessage)?;
+    first.write_all(resumed, &stop, deadline)?;
+    let Event::Reply {
+        request: 2,
+        outcome: Outcome::Result(text),
+        ..
+    } = read_event(
+        &mut first,
+        &mut clients[0],
+        &mut inboxes[0],
+        &stop,
+        deadline,
+    )?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    if text != "再開" {
+        return Err(Error::InvalidMessage);
+    }
     Ok(())
 }

@@ -69,6 +69,15 @@ Hello後の連結要求をHostのactive接続へ引き継ぎ、不正本文は�
 開始失敗を個別に回収する。子processの2接続診断ではHelloとConvertをそれぞれ
 並行受信する。全接続から1frameずつ集める有限診断であり、製品の継続する
 I/O調停ループの代わりではない。
+`poll_active_message`はキュー済みbyteだけを1接続から読み、未完成frameを
+接続別に保持して別接続の処理へ進める。未完成frameが10秒残ればその接続を
+退役させ、アイドル接続は期限切れにしない。子process診断で失効・再許可後の
+追加要求を同じpipeで受け付け、結果を配送した。設定変更・新規accept・
+実worker完了を調停する製品の継続ループはまだない。
+`poll_reserved_hello`はHelloの未完成chunkを保持し、その間にHost政策公開を
+処理できる。2本のHelloが部分受信中に変更した場合、両pipeを閉じてから
+配送receiptを完了し、後の新接続だけが新版Readyを受けた。Convertのchunk間に
+失効した旧本文も要求として受理せず、そのpipeだけを退役させた。
 
 ## 残る境界
 
