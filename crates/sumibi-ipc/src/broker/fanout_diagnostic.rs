@@ -454,6 +454,14 @@ fn serve_failed_notice(
         deadline,
     )?;
     drop(publication);
+    let abandoned = read_message(&mut second, &bootstrap.stop, deadline)?;
+    let BrokerEvent::Convert(abandoned) = order
+        .receive(2, abandoned, Instant::now())
+        .map_err(map_fanout_error)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    gate.authorize(abandoned.revision)?;
     let request = read_message(&mut first, &bootstrap.stop, deadline)?;
     let BrokerEvent::Convert(convert) = order
         .receive(1, request, Instant::now())
@@ -486,6 +494,19 @@ fn serve_failed_notice(
     {
         return Err(Error::InvalidMessage);
     }
+    if order
+        .result(
+            2,
+            abandoned.request,
+            abandoned.revision,
+            "切断前の旧結果".into(),
+            Instant::now(),
+        )
+        .map_err(map_fanout_error)?
+        .is_some()
+    {
+        return Err(Error::InvalidMessage);
+    }
     let notices = order.pending_writes();
     if notices.len() != 2 {
         return Err(Error::InvalidMessage);
@@ -499,7 +520,7 @@ fn serve_failed_notice(
                     .notice_delivered(1, revoked)
                     .map_err(map_fanout_error)?;
             }
-            2 if notice.cancelled.is_none() => {
+            2 if notice.cancelled == Some(abandoned.request) => {
                 let failed = second.write_all(frame, &bootstrap.stop, deadline).err();
                 if !matches!(failed, Some(Error::Disconnected)) {
                     return Err(Error::InvalidMessage);
@@ -962,6 +983,10 @@ fn probe_failed_notice(
     if text != "初回" {
         return Err(Error::InvalidMessage);
     }
+    let abandoned = clients[1]
+        .begin(2, "nihongo", 5000, Instant::now())
+        .map_err(|_| Error::InvalidMessage)?;
+    second.write_all(abandoned, stop, deadline)?;
     drop(second);
     let old = clients[0]
         .begin(1, "nihongo", 5000, Instant::now())
@@ -1006,11 +1031,11 @@ fn probe_failed_notice(
         return Err(Error::InvalidMessage);
     }
     let resumed = clients[1]
-        .begin(2, "nihongo", 5000, Instant::now())
+        .begin(3, "nihongo", 5000, Instant::now())
         .map_err(|_| Error::InvalidMessage)?;
     second.write_all(resumed, stop, deadline)?;
     let ClientEvent::Reply {
-        request: 2,
+        request: 3,
         outcome: Outcome::Result(text),
         ..
     } = read_event(
