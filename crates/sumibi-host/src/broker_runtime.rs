@@ -1931,6 +1931,111 @@ mod tests {
     }
 
     #[test]
+    fn manual_owner_loop_uses_the_destination_after_settings_change() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let old_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let old_port = old_listener.local_addr().unwrap().port();
+        let next_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let next_port = next_listener.local_addr().unwrap().port();
+        let old = Destination::new(Scheme::HttpLoopback, "127.0.0.1", old_port, "/old").unwrap();
+        let next = Destination::new(Scheme::HttpLoopback, "127.0.0.1", next_port, "/new").unwrap();
+        let source = Arc::new(PolicyAuthority::new(old.clone()));
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&old).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (server, mut client) = connected(&stop, deadline);
+        runtime
+            .attach(server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut client, &stop, deadline);
+        source.set_destination(next.clone()).unwrap();
+        source.grant_manual_consent(&next).unwrap();
+        drop(old_listener);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = next_listener.accept().unwrap();
+            let request = read_http_request(&mut stream);
+            let body = r#"{"text":"新しい宛先"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            request
+        });
+        let mut owner = BrokerWorkLoop::new();
+        assert!(matches!(
+            owner.advance_manual(
+                &mut runtime,
+                source.clone(),
+                Arc::new(DiagnosticLoopbackHttp),
+                &stop,
+                deadline
+            ),
+            Ok(OwnerStep::Published(outcome)) if outcome.policy.allowed
+        ));
+        let current = runtime.policy();
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::PolicyChanged(policy) if policy == current
+        ));
+        client
+            .write_all(
+                message::encode(&convert(1, 1, 1, current)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        assert!(matches!(
+            owner.advance_manual(
+                &mut runtime,
+                source.clone(),
+                Arc::new(DiagnosticLoopbackHttp),
+                &stop,
+                deadline
+            ),
+            Ok(OwnerStep::Submitted { key: 1, request: 1 })
+        ));
+        loop {
+            match owner
+                .advance_manual(
+                    &mut runtime,
+                    source.clone(),
+                    Arc::new(DiagnosticLoopbackHttp),
+                    &stop,
+                    deadline,
+                )
+                .unwrap()
+            {
+                OwnerStep::Completed {
+                    key: 1,
+                    request: 1,
+                    delivered: true,
+                    succeeded: true,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("updated destination did not complete"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Result(result) if result.text == "新しい宛先"
+        ));
+        let request = server.join().unwrap();
+        assert!(request
+            .windows(b"POST /new".len())
+            .any(|part| part == b"POST /new"));
+    }
+
+    #[test]
     fn owner_loop_publishes_revoke_before_a_queued_worker_completion() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
