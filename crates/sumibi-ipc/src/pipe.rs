@@ -611,6 +611,17 @@ mod tests {
 
     static PIPE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    fn native_pipe_tests_supported() -> bool {
+        match PinnedProcess::current() {
+            Ok(_) => true,
+            Err(Error::UnsupportedElevation | Error::UnsupportedAppContainer) => {
+                eprintln!("native pipe test requires an ordinary desktop process");
+                false
+            }
+            Err(error) => panic!("cannot inspect current process for native pipe test: {error:?}"),
+        }
+    }
+
     fn connected_pair(stop: &Stop, deadline: Instant) -> (Pipe, Pipe, Pipe, Pipe) {
         let name = Nonce::random().unwrap();
         let first = Server::create_pair(&name).unwrap();
@@ -648,6 +659,9 @@ mod tests {
 
     #[test]
     fn wait_any_selects_the_pipe_that_completes_after_both_reads_are_pending() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
         let _guard = PIPE_TEST_LOCK.lock().unwrap();
         let stop = Stop::new().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -683,6 +697,9 @@ mod tests {
 
     #[test]
     fn wait_any_expires_one_read_without_consuming_the_other() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
         let _guard = PIPE_TEST_LOCK.lock().unwrap();
         let stop = Stop::new().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -705,6 +722,9 @@ mod tests {
 
     #[test]
     fn wait_any_isolates_closed_peer_from_other_pending_read() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
         let _guard = PIPE_TEST_LOCK.lock().unwrap();
         let stop = Stop::new().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
