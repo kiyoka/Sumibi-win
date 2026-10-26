@@ -5,6 +5,8 @@ mod channel_probe;
 #[cfg(windows)]
 mod edit_host;
 #[cfg(windows)]
+mod fanout_probe;
+#[cfg(windows)]
 mod input_signal;
 #[cfg(windows)]
 mod live_render;

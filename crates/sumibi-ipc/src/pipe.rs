@@ -88,9 +88,28 @@ impl Stop {
 pub struct Server {
     handle: OwnedHandle,
     permit: Permit,
+    name: Nonce,
+    max_instances: u32,
 }
 impl Server {
     pub fn create(name: &Nonce) -> Result<Self> {
+        Self::create_instance(name, true, 1)
+    }
+    /// Allow exactly two instances for the disposable multi-client probe.
+    /// Normal one-client services keep their original one-instance boundary.
+    pub(crate) fn create_pair(name: &Nonce) -> Result<Self> {
+        Self::create_instance(name, true, 2)
+    }
+    /// Create another instance only while the first instance is still owned
+    /// by this process. Every instance receives the same restricted ACL and
+    /// consumes an endpoint permit before opening a kernel handle.
+    pub(crate) fn additional(&self) -> Result<Self> {
+        if self.max_instances == 1 {
+            return Err(Error::InvalidArgument);
+        }
+        Self::create_instance(&self.name, false, self.max_instances)
+    }
+    fn create_instance(name: &Nonce, first: bool, max_instances: u32) -> Result<Self> {
         let permit = Permit::acquire()?;
         let local = PinnedProcess::current()?;
         let descriptor: Vec<u16> = format!("D:P(A;;GA;;;{})", local.identity().logon_text)
@@ -113,12 +132,16 @@ impl Server {
                 lpSecurityDescriptor: security.0,
                 bInheritHandle: false.into(),
             };
-            let name = name.pipe_name();
+            let pipe_name = name.pipe_name();
+            let mut access = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
+            if first {
+                access |= FILE_FLAG_FIRST_PIPE_INSTANCE;
+            }
             let handle = CreateNamedPipeW(
-                PCWSTR(name.as_ptr()),
-                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
+                PCWSTR(pipe_name.as_ptr()),
+                access,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                1,
+                max_instances,
                 CHUNK as u32,
                 CHUNK as u32,
                 0,
@@ -130,6 +153,8 @@ impl Server {
             Ok(Self {
                 handle: own(handle),
                 permit,
+                name: name.clone(),
+                max_instances,
             })
         }
     }

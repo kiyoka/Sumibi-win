@@ -95,8 +95,12 @@ pub fn serve(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
     match bootstrap.service {
         Service::Once => serve_once(bootstrap, diagnostic_enabled),
         Service::Channel => serve_channel(bootstrap, diagnostic_enabled),
+        Service::Fanout => fanout_diagnostic::serve_fanout(bootstrap, diagnostic_enabled),
     }
 }
+
+mod fanout_diagnostic;
+pub use fanout_diagnostic::probe as diagnostic_two_client_probe;
 
 pub fn serve_once(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
     if bootstrap.service != Service::Once {

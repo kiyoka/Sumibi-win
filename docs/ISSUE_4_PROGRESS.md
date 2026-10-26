@@ -1,6 +1,6 @@
 # Issue #4 の受入進捗
 
-2026-10-25 / [Issue #4](https://github.com/kiyoka/Sumibi-win/issues/4) /
+2026-10-26 / [Issue #4](https://github.com/kiyoka/Sumibi-win/issues/4) /
 [draft PR #10](https://github.com/kiyoka/Sumibi-win/pull/10)。
 ここでいう成功は、明記した診断Host・専用TSF入力欄・合成本文での結果に限る。
 製品の一般アプリ対応や実API利用を意味しない。
@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | 版付きJSON、ID・世代・取消・切断・重複・再接続、有限容量 | `sumibi-protocol`の`ClientSession`、`sumibi-ipc`の単発Jobと再利用Channel/Worker。要求・接続・結果の容量、期限、古い返信と未発行の未来IDを検査 | 製品Brokerの接続・設定変更元を接続する |
 | 別プロセスの相互認証と偽server/PID再利用/終了待機 | 起動時の固定process handle、user/logon SID・session・integrity・PID・生成時刻とpipe peer IDを照合。実子processと偽peer診断を実行 | 配置済みBrokerの信頼できる発見、署名・更新・保護された起動経路 |
-| 非同期pipe、バックプレッシャー、所有TSFスレッドへの結果配送 | 有限I/Oと取消、要求前Permit、EXE workerから所有STAへの非同期結果配送。失効・異常完了は対象と接続を退役 | 製品TIPと一般アプリへの配送・policy通知の全接続への公開順序 |
+| 非同期pipe、バックプレッシャー、所有TSFスレッドへの結果配送 | 有限I/Oと取消、要求前Permit、EXE workerから所有STAへの非同期結果配送。診断Brokerの同一親processからの2接続にも失効と退役を配送 | 製品TIPと一般アプリへの配送・policy通知の全接続への公開順序 |
 | composition、通常文字・Enter/Esc、入力スコープと保護条件 | 専用ACP入力欄で同期入力取引、所有composition、待機中の文字/Backspace/Enter/Esc、保護状態の再検査を実DLLで確認。未知条件は拒否 | 一般アプリの入力先ごとの保護情報、通知履歴、composition寿命、実キー配送 |
 | 待機容量の消費前確保、超過切替、救済期限、遅延キー再送禁止 | 専用adapterで共有4件・4096 UTF-16単位の救済枠を先に予約。待機は最大4件・8秒、救済は最大10分。失敗した操作を自動再送しない | 製品の全入力先にまたがる容量・期限・超過時政策の確定と接続 |
 | Notepad等で実打鍵、1回Undo、別欄・同長別内容・読取不能の非適用 | 専用TSF storeの実DLL検査で対象変更・本文変更・読取拒否・1回Undoを確認。標準RichEditは保護情報不足で拒否。標準EDITは今回の環境でfocused documentなし | Notepad等の実アプリで肯定的な保護条件と標準Undoを確認する。現在は未達 |
@@ -50,7 +50,7 @@
   Ready書込中の接続は通常の通知取得から外し、Ready完了後または明示的な
   同一書込で取得する。Hostの結合検査では書込失敗後の再接続も確認した。
   診断用Brokerの実子Channelを
-  1接続として通した。複数clientの実I/Oは残る
+  1接続として通した。製品の複数client実I/Oは残る
   （[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)）。
 - Host内の設定・認可変更を期限付きで待てる`wait_for_change`を追加。
   成功した更新だけが配信担当を起こし、最新の公開用policyを返す。
@@ -80,6 +80,18 @@
   実子Channelで再確認した。パッシブTIP DLLの事前確認も成功した。
   省略なしの対話検査は今回実行していない。
   現在のサンドボックスでは診断用localhost HTTPの4件が接続不可になるため、同じコマンドを通常ユーザー環境で再実行して切り分けた。
+
+## 2026-10-26 の追加確認
+
+- 診断専用Brokerで同じ名前のnamed pipeを2 instance作り、それぞれを固定した
+  親process handleとOS peer情報で認証した。既存のJob/Channelは1 instanceのまま。
+  pipeの割当順は仮定せず、認証後のHelloから診断用の論理接続を決める。
+- 2接続の実I/Oで、保留要求の失効、待機側への通知、旧結果の破棄、再許可後の
+  新版結果を確認した。片方の不正な未来Cancelだけを退役・切断し、残る接続の
+  保留要求を次の失効で取消した。親側接続を入れ替えた順序でも確認した。
+  既定Hostはこの診断serviceを拒否し、検査後に既定Hostへ戻した
+  （[ADR 0061](adr/0061-two-client-broker-pipe-diagnostic.md)）。
+  これは一つの親processの2本であり、常駐Brokerの異なるTIP process接続ではない。
 
 ## 次の受入作業
 

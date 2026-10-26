@@ -29,12 +29,14 @@ pub enum Mode {
 pub(crate) enum Service {
     Once,
     Channel,
+    Fanout,
 }
 impl Service {
     fn argument(self) -> &'static str {
         match self {
             Self::Once => "serve",
             Self::Channel => "serve-channel",
+            Self::Fanout => "serve-fanout",
         }
     }
 }
@@ -131,7 +133,9 @@ impl Launched {
         stop: &Stop,
         deadline: Instant,
     ) -> Result<(Self, Pipe, Nonce)> {
-        Self::connect_service(path, mode, stop, deadline, Service::Once)
+        let (launched, pipe, _, boot) =
+            Self::connect_service(path, mode, stop, deadline, Service::Once)?;
+        Ok((launched, pipe, boot))
     }
     pub(crate) fn connect_channel(
         path: &Path,
@@ -139,7 +143,24 @@ impl Launched {
         stop: &Stop,
         deadline: Instant,
     ) -> Result<(Self, Pipe, Nonce)> {
-        Self::connect_service(path, mode, stop, deadline, Service::Channel)
+        let (launched, pipe, _, boot) =
+            Self::connect_service(path, mode, stop, deadline, Service::Channel)?;
+        Ok((launched, pipe, boot))
+    }
+    pub(crate) fn connect_fanout(
+        path: &Path,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<(Self, Pipe, Pipe, Nonce)> {
+        let (launched, first, name, boot) = Self::connect_service(
+            path,
+            Mode::DiagnosticFixed { delay_ms: 0 },
+            stop,
+            deadline,
+            Service::Fanout,
+        )?;
+        let second = Pipe::connect(&name, launched.peer()?)?;
+        Ok((launched, first, second, boot))
     }
     pub(crate) fn peer(&self) -> Result<PinnedProcess> {
         PinnedProcess::from_launch_handle(self.process.as_handle())
@@ -150,7 +171,7 @@ impl Launched {
         stop: &Stop,
         deadline: Instant,
         service: Service,
-    ) -> Result<(Self, Pipe, Nonce)> {
+    ) -> Result<(Self, Pipe, Nonce, Nonce)> {
         let path_text = path.to_str().ok_or(Error::InvalidArgument)?;
         if !path.is_absolute() || path_text.contains(['\0', '"']) {
             return Err(Error::InvalidArgument);
@@ -238,7 +259,7 @@ impl Launched {
             });
         }
         let pipe = Pipe::connect(&name, peer)?;
-        Ok((launched, pipe, boot))
+        Ok((launched, pipe, name, boot))
     }
 }
 impl Drop for Launched {
@@ -267,7 +288,7 @@ pub struct Bootstrap {
 impl Bootstrap {
     pub fn parse(args: &[OsString]) -> Result<Self> {
         if args.len() != 7
-            || (args[0] != "serve" && args[0] != "serve-channel")
+            || (args[0] != "serve" && args[0] != "serve-channel" && args[0] != "serve-fanout")
             || args[1] == args[2]
             || args[1] == args[3]
             || args[2] == args[3]
@@ -308,10 +329,10 @@ impl Bootstrap {
             name,
             boot,
             mode,
-            service: if args[0] == "serve-channel" {
-                Service::Channel
-            } else {
-                Service::Once
+            service: match args[0].to_str() {
+                Some("serve-channel") => Service::Channel,
+                Some("serve-fanout") => Service::Fanout,
+                _ => Service::Once,
             },
         })
     }

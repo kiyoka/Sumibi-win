@@ -192,6 +192,12 @@ pub(super) fn run() -> Result<(), Failure> {
         return Ok(());
     }
     if args.len() == 1
+        && (args[0] == "broker-fanout-test" || args[0] == "broker-fanout-denied-test")
+    {
+        crate::fanout_probe::run(args[0] == "broker-fanout-denied-test")?;
+        return Ok(());
+    }
+    if args.len() == 1
         && (args[0] == "broker-channel-test" || args[0] == "broker-channel-denied-test")
     {
         crate::channel_probe::run(args[0] == "broker-channel-denied-test")?;

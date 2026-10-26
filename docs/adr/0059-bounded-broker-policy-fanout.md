@@ -59,6 +59,8 @@ Hostの`PolicyAuthority`変更を2件のProtocol接続へ渡す結合検査で�
 保留中と待機中の両方が失効通知を受け、古い結果が公開されないことを確認する。
 この型はI/O、OS peer認証、UI操作、別process間の設定変更伝達を持たない。
 診断用Brokerの単一Channelはこのfanoutを1接続として使う。実子Brokerの
-既存回帰はその1接続の通知・結果順序を確認するが、複数clientの実I/O配信は
-まだ実装していない。製品統合では、返された退役IDのpipeを確実に閉じ、
+既存回帰はその1接続の通知・結果順序を確認する。後続の
+[ADR 0061](0061-two-client-broker-pipe-diagnostic.md)では一つの親processから
+2本のpipeを開く診断を追加した。製品の複数client実I/O配信は未実装。
+製品統合では、返された退役IDのpipeを確実に閉じ、
 配送失敗も同様に退役させ、所有側の適用前policy再検査と結ぶ必要がある。
