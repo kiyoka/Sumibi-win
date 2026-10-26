@@ -112,6 +112,10 @@ workerの`completed_at`が要求期限内でも、Host回収後の実際の結�
 Helloを完成させてReadyを届ける所有側ループの実pipe検査を通した。
 `BrokerWorkLoop::accept`はOS認証済みpipeのkey予約前に未公開政策を配送する。
 診断子Brokerの2接続受付もこの入口を使う。継続する製品acceptは別途接続する。
+`advance_manual`はRuntimeとworkerが同じ`PolicyAuthority`を参照することを
+ポインタ同一性で確認してから、現行宛先をworkerへ渡す。異なる政策元が偶然同じ版を
+持っていても送信できない。workerは`convert_ordered`で許可、資格情報の同一性、
+送信開始順序、取消と期限を再検査する。実HTTP結合検査をこの入口に通した。
 
 ## 残る境界
 

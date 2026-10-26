@@ -3,9 +3,14 @@
 use crate::broker_runtime::{
     BrokerPolicyRuntime, JobTicket, PollStep, PublicationOutcome, ReplyContext, RuntimeError,
 };
+use crate::manual::{
+    self, ManualRequest, OrderedConversionTransport, PolicySource, SendError, TransportError,
+};
 use crate::policy::ChangeError;
+use crate::policy::PolicyAuthority;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use sumibi_ipc::{Error as IpcError, Pipe, Stop};
@@ -125,6 +130,47 @@ impl BrokerWorkLoop {
         Ok((key, published))
     }
 
+    /// Product-facing manual conversion dispatch. The runtime and worker
+    /// must share the same Host authority; otherwise equal version numbers
+    /// from unrelated authorities could authorize the wrong destination.
+    /// The worker snapshots its destination immediately before the ordered
+    /// send, which rechecks consent, credential identity and cancellation.
+    pub fn advance_manual<T>(
+        &mut self,
+        runtime: &mut BrokerPolicyRuntime<'_>,
+        authority: Arc<PolicyAuthority>,
+        transport: Arc<T>,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<OwnerStep, RuntimeError>
+    where
+        T: OrderedConversionTransport + Send + Sync + 'static,
+    {
+        if !runtime.uses_source(&authority) {
+            return Err(RuntimeError::InvalidTarget);
+        }
+        self.advance(runtime, stop, deadline, move |request| {
+            move |ticket: JobTicket| {
+                let destination = authority
+                    .snapshot()
+                    .ok_or(ErrorCode::Unavailable)?
+                    .destination;
+                manual::convert_ordered(
+                    ManualRequest {
+                        revision: request.revision,
+                        destination: &destination,
+                        source: &request.text,
+                        deadline: ticket.deadline(),
+                    },
+                    &authority,
+                    &ticket,
+                    &*transport,
+                )
+                .map_err(classify_send_error)
+            }
+        })
+    }
+
     pub fn advance<F, W>(
         &mut self,
         runtime: &mut BrokerPolicyRuntime<'_>,
@@ -213,6 +259,19 @@ impl BrokerWorkLoop {
                 }
             }
         }
+    }
+}
+
+fn classify_send_error(error: SendError) -> ErrorCode {
+    match error {
+        SendError::PolicyDenied | SendError::Transport(TransportError::Cancelled) => {
+            ErrorCode::Cancelled
+        }
+        SendError::Timeout | SendError::Transport(TransportError::Timeout) => ErrorCode::Timeout,
+        SendError::InvalidRequest | SendError::Transport(TransportError::InvalidRequest) => {
+            ErrorCode::Rejected
+        }
+        SendError::InvalidResponse | SendError::Transport(_) => ErrorCode::Unavailable,
     }
 }
 

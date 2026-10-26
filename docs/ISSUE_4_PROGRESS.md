@@ -305,6 +305,11 @@
 - OS認証済みpipeを所有側ループへ渡す`accept`入口を追加した。接続key予約の前に
   未公開のHost政策を配送し、新接続はその版でReadyになる。子Broker診断の2接続の
   受付もこの入口へ接続し、全Rustテスト262件、Clippy、実pipeのBroker回帰が成功。
+- `BrokerWorkLoop::advance_manual`で認証済み要求からHostの`convert_ordered` workerを
+  作る入口を追加した。Runtimeとworkerの政策元が同じインスタンスかを確認し、
+  worker内で現行の宛先を取得する。実pipe→loopback HTTP→元のpipeの結果と、
+  HTTP応答待機中の失効をこの入口で検査した。全Rustテスト263件とClippyが成功。
+  製品HTTPS adapterは未接続。
 
 ## 次の受入作業
 

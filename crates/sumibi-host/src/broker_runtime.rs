@@ -197,6 +197,10 @@ impl<'a> BrokerPolicyRuntime<'a> {
         self.fanout.policy()
     }
 
+    pub(crate) fn uses_source(&self, source: &PolicyAuthority) -> bool {
+        std::ptr::eq(self.source, source)
+    }
+
     /// Complete a finished settings mutation. The caller supplies the version
     /// returned by PolicyAuthority and reads that authority again for display
     /// after this receipt. Coalescing to a newer version reports Superseded.
@@ -1906,6 +1910,27 @@ mod tests {
     }
 
     #[test]
+    fn manual_owner_loop_rejects_a_different_policy_authority() {
+        let (source, destination) = source();
+        let source = Arc::new(source);
+        let other = Arc::new(PolicyAuthority::new(destination));
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let mut owner = BrokerWorkLoop::new();
+        let stop = Stop::new().unwrap();
+        assert!(matches!(
+            owner.advance_manual(
+                &mut runtime,
+                other,
+                Arc::new(DiagnosticLoopbackHttp),
+                &stop,
+                Instant::now() + Duration::from_secs(1)
+            ),
+            Err(RuntimeError::InvalidTarget)
+        ));
+        assert_eq!(runtime.active_count(), 0);
+    }
+
+    #[test]
     fn owner_loop_publishes_revoke_before_a_queued_worker_completion() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -2188,26 +2213,15 @@ mod tests {
                 deadline,
             )
             .unwrap();
-        let worker_source = source.clone();
-        let worker_destination = destination.clone();
         let mut owner = BrokerWorkLoop::new();
         assert!(matches!(
-            owner.advance(&mut runtime, &stop, deadline, move |request| {
-                move |ticket: JobTicket| {
-                    manual::convert_ordered(
-                        ManualRequest {
-                            revision: request.revision,
-                            destination: &worker_destination,
-                            source: &request.text,
-                            deadline: ticket.deadline(),
-                        },
-                        &worker_source,
-                        &ticket,
-                        &DiagnosticLoopbackHttp,
-                    )
-                    .map_err(|_| ErrorCode::Unavailable)
-                }
-            }),
+            owner.advance_manual(
+                &mut runtime,
+                source.clone(),
+                Arc::new(DiagnosticLoopbackHttp),
+                &stop,
+                deadline
+            ),
             Ok(OwnerStep::Submitted { key: 1, request: 1 })
         ));
         loop {
@@ -2320,26 +2334,15 @@ mod tests {
                 deadline,
             )
             .unwrap();
-        let worker_source = source.clone();
-        let worker_destination = destination.clone();
         let mut owner = BrokerWorkLoop::new();
         assert!(matches!(
-            owner.advance(&mut runtime, &stop, deadline, move |request| {
-                move |ticket: JobTicket| {
-                    manual::convert_ordered(
-                        ManualRequest {
-                            revision: request.revision,
-                            destination: &worker_destination,
-                            source: &request.text,
-                            deadline: ticket.deadline(),
-                        },
-                        &worker_source,
-                        &ticket,
-                        &DiagnosticLoopbackHttp,
-                    )
-                    .map_err(|_| ErrorCode::Unavailable)
-                }
-            }),
+            owner.advance_manual(
+                &mut runtime,
+                source.clone(),
+                Arc::new(DiagnosticLoopbackHttp),
+                &stop,
+                deadline
+            ),
             Ok(OwnerStep::Submitted { key: 1, request: 1 })
         ));
         let ticket = runtime.job_ticket(1, 1).unwrap();
