@@ -17,7 +17,7 @@ pub(super) fn run(default_host: bool) -> Result<()> {
             println!("Broker fanout / default Host rejects two-client diagnostic service: OK");
         } else {
             result?;
-            println!("Broker fanout / two pipe orders, revoke, regrant, isolated retirement: OK");
+            println!("Broker fanout / two pipe orders, revoke, regrant, isolated retirement, failed notice write: OK");
         }
         Ok(())
     })

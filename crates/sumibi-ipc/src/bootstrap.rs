@@ -149,16 +149,15 @@ impl Launched {
     }
     pub(crate) fn connect_fanout(
         path: &Path,
+        mode: Mode,
         stop: &Stop,
         deadline: Instant,
     ) -> Result<(Self, Pipe, Pipe, Nonce)> {
-        let (launched, first, name, boot) = Self::connect_service(
-            path,
-            Mode::DiagnosticFixed { delay_ms: 0 },
-            stop,
-            deadline,
-            Service::Fanout,
-        )?;
+        if !matches!(mode, Mode::DiagnosticFixed { delay_ms: 0 | 1 }) {
+            return Err(Error::InvalidArgument);
+        }
+        let (launched, first, name, boot) =
+            Self::connect_service(path, mode, stop, deadline, Service::Fanout)?;
         let second = Pipe::connect(&name, launched.peer()?)?;
         Ok((launched, first, second, boot))
     }

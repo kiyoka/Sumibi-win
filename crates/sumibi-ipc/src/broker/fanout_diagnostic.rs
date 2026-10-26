@@ -1,12 +1,16 @@
 //! Disposable two-client Broker transport diagnostic.
 use super::*;
+use crate::job::{read_event, Inbox};
+use sumibi_protocol::session::{ClientSession, Event as ClientEvent, Outcome};
 
 /// Two authenticated pipe instances in one child Broker. This fixed fixture
 /// exercises real multi-connection I/O without product discovery or HTTP.
 pub(super) fn serve_fanout(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
-    if !diagnostic_enabled || bootstrap.mode != (Mode::DiagnosticFixed { delay_ms: 0 }) {
-        return Err(Error::PolicyDenied);
-    }
+    let write_failure = match bootstrap.mode {
+        Mode::DiagnosticFixed { delay_ms: 0 } if diagnostic_enabled => false,
+        Mode::DiagnosticFixed { delay_ms: 1 } if diagnostic_enabled => true,
+        _ => return Err(Error::PolicyDenied),
+    };
     let first = Server::create_pair(&bootstrap.name)?;
     let second = first.additional()?;
     if first.additional().is_ok() {
@@ -48,6 +52,9 @@ pub(super) fn serve_fanout(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Re
             deadline,
         )?;
         order.ready_delivered(key).map_err(map_fanout_error)?;
+    }
+    if write_failure {
+        return serve_failed_notice(bootstrap, gate, order, first, second, deadline);
     }
     let request = read_message(&mut first, &bootstrap.stop, deadline)?;
     let BrokerEvent::Convert(convert) = order
@@ -171,6 +178,135 @@ pub(super) fn serve_fanout(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Re
     Ok(())
 }
 
+fn serve_failed_notice(
+    bootstrap: Bootstrap,
+    gate: BrokerPolicyGate,
+    mut order: PolicyFanout,
+    mut first: Pipe,
+    mut second: Pipe,
+    deadline: Instant,
+) -> Result<()> {
+    let request = read_message(&mut first, &bootstrap.stop, deadline)?;
+    let BrokerEvent::Convert(convert) = order
+        .receive(1, request, Instant::now())
+        .map_err(map_fanout_error)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    gate.authorize(convert.revision)?;
+    // Observe the other client's close before publication so the write failure
+    // is deterministic, while leaving its Fanout entry until that write fails.
+    let closed = second
+        .start_read(&bootstrap.stop, deadline)
+        .and_then(|operation| operation.wait())
+        .err();
+    if !matches!(closed, Some(Error::Disconnected | Error::Closed)) {
+        return Err(Error::InvalidMessage);
+    }
+    let initial = gate.snapshot()?;
+    let revoked = Policy {
+        authorization: initial.authorization + 1,
+        allowed: false,
+        ..initial
+    };
+    if !gate.publish(&mut order, revoked)?.is_empty() {
+        return Err(Error::InvalidMessage);
+    }
+    if order
+        .result(
+            1,
+            convert.request,
+            convert.revision,
+            "旧結果".into(),
+            Instant::now(),
+        )
+        .map_err(map_fanout_error)?
+        .is_some()
+    {
+        return Err(Error::InvalidMessage);
+    }
+    let notices = order.pending_writes();
+    if notices.len() != 2 {
+        return Err(Error::InvalidMessage);
+    }
+    for (key, notice) in notices {
+        let frame = message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?;
+        match key {
+            1 if notice.cancelled == Some(convert.request) => {
+                first.write_all(frame, &bootstrap.stop, deadline)?;
+                order
+                    .notice_delivered(1, revoked)
+                    .map_err(map_fanout_error)?;
+            }
+            2 if notice.cancelled.is_none() => {
+                let failed = second.write_all(frame, &bootstrap.stop, deadline).err();
+                if !matches!(failed, Some(Error::Disconnected | Error::Closed)) {
+                    return Err(Error::InvalidMessage);
+                }
+                if !order.detach(2) {
+                    return Err(Error::InvalidMessage);
+                }
+            }
+            _ => return Err(Error::InvalidMessage),
+        }
+    }
+    drop(second);
+    if order.active_count() != 1 {
+        return Err(Error::InvalidMessage);
+    }
+    let regranted = Policy {
+        authorization: revoked.authorization + 1,
+        allowed: true,
+        ..revoked
+    };
+    if !gate.publish(&mut order, regranted)?.is_empty() {
+        return Err(Error::InvalidMessage);
+    }
+    let mut notices = order.pending_writes();
+    if notices.len() != 1 {
+        return Err(Error::InvalidMessage);
+    }
+    let (key, notice) = notices.pop().ok_or(Error::InvalidMessage)?;
+    if key != 1 || notice.cancelled.is_some() {
+        return Err(Error::InvalidMessage);
+    }
+    first.write_all(
+        message::encode(&notice.frame).map_err(|_| Error::InvalidMessage)?,
+        &bootstrap.stop,
+        deadline,
+    )?;
+    order
+        .notice_delivered(1, regranted)
+        .map_err(map_fanout_error)?;
+    let next = read_message(&mut first, &bootstrap.stop, deadline)?;
+    let BrokerEvent::Convert(convert) = order
+        .receive(1, next, Instant::now())
+        .map_err(map_fanout_error)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    gate.authorize(convert.revision)?;
+    let result = order
+        .result(
+            1,
+            convert.request,
+            convert.revision,
+            "日本語".into(),
+            Instant::now(),
+        )
+        .map_err(map_fanout_error)?
+        .ok_or(Error::InvalidMessage)?;
+    let publication = gate.authorize_for_publish(convert.revision)?;
+    first.write_all(
+        message::encode(&result).map_err(|_| Error::InvalidMessage)?,
+        &bootstrap.stop,
+        deadline,
+    )?;
+    drop(publication);
+    let _ = wait_stop(&bootstrap.stop, 10_000)?;
+    Ok(())
+}
+
 fn write_fanout_notices(
     order: &mut PolicyFanout,
     first: &mut Pipe,
@@ -208,19 +344,26 @@ fn write_fanout_notices(
 /// pipes authenticate the same launched Host and carry no external source.
 pub fn probe(path: &std::path::Path) -> Result<()> {
     for reversed in [false, true] {
-        diagnostic_two_client_probe_once(path, reversed)?;
+        diagnostic_two_client_probe_once(path, reversed, false)?;
     }
+    diagnostic_two_client_probe_once(path, false, true)?;
     Ok(())
 }
 
-fn diagnostic_two_client_probe_once(path: &std::path::Path, reversed: bool) -> Result<()> {
+fn diagnostic_two_client_probe_once(
+    path: &std::path::Path,
+    reversed: bool,
+    write_failure: bool,
+) -> Result<()> {
     use crate::bootstrap::Launched;
-    use crate::job::{read_event, Inbox};
-    use sumibi_protocol::session::{ClientSession, Event as ClientEvent, Outcome};
 
     let stop = Stop::new()?;
     let deadline = Instant::now() + Duration::from_secs(10);
-    let (_child, mut first, mut second, boot) = Launched::connect_fanout(path, &stop, deadline)?;
+    let mode = Mode::DiagnosticFixed {
+        delay_ms: u32::from(write_failure),
+    };
+    let (_child, mut first, mut second, boot) =
+        Launched::connect_fanout(path, mode, &stop, deadline)?;
     if reversed {
         // The first logical client uses the second opened pipe instance.
         // The Broker must route by Hello, not by connection creation order.
@@ -248,6 +391,9 @@ fn diagnostic_two_client_probe_once(path: &std::path::Path, reversed: bool) -> R
         if policy.settings != 1 || policy.authorization != 1 || !policy.allowed {
             return Err(Error::InvalidMessage);
         }
+    }
+    if write_failure {
+        return probe_failed_notice(first, second, clients, inboxes, &stop, deadline);
     }
     let old = clients[0]
         .begin(1, "nihongo", 5000, Instant::now())
@@ -334,6 +480,53 @@ fn diagnostic_two_client_probe_once(path: &std::path::Path, reversed: bool) -> R
         .and_then(|operation| operation.wait())
         .err();
     if !matches!(closed, Some(Error::Disconnected | Error::Closed)) {
+        return Err(Error::InvalidMessage);
+    }
+    Ok(())
+}
+
+fn probe_failed_notice(
+    mut first: Pipe,
+    second: Pipe,
+    mut clients: [ClientSession; 2],
+    mut inboxes: [Inbox; 2],
+    stop: &Stop,
+    deadline: Instant,
+) -> Result<()> {
+    drop(second);
+    let old = clients[0]
+        .begin(1, "nihongo", 5000, Instant::now())
+        .map_err(|_| Error::InvalidMessage)?;
+    first.write_all(old, stop, deadline)?;
+    let ClientEvent::PolicyChanged { policy, cancelled } =
+        read_event(&mut first, &mut clients[0], &mut inboxes[0], stop, deadline)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    if policy.authorization != 2 || policy.allowed || cancelled != Some(1) {
+        return Err(Error::InvalidMessage);
+    }
+    let ClientEvent::PolicyChanged { policy, cancelled } =
+        read_event(&mut first, &mut clients[0], &mut inboxes[0], stop, deadline)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    if policy.authorization != 3 || !policy.allowed || cancelled.is_some() {
+        return Err(Error::InvalidMessage);
+    }
+    let next = clients[0]
+        .begin(2, "nihongo", 5000, Instant::now())
+        .map_err(|_| Error::InvalidMessage)?;
+    first.write_all(next, stop, deadline)?;
+    let ClientEvent::Reply {
+        request: 2,
+        outcome: Outcome::Result(text),
+        ..
+    } = read_event(&mut first, &mut clients[0], &mut inboxes[0], stop, deadline)?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    if text != "日本語" {
         return Err(Error::InvalidMessage);
     }
     Ok(())
