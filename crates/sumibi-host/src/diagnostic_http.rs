@@ -44,18 +44,28 @@ impl OrderedConversionTransport for DiagnosticLoopbackHttp {
         deadline: Instant,
         gate: &mut dyn SendGate,
     ) -> Result<String, SendError> {
-        execute(
-            destination,
-            credential,
-            source,
-            deadline,
-            |stream, headers, body| {
-                gate.write_authorized(&mut || send_request(stream, headers, body, deadline))
-            },
+        let (address, headers, body) =
+            prepare(destination, credential, source).map_err(SendError::Transport)?;
+        if gate.is_cancelled() {
+            return Err(SendError::PolicyDenied);
+        }
+        let mut stream = TcpStream::connect_timeout(
+            &address,
+            remaining(deadline).map_err(SendError::Transport)?,
         )
+        .map_err(classify_io)
+        .map_err(SendError::Transport)?;
+        if gate.is_cancelled() {
+            return Err(SendError::PolicyDenied);
+        }
+        gate.write_authorized(&mut || {
+            send_request(&mut stream, headers.as_bytes(), &body, deadline)
+        })?;
+        read_response(&mut stream, deadline, &|| gate.is_cancelled()).map_err(SendError::Transport)
     }
 }
 
+#[cfg(test)]
 fn execute<E: From<TransportError>>(
     destination: &Destination,
     credential: &str,
@@ -68,7 +78,7 @@ fn execute<E: From<TransportError>>(
         .map_err(classify_io)
         .map_err(E::from)?;
     send(&mut stream, headers.as_bytes(), &body)?;
-    read_response(&mut stream, deadline).map_err(E::from)
+    read_response(&mut stream, deadline, &|| false).map_err(E::from)
 }
 
 fn prepare(
@@ -124,7 +134,11 @@ fn send_request(
     stream.write_all(body).map_err(classify_io)
 }
 
-fn read_response(stream: &mut TcpStream, deadline: Instant) -> Result<String, TransportError> {
+fn read_response(
+    stream: &mut TcpStream,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<String, TransportError> {
     let mut response = Vec::new();
     let header_end = loop {
         if let Some(end) = find_header_end(&response) {
@@ -134,8 +148,7 @@ fn read_response(stream: &mut TcpStream, deadline: Instant) -> Result<String, Tr
             return Err(TransportError::ResponseTooLarge);
         }
         let mut chunk = [0u8; 1024];
-        set_read_deadline(stream, deadline)?;
-        let count = stream.read(&mut chunk).map_err(classify_io)?;
+        let count = read_chunk(stream, &mut chunk, deadline, cancelled)?;
         if count == 0 {
             return Err(TransportError::InvalidResponse);
         }
@@ -153,8 +166,7 @@ fn read_response(stream: &mut TcpStream, deadline: Instant) -> Result<String, Tr
     }
     while response.len() - header_end < length {
         let mut chunk = [0u8; 1024];
-        set_read_deadline(stream, deadline)?;
-        let count = stream.read(&mut chunk).map_err(classify_io)?;
+        let count = read_chunk(stream, &mut chunk, deadline, cancelled)?;
         if count == 0 {
             return Err(TransportError::InvalidResponse);
         }
@@ -162,6 +174,9 @@ fn read_response(stream: &mut TcpStream, deadline: Instant) -> Result<String, Tr
             return Err(TransportError::InvalidResponse);
         }
         response.extend_from_slice(&chunk[..count]);
+    }
+    if cancelled() {
+        return Err(TransportError::Cancelled);
     }
     remaining(deadline)?;
     let value: Value = serde_json::from_slice(&response[header_end..])
@@ -190,10 +205,30 @@ fn set_write_deadline(stream: &TcpStream, deadline: Instant) -> Result<(), Trans
         .set_write_timeout(Some(remaining(deadline)?))
         .map_err(classify_io)
 }
-fn set_read_deadline(stream: &TcpStream, deadline: Instant) -> Result<(), TransportError> {
-    stream
-        .set_read_timeout(Some(remaining(deadline)?))
-        .map_err(classify_io)
+fn read_chunk(
+    stream: &mut TcpStream,
+    chunk: &mut [u8],
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<usize, TransportError> {
+    loop {
+        if cancelled() {
+            return Err(TransportError::Cancelled);
+        }
+        let timeout = remaining(deadline)?.min(Duration::from_millis(50));
+        stream
+            .set_read_timeout(Some(timeout))
+            .map_err(classify_io)?;
+        match stream.read(chunk) {
+            Ok(size) => return Ok(size),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) => {}
+            Err(error) => return Err(classify_io(error)),
+        }
+    }
 }
 fn classify_io(error: std::io::Error) -> TransportError {
     match error.kind() {
@@ -272,6 +307,8 @@ mod tests {
     use crate::manual::{self, Credential, ManualRequest, SendAdmission, SendError};
     use crate::policy::PolicyAuthority;
     use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     use std::thread;
     use sumibi_protocol::message::Revision;
 
@@ -286,6 +323,101 @@ mod tests {
         ) -> Result<(), SendError> {
             write().map_err(SendError::Transport)
         }
+    }
+
+    struct Cancellable(Arc<AtomicBool>);
+    impl SendAdmission for Cancellable {
+        fn is_cancelled(&self) -> bool {
+            self.0.load(Ordering::Acquire)
+        }
+        fn write_if_active(
+            &self,
+            write: &mut dyn FnMut() -> Result<(), TransportError>,
+        ) -> Result<(), SendError> {
+            if self.is_cancelled() {
+                Err(SendError::PolicyDenied)
+            } else {
+                write().map_err(SendError::Transport)
+            }
+        }
+    }
+
+    #[test]
+    fn cancellation_releases_a_worker_waiting_for_http_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (received_send, received_receive) = std::sync::mpsc::channel();
+        let (release_send, release_receive) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            let header_end = loop {
+                let size = stream.read(&mut chunk).unwrap();
+                assert!(size > 0);
+                request.extend_from_slice(&chunk[..size]);
+                if let Some(index) = find_header_end(&request) {
+                    break index;
+                }
+            };
+            let headers = std::str::from_utf8(&request[..header_end]).unwrap();
+            let length: usize = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            while request.len() - header_end < length {
+                let size = stream.read(&mut chunk).unwrap();
+                assert!(size > 0);
+                request.extend_from_slice(&chunk[..size]);
+            }
+            received_send.send(()).unwrap();
+            release_receive.recv().unwrap();
+        });
+        let destination =
+            Destination::new(Scheme::HttpLoopback, "127.0.0.1", port, "/convert").unwrap();
+        let authority = Arc::new(PolicyAuthority::new(destination.clone()));
+        authority
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        let version = authority.grant_manual_consent(&destination).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (result_send, result_receive) = std::sync::mpsc::channel();
+        let worker_cancelled = cancelled.clone();
+        let worker = thread::spawn(move || {
+            let result = manual::convert_ordered(
+                ManualRequest {
+                    revision: Revision {
+                        input: 1,
+                        settings: version.settings,
+                        authorization: version.authorization,
+                    },
+                    destination: &destination,
+                    source: "nihongo",
+                    deadline: Instant::now() + Duration::from_secs(2),
+                },
+                &authority,
+                &Cancellable(worker_cancelled),
+                &DiagnosticLoopbackHttp,
+            );
+            result_send.send(result).unwrap();
+        });
+        received_receive
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        cancelled.store(true, Ordering::Release);
+        assert_eq!(
+            result_receive.recv_timeout(Duration::from_millis(500)),
+            Ok(Err(SendError::Transport(TransportError::Cancelled)))
+        );
+        release_send.send(()).unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
     }
 
     fn serve_once(

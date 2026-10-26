@@ -90,6 +90,11 @@ active接続は巡回し、同一pipeに連結された後続frameがあって�
 `BrokerPolicyRuntime`へ戻す。取消済み完了は配送前に破棄し、成功と固定エラーは
 同じ政策・期限・有界pipe書込の入口へ渡す。診断の実pipeからloopback HTTPを
 経た成功結果と、次要求の固定エラーを検査した。製品HTTPS workerは未接続。
+ticketの期限はConvert受理時点から計算し、workerが後から延長する要求は
+送信前に拒否する。期限後のworker投入も拒否する。診断HTTPは応答読取を
+最大50msの間隔で区切ってticketの取消を確認する。失効中にHTTP応答を待つ
+workerを回収し、旧結果をpipeへ戻さない実I/O検査を通した。TCP接続中と
+書込中は引き続き有限期限で抑え、製品HTTPS adapterでは明示的な取消待機を要する。
 
 ## 残る境界
 

@@ -274,6 +274,13 @@
   元のpipeの成功結果と、次要求の固定エラーを確認した。実HTTPS adapter、
   永続的な設定・資格情報、製品Hostの継続acceptループは未接続。
   全Rustテスト252件、Clippy、Broker子process回帰が成功し、既定Hostへ復元した。
+- `JobTicket`にBrokerがConvertを受理した時点の期限を固定し、workerが後の期限を
+  指定して本文送信を延ばすことを拒否する。期限後のworker投入も拒否する。
+  診断HTTPの応答読取は最大50msごとに取消を見直し、失効で待機workerを回収する。
+  実pipe・worker・loopback HTTPの連結検査で、失効後に旧結果を配送せず、
+  他の要求を受けられる接続を維持した。TCP接続中と書込中の取消は各有限期限で
+  境界を定める。製品HTTPS adapterにも取消待機が必要。全Rustテスト255件、
+  Clippy、Broker子process回帰が成功し、既定Hostへ復元した。
 
 ## 次の受入作業
 

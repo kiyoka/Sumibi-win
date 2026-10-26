@@ -14,6 +14,7 @@ pub enum WorkerPoolError {
     Full,
     Duplicate,
     Cancelled,
+    Expired,
     Spawn,
 }
 
@@ -82,6 +83,9 @@ impl BrokerWorkers {
     ) -> Result<(), WorkerPoolError> {
         if ticket.is_cancelled() {
             return Err(WorkerPoolError::Cancelled);
+        }
+        if Instant::now() >= ticket.deadline() {
+            return Err(WorkerPoolError::Expired);
         }
         let identity = ticket.identity();
         if self.slots.iter().any(|slot| slot.identity == identity) {

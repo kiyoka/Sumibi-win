@@ -133,6 +133,7 @@ pub enum TransportError {
     RateLimited,
     ResponseTooLarge,
     InvalidResponse,
+    Cancelled,
 }
 
 /// Snapshot-only transport used by policy unit tests. Shipping adapters use
@@ -151,6 +152,9 @@ pub trait ConversionTransport {
 /// A trusted adapter must place every outbound request byte, including the
 /// credential header, inside this callback. It may connect before calling it.
 pub trait SendGate {
+    fn is_cancelled(&self) -> bool {
+        false
+    }
     fn write_authorized(
         &mut self,
         write: &mut dyn FnMut() -> Result<(), TransportError>,
@@ -161,6 +165,9 @@ pub trait SendGate {
 /// independently of Host policy revocation.
 pub trait SendAdmission {
     fn is_cancelled(&self) -> bool;
+    fn request_deadline(&self) -> Option<Instant> {
+        None
+    }
     fn write_if_active(
         &self,
         write: &mut dyn FnMut() -> Result<(), TransportError>,
@@ -259,6 +266,10 @@ struct AuthoritySendGate<'a> {
 }
 
 impl SendGate for AuthoritySendGate<'_> {
+    fn is_cancelled(&self) -> bool {
+        self.admission.is_cancelled()
+    }
+
     fn write_authorized(
         &mut self,
         write: &mut dyn FnMut() -> Result<(), TransportError>,
@@ -295,6 +306,12 @@ pub fn convert_ordered(
 ) -> Result<String, SendError> {
     if admission.is_cancelled() {
         return Err(SendError::PolicyDenied);
+    }
+    if admission
+        .request_deadline()
+        .is_some_and(|accepted| request.deadline > accepted)
+    {
+        return Err(SendError::InvalidRequest);
     }
     let remaining = request.deadline.saturating_duration_since(Instant::now());
     if request.revision.input == 0
