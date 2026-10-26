@@ -17,6 +17,9 @@
 `PolicyFanout`がある。`sumibi-host`には設定・資格情報・明示同意の
 `PolicyAuthority`、要求の前後を検査する`manual::convert`、
 Hostの版をBrokerの受付ゲートとFanoutへ渡す`BrokerPolicyRelay`がある。
+Host側の`BrokerPolicyRuntime`は、認証済みpipeのReady、有限な政策通知、
+失敗先の物理切断と配送receiptを一つのworker側で処理する
+（[ADR 0063](0063-host-policy-runtime.md)）。製品Host EXEの主ループは未接続。
 Hostの単体結合検査では、Relayの公開通知を同一processの認証済み2本の
 実pipeへ書き、各完了で配送receiptを進め、client側の受信版を照合した。
 片方が通知前に閉じた場合も、生存側の配送と失敗先の退役を維持し、

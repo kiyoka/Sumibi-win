@@ -241,6 +241,7 @@ mod tests {
 
     #[test]
     fn host_publication_reaches_two_real_pipes_before_receipt_completes() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         match PinnedProcess::current() {
             Ok(_) => {}
             Err(IpcError::UnsupportedElevation | IpcError::UnsupportedAppContainer) => return,
@@ -328,6 +329,7 @@ mod tests {
 
     #[test]
     fn failed_host_notice_closes_only_that_pipe_before_receipt_completes() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         match PinnedProcess::current() {
             Ok(_) => {}
             Err(IpcError::UnsupportedElevation | IpcError::UnsupportedAppContainer) => return,
