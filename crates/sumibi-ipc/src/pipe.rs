@@ -611,6 +611,30 @@ mod tests {
 
     static PIPE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    fn connected_pair(stop: &Stop, deadline: Instant) -> (Pipe, Pipe, Pipe, Pipe) {
+        let name = Nonce::random().unwrap();
+        let first = Server::create_pair(&name).unwrap();
+        let second = first.additional().unwrap();
+        std::thread::scope(|scope| {
+            let first_stop = stop.clone();
+            let second_stop = stop.clone();
+            let first_worker = scope.spawn(move || {
+                first.accept(PinnedProcess::current().unwrap(), &first_stop, deadline)
+            });
+            let second_worker = scope.spawn(move || {
+                second.accept(PinnedProcess::current().unwrap(), &second_stop, deadline)
+            });
+            let client_one = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+            let client_two = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+            (
+                first_worker.join().unwrap().unwrap(),
+                second_worker.join().unwrap().unwrap(),
+                client_one,
+                client_two,
+            )
+        })
+    }
+
     #[test]
     fn endpoint_budget_is_reserved_before_creation_and_returned_on_drop() {
         let _guard = PIPE_TEST_LOCK.lock().unwrap();
@@ -625,51 +649,83 @@ mod tests {
     #[test]
     fn wait_any_selects_the_pipe_that_completes_after_both_reads_are_pending() {
         let _guard = PIPE_TEST_LOCK.lock().unwrap();
-        let name = Nonce::random().unwrap();
-        let first = Server::create_pair(&name).unwrap();
-        let second = first.additional().unwrap();
         let stop = Stop::new().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
-        std::thread::scope(|scope| {
-            let first_stop = stop.clone();
-            let second_stop = stop.clone();
-            let first_worker = scope.spawn(move || {
-                first.accept(PinnedProcess::current().unwrap(), &first_stop, deadline)
-            });
-            let second_worker = scope.spawn(move || {
-                second.accept(PinnedProcess::current().unwrap(), &second_stop, deadline)
-            });
-            let mut client_one = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
-            let mut client_two = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
-            let mut server_one = first_worker.join().unwrap().unwrap();
-            let mut server_two = second_worker.join().unwrap().unwrap();
-            let first_read = server_one.start_read(&stop, deadline).unwrap();
-            let second_read = server_two.start_read(&stop, deadline).unwrap();
-            assert!(first_read.is_pending() && second_read.is_pending());
-            client_one.write_all(vec![7], &stop, deadline).unwrap();
-            match wait_any(&[&first_read, &second_read]).unwrap() {
-                0 => {
-                    assert_eq!(first_read.wait().unwrap().bytes, [7]);
-                    client_two.write_all(vec![8], &stop, deadline).unwrap();
-                    assert_eq!(wait_any(&[&second_read]).unwrap(), 0);
-                    assert_eq!(second_read.wait().unwrap().bytes, [8]);
-                }
-                1 => {
-                    assert_eq!(second_read.wait().unwrap().bytes, [7]);
-                    client_two.write_all(vec![8], &stop, deadline).unwrap();
-                    assert_eq!(wait_any(&[&first_read]).unwrap(), 0);
-                    assert_eq!(first_read.wait().unwrap().bytes, [8]);
-                }
-                _ => panic!("only two pending pipe reads"),
+        let (mut server_one, mut server_two, mut client_one, mut client_two) =
+            connected_pair(&stop, deadline);
+        let first_read = server_one.start_read(&stop, deadline).unwrap();
+        let second_read = server_two.start_read(&stop, deadline).unwrap();
+        assert!(first_read.is_pending() && second_read.is_pending());
+        client_one.write_all(vec![7], &stop, deadline).unwrap();
+        match wait_any(&[&first_read, &second_read]).unwrap() {
+            0 => {
+                assert_eq!(first_read.wait().unwrap().bytes, [7]);
+                client_two.write_all(vec![8], &stop, deadline).unwrap();
+                assert_eq!(wait_any(&[&second_read]).unwrap(), 0);
+                assert_eq!(second_read.wait().unwrap().bytes, [8]);
             }
-            let first_read = server_one.start_read(&stop, deadline).unwrap();
-            let second_read = server_two.start_read(&stop, deadline).unwrap();
-            assert!(first_read.is_pending() && second_read.is_pending());
-            stop.cancel().unwrap();
-            assert_eq!(wait_any(&[&first_read, &second_read]).unwrap(), 0);
-            assert!(matches!(first_read.wait(), Err(Error::Cancelled)));
-            assert!(matches!(second_read.wait(), Err(Error::Cancelled)));
-        });
+            1 => {
+                assert_eq!(second_read.wait().unwrap().bytes, [7]);
+                client_two.write_all(vec![8], &stop, deadline).unwrap();
+                assert_eq!(wait_any(&[&first_read]).unwrap(), 0);
+                assert_eq!(first_read.wait().unwrap().bytes, [8]);
+            }
+            _ => panic!("only two pending pipe reads"),
+        }
+        let first_read = server_one.start_read(&stop, deadline).unwrap();
+        let second_read = server_two.start_read(&stop, deadline).unwrap();
+        assert!(first_read.is_pending() && second_read.is_pending());
+        stop.cancel().unwrap();
+        assert_eq!(wait_any(&[&first_read, &second_read]).unwrap(), 0);
+        assert!(matches!(first_read.wait(), Err(Error::Cancelled)));
+        assert!(matches!(second_read.wait(), Err(Error::Cancelled)));
+    }
+
+    #[test]
+    fn wait_any_expires_one_read_without_consuming_the_other() {
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut server_one, mut server_two, mut client_one, mut client_two) =
+            connected_pair(&stop, deadline);
+        let first_deadline = Instant::now() + Duration::from_millis(75);
+        let first_read = server_one.start_read(&stop, first_deadline).unwrap();
+        let second_read = server_two.start_read(&stop, deadline).unwrap();
+        assert!(first_read.is_pending() && second_read.is_pending());
+        assert_eq!(wait_any(&[&first_read, &second_read]).unwrap(), 0);
+        assert!(matches!(first_read.wait(), Err(Error::Timeout)));
+        // Either client may have been assigned to the still-live server pipe.
+        // A timed-out read on the other instance must not consume this byte.
+        let one = client_one.write_all(vec![9], &stop, deadline);
+        let two = client_two.write_all(vec![9], &stop, deadline);
+        assert!(one.is_ok() || two.is_ok());
+        assert_eq!(wait_any(&[&second_read]).unwrap(), 0);
+        assert_eq!(second_read.wait().unwrap().bytes, [9]);
+    }
+
+    #[test]
+    fn wait_any_isolates_closed_peer_from_other_pending_read() {
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut server_one, mut server_two, client_one, mut client_two) =
+            connected_pair(&stop, deadline);
+        let first_read = server_one.start_read(&stop, deadline).unwrap();
+        let second_read = server_two.start_read(&stop, deadline).unwrap();
+        assert!(first_read.is_pending() && second_read.is_pending());
+        drop(client_one);
+        let closed = wait_any(&[&first_read, &second_read]).unwrap();
+        client_two.write_all(vec![11], &stop, deadline).unwrap();
+        if closed == 0 {
+            assert!(matches!(first_read.wait(), Err(Error::Disconnected)));
+            assert_eq!(wait_any(&[&second_read]).unwrap(), 0);
+            assert_eq!(second_read.wait().unwrap().bytes, [11]);
+        } else {
+            assert_eq!(closed, 1);
+            assert!(matches!(second_read.wait(), Err(Error::Disconnected)));
+            assert_eq!(wait_any(&[&first_read]).unwrap(), 0);
+            assert_eq!(first_read.wait().unwrap().bytes, [11]);
+        }
     }
     #[test]
     fn bootstrap_values_cannot_be_paths_or_zero_ids() {

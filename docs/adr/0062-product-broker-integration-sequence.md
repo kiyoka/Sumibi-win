@@ -7,6 +7,9 @@
 `sumibi-ipc`には固定process handleによる相互認証、有限な非同期pipe、
 最大8件の進行中I/Oから完了可能な接続を選ぶ待機処理、単発Job、再利用Channel、
 診断専用の2接続Brokerがある。
+診断の政策通知は先に2本の書込を開始し、最初の完了を選ぶ。部分書込の残りは
+その接続で有限期限まで書き切るため、任意の遅い接続を常に独立して進める
+製品のI/O調停点はまだない。
 `sumibi-protocol`には接続ごとの`BrokerSession`と、最大8接続・各1通知の
 `PolicyFanout`がある。`sumibi-host`には設定・資格情報・明示同意の
 `PolicyAuthority`、要求の前後を検査する`manual::convert`、
