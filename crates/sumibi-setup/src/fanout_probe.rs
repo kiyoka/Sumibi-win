@@ -61,7 +61,7 @@ pub(super) fn run_policy_runtime(default_host: bool) -> Result<()> {
             if default_host {
                 "default denial"
             } else {
-                "two authenticated clients, grant and revoke"
+                "two authenticated clients, result, cancellation and revoke"
             }
         );
         Ok(())

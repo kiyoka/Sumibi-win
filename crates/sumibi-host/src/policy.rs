@@ -1,9 +1,9 @@
 //! In-memory Host authority for a coherent manual-send policy snapshot.
 //! Persistence, credential loading, UI consent and IPC publication are separate.
 use crate::manual::{Credential, Destination, PolicySnapshot, PolicySource};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Instant;
-use sumibi_protocol::message::Policy;
+use sumibi_protocol::message::{Policy, Revision};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PolicyVersion {
@@ -14,9 +14,17 @@ pub struct PolicyVersion {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeError {
     InvalidConsent,
+    StalePolicy,
     InvalidCursor,
     Exhausted,
     Unavailable,
+}
+
+/// Orders a bounded result write before the next Host policy mutation.
+/// Keep this guard until the complete frame write or transport close.
+#[must_use = "hold through the complete result write"]
+pub struct ResultPublicationGuard<'a> {
+    _state: MutexGuard<'a, PolicySnapshot>,
 }
 
 /// Mutations publish the complete new state under one lock. A failed or
@@ -46,6 +54,20 @@ impl PolicyAuthority {
     pub fn wire_policy(&self) -> Result<Policy, ChangeError> {
         let state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
         Ok(wire_policy(&state))
+    }
+
+    pub fn authorize_result(
+        &self,
+        revision: Revision,
+    ) -> Result<ResultPublicationGuard<'_>, ChangeError> {
+        let state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        if !state.allowed
+            || revision.settings != state.settings
+            || revision.authorization != state.authorization
+        {
+            return Err(ChangeError::StalePolicy);
+        }
+        Ok(ResultPublicationGuard { _state: state })
     }
 
     /// A bounded publisher can keep just one cursor and coalesce changes into
@@ -217,6 +239,45 @@ mod tests {
 
     fn destination(host: &str) -> Destination {
         Destination::new(Scheme::Https, host, 443, "/convert").unwrap()
+    }
+
+    #[test]
+    fn result_guard_orders_revoke_after_publication() {
+        let destination = destination("api.example.test");
+        let authority = PolicyAuthority::new(destination.clone());
+        authority
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        authority.grant_manual_consent(&destination).unwrap();
+        let revision = Revision {
+            input: 1,
+            settings: 1,
+            authorization: 3,
+        };
+        let publication = authority.authorize_result(revision).unwrap();
+        std::thread::scope(|scope| {
+            let (started_send, started_receive) = std::sync::mpsc::channel();
+            let (finished_send, finished_receive) = std::sync::mpsc::channel();
+            let source = &authority;
+            scope.spawn(move || {
+                started_send.send(()).unwrap();
+                source.revoke_manual_consent().unwrap();
+                finished_send.send(()).unwrap();
+            });
+            started_receive.recv().unwrap();
+            assert!(matches!(
+                finished_receive.recv_timeout(Duration::from_millis(20)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            drop(publication);
+            finished_receive
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+        });
+        assert_eq!(
+            authority.authorize_result(revision).err(),
+            Some(ChangeError::StalePolicy)
+        );
     }
 
     fn request(destination: &Destination, version: PolicyVersion) -> ManualRequest<'_> {

@@ -3,13 +3,13 @@
 //! policy publication, bounded writes, and physical close receipts together.
 use crate::broker_policy::{BrokerPolicyRelay, DeliveryCompletion, DeliveryError, RelayError};
 use crate::policy::{ChangeError, PolicyAuthority};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use sumibi_ipc::{
     broker::BrokerPolicyGate, Error as IpcError, Pipe, Stop, WriteBatch, WriteRequest,
 };
 use sumibi_protocol::{
     broker_session::Event,
-    message::{self, Envelope, Id, Policy},
+    message::{self, Envelope, ErrorCode, Id, Policy, Revision},
     policy_fanout::{FanoutError, PolicyFanout},
 };
 
@@ -25,6 +25,18 @@ pub enum RuntimeError {
     Incomplete,
     Retired,
     PolicyPending,
+    WrongBroker,
+}
+
+/// Bind a worker completion to the Broker boot and original connection.
+/// A later Broker may reuse a numeric key but has a different boot identity.
+#[derive(Clone, Copy)]
+pub struct ReplyContext {
+    pub broker: Id,
+    pub key: u64,
+    pub request: u64,
+    pub revision: Revision,
+    pub completed_at: Instant,
 }
 
 pub struct PublicationOutcome {
@@ -239,6 +251,107 @@ impl<'a> BrokerPolicyRuntime<'a> {
         Ok(event)
     }
 
+    /// Publish one worker result to its original authenticated connection.
+    /// The Host source and Broker gate are held through the bounded write, so
+    /// a simultaneous revocation cannot complete before this result's order
+    /// is fixed. A failed write retires only this connection.
+    pub fn publish_result(
+        &mut self,
+        reply: ReplyContext,
+        text: String,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<bool, RuntimeError> {
+        self.publish_reply(reply, stop, deadline, |fanout| {
+            fanout.result(
+                reply.key,
+                reply.request,
+                reply.revision,
+                text,
+                reply.completed_at,
+            )
+        })
+    }
+
+    /// Publish a fixed worker failure under the same policy and transport
+    /// ordering as a successful result.
+    pub fn publish_error(
+        &mut self,
+        reply: ReplyContext,
+        code: ErrorCode,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<bool, RuntimeError> {
+        self.publish_reply(reply, stop, deadline, |fanout| {
+            fanout.error(
+                reply.key,
+                reply.request,
+                reply.revision,
+                code,
+                reply.completed_at,
+            )
+        })
+    }
+
+    fn publish_reply(
+        &mut self,
+        reply: ReplyContext,
+        stop: &Stop,
+        deadline: Instant,
+        prepare: impl FnOnce(&mut PolicyFanout) -> Result<Option<Envelope>, FanoutError>,
+    ) -> Result<bool, RuntimeError> {
+        if self.failed {
+            return Err(RuntimeError::Retired);
+        }
+        if reply.broker != self.fanout.broker_id() {
+            return Err(RuntimeError::WrongBroker);
+        }
+        if !self.connections.iter().any(|entry| entry.key == reply.key) {
+            return Err(RuntimeError::MissingPipe);
+        }
+        let started = Instant::now();
+        if deadline <= started || deadline > started + Duration::from_millis(500) {
+            return Err(RuntimeError::Transport(IpcError::InvalidArgument));
+        }
+        let result = (|| {
+            let _source = self
+                .source
+                .authorize_result(reply.revision)
+                .map_err(RuntimeError::Source)?;
+            let _gate = self
+                .gate
+                .authorize_for_publish(reply.revision)
+                .map_err(RuntimeError::Transport)?;
+            let Some(prepared) = prepare(&mut self.fanout).map_err(RuntimeError::Fanout)? else {
+                return Ok(false);
+            };
+            let frame = message::encode(&prepared).map_err(|_| RuntimeError::Incomplete)?;
+            let connection = self
+                .connections
+                .iter_mut()
+                .find(|entry| entry.key == reply.key)
+                .ok_or(RuntimeError::MissingPipe)?;
+            connection
+                .pipe
+                .write_all(frame, stop, deadline)
+                .map_err(RuntimeError::Transport)?;
+            Ok(true)
+        })();
+        match result {
+            Err(RuntimeError::Transport(IpcError::PolicyDenied)) => {
+                self.failed = true;
+                self.close_all();
+            }
+            Err(
+                RuntimeError::Fanout(_) | RuntimeError::Transport(_) | RuntimeError::Incomplete,
+            ) => {
+                self.close(reply.key);
+            }
+            _ => {}
+        }
+        result
+    }
+
     /// Publish the latest Host epoch, then write or close every connection
     /// that existed before publication. Return only after its receipt is
     /// complete. A failed endpoint does not block the others.
@@ -437,9 +550,9 @@ pub fn serve_diagnostic(
         .map_err(|_| IpcError::InvalidMessage)?;
     let session_one = Id::new(1).ok_or(IpcError::InvalidMessage)?;
     let session_two = Id::new(2).ok_or(IpcError::InvalidMessage)?;
-    let request_key = match (first_session, second_session) {
-        (first, second) if first == session_one && second == session_two => first_key,
-        (first, second) if first == session_two && second == session_one => second_key,
+    let (request_key, result_key) = match (first_session, second_session) {
+        (first, second) if first == session_one && second == session_two => (first_key, second_key),
+        (first, second) if first == session_two && second == session_one => (second_key, first_key),
         _ => return Err(IpcError::InvalidMessage),
     };
     let credential = Credential::new("diagnostic-only".into()).ok_or(IpcError::InvalidArgument)?;
@@ -466,6 +579,41 @@ pub fn serve_diagnostic(
         return Err(IpcError::InvalidMessage);
     };
     if convert.request != 1 || convert.text != "nihongo" {
+        return Err(IpcError::InvalidMessage);
+    }
+    let second_request = {
+        let connection = runtime
+            .connections
+            .iter_mut()
+            .find(|connection| connection.key == result_key)
+            .ok_or(IpcError::InvalidMessage)?;
+        read_message(&mut connection.pipe, bootstrap.stop(), deadline)?
+    };
+    let Event::Convert(second) = runtime
+        .receive(result_key, second_request, Instant::now())
+        .map_err(|_| IpcError::PolicyDenied)?
+    else {
+        return Err(IpcError::InvalidMessage);
+    };
+    if second.request != 1 || second.text != "second" {
+        return Err(IpcError::InvalidMessage);
+    }
+    let now = Instant::now();
+    if !runtime
+        .publish_result(
+            ReplyContext {
+                broker: bootstrap.boot_id(),
+                key: result_key,
+                request: second.request,
+                revision: second.revision,
+                completed_at: now,
+            },
+            "完了".into(),
+            bootstrap.stop(),
+            now + Duration::from_millis(500),
+        )
+        .map_err(|_| IpcError::PolicyDenied)?
+    {
         return Err(IpcError::InvalidMessage);
     }
     source
@@ -634,6 +782,111 @@ mod tests {
         assert!(matches!(
             read_frame(&mut next_client, &stop, deadline).message,
             message::Message::Ready(ready) if ready.policy == outcome.policy
+        ));
+    }
+
+    #[test]
+    fn result_write_uses_host_epoch_and_revocation_cancels_unsent_result() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (server, mut client) = connected(&stop, deadline);
+        assert_eq!(
+            runtime.attach(server, hello(1, id(90)), &stop, deadline),
+            Ok(1)
+        );
+        let policy = runtime.policy();
+        read_frame(&mut client, &stop, deadline);
+        let revision = Revision {
+            input: 1,
+            settings: policy.settings,
+            authorization: policy.authorization,
+        };
+        let reply = |request, completed_at| ReplyContext {
+            broker: id(90),
+            key: 1,
+            request,
+            revision,
+            completed_at,
+        };
+        assert!(matches!(
+            runtime.receive(1, convert(1, 1, 1, policy), Instant::now()),
+            Ok(Event::Convert(_))
+        ));
+        let now = Instant::now();
+        assert_eq!(
+            runtime.publish_result(
+                ReplyContext {
+                    broker: id(91),
+                    ..reply(1, now)
+                },
+                "別Broker".into(),
+                &stop,
+                now + Duration::from_millis(500)
+            ),
+            Err(RuntimeError::WrongBroker)
+        );
+        assert_eq!(
+            runtime.publish_result(
+                reply(1, now),
+                "日本語".into(),
+                &stop,
+                now + Duration::from_millis(500)
+            ),
+            Ok(true)
+        );
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Result(result) if result.request == 1 && result.text == "日本語"
+        ));
+        assert!(matches!(
+            runtime.receive(1, convert(1, 1, 2, policy), Instant::now()),
+            Ok(Event::Convert(_))
+        ));
+        let now = Instant::now();
+        assert_eq!(
+            runtime.publish_error(
+                reply(2, now),
+                ErrorCode::Unavailable,
+                &stop,
+                now + Duration::from_millis(500)
+            ),
+            Ok(true)
+        );
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Error(error)
+                if error.request == 2 && error.code == ErrorCode::Unavailable
+        ));
+        assert!(matches!(
+            runtime.receive(1, convert(1, 1, 3, policy), Instant::now()),
+            Ok(Event::Convert(_))
+        ));
+        source.revoke_manual_consent().unwrap();
+        let now = Instant::now();
+        assert_eq!(
+            runtime.publish_result(
+                reply(3, now),
+                "古い結果".into(),
+                &stop,
+                now + Duration::from_millis(500)
+            ),
+            Err(RuntimeError::Source(ChangeError::StalePolicy))
+        );
+        let revoked = runtime.publish_current(&stop, deadline).unwrap().unwrap();
+        assert_eq!(revoked.cancelled, [(1, 3)]);
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::PolicyChanged(policy) if policy == revoked.policy
         ));
     }
 

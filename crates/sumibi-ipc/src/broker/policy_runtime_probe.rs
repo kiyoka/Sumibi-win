@@ -5,7 +5,7 @@ use crate::{Error, Result, Stop};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use sumibi_protocol::message::Id;
-use sumibi_protocol::session::{ClientSession, Event};
+use sumibi_protocol::session::{ClientSession, Event, Outcome};
 
 pub fn diagnostic_policy_runtime_probe(path: &Path, default_host: bool) -> Result<()> {
     if default_host {
@@ -76,6 +76,27 @@ fn probe_once(path: &Path, default_host: bool, reversed: bool) -> Result<()> {
         .begin(1, "nihongo", 5000, Instant::now())
         .map_err(|_| Error::InvalidMessage)?;
     first.write_all(request, &stop, deadline)?;
+    let second_request = clients[1]
+        .begin(1, "second", 5000, Instant::now())
+        .map_err(|_| Error::InvalidMessage)?;
+    second.write_all(second_request, &stop, deadline)?;
+    let Event::Reply {
+        request: 1,
+        outcome: Outcome::Result(text),
+        ..
+    } = read_event(
+        &mut second,
+        &mut clients[1],
+        &mut inboxes[1],
+        &stop,
+        deadline,
+    )?
+    else {
+        return Err(Error::InvalidMessage);
+    };
+    if text != "完了" {
+        return Err(Error::InvalidMessage);
+    }
     for (index, client) in clients.iter_mut().enumerate() {
         let pipe = if index == 0 { &mut first } else { &mut second };
         let Event::PolicyChanged { policy, cancelled } =
