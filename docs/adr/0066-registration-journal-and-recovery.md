@@ -1,6 +1,7 @@
 # ADR 0066: 登録操作の先行記録と中断後の復旧
 
 2026-10-28 / Issue #4 / draft PR #10。状態: 取引エンジンと専用 HKCU fixture を実装・検証。製品 COM/TSF backend は未接続。
+実APIを隔離レジストリへ接続した後続試験は [ADR 0067](0067-isolated-native-registration-backend.md) に記録する。
 
 ## 状況
 
@@ -12,7 +13,7 @@
 ## 決定
 
 `sumibi-setup` のライブラリに `install_transaction` と `install_journal` を追加する。
-現在接続する Windows backend は専用 HKCU fixture だけで、HKLM/恒久 TSF writer は公開しない。
+このADRで最初に接続した Windows backend は専用 HKCU 模擬fixtureである。後続の実API隔離backendもHKLM/恒久 TSF writerを公開しない。
 製品用 API の振舞い・署名方針・保護 journal 配置が未検証のため、fixture の成功を機械登録の成功とは扱わない。
 
 固定順序は COM server → 言語 profile → keyboard category → display attribute category。

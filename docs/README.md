@@ -63,6 +63,7 @@
 - [ADR 0062](adr/0062-product-broker-integration-sequence.md)：製品Brokerの接続、政策配送、TSF適用までの統合順序と完了条件。
 - [ADR 0065](adr/0065-authenticated-shared-broker-listener.md)：固定peerの共有pipeアンカー、接続0件の待受、受付容量と停止・再起動の境界。
 - [ADR 0066](adr/0066-registration-journal-and-recovery.md)：登録の先行記録、途中終了後の逆順復旧、所有不一致での解除停止と専用HKCU検査。
+- [ADR 0067](adr/0067-isolated-native-registration-backend.md)：低整合性の隔離レジストリで実COM/TSF APIの登録、解除、中断後復旧を検査する境界。
 
 ## 更新の規則
 

@@ -14,8 +14,9 @@
 既存CLSID/TSF登録との衝突を調べる。これはDLLをロードするがレジストリは読取専用とする。
 「事前確認成功」は設置可能という判定ではない。
 
-後続の取引と復旧は [ADR 0066](0066-registration-journal-and-recovery.md) に実装する。
-現時点の backend は専用 HKCU fixture のみで、この決定の HKLM/恒久 TSF 境界を変更しない。
+後続の取引と復旧は [ADR 0066](0066-registration-journal-and-recovery.md) に実装し、
+[ADR 0067](0067-isolated-native-registration-backend.md) では隔離した実APIまで検査する。
+いずれもこの決定の HKLM/恒久 TSF 境界を変更しない。
 
 登録実装へ進む条件は、管理者だけが変更できる安定配置先、DLLと依存物のACL検証、
 署名方針、別の版へ更新する際の参照寿命と失敗時復旧、同一CLSIDの所有確認、

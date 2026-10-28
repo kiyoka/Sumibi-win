@@ -107,6 +107,26 @@ DLL もロードしない。記録は `target/debug/registration-transaction-fix
 所有証拠、記録の上限、破損/書込み失敗の扱い、実 backend の残条件は
 [ADR 0066](adr/0066-registration-journal-and-recovery.md) を参照。
 
+### 隔離した実COM/TSF登録APIの検査
+
+実APIとの接続は、通常ユーザーのPowerShellから次を実行する。画面操作やUACは不要。
+`sumibi-registration-worker.exe`を試験ごとの低整合性ディレクトリへコピーし、
+プロセス内のレジストリ切替えを行ってからWindowsのCOM/TSF APIを呼ぶ。
+製品のCLSID、恒久HKLM登録、既定IME、証明書信頼は変更しない。
+
+```powershell
+cargo build -p sumibi-setup --locked --offline
+.\tools\Test-NativeRegistrationBackend.ps1
+```
+
+2026-10-29、Windows 11 Home 10.0.26300 x64、通常ユーザーで47ケースが成功した。
+PowerShell 7とWindows PowerShell 5.1で確認した。登録・解除の中断、別プロセス復旧、
+無効profile、2カテゴリの双方向binding、既知の空キー整理、未知項目や別所有情報の
+変更前拒否を扱う。ケースごとのjournalとmanifestは`target/native-registration-<ID>/`に残す。
+失敗時は原因調査のため、試験用rootとworkerも保存する。
+仕組み、正確な所有証拠と製品登録へ進む条件は
+[ADR 0067](adr/0067-isolated-native-registration-backend.md)を参照。
+
 ## 開発用COM登録（明示実行のみ）
 
 一般アプリでのロード経路を切り分けるため、現ユーザーの64-bit COM登録を個別に検証できる。

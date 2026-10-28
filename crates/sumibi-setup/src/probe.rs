@@ -172,6 +172,12 @@ fn checkpoint(point: FailAfter, requested: FailAfter) -> Result<(), Failure> {
 
 pub(super) fn run() -> Result<(), Failure> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args
+        .first()
+        .is_some_and(|arg| arg == "tsf-registry-fixture")
+    {
+        return crate::tsf_registry_fixture::run(&args[1..]);
+    }
     if args.len() == 1 && args[0] == "registration-transaction-test" {
         return crate::registration_fixture::run();
     }

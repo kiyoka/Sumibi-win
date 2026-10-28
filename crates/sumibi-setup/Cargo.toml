@@ -3,6 +3,7 @@ name = "sumibi-setup"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+default-run = "sumibi-setup"
 
 [dependencies]
 serde = { version = "=1.0.229", features = ["derive"] }

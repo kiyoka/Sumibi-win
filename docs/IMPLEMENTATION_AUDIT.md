@@ -23,7 +23,7 @@
 | 設定・資格情報 | Host内メモリーの一貫した設定・認可スナップショットを追加。接続先・キー変更、同意付与・取消で版と送信可否を更新。IPC用の秘密を含まない政策値と変更カーソルを追加し、型付きProtocolで取消と旧結果拒否を検証（[ADR 0049](adr/0049-host-in-memory-policy-authority.md)）。保存・UI・Credential Manager・実IPC配送は未実装 | 形式版・原子的保存・秘密分離・認可取消の実配送・破損回復 |
 | 追加候補・辞書 | 未実装。Mac移植範囲に目的を記録 | 件数決定・現在候補・出所・索引ハッシュ・LICENSE |
 | Decisions | 未実装。Mac契約を参照した後続案 | API再確認、独立同意、固定窓、永続回数予約、手動優先 |
-| 導入・更新・配布 | 現ユーザーの開発用COM登録・別プロセス生成確認・解除とプロセス内TSF検査が成功。パッシブDLLの読取専用事前確認、未信頼の自己署名、Dドライブの保護配置と独立した再検証を追加。取引エンジンと先行記録・逆順復旧を専用HKCU fixtureの別process中断/衝突45ケースで確認（[ADR 0066](adr/0066-registration-journal-and-recovery.md)）。HKLM/恒久TSF backendはまだない。spike DLLは配布不可 | 信頼できる配布署名、実COM/TSFの所有証拠と永続化、保護journal、マシン登録・解除の実証、Host起動、更新・削除・旧版復旧 |
+| 導入・更新・配布 | 現ユーザーの開発用COM登録・別プロセス生成確認・解除とプロセス内TSF検査が成功。パッシブDLLの読取専用事前確認、未信頼の自己署名、Dドライブの保護配置と独立した再検証を追加。先行記録・逆順復旧を専用HKCU模擬fixtureの45ケースで確認（[ADR 0066](adr/0066-registration-journal-and-recovery.md)）。低整合性の隔離レジストリで実COM/TSF APIを使い、途中終了、別プロセス復旧、異物拒否の47ケースが成功（[ADR 0067](adr/0067-isolated-native-registration-backend.md)）。HKLM/恒久TSF backendはまだない。spike DLLは配布不可 | 信頼できる配布署名、製品用の実COM/TSF所有証拠と永続化、保護journal、マシン登録・解除の実証、Host起動、更新・削除・旧版復旧 |
 
 2026-10-25、未発行の未来要求番号を持つBroker応答を接続異常として拒否し、
 認証済み実子processで退役と再送不可を確認した（[ADR 0056](adr/0056-future-reply-id-is-terminal.md)）。
@@ -33,6 +33,14 @@
 （[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md)）。
 
 ## 2. Windowsで実行済みの検証
+
+2026-10-29 の実API隔離試験追加分では、Windows 11 Home 10.0.26300 x64、通常ユーザー権限の
+自動検査で、通常/Host spike の各 Rust 345件、fmt、workspace Clippy 2構成、passive TIP Clippyが成功した。
+模擬fixture45ケース、実COM/TSF隔離fixture47ケース、メモリー内ACL105ケースが成功した。
+実API試験はPowerShell 7とWindows PowerShell 5.1で実行した。保護DLLの
+現在ユーザーCOM所有9ケースとCOM/TSF一時登録・解除も再確認した。
+試験用HKCU rootの残件はなく、desktop操作を伴う全回帰は省略した。
+ログは`target/issue-4-native-registration-regression.log`と`target/native-registration-backend.log`。
 
 2026-10-28 の登録準備追加分では、Windows 11 Home 10.0.26300 x64、通常ユーザー権限の
 自動検査で、通常/Host spike の各 Rust 327件、fmt、workspace Clippy 2構成、passive TIP Clippy が成功した。

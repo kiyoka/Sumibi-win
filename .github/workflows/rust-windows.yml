@@ -35,5 +35,7 @@ jobs:
         run: cargo build --workspace --locked
       - name: Registration journal crash recovery (disposable HKCU fixture)
         run: .\target\debug\sumibi-setup.exe registration-transaction-test
+      - name: Native COM and TSF registration (low-integrity redirected hives)
+        run: .\tools\Test-NativeRegistrationBackend.ps1
       - name: DLL load and mock TSF lifecycle
         run: cargo run -p sumibi-tip --features spike --example load_smoke --locked -- target/debug/sumibi_tip.dll

@@ -476,7 +476,14 @@
 機械全体のTSF登録は今回行っていない。恒久登録に進む前の条件は
 [ADR 0045](adr/0045-machine-registration-boundary.md)に記録している。
 2026-10-28にパッシブDLLの読取専用事前検査と現在ユーザー限定の登録・解除を
-再確認した。DLLは未署名で作業ユーザーに書込権限があるため、HKLMへは登録していない。
+再確認した。ワークスペースのDLLは未署名で作業ユーザーに書込権限がある。
+保護配置した別コピーは自己署名で未信頼のため、HKLMへは登録していない。
+2026-10-29には[ADR 0067](adr/0067-isolated-native-registration-backend.md)の
+低整合性レジストリ切替えで実COM/TSF APIを取引journalへ接続した。
+Windows 11 x64の通常ユーザーから47ケースが成功し、途中終了後の別プロセス復旧、
+無効profile、カテゴリの双方向binding、未知項目での変更停止を確認した。
+通常/Host spikeの各Rust 345件と`Test-Spike.ps1 -SkipDesktop`も成功した。
+試験用GUIDと隔離されたkeyだけを扱い、製品の恒久登録・有効化は行っていない。
 
 ## Issue #4 の受入条件との照合
 

@@ -21,11 +21,19 @@ mod recovery_view;
 #[cfg(windows)]
 mod registration;
 #[cfg(windows)]
+mod registration_backend;
+#[cfg(windows)]
 mod registration_fixture;
+#[cfg(windows)]
+mod registration_native;
+#[cfg(windows)]
+mod registration_registry;
 #[cfg(windows)]
 mod render;
 #[cfg(windows)]
 mod system_registration;
+#[cfg(windows)]
+mod tsf_registry_fixture;
 #[cfg(windows)]
 mod window_host;
 #[cfg(windows)]

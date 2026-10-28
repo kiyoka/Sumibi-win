@@ -40,6 +40,7 @@ try {
     $restorePassiveTip = $true
     & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') registration-transaction-test
     if ($LASTEXITCODE -ne 0) { throw 'Registration transaction fixture failed; inspect its preserved journal.' }
+    & (Join-Path $PSScriptRoot 'Test-NativeRegistrationBackend.ps1')
     Invoke-Cargo -Arguments @('run', '-p', 'sumibi-tip', '--features', 'spike', '--example', 'load_smoke', '--locked', '--offline', '--', 'target/debug/sumibi_tip.dll')
     foreach ($name in @('self-test', 'edit-test', 'key-test')) { Invoke-Spike -Name $name }
     if (!$SkipDesktop) {
