@@ -179,11 +179,22 @@ impl RedirectedBackend<'_> {
     fn inspect(&self, spec: &InstallSpec) -> Result<(Layout, Tree), Failure> {
         let layout = Layout::new(spec)?;
         let tree = reg::snapshot(self.hives[0].0)?;
+        let user = reg::snapshot(self.hives[1].0)?;
+        let classes = reg::snapshot(self.hives[2].0)?;
         if !tree.subset_of(&layout.expected)
-            || reg::snapshot(self.hives[1].0)? != Tree::default()
-            || reg::snapshot(self.hives[2].0)? != Tree::default()
+            || user != Tree::default()
+            || classes != Tree::default()
         {
-            return Err("unknown native registration state; preserving all resources".into());
+            // The hives are disposable, bounded fixtures. Include their exact
+            // snapshot so an OS-specific write can be diagnosed without
+            // weakening the closed-schema ownership check or deleting it.
+            return Err(format!(
+                "unknown native registration state; preserving all resources: machine={}, user={}, classes={}",
+                serde_json::to_string(&tree)?,
+                serde_json::to_string(&user)?,
+                serde_json::to_string(&classes)?,
+            )
+            .into());
         }
         Ok((layout, tree))
     }
