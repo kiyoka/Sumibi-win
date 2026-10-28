@@ -92,11 +92,18 @@ impl JobTicket {
     pub(crate) fn cancel(&self) {
         // Wake any cancellable I/O immediately. The mutex below fixes the
         // cancellation order against a request write already in progress.
-        let _ = self.stop.cancel();
+        self.request_cancel();
         let _guard = self
             .send_lock
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
+    }
+
+    /// Shutdown may not wait on a worker's outbound write lock before its
+    /// own deadline starts. A writer that already held the lock is still
+    /// awaited by the worker pool; later writers see the cancellation flag.
+    pub(crate) fn request_cancel(&self) {
+        let _ = self.stop.cancel();
         self.cancelled.store(true, Ordering::Release);
     }
 }
@@ -268,6 +275,14 @@ impl<'a> BrokerPolicyRuntime<'a> {
 
     pub fn pending_keys(&self) -> Vec<u64> {
         self.pending.iter().map(|entry| entry.key).collect()
+    }
+
+    /// Terminally close this Broker boot's authenticated connections and
+    /// cancel their jobs. The owner must still reap workers and pending OS
+    /// accepts before releasing its shared anchor or starting a new boot.
+    pub fn retire_for_restart(&mut self) {
+        self.failed = true;
+        self.close_all_inner(false);
     }
 
     /// Clone the admission token after `receive` returns Convert. A worker
@@ -1001,8 +1016,16 @@ impl<'a> BrokerPolicyRuntime<'a> {
     }
 
     fn close_all(&mut self) {
+        self.close_all_inner(true);
+    }
+
+    fn close_all_inner(&mut self, wait_for_send: bool) {
         for job in self.jobs.drain(..) {
-            job.cancel();
+            if wait_for_send {
+                job.cancel();
+            } else {
+                job.request_cancel();
+            }
         }
         for connection in self.pending.drain(..) {
             self.fanout.abandon_key(connection.key);
@@ -1016,7 +1039,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
 
 impl Drop for BrokerPolicyRuntime<'_> {
     fn drop(&mut self) {
-        self.close_all();
+        self.close_all_inner(false);
     }
 }
 
@@ -1611,6 +1634,79 @@ mod tests {
     }
 
     #[test]
+    fn restart_retirement_signals_a_writer_without_waiting_for_its_send_lock() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (server, mut client) = connected(&stop, deadline);
+        runtime
+            .attach(server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut client, &stop, deadline);
+        runtime
+            .receive(1, convert(1, 1, 1, policy), Instant::now())
+            .unwrap();
+        let ticket = runtime.job_ticket(1, 1).unwrap();
+        let (entered_send, entered_receive) = std::sync::mpsc::channel();
+        let (release_send, release_receive) = std::sync::mpsc::channel();
+        let transport = BlockingTransport {
+            entered: entered_send,
+            release: Mutex::new(release_receive),
+            wrote: AtomicBool::new(false),
+        };
+        std::thread::scope(|scope| {
+            let worker_ticket = ticket.clone();
+            let source_ref = &source;
+            let destination_ref = &destination;
+            let transport_ref = &transport;
+            let worker = scope.spawn(move || {
+                manual::convert_ordered(
+                    ManualRequest {
+                        revision: Revision {
+                            input: 1,
+                            settings: policy.settings,
+                            authorization: policy.authorization,
+                        },
+                        destination: destination_ref,
+                        source: "nihongo",
+                        deadline: worker_ticket.deadline(),
+                    },
+                    source_ref,
+                    &worker_ticket,
+                    transport_ref,
+                )
+            });
+            entered_receive
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+            let (retired_send, retired_receive) = std::sync::mpsc::channel();
+            let runtime_ref = &mut runtime;
+            scope.spawn(move || {
+                runtime_ref.retire_for_restart();
+                retired_send.send(()).unwrap();
+            });
+            assert!(retired_receive
+                .recv_timeout(Duration::from_millis(100))
+                .is_ok());
+            assert!(ticket.is_cancelled());
+            release_send.send(()).unwrap();
+            assert_eq!(worker.join().unwrap(), Err(SendError::PolicyDenied));
+        });
+        assert_eq!(runtime.active_count(), 0);
+        assert!(transport.wrote.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn reserved_hello_keeps_coalesced_request_for_active_connection() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {
@@ -1775,10 +1871,44 @@ mod tests {
         let policy = runtime.policy();
         let stop = Stop::new().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
-        let (server, mut client) = connected(&stop, deadline);
-        runtime
-            .attach(server, hello(1, id(90)), &stop, deadline)
+        let name = Nonce::random().unwrap();
+        let anchor = SharedAnchor::create(&name, 3, deadline).unwrap();
+        let mut accepts = vec![runtime
+            .begin_anchor_accept(&anchor, PinnedProcess::current().unwrap(), deadline)
+            .unwrap()];
+        let mut client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        let mut owner = BrokerWorkLoop::new();
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Ok("unused".into())
+                })
+                .unwrap()
+            {
+                OwnerStep::Accepted { key: 1, .. } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("anchored client was not accepted before shutdown"),
+            }
+        }
+        client
+            .write_all(message::encode(&hello(1, id(90))).unwrap(), &stop, deadline)
             .unwrap();
+        loop {
+            match owner
+                .advance(&mut runtime, &stop, deadline, |_| {
+                    |_: JobTicket| Ok("unused".into())
+                })
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(1)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("anchored client did not activate before shutdown"),
+            }
+        }
         read_frame(&mut client, &stop, deadline);
         client
             .write_all(
@@ -1787,7 +1917,6 @@ mod tests {
                 deadline,
             )
             .unwrap();
-        let mut owner = BrokerWorkLoop::new();
         loop {
             match owner
                 .advance(&mut runtime, &stop, deadline, |_| {
@@ -1807,22 +1936,99 @@ mod tests {
                 _ => panic!("worker was not submitted before shutdown"),
             }
         }
-        let name = Nonce::random().unwrap();
-        let anchor = SharedAnchor::create(&name, 3, deadline).unwrap();
-        let mut accepts = vec![
+        let ticket = runtime.job_ticket(1, 1).unwrap();
+        accepts.push(
             runtime
                 .begin_anchor_accept(&anchor, PinnedProcess::current().unwrap(), deadline)
                 .unwrap(),
-            runtime
-                .begin_anchor_accept(&anchor, PinnedProcess::current().unwrap(), deadline)
-                .unwrap(),
-        ];
-        assert!(owner
-            .stop_and_reap_with_accepts(&mut accepts, Instant::now() + Duration::from_millis(500)));
+        );
+        assert!(owner.retire_for_restart(
+            &mut runtime,
+            &mut accepts,
+            Instant::now() + Duration::from_millis(500)
+        ));
         assert!(accepts.is_empty());
         assert_eq!(owner.active_count(), 0);
+        assert_eq!(runtime.active_count(), 0);
+        assert_eq!(runtime.pending_count(), 0);
+        assert!(ticket.is_cancelled());
+        assert!(matches!(
+            runtime.publish_result(
+                ticket.reply_context(Instant::now()),
+                "遅延".into(),
+                &stop,
+                Instant::now() + Duration::from_millis(300)
+            ),
+            Err(RuntimeError::Retired)
+        ));
+        drop(client);
+        drop(runtime);
         drop(anchor);
         assert!(Server::create_shared(&name, 3).is_ok());
+    }
+
+    #[test]
+    fn restart_retirement_reports_a_stuck_worker_then_allows_a_bounded_retry() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (server, mut client) = connected(&stop, deadline);
+        runtime
+            .attach(server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut client, &stop, deadline);
+        client
+            .write_all(
+                message::encode(&convert(1, 1, 1, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        let release = Arc::new(AtomicBool::new(false));
+        let worker_release = release.clone();
+        let mut owner = BrokerWorkLoop::new();
+        assert!(matches!(
+            owner.advance(&mut runtime, &stop, deadline, |_| {
+                move |ticket: JobTicket| {
+                    while !worker_release.load(Ordering::Acquire)
+                        && Instant::now() < ticket.deadline()
+                    {
+                        std::thread::yield_now();
+                    }
+                    Err(ErrorCode::Cancelled)
+                }
+            }),
+            Ok(OwnerStep::Submitted { key: 1, request: 1 })
+        ));
+        let ticket = runtime.job_ticket(1, 1).unwrap();
+        let mut accepts = Vec::new();
+        let started = Instant::now();
+        assert!(!owner.retire_for_restart(
+            &mut runtime,
+            &mut accepts,
+            started + Duration::from_millis(20)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(ticket.is_cancelled());
+        assert_eq!(runtime.active_count(), 0);
+        assert_eq!(owner.active_count(), 1);
+        release.store(true, Ordering::Release);
+        assert!(owner.retire_for_restart(
+            &mut runtime,
+            &mut accepts,
+            Instant::now() + Duration::from_millis(500)
+        ));
+        assert_eq!(owner.active_count(), 0);
     }
 
     #[test]

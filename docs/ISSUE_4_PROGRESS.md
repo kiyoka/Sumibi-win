@@ -410,11 +410,19 @@
 - 実clientが0件の間に設定同意を失効・再許可し、それぞれの版の完了receiptを
   所有側で受けた後、次のクライアントが最新版のReadyと結果を受け取ることを
   アンカー付き実pipeで確認した。
+- `BrokerWorkLoop::retire_for_restart`はRuntimeの認証済みpipeを先に退役させ、
+  旧jobを取消してから、待機受付と実workerを有限期限で回収する。成功後に
+  アンカーと旧clientを解放すれば同名pipeを再作成でき、旧worker結果は
+  `Retired`として拒否する。終了時の取消は送信mutexを待たずに通知し、
+  送信中workerが期限までに退出しない場合は失敗を返して再試行できる。
+  実pipeと送信競合で確認した。全Rustテスト296件、Clippyと`Test-Broker.ps1`成功。
+  製品Hostの自動ローテーションは未接続。
 
 ## 次の受入作業
 
 製品Brokerへ統合する責務と順序は
-[ADR 0062](adr/0062-product-broker-integration-sequence.md)に記録した。
+[ADR 0062](adr/0062-product-broker-integration-sequence.md)、共有待受の所有と寿命は
+[ADR 0065](adr/0065-authenticated-shared-broker-listener.md)に記録した。
 
 1. `BrokerWorkLoop`と`BrokerPolicyRuntime`を製品Hostの継続するOS acceptへ接続する。
    共有groupの3接続と差替え受付まで実pipeで確認した。長寿命の製品受付、設定UIの操作完了と

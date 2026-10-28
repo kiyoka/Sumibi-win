@@ -61,6 +61,7 @@
 - [ADR 0060](adr/0060-host-to-broker-policy-relay.md)：Hostの政策版をBrokerの受付と接続通知へ渡す境界。
 - [ADR 0061](adr/0061-two-client-broker-pipe-diagnostic.md)：同じ親processから開く2本の認証済みpipeでの通知・退役・再接続診断。
 - [ADR 0062](adr/0062-product-broker-integration-sequence.md)：製品Brokerの接続、政策配送、TSF適用までの統合順序と完了条件。
+- [ADR 0065](adr/0065-authenticated-shared-broker-listener.md)：固定peerの共有pipeアンカー、接続0件の待受、受付容量と停止・再起動の境界。
 
 ## 更新の規則
 

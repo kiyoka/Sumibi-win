@@ -41,6 +41,7 @@ Hostの`begin_anchor_accept`はBrokerの接続履歴上限を確認してからO
 アンカー付きshutdown後の同名pipe再作成を実pipeで確認した。
 実clientが0件の間の失効・再許可も所有側で完了させ、後から来た接続へ最新版の
 Readyと結果を返した。
+共有待受の所有と期限は[ADR 0065](0065-authenticated-shared-broker-listener.md)にまとめる。
 製品Hostの信頼できるpeer発見と、アンカーを保持した常駐ループは未接続。
 `BrokerWorkLoop::advance_with_accept`はHost政策の公開を先に確認し、完了済み受付を
 一件だけ取り出してkeyを予約し、受付が未完了ならworkerと既存pipeを進める。

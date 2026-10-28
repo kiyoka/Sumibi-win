@@ -78,3 +78,7 @@ Brokerはもう片方へのReadyを完了させた後、切断先へのReadyの`
 Windowsの複数instanceと早着接続の扱いは
 [Named Pipe Operations](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-operations)と
 [ConnectNamedPipe](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-connectnamedpipe)に従う。
+
+2026-10-28追記: このADRの`serve-fanout`は引き続き2 instanceである。
+別の`policy-runtime`診断はBroker自身のアンカー1件と親process向け2件の
+3 instanceへ移した（[ADR 0065](0065-authenticated-shared-broker-listener.md)）。

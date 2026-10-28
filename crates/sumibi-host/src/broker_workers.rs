@@ -151,6 +151,19 @@ impl BrokerWorkLoop {
         accepts_signalled && workers_done && accepts_done
     }
 
+    /// Close this runtime's authenticated pipes before draining all work and
+    /// pending accepts. Once this succeeds, the caller may drop its anchor
+    /// and create a new Broker boot with a new identity and pipe name.
+    pub fn retire_for_restart(
+        &mut self,
+        runtime: &mut BrokerPolicyRuntime<'_>,
+        accepts: &mut Vec<AcceptTask>,
+        deadline: Instant,
+    ) -> bool {
+        runtime.retire_for_restart();
+        self.stop_and_reap_with_accepts(accepts, deadline)
+    }
+
     /// Settings completion includes transport publication and the exit of
     /// workers cancelled by that publication. A previously completed policy
     /// version may still have cancelled workers awaiting bounded I/O exit.
@@ -556,7 +569,7 @@ impl BrokerWorkers {
     /// detaches those threads rather than blocking the Broker indefinitely.
     pub fn stop_and_reap(&mut self, deadline: Instant) -> bool {
         for slot in &self.slots {
-            slot.ticket.cancel();
+            slot.ticket.request_cancel();
         }
         while !self.slots.is_empty() && Instant::now() < deadline {
             let _ = self.try_completion();
@@ -571,7 +584,7 @@ impl BrokerWorkers {
 impl Drop for BrokerWorkers {
     fn drop(&mut self) {
         for slot in &self.slots {
-            slot.ticket.cancel();
+            slot.ticket.request_cancel();
         }
     }
 }
