@@ -2222,6 +2222,73 @@ mod tests {
     }
 
     #[test]
+    fn settings_acknowledgment_precedes_ready_for_a_not_yet_reserved_os_pipe() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let name = Nonce::random().unwrap();
+        let server = Server::create(&name).unwrap();
+        let mut accepts =
+            vec![AcceptTask::start(server, PinnedProcess::current().unwrap(), deadline).unwrap()];
+        let mut client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        let granted = source.grant_manual_consent(&destination).unwrap();
+        let mut owner = BrokerWorkLoop::new();
+        let acknowledged = owner
+            .acknowledge_version(&mut runtime, granted, &stop, deadline)
+            .unwrap();
+        assert_eq!(acknowledged.completion, DeliveryCompletion::ExactOrClosed);
+        assert!(acknowledged.current.allowed);
+        assert_eq!(runtime.pending_count(), 0);
+        assert_eq!(accepts.len(), 1);
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Accepted {
+                    key: 1,
+                    published: None,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("completed OS pipe was not reserved after settings acknowledgment"),
+            }
+        }
+        client
+            .write_all(message::encode(&hello(1, id(90))).unwrap(), &stop, deadline)
+            .unwrap();
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(1)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("acknowledged pipe did not activate"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Ready(ready) if ready.policy == acknowledged.current
+        ));
+    }
+
+    #[test]
     fn owner_loop_takes_a_later_accept_task_without_consuming_the_earlier_one() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {
@@ -2361,23 +2428,60 @@ mod tests {
 
     #[test]
     fn manual_owner_loop_rejects_a_different_policy_authority() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
         let (source, destination) = source();
         let source = Arc::new(source);
         let other = Arc::new(PolicyAuthority::new(destination));
         let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
         let mut owner = BrokerWorkLoop::new();
         let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let name = Nonce::random().unwrap();
+        let server = Server::create(&name).unwrap();
+        let mut accepts =
+            vec![AcceptTask::start(server, PinnedProcess::current().unwrap(), deadline).unwrap()];
+        let _client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
         assert!(matches!(
-            owner.advance_manual(
+            owner.advance_manual_with_accept(
                 &mut runtime,
+                &mut accepts,
                 other,
                 Arc::new(DiagnosticLoopbackHttp),
                 &stop,
-                Instant::now() + Duration::from_secs(1)
+                deadline
             ),
             Err(RuntimeError::InvalidTarget)
         ));
         assert_eq!(runtime.active_count(), 0);
+        assert_eq!(runtime.pending_count(), 0);
+        assert_eq!(accepts.len(), 1);
+        loop {
+            match owner
+                .advance_manual_with_accept(
+                    &mut runtime,
+                    &mut accepts,
+                    source.clone(),
+                    Arc::new(DiagnosticLoopbackHttp),
+                    &stop,
+                    deadline,
+                )
+                .unwrap()
+            {
+                OwnerStep::Accepted {
+                    key: 1,
+                    published: None,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("same authority did not accept the retained pipe"),
+            }
+        }
+        assert!(accepts.is_empty());
+        assert_eq!(runtime.pending_keys(), [1]);
     }
 
     #[test]

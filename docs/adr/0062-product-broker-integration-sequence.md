@@ -19,8 +19,14 @@ OS acceptと実worker完了を一緒に扱う製品の継続I/O調停ループ�
 一件だけ取り出してkeyを予約し、受付が未完了ならworkerと既存pipeを進める。
 受付の期限切れは`AcceptFailed`として返し、他の認証済み接続は維持する。
 `advance_manual_with_accept`は同じ政策元を確認してから現行宛先の送信workerへ渡す。
+異なる政策元なら受付taskを消費せず、正しい元で後から同じpipeを受け付ける。
+設定変更の受領が接続済み・未予約のpipeより先に完了した場合、そのpipeのReadyは
+受領済み最新版だけを含む。
 診断子Brokerの初期Hello/Readyもこの所有側入口を使う。破棄した受付のOS枠は
 有限期限で戻り、生存中の別接続から追加instanceを作り直せることを確認した。
+別の実processを固定した受付ではそのprocessの接続を受理し、同じlogon SIDの
+別processからの接続を`WrongPeer`で拒否した。子Brokerの2本は引き続き同一親process
+からの接続であり、異なるTIP間の共有・発見までは示していない。
 共有Hostの長寿命受付には、信頼できるTIP process発見と接続ごとのpeer固定が必要。
 `WriteBatch`が返すのは投入時の位置であり、製品の呼出し側がその位置を
 接続key・世代・政策版・Broker起動IDへ結び付けて完了を処理する。

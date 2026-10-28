@@ -338,6 +338,16 @@
   この入口へ接続し、2本目を待ちながら1本目のReadyを返す。受付取消・期限切れ・
   instance差替えでOS枠が戻る実pipe検査を追加した。全Rustテスト275件とBroker
   回帰が成功。製品TIPの信頼できる発見と長寿命Host起動は引き続き必要。
+- `advance_manual_with_accept`は別のHost政策元を受けた場合、接続keyと受付taskを
+  消費する前に拒否する。正しい政策元で同じ認証pipeを後から受け付けられる。
+  設定変更の`acknowledge_version`が接続済みだが未予約のOS pipeより先に完了した
+  場合、後続のHelloには受領済み最新版のReadyだけを返す。実pipeで確認した。
+  全Rustテスト276件。
+- `AcceptTask`の認証を別の実processで確認した。起動時に固定した子processが
+  pipeへ接続すれば認証済みendpointだけを渡す。同じlogon SIDを持つ現在のprocessが
+  その子process向けの受付へ接続しても`WrongPeer`で拒否し、未認証pipeは所有側へ
+  渡さない。これは共有Hostに異なるTIPを接続する製品発見の代用ではない。
+  全Rustテスト279件。
 
 ## 次の受入作業
 

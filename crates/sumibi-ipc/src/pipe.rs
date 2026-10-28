@@ -945,6 +945,9 @@ fn classify(error: windows::core::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
+    use std::os::windows::io::AsHandle;
+    use std::process::{Child, Command, Stdio};
     use std::sync::Mutex;
 
     static PIPE_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -958,6 +961,48 @@ mod tests {
             }
             Err(error) => panic!("cannot inspect current process for native pipe test: {error:?}"),
         }
+    }
+
+    fn accept_test_child(name: Option<&Nonce>) -> Child {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "pipe::tests::accept_task_child_fixture"])
+            .env("SUMIBI_ACCEPT_TEST_CHILD", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some(name) = name {
+            command.env("SUMIBI_ACCEPT_TEST_NAME", name.bootstrap());
+        }
+        command.spawn().unwrap()
+    }
+
+    #[test]
+    fn accept_task_child_fixture() {
+        if std::env::var_os("SUMIBI_ACCEPT_TEST_CHILD").is_none() {
+            return;
+        }
+        let _pipe = if let Ok(value) = std::env::var("SUMIBI_ACCEPT_TEST_NAME") {
+            let name = Nonce::from_bootstrap(&value).unwrap();
+            let pipe_name = name.pipe_name();
+            let handle = unsafe {
+                CreateFileW(
+                    PCWSTR(pipe_name.as_ptr()),
+                    GENERIC_READ.0 | GENERIC_WRITE.0,
+                    FILE_SHARE_MODE(0),
+                    None,
+                    OPEN_EXISTING,
+                    FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                    None,
+                )
+            }
+            .unwrap();
+            Some(unsafe { own(handle) })
+        } else {
+            None
+        };
+        let mut signal = [0];
+        let _ = std::io::stdin().read(&mut signal).unwrap();
     }
 
     fn connected_pair(stop: &Stop, deadline: Instant) -> (Pipe, Pipe, Pipe, Pipe) {
@@ -1196,6 +1241,55 @@ mod tests {
                 .bytes,
             [2]
         );
+    }
+
+    #[test]
+    fn accept_task_authenticates_a_distinct_pinned_process() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let server = Server::create(&name).unwrap();
+        let mut child = accept_test_child(Some(&name));
+        let peer = PinnedProcess::from_launch_handle(child.as_handle()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut accepting = AcceptTask::start(server, peer, deadline).unwrap();
+        let accepted = loop {
+            if let Some(result) = accepting.poll() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        };
+        assert!(accepted.authenticated);
+        drop(child.stdin.take());
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn accept_task_rejects_a_same_user_client_other_than_the_pinned_process() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let server = Server::create(&name).unwrap();
+        let mut child = accept_test_child(None);
+        let peer = PinnedProcess::from_launch_handle(child.as_handle()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut accepting = AcceptTask::start(server, peer, deadline).unwrap();
+        let _wrong_client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            if let Some(result) = accepting.poll() {
+                assert!(matches!(result, Err(Error::WrongPeer)));
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+        drop(child.stdin.take());
+        assert!(child.wait().unwrap().success());
     }
 
     #[test]
