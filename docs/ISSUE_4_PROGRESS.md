@@ -457,6 +457,8 @@
   稼働中の旧Bootを`InvalidDeadline`で返して、退役途中の受付を残さない。
 - 退役未完了で旧Bootを保持する場合でも、旧clientのpipe読取が`Disconnected`に
   なることを実pipeで確認した。旧本文を接続中と誤認して再開させない。
+- 履歴上限後の新Bootに旧起動IDのHelloを送り、拒否と接続keyの消費を確認した。
+  次の正しいHelloは別keyでReadyまで進む。旧Bootの再接続を許可しない。
 
 ## 次の受入作業
 

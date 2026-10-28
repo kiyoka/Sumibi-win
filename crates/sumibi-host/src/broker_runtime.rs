@@ -2659,6 +2659,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
         let old_name = boot.name().clone();
+        let old_id = boot.boot_id();
         let initial_budget = boot.remaining_attachment_budget();
         assert!(initial_budget > 0);
 
@@ -2725,13 +2726,47 @@ mod tests {
         assert!(Server::create_shared(&old_name, 2).is_ok());
         next.begin_accept(PinnedProcess::current().unwrap(), deadline)
             .unwrap();
-        let mut client = Pipe::connect(next.name(), PinnedProcess::current().unwrap()).unwrap();
+        let mut stale = Pipe::connect(next.name(), PinnedProcess::current().unwrap()).unwrap();
         loop {
             match next
                 .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
                 .unwrap()
             {
                 OwnerStep::Accepted { key: 1, .. } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("stale client was not accepted for identity check"),
+            }
+        }
+        stale
+            .write_all(message::encode(&hello(1, old_id)).unwrap(), &stop, deadline)
+            .unwrap();
+        loop {
+            match next
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Closed {
+                    key: 1,
+                    error: RuntimeError::Fanout(FanoutError::Broker(_)),
+                }) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("stale boot identity was not rejected"),
+            }
+        }
+        drop(stale);
+        next.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let mut client = Pipe::connect(next.name(), PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            match next
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Accepted { key: 2, .. } => break,
                 OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
                     std::thread::yield_now();
                 }
@@ -2750,7 +2785,7 @@ mod tests {
                 .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
                 .unwrap()
             {
-                OwnerStep::Broker(PollStep::Activated(1)) => break,
+                OwnerStep::Broker(PollStep::Activated(2)) => break,
                 OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
                     std::thread::yield_now();
                 }

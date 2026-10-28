@@ -102,7 +102,8 @@ Bootを`Expired`で返し、60秒を超える期限なら`InvalidDeadline`で返
   Hello・Readyが引き続き成立することを確認。終了APIでも同じ期限前判定と
   待機受付の回収後のアンカー解放を確認。
 - 実pipeで64回の受付・Hello・Ready・切断を行い、履歴上限で新規受付を拒否。
-  切替後は履歴予算と接続keyが新Bootで初期化され、再び受付できることを確認。
+  切替後は履歴予算と接続keyが新Bootで初期化される。旧起動IDのHelloを拒否して
+  その接続keyを消費し、次の正しいHelloを新しいkeyで有効化することも確認。
 - 診断用子Brokerの親process向け2受付、政策通知、取消、結果。`tools/Test-Broker.ps1`と
   `tools/Test-Spike.ps1 -SkipDesktop`が成功し、既定HostとパッシブTIPへ復元。
 
