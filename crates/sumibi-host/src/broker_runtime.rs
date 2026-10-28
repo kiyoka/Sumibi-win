@@ -2218,6 +2218,184 @@ mod tests {
     }
 
     #[test]
+    fn broker_boot_acknowledges_idle_policy_before_a_later_ready() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+        let revoked = source.revoke_manual_consent().unwrap();
+        let acknowledgment = boot.acknowledge_version(revoked, &stop, deadline).unwrap();
+        assert!(!acknowledgment.current.allowed);
+        assert_eq!(acknowledgment.current.authorization, revoked.authorization);
+        assert_eq!(boot.active_count(), 0);
+        let granted = source.grant_manual_consent(&destination).unwrap();
+        let acknowledgment = boot.acknowledge_version(granted, &stop, deadline).unwrap();
+        assert!(acknowledgment.current.allowed);
+        assert_eq!(acknowledgment.current.authorization, granted.authorization);
+
+        boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let mut client = Pipe::connect(boot.name(), PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Accepted { key: 1, .. } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("client was not accepted after idle policy changes"),
+            }
+        }
+        client
+            .write_all(
+                message::encode(&hello(1, boot.boot_id())).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(1)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("client did not activate after idle policy changes"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Ready(ready) if ready.policy == boot.policy() && ready.policy.allowed
+        ));
+        assert!(boot.retire_for_restart(Instant::now() + Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn broker_boot_manual_dispatch_uses_the_authenticated_pipe() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let destination =
+            Destination::new(Scheme::HttpLoopback, "127.0.0.1", port, "/convert").unwrap();
+        let source = Arc::new(PolicyAuthority::new(destination.clone()));
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let http = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut stream);
+            let body = r#"{"text":"日本語"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            request
+        });
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+        boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let mut client = Pipe::connect(boot.name(), PinnedProcess::current().unwrap()).unwrap();
+        let transport = Arc::new(DiagnosticLoopbackHttp);
+        loop {
+            match boot
+                .advance_manual(source.clone(), transport.clone(), &stop, deadline)
+                .unwrap()
+            {
+                OwnerStep::Accepted { key: 1, .. } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("manual boot did not accept the client"),
+            }
+        }
+        client
+            .write_all(
+                message::encode(&hello(1, boot.boot_id())).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        loop {
+            match boot
+                .advance_manual(source.clone(), transport.clone(), &stop, deadline)
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(1)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("manual boot did not activate the client"),
+            }
+        }
+        let ready = read_frame(&mut client, &stop, deadline);
+        assert!(matches!(ready.message, message::Message::Ready(_)));
+        client
+            .write_all(
+                message::encode(&convert(1, 1, 1, boot.policy())).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        loop {
+            match boot
+                .advance_manual(source.clone(), transport.clone(), &stop, deadline)
+                .unwrap()
+            {
+                OwnerStep::Submitted { key: 1, request: 1 } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("manual boot did not submit the request"),
+            }
+        }
+        loop {
+            match boot
+                .advance_manual(source.clone(), transport.clone(), &stop, deadline)
+                .unwrap()
+            {
+                OwnerStep::Completed {
+                    key: 1,
+                    request: 1,
+                    delivered: true,
+                    succeeded: true,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("manual boot did not deliver the response"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Result(result) if result.text == "日本語"
+        ));
+        let request = http.join().unwrap();
+        assert!(request
+            .windows(b"POST /convert".len())
+            .any(|bytes| bytes == b"POST /convert"));
+        assert!(boot.retire_for_restart(Instant::now() + Duration::from_millis(500)));
+    }
+
+    #[test]
     fn repeated_cancelled_worker_reaps_do_not_fill_the_completion_channel() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {

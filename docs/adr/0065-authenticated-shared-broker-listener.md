@@ -76,6 +76,8 @@ logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer
 - `BrokerBoot`で0件の期間を挟む2接続を同じ起動IDで処理し、退役後に旧pipe名を
   再作成。異なる政策元はOS受付の消費前に拒否し、正しい元で同じ受付を継続。
   待機受付だけがある状態でも退役とアンカー解放の順序を確認。
+- `BrokerBoot`の0-client時に失効・再許可receiptを完了し、後続Readyで最新版を確認。
+  認証付きpipeから診断loopback HTTPへ送信して、結果を同じpipeへ一度配送。
 - 診断用子Brokerの親process向け2受付、政策通知、取消、結果。`tools/Test-Broker.ps1`と
   `tools/Test-Spike.ps1 -SkipDesktop`が成功し、既定HostとパッシブTIPへ復元。
 
