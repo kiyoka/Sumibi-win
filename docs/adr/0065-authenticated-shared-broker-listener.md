@@ -89,7 +89,10 @@ logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer
   子process退出、旧Boot退役とアンカー解放後の同名pipe再作成を確認。子fixtureは
   標準File接続なのでclient側のBroker相互認証はこの検査の範囲外。
 - 待機受付を回収してから切替え、旧名の解放と新名でのHello・Readyを実pipeで確認。
-  退出しないworkerでは切替えを保留して旧Bootを保持し、退出後の再試行で成功。
+  切替時に政策元の最新版を読み直す。退出しないworkerでは切替えを保留して
+  旧Bootを保持し、退出後の再試行で成功。
+- 実pipeで64回の受付・Hello・Ready・切断を行い、履歴上限で新規受付を拒否。
+  切替後は履歴予算と接続keyが新Bootで初期化され、再び受付できることを確認。
 - 診断用子Brokerの親process向け2受付、政策通知、取消、結果。`tools/Test-Broker.ps1`と
   `tools/Test-Spike.ps1 -SkipDesktop`が成功し、既定HostとパッシブTIPへ復元。
 

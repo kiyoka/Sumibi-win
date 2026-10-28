@@ -2498,10 +2498,15 @@ mod tests {
         let old_id = boot.boot_id();
         boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
             .unwrap();
+        source
+            .replace_credential(Credential::new("rotated".into()))
+            .unwrap();
+        let latest_policy = source.wire_policy().unwrap();
         let mut next = boot
             .rotate(Instant::now() + Duration::from_secs(1))
             .unwrap();
         assert!(next.boot_id() != old_id);
+        assert!(next.policy() == latest_policy);
         assert_ne!(next.name().bootstrap(), old_name.bootstrap());
         assert_eq!(next.pending_accept_count(), 0);
         assert!(Server::create_shared(&old_name, 3).is_ok());
@@ -2635,6 +2640,120 @@ mod tests {
         let mut next = old.rotate(Instant::now() + Duration::from_secs(1)).unwrap();
         assert!(next.boot_id() != old_id);
         assert!(Server::create_shared(&old_name, 3).is_ok());
+        assert!(next.retire_for_restart(Instant::now() + Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn broker_boot_rotates_after_exhausting_its_attachment_history() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, _) = source();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+        let old_name = boot.name().clone();
+        let initial_budget = boot.remaining_attachment_budget();
+        assert!(initial_budget > 0);
+
+        for client_id in 1..=initial_budget as u64 {
+            boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+                .unwrap();
+            let mut client = Pipe::connect(boot.name(), PinnedProcess::current().unwrap()).unwrap();
+            loop {
+                match boot
+                    .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                    .unwrap()
+                {
+                    OwnerStep::Accepted { key, .. } if key == client_id => break,
+                    OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                        std::thread::yield_now();
+                    }
+                    _ => panic!("history client was not accepted"),
+                }
+            }
+            client
+                .write_all(
+                    message::encode(&hello(client_id.into(), boot.boot_id())).unwrap(),
+                    &stop,
+                    deadline,
+                )
+                .unwrap();
+            loop {
+                match boot
+                    .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                    .unwrap()
+                {
+                    OwnerStep::Broker(PollStep::Activated(key)) if key == client_id => break,
+                    OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                        std::thread::yield_now();
+                    }
+                    _ => panic!("history client did not activate"),
+                }
+            }
+            read_frame(&mut client, &stop, deadline);
+            drop(client);
+            loop {
+                match boot
+                    .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                    .unwrap()
+                {
+                    OwnerStep::Broker(PollStep::Closed { key, .. }) if key == client_id => break,
+                    OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                        std::thread::yield_now();
+                    }
+                    _ => panic!("history client was not closed"),
+                }
+            }
+        }
+        assert_eq!(boot.active_count(), 0);
+        assert_eq!(boot.remaining_attachment_budget(), 0);
+        assert!(matches!(
+            boot.begin_accept(PinnedProcess::current().unwrap(), deadline),
+            Err(RuntimeError::Exhausted)
+        ));
+        let mut next = boot
+            .rotate(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(next.remaining_attachment_budget(), initial_budget);
+        assert!(Server::create_shared(&old_name, 2).is_ok());
+        next.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let mut client = Pipe::connect(next.name(), PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            match next
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Accepted { key: 1, .. } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("new boot did not accept after history reset"),
+            }
+        }
+        client
+            .write_all(
+                message::encode(&hello(1, next.boot_id())).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        loop {
+            match next
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(1)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("new boot did not activate after history reset"),
+            }
+        }
+        read_frame(&mut client, &stop, deadline);
+        drop(client);
         assert!(next.retire_for_restart(Instant::now() + Duration::from_millis(500)));
     }
 
