@@ -52,18 +52,7 @@ function New-AncestorSecurity {
 
 function New-ProtectedSecurity {
     param([bool]$Directory)
-    $acl = if ($Directory) {
-        [System.Security.AccessControl.DirectorySecurity]::new()
-    } else {
-        [System.Security.AccessControl.FileSecurity]::new()
-    }
-    $acl.SetOwner([System.Security.Principal.SecurityIdentifier]::new($admin))
-    $acl.SetAccessRuleProtection($true, $false)
-    $inheritance = if ($Directory) { 'ContainerInherit, ObjectInherit' } else { 'None' }
-    Add-TestRule -Security $acl -Sid $admin -Rights FullControl -Inheritance $inheritance
-    Add-TestRule -Security $acl -Sid $system -Rights FullControl -Inheritance $inheritance
-    Add-TestRule -Security $acl -Sid $users -Rights ReadAndExecute -Inheritance $inheritance
-    return $acl
+    return New-SumibiProtectedSecurity -Directory $Directory
 }
 
 function Invoke-AclCase {
@@ -133,6 +122,28 @@ foreach ($directory in @($true, $false)) {
     if ($directory) {
         $acl = New-ProtectedSecurity -Directory $true
         Invoke-AclCase 'protected/wrong-inheritance-form' { Assert-SumibiProtectedSecurity -Security $acl -Directory $false -Label 'memory fixture' } -Reject $true
+    }
+}
+foreach ($inherited in @($false, $true)) {
+    $acl = New-SumibiProtectedSecurity -Directory $false
+    if ($inherited) {
+        # Model the ACL between create_new and an optional explicit ACL write.
+        $acl = [System.Security.AccessControl.FileSecurity]::new()
+        $acl.SetSecurityDescriptorSddlForm('O:BAG:BAD:AI(A;ID;0x001f01ff;;;BA)(A;ID;0x001f01ff;;;SY)(A;ID;0x001200a9;;;BU)')
+        if (-not @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | Where-Object IsInherited).Count) {
+            throw 'The inherited journal ACL fixture did not contain inherited ACEs.'
+        }
+    }
+    Invoke-AclCase "journal/inherited-$inherited/exact" { Assert-SumibiJournalFileSecurity -Security $acl -Label 'memory fixture' }
+}
+$acl = New-SumibiProtectedSecurity -Directory $false
+$acl.SetOwner([System.Security.Principal.SecurityIdentifier]::new($individual))
+Invoke-AclCase 'journal/foreign-owner' { Assert-SumibiJournalFileSecurity -Security $acl -Label 'memory fixture' } -Reject $true
+foreach ($sid in @($individual, $customGroup, $users)) {
+    foreach ($rights in @('Write', 'Delete', 'FullControl')) {
+        $acl = New-SumibiProtectedSecurity -Directory $false
+        Add-TestRule -Security $acl -Sid $sid -Rights $rights
+        Invoke-AclCase "journal/$sid/$rights" { Assert-SumibiJournalFileSecurity -Security $acl -Label 'memory fixture' } -Reject $true
     }
 }
 Write-Output "System registration ACL policy: $script:cases cases passed (in-memory ACLs; no filesystem changes)"

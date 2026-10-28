@@ -2,6 +2,7 @@
 
 2026-10-28 / Issue #4 / draft PR #10。状態: 取引エンジンと専用 HKCU fixture を実装・検証。製品 COM/TSF backend は未接続。
 実APIを隔離レジストリへ接続した後続試験は [ADR 0067](0067-isolated-native-registration-backend.md) に記録する。
+固定ロックと解除後のjournal世代交代は [ADR 0068](0068-fixed-registration-journal-store.md) に記録する。
 
 ## 状況
 

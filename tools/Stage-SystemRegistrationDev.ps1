@@ -5,35 +5,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'SystemRegistrationDevAcl.ps1')
-$adminSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
-$systemSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
-$usersSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
-function Set-ProtectedAcl {
-    param([string]$Path, [bool]$Directory)
-    if ($Directory) {
-        $acl = [System.Security.AccessControl.DirectorySecurity]::new()
-        $inheritance = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
-    } else {
-        $acl = [System.Security.AccessControl.FileSecurity]::new()
-        $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
-    }
-    $acl.SetAccessRuleProtection($true, $false)
-    $acl.SetOwner($adminSid)
-    foreach ($entry in @(
-        @($adminSid, [System.Security.AccessControl.FileSystemRights]::FullControl),
-        @($systemSid, [System.Security.AccessControl.FileSystemRights]::FullControl),
-        @($usersSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute)
-    )) {
-        $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-            $entry[0], $entry[1], $inheritance,
-            [System.Security.AccessControl.PropagationFlags]::None,
-            [System.Security.AccessControl.AccessControlType]::Allow
-        )
-        $acl.AddAccessRule($rule)
-    }
-    Set-Acl -LiteralPath $Path -AclObject $acl
-    Assert-SumibiProtectedAcl -Path $Path -Directory $Directory
-}
 
 $principal = [System.Security.Principal.WindowsPrincipal]::new(
     [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -92,7 +63,7 @@ if (Test-Path -LiteralPath $versionPath) {
 }
 if (-not (Test-Path -LiteralPath $resolvedRoot)) {
     $null = New-Item -ItemType Directory -Path $resolvedRoot -ErrorAction Stop
-    Set-ProtectedAcl -Path $resolvedRoot -Directory $true
+    Set-SumibiProtectedAcl -Path $resolvedRoot -Directory $true
 } else {
     $rootItem = Get-Item -LiteralPath $resolvedRoot
     if (-not $rootItem.PSIsContainer -or
@@ -103,10 +74,10 @@ if (-not (Test-Path -LiteralPath $resolvedRoot)) {
 }
 
 $null = New-Item -ItemType Directory -Path $versionPath -ErrorAction Stop
-Set-ProtectedAcl -Path $versionPath -Directory $true
+Set-SumibiProtectedAcl -Path $versionPath -Directory $true
 $installedDll = Join-Path $versionPath 'sumibi_tip.dll'
 Copy-Item -LiteralPath $source -Destination $installedDll -ErrorAction Stop
-Set-ProtectedAcl -Path $installedDll -Directory $false
+Set-SumibiProtectedAcl -Path $installedDll -Directory $false
 if ((Get-FileHash -LiteralPath $installedDll -Algorithm SHA256).Hash -ne $sourceHash) {
     throw 'The protected copy differs from the signed source.'
 }
@@ -119,7 +90,7 @@ $receiptPath = Join-Path $versionPath 'staging.json'
     installedDll = $installedDll
     machineRegistrationPerformed = $false
 } | ConvertTo-Json | Set-Content -LiteralPath $receiptPath -Encoding UTF8
-Set-ProtectedAcl -Path $receiptPath -Directory $false
+Set-SumibiProtectedAcl -Path $receiptPath -Directory $false
 
 # Re-read the protected copy through the same gate used before a future
 # registration trial. Failure leaves the version for administrator diagnosis.

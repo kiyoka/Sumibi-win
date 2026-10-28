@@ -23,7 +23,7 @@
 | 設定・資格情報 | Host内メモリーの一貫した設定・認可スナップショットを追加。接続先・キー変更、同意付与・取消で版と送信可否を更新。IPC用の秘密を含まない政策値と変更カーソルを追加し、型付きProtocolで取消と旧結果拒否を検証（[ADR 0049](adr/0049-host-in-memory-policy-authority.md)）。保存・UI・Credential Manager・実IPC配送は未実装 | 形式版・原子的保存・秘密分離・認可取消の実配送・破損回復 |
 | 追加候補・辞書 | 未実装。Mac移植範囲に目的を記録 | 件数決定・現在候補・出所・索引ハッシュ・LICENSE |
 | Decisions | 未実装。Mac契約を参照した後続案 | API再確認、独立同意、固定窓、永続回数予約、手動優先 |
-| 導入・更新・配布 | 現ユーザーの開発用COM登録・別プロセス生成確認・解除とプロセス内TSF検査が成功。パッシブDLLの読取専用事前確認、未信頼の自己署名、Dドライブの保護配置と独立した再検証を追加。先行記録・逆順復旧を専用HKCU模擬fixtureの45ケースで確認（[ADR 0066](adr/0066-registration-journal-and-recovery.md)）。低整合性の隔離レジストリで実COM/TSF APIを使い、途中終了、別プロセス復旧、異物拒否の47ケースが成功（[ADR 0067](adr/0067-isolated-native-registration-backend.md)）。HKLM/恒久TSF backendはまだない。spike DLLは配布不可 | 信頼できる配布署名、製品用の実COM/TSF所有証拠と永続化、保護journal、マシン登録・解除の実証、Host起動、更新・削除・旧版復旧 |
+| 導入・更新・配布 | 現ユーザーの開発用COM登録・別プロセス生成確認・解除とプロセス内TSF検査が成功。パッシブDLLの読取専用事前確認、未信頼の自己署名、Dドライブの保護配置と独立した再検証を追加。先行記録・逆順復旧を専用HKCU模擬fixtureの45ケースで確認（[ADR 0066](adr/0066-registration-journal-and-recovery.md)）。低整合性の隔離レジストリで実COM/TSF APIを使い、途中終了、別プロセス復旧、異物拒否の47ケースが成功（[ADR 0067](adr/0067-isolated-native-registration-backend.md)）。固定ロックと解除済みjournalの退避・次回取引を追加（[ADR 0068](adr/0068-fixed-registration-journal-store.md)）。HKLM/恒久TSF backendはまだない。spike DLLは配布不可 | 信頼できる配布署名、製品用の実COM/TSF所有証拠と永続化、保護stateの実配置・検証、マシン登録・解除の実証、Host起動、更新・削除・旧版復旧 |
 
 2026-10-25、未発行の未来要求番号を持つBroker応答を接続異常として拒否し、
 認証済み実子processで退役と再送不可を確認した（[ADR 0056](adr/0056-future-reply-id-is-terminal.md)）。
@@ -33,6 +33,15 @@
 （[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md)）。
 
 ## 2. Windowsで実行済みの検証
+
+2026-10-29 の固定journal store追加分では、通常/Host spikeの各Rust 351件、
+fmt、workspace Clippy 2構成、passive TIP Clippy、模擬fixture45ケース、
+隔離した実COM/TSF APIの47ケース、メモリー内ACL117ケースが成功した。
+`Test-Spike.ps1 -SkipDesktop`を完走し、パッシブTIPと通常Hostへ復元した。
+既存保護DLLの読取検証、state候補の親ACL確認、非管理者の作成拒否も確認した。
+`D:\Program Files\Sumibi\registration-state`は未作成であり、保護state上の
+ファイル作成・管理者権限での取引は今回の実行範囲に含まない。
+ログは`target/issue-4-registration-store-regression.log`に保存した。
 
 2026-10-29 の実API隔離試験追加分では、Windows 11 Home 10.0.26300 x64、通常ユーザー権限の
 自動検査で、通常/Host spike の各 Rust 347件、fmt、workspace Clippy 2構成、passive TIP Clippyが成功した。

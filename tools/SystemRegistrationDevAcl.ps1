@@ -1,5 +1,39 @@
-# Shared ACL policy for development staging and its independent verifier.
-# Dot-sourcing defines validators only; no files, ACLs or registry values change.
+# Shared ACL policy for development staging and the registration store.
+# Dot-sourcing defines functions only; no files, ACLs or registry values change.
+
+function New-SumibiProtectedSecurity {
+    param([bool]$Directory)
+    $admin = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+    $system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+    $users = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
+    if ($Directory) {
+        $security = [System.Security.AccessControl.DirectorySecurity]::new()
+        $inheritance = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    } else {
+        $security = [System.Security.AccessControl.FileSecurity]::new()
+        $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
+    }
+    $security.SetAccessRuleProtection($true, $false)
+    $security.SetOwner($admin)
+    foreach ($entry in @(
+        @($admin, [System.Security.AccessControl.FileSystemRights]::FullControl),
+        @($system, [System.Security.AccessControl.FileSystemRights]::FullControl),
+        @($users, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute)
+    )) {
+        $security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+            $entry[0], $entry[1], $inheritance,
+            [System.Security.AccessControl.PropagationFlags]::None,
+            [System.Security.AccessControl.AccessControlType]::Allow
+        ))
+    }
+    return $security
+}
+
+function Set-SumibiProtectedAcl {
+    param([string]$Path, [bool]$Directory)
+    Set-Acl -LiteralPath $Path -AclObject (New-SumibiProtectedSecurity -Directory $Directory)
+    Assert-SumibiProtectedAcl -Path $Path -Directory $Directory
+}
 
 function Assert-SumibiAncestorSecurity {
     param(
@@ -87,4 +121,40 @@ function Assert-SumibiProtectedSecurity {
 function Assert-SumibiProtectedAcl {
     param([string]$Path, [bool]$Directory)
     Assert-SumibiProtectedSecurity -Security (Get-Acl -LiteralPath $Path) -Directory $Directory -Label $Path
+}
+
+# A journal file may have inherited ACEs if the process stops immediately
+# after create_new. Its parent is validated separately and cannot grant write
+# access to a nonprivileged principal. Requiring explicit ACEs here would make
+# that safe crash state unrecoverable.
+function Assert-SumibiJournalFileSecurity {
+    param([System.Security.AccessControl.FileSystemSecurity]$Security, [string]$Label)
+    $admin = 'S-1-5-32-544'
+    $system = 'S-1-5-18'
+    $users = 'S-1-5-32-545'
+    if ($Security.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -notin @($admin, $system)) {
+        throw "Unexpected journal file owner: $Label"
+    }
+    $rules = @($Security.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+    if ($rules.Count -ne 3) { throw "Unexpected journal file rule count: $Label" }
+    foreach ($sid in @($admin, $system, $users)) {
+        $matching = @($rules | Where-Object { $_.IdentityReference.Value -eq $sid })
+        if ($matching.Count -ne 1 -or $matching[0].AccessControlType -ne 'Allow') {
+            throw "Unexpected journal file principal: $Label"
+        }
+        $rights = if ($sid -eq $users) {
+            [System.Security.AccessControl.FileSystemRights]::ReadAndExecute -bor
+                [System.Security.AccessControl.FileSystemRights]::Synchronize
+        } else {
+            [System.Security.AccessControl.FileSystemRights]::FullControl
+        }
+        if ($matching[0].FileSystemRights -ne $rights) {
+            throw "Unexpected journal file rights: $Label"
+        }
+    }
+}
+
+function Assert-SumibiJournalFileAcl {
+    param([string]$Path)
+    Assert-SumibiJournalFileSecurity -Security (Get-Acl -LiteralPath $Path) -Label $Path
 }

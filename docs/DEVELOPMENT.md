@@ -127,6 +127,26 @@ PowerShell 7とWindows PowerShell 5.1で確認した。登録・解除の中断�
 仕組み、正確な所有証拠と製品登録へ進む条件は
 [ADR 0067](adr/0067-isolated-native-registration-backend.md)を参照。
 
+### 登録journalの固定ロックと保護state配置
+
+解除完了後の次回登録に備え、`install_store`は固定の`registration.lock`を保持し、
+`Removed`となった`current.bin`だけを取引ID付きの退避ファイルへ移す。
+journalの寿命はRustの型でロックに結び付ける。中断・破損・同名退避先の扱いは
+[ADR 0068](adr/0068-fixed-registration-journal-store.md)に記録する。
+製品の機械登録コマンドにはまだ接続していない。
+
+保護配置先候補`D:\Program Files\Sumibi\registration-state`の親ACLを読み取り、
+stateの有無を確認するには次を実行する。未作成ならその旨を表示し、変更しない。
+
+```powershell
+.\tools\Prepare-RegistrationStoreDev.ps1
+```
+
+`-Provision`は管理者PowerShellからのみ、新しい空のstateディレクトリを作成する。
+現在の検証PCでは未実行で、保護state上でのjournal作成・管理者試験はまだ行っていない。
+その前に`Test-SystemRegistrationDevAcl.ps1`のメモリー内117ケース、
+PowerShell 7/Windows PowerShell 5.1の読取専用検証を確認した。
+
 ## 開発用COM登録（明示実行のみ）
 
 一般アプリでのロード経路を切り分けるため、現ユーザーの64-bit COM登録を個別に検証できる。
