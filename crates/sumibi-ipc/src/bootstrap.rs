@@ -1,7 +1,7 @@
 //! Restricted broker launch. This is not per-user broker discovery or
 //! executable signature verification. Callers must supply a trusted full path.
 use crate::support::{own, raw, Error, Nonce, Result};
-use crate::{AcceptTask, PinnedProcess, Pipe, Server, Stop};
+use crate::{AcceptTask, PinnedProcess, Pipe, SharedAnchor, Stop};
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle};
@@ -328,20 +328,23 @@ impl Bootstrap {
         &self.stop
     }
 
-    /// Start both bounded OS accepts without blocking the Broker owner. The
-    /// owner reserves a key only after each task returns an authenticated pipe.
-    pub fn begin_policy_runtime_pair(&self, deadline: Instant) -> Result<[AcceptTask; 2]> {
+    /// Keep the first pipe instance in this Broker while both bounded OS
+    /// accepts run. The owner reserves a key only after each task returns an
+    /// authenticated parent pipe.
+    pub fn begin_policy_runtime_pair(
+        &self,
+        deadline: Instant,
+    ) -> Result<(SharedAnchor, [AcceptTask; 2])> {
         if !self.is_policy_runtime_diagnostic() {
             return Err(Error::PolicyDenied);
         }
-        let first = Server::create_pair(&self.name)?;
-        let second = first.additional()?;
+        let anchor = SharedAnchor::create(&self.name, 3, deadline)?;
         let first_peer = PinnedProcess::from_launch_handle(self.parent.as_handle())?;
         let second_peer = PinnedProcess::from_launch_handle(self.parent.as_handle())?;
-        let first = AcceptTask::start(first, first_peer, deadline)?;
-        let second = AcceptTask::start(second, second_peer, deadline)?;
+        let first = anchor.begin_accept(first_peer, deadline)?;
+        let second = anchor.begin_accept(second_peer, deadline)?;
         self.ready()?;
-        Ok([first, second])
+        Ok((anchor, [first, second]))
     }
 
     pub fn parse(args: &[OsString]) -> Result<Self> {

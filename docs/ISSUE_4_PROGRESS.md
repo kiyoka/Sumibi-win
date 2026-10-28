@@ -400,6 +400,9 @@
 - Hostの`begin_anchor_accept`はこのアンカー受付をBrokerの64接続履歴上限と
   同じ入口で制限する。上限前に始めた受付は所有側が完了時に拒否し、上限後の
   新規受付はOS instanceを作る前に拒否する。実pipeで確認した。
+- 診断用子Brokerの2接続起動も`SharedAnchor`の3 instance groupへ切り替え、
+  最初のinstanceを子Broker自身が保持する。親からの2接続、結果、政策変更、
+  取消を含む`Test-Broker.ps1`が成功し、既定Hostへ復元した。
 
 ## 次の受入作業
 

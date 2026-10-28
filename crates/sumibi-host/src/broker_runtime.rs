@@ -1041,7 +1041,8 @@ pub fn serve_diagnostic(
         .map_err(|_| IpcError::PolicyDenied)?;
     let mut owner = BrokerWorkLoop::new();
     let deadline = Instant::now() + Duration::from_secs(10);
-    let mut accepts = Vec::from(bootstrap.begin_policy_runtime_pair(deadline)?);
+    let (_anchor, tasks) = bootstrap.begin_policy_runtime_pair(deadline)?;
+    let mut accepts = Vec::from(tasks);
     let mut activated = Vec::with_capacity(2);
     while activated.len() != 2 {
         if bootstrap.stop().is_cancelled()? {
