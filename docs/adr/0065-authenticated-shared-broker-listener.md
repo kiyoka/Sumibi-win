@@ -78,6 +78,9 @@ logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer
   待機受付だけがある状態でも退役とアンカー解放の順序を確認。
 - `BrokerBoot`の0-client時に失効・再許可receiptを完了し、後続Readyで最新版を確認。
   認証付きpipeから診断loopback HTTPへ送信して、結果を同じpipeへ一度配送。
+- 起動handleで固定した別processを`BrokerBoot`から受付し、Hello・Convert・結果、
+  子process退出、旧Boot退役とアンカー解放後の同名pipe再作成を確認。子fixtureは
+  標準File接続なのでclient側のBroker相互認証はこの検査の範囲外。
 - 診断用子Brokerの親process向け2受付、政策通知、取消、結果。`tools/Test-Broker.ps1`と
   `tools/Test-Spike.ps1 -SkipDesktop`が成功し、既定HostとパッシブTIPへ復元。
 

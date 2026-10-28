@@ -1363,13 +1363,22 @@ mod tests {
             return;
         };
         let name = Nonce::from_bootstrap(&name).unwrap();
+        if std::env::var_os("SUMIBI_HOST_TEST_WAIT_FOR_START").is_some() {
+            let mut ready = [0];
+            std::io::stdin().read_exact(&mut ready).unwrap();
+        }
         let path = format!(r"\\.\pipe\Sumibi-peer-{}", name.bootstrap());
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(path)
             .unwrap();
-        let mut session = sumibi_protocol::session::ClientSession::new(id(2), id(90));
+        let broker = if std::env::var_os("SUMIBI_HOST_TEST_BOOT_FROM_NAME").is_some() {
+            name.id()
+        } else {
+            id(90)
+        };
+        let mut session = sumibi_protocol::session::ClientSession::new(id(2), broker);
         file.write_all(&session.hello().unwrap()).unwrap();
         let ready = read_fixture_frame(&mut file);
         assert!(matches!(
@@ -2393,6 +2402,87 @@ mod tests {
             .windows(b"POST /convert".len())
             .any(|bytes| bytes == b"POST /convert"));
         assert!(boot.retire_for_restart(Instant::now() + Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn broker_boot_accepts_a_launched_process_after_pinning_its_handle() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 3, deadline).unwrap();
+        let name = boot.name().clone();
+        let mut child = FixtureChild(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "broker_runtime::tests::cross_process_client_fixture",
+                ])
+                .env("SUMIBI_HOST_TEST_CHILD_NAME", name.bootstrap())
+                .env("SUMIBI_HOST_TEST_BOOT_FROM_NAME", "1")
+                .env("SUMIBI_HOST_TEST_WAIT_FOR_START", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let pinned = PinnedProcess::from_launch_handle(child.0.as_handle()).unwrap();
+        boot.begin_accept(pinned, deadline).unwrap();
+        child.0.stdin.take().unwrap().write_all(&[1]).unwrap();
+        let mut accepted = false;
+        let mut activated = false;
+        let mut submitted = false;
+        loop {
+            assert!(Instant::now() < deadline);
+            match boot
+                .advance(&stop, deadline, |request| {
+                    move |_: JobTicket| {
+                        if request.text == "second" {
+                            Ok("完了".into())
+                        } else {
+                            Err(ErrorCode::Rejected)
+                        }
+                    }
+                })
+                .unwrap()
+            {
+                OwnerStep::Accepted { key: 1, .. } if !accepted => accepted = true,
+                OwnerStep::Broker(PollStep::Activated(1)) if accepted && !activated => {
+                    activated = true;
+                }
+                OwnerStep::Submitted { key: 1, request: 1 } if activated && !submitted => {
+                    submitted = true;
+                }
+                OwnerStep::Completed {
+                    key: 1,
+                    request: 1,
+                    delivered: true,
+                    succeeded: true,
+                } if submitted => break,
+                OwnerStep::Broker(PollStep::Idle) => std::thread::yield_now(),
+                _ => panic!("pinned child did not complete the authenticated request"),
+            }
+        }
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(boot.retire_for_restart(Instant::now() + Duration::from_millis(500)));
+        assert!(Server::create_shared(&name, 3).is_err());
+        drop(boot);
+        assert!(Server::create_shared(&name, 3).is_ok());
     }
 
     #[test]

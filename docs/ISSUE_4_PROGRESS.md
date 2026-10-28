@@ -434,6 +434,11 @@
   後続のReadyへ最新版を渡した。認証付きpipeのConvertを診断loopback HTTPへ
   一度だけ送り、結果を同じpipeへ返す縦断も確認した。製品HTTPS adapterではない。
   全Rustテスト303件。
+- 親が起動した別processを、接続より先に起動handleから`PinnedProcess`として固定し、
+  `BrokerBoot`のアンカー付き共有待受でHello・Convert・結果まで通した。子process
+  の退出後に旧Bootを退役させ、アンカー解放前は同名pipeを新規作成できず、解放後は
+  作成できることも確認した。子fixtureは標準Fileで接続するためclient側のBroker
+  認証を示さず、製品TIPの発見・配置の代替でもない。全Rustテスト304件。
 
 ## 次の受入作業
 
