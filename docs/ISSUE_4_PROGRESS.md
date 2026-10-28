@@ -440,3 +440,19 @@
 
 機械全体のTSF登録は今回行っていない。恒久登録に進む前の条件は
 [ADR 0045](adr/0045-machine-registration-boundary.md)に記録している。
+
+## Issue #4 の受入条件との照合
+
+| 条件 | 今回までの確認 | 残る製品受入 |
+| --- | --- | --- |
+| 版付きJSON、ID・世代・取消・切断・再接続、容量 | ProtocolとCore、実pipe、子Brokerの診断で検査 | 製品の長寿命Brokerでの受付と更新 |
+| 別processのSID・PID・起動世代、偽serverと終了 | 固定したkernel process handle、作成時刻、相互peer照合、誤peer・終了後再受付を検査 | 配置済みTIPを信頼経路で発見・固定する仕組み |
+| 非同期pipe、バックプレッシャー、所有STA配送 | 有限I/Oとworker、専用TSFホストへの一度だけの配送を検査 | 一般アプリの所有TSFでの結果適用 |
+| composition、通常キー、スコープと保護 | 専用ホストの実DLL、Core、保護拒否を検査 | 一般アプリの正の保護判定と実キー配送 |
+| 待機容量、超過切替、救済期限 | 共有予算と専用waiting-demoで検査 | 製品の容量・期限政策と複数入力先UI |
+| Notepad等の実打鍵、1回Undo、別欄・同長別本文・読取不能拒否 | 専用ホストでは実打鍵とUndo、対象変更や読取不能の拒否を検査 | Notepad等の一般アプリで同じ受入を実施 |
+
+実APIなしのCore→IPC→編集は専用診断ホストで縦断確認した。AppContainerは拒否し、
+pipe ACLはlogon SIDに限定する。Hostの診断出力は固定した結果分類とケース名で、
+入力本文・キーを出力しない。機械登録と製品Hostの常駐起動は未実施なので、
+Issue #4とPR #10は引き続き未完了・draftとして扱う。
