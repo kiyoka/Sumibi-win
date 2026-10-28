@@ -82,7 +82,11 @@ fixture の profile/category は名前付きの模擬項目であり、実 TSF A
 通常ユーザーの HKCU fixture は同一ユーザーによる悪意のある並行書込みに対する防御を証明しない。
 製品では保護された登録領域と journal、管理者による他 installer との競合方針が必要。
 
-各ケースの journal は `target/debug/registration-transaction-fixture/<ID>/journal.bin` に残す。
+各ケースの journal は `target/debug/registration-transaction-fixture/<ID>/current.bin` に残し、
+同じディレクトリの`registration.lock`を別プロセスをまたぐ固定排他に使う。
+2026-10-29に[ADR 0068](0068-fixed-registration-journal-store.md)のstoreへfixtureを接続し、
+別プロセスの重複ロックを拒否する1ケースを加えた46ケースが成功した。
+fixtureのユーザー書込可能な配置は製品の保護ACLを証明しない。
 成功後はその取引の既知の registry 子だけを解除し、空かつ所有が一致する root を削除する。
 異常時は root と journal を診断のため保存する。実データを含む入力欄の操作は不要。
 

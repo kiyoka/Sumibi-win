@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use sumibi_setup::install_journal::FileJournal;
+use sumibi_setup::install_store::RegistrationStoreLock;
 use sumibi_setup::install_transaction::{
     self as tx, Backend, Error, InstallSpec, Journal, Observation, Resource, RESOURCES,
 };
@@ -340,7 +340,7 @@ fn directory(id: &str) -> tx::Result<PathBuf> {
     Ok(parent.join("registration-transaction-fixture").join(id))
 }
 fn journal_path(id: &str) -> tx::Result<PathBuf> {
-    Ok(directory(id)?.join("journal.bin"))
+    Ok(directory(id)?.join("current.bin"))
 }
 fn mode(value: &str) -> tx::Result<&'static str> {
     match value {
@@ -377,10 +377,29 @@ pub(super) fn worker(args: &[OsString]) -> Result<(), Failure> {
         let root = create_exclusive(HKEY_CURRENT_USER, &root_name(id)?)?;
         put(root.0, "Transaction", id)?;
         flush(root.0)?;
-        drop(FileJournal::create(&journal_path(id)?)?);
+        let store = RegistrationStoreLock::acquire_at_verified_directory(&directory(id)?)?;
+        drop(store.begin_new()?);
         return Ok(());
     }
-    let mut journal = FileJournal::open(&journal_path(id)?)?;
+    if action == "assert-lock-denied" {
+        if !journal_path(id)?.is_file()
+            || open(HKEY_CURRENT_USER, &root_name(id)?, KEY_READ)?.is_none()
+        {
+            return Err("fixture disappeared before cross-process lock check".into());
+        }
+        if RegistrationStoreLock::acquire_at_verified_directory(&directory(id)?).is_ok() {
+            return Err("fixed registration lock was acquired by another process".into());
+        }
+        return Ok(());
+    }
+    // This disposable HKCU fixture uses a user-writable directory. It tests
+    // the fixed-lock lifecycle across worker processes, not machine ACL trust.
+    let store = RegistrationStoreLock::acquire_at_verified_directory(&directory(id)?)?;
+    let mut journal = if action == "install" || action == "install-failure" {
+        store.begin_new()?
+    } else {
+        store.open_current()?.ok_or("fixture journal absent")?
+    };
     let mut backend = Fixture::open(id, cut)?;
     match action {
         "install" => tx::install(&mut backend, &mut journal, identity)?,
@@ -542,6 +561,12 @@ pub(super) fn run() -> Result<(), Failure> {
         // SAFETY: CoCreateGuid needs no COM initialization and returns a new GUID.
         let id = format!("{:032x}", unsafe { CoCreateGuid()? }.to_u128());
         child(&exe, "init", &id, none, 0)?;
+        if *name == "normal" {
+            let held = RegistrationStoreLock::acquire_at_verified_directory(&directory(&id)?)?;
+            child(&exe, "assert-lock-denied", &id, none, 0)?;
+            drop(held);
+            println!("Registration transaction fixture / fixed-lock-cross-process: OK");
+        }
         if name.starts_with("delete") || *name == "normal" {
             child(&exe, "install", &id, none, 0)?;
             child(&exe, "recover", &id, none, 0)?;
@@ -593,7 +618,7 @@ pub(super) fn run() -> Result<(), Failure> {
     }
     println!(
         "Registration transaction fixture: {} cases passed; HKCU fixture roots removed",
-        cases.len() + conflicts
+        cases.len() + conflicts + 1
     );
     println!("No COM/TSF registration, HKLM changes, DLL loading or trust changes performed");
     Ok(())

@@ -98,10 +98,15 @@ cargo build -p sumibi-setup --locked --offline
 所有情報の不一致、未知の値/子キー、有効化 flag の変化がある場合は、他の項目も削除しない。
 成功した取引の通常 recover は登録を保持し、明示 uninstall だけが解除を開始する。
 2026-10-28、Windows x64 の通常ユーザー権限で45ケースが成功し、各 fixture root の解除を確認した。
+2026-10-29、fixtureのjournalを固定storeへ接続し、別プロセスによるロック取得拒否を
+加えた46ケースが成功した。中断後の各workerは同じ`registration.lock`を再取得して
+`current.bin`を開き直す。
 
 書込みは `HKCU\Software\Sumibi\RegistrationTransactionFixture\<取引ID>` に限る。
 fixture の項目は模擬 COM/profile/category で、実 COM/TSF・HKLM・既定 IME・証明書ストアを変更せず、
-DLL もロードしない。記録は `target/debug/registration-transaction-fixture/<ID>/journal.bin` に残す。
+DLL もロードしない。記録は `target/debug/registration-transaction-fixture/<ID>/current.bin` に残す。
+同じディレクトリの`registration.lock`も固定排他に使う。このfixtureディレクトリは
+通常ユーザーが書き込めるため、製品の保護stateのACL検査にはならない。
 失敗時は journal と専用 root を残して停止する。`registration-fixture-worker` は同検査の内部子コマンドで、
 製品登録や任意のレジストリ path を受け付ける入口ではない。
 所有証拠、記録の上限、破損/書込み失敗の扱い、実 backend の残条件は
