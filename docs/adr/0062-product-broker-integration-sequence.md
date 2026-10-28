@@ -34,6 +34,7 @@ pipe名で再起動する必要がある。この製品ローテーションは�
 実clientが0件でも同名pipeの所有を維持できる。自己接続は本文I/Oをせず、
 OS instanceの1件を占めるため実client上限は7件。所有側の接続keyを0件の期間後も
 単調増加させ、次の結果を返す実pipe検査を通した。
+Hostの`begin_anchor_accept`はBrokerの接続履歴上限を確認してからOS instanceを作る。
 製品Hostの信頼できるpeer発見と、アンカーを保持した常駐ループは未接続。
 `BrokerWorkLoop::advance_with_accept`はHost政策の公開を先に確認し、完了済み受付を
 一件だけ取り出してkeyを予約し、受付が未完了ならworkerと既存pipeを進める。

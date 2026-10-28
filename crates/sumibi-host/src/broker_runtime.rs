@@ -11,7 +11,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use sumibi_ipc::{
     broker::BrokerPolicyGate, framed::FrameInbox, AcceptTask, Error as IpcError, PinnedProcess,
-    Pipe, Stop, WriteBatch, WriteRequest,
+    Pipe, SharedAnchor, Stop, WriteBatch, WriteRequest,
 };
 use sumibi_protocol::{
     broker_session::Event,
@@ -332,6 +332,25 @@ impl<'a> BrokerPolicyRuntime<'a> {
 
     pub fn remaining_attachment_budget(&self) -> usize {
         self.fanout.remaining_attachment_budget()
+    }
+
+    /// Start an anchored shared accept only while this Broker has room in its
+    /// bounded replay history. The caller still supplies a trusted peer pin.
+    pub fn begin_anchor_accept(
+        &self,
+        anchor: &SharedAnchor,
+        peer: PinnedProcess,
+        deadline: Instant,
+    ) -> Result<AcceptTask, RuntimeError> {
+        if self.failed {
+            return Err(RuntimeError::Retired);
+        }
+        if self.remaining_attachment_budget() == 0 {
+            return Err(RuntimeError::Exhausted);
+        }
+        anchor
+            .begin_accept(peer, deadline)
+            .map_err(RuntimeError::Transport)
     }
 
     /// Start the next bounded OS accept while this authenticated shared
@@ -2785,12 +2804,10 @@ mod tests {
         let limit = sumibi_protocol::policy_fanout::MAX_ATTACHMENTS;
         let mut last_client = None;
         let spare_name = Nonce::random().unwrap();
-        let mut accepts = vec![AcceptTask::start(
-            Server::create(&spare_name).unwrap(),
-            PinnedProcess::current().unwrap(),
-            deadline,
-        )
-        .unwrap()];
+        let anchor = SharedAnchor::create(&spare_name, 2, deadline).unwrap();
+        let mut accepts = vec![runtime
+            .begin_anchor_accept(&anchor, PinnedProcess::current().unwrap(), deadline)
+            .unwrap()];
 
         for index in 1..=limit {
             let (server, mut client) = connected(&stop, deadline);
@@ -2815,6 +2832,10 @@ mod tests {
                 PinnedProcess::current().unwrap(),
                 deadline
             ),
+            Err(RuntimeError::Exhausted)
+        ));
+        assert!(matches!(
+            runtime.begin_anchor_accept(&anchor, PinnedProcess::current().unwrap(), deadline),
             Err(RuntimeError::Exhausted)
         ));
         let (extra_server, _extra_client) = connected(&stop, deadline);
@@ -2894,8 +2915,8 @@ mod tests {
         let anchor = SharedAnchor::create(&name, 3, deadline).unwrap();
 
         for client_id in 1..=2 {
-            let mut accepts = vec![anchor
-                .begin_accept(PinnedProcess::current().unwrap(), deadline)
+            let mut accepts = vec![runtime
+                .begin_anchor_accept(&anchor, PinnedProcess::current().unwrap(), deadline)
                 .unwrap()];
             let mut client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
             let key = loop {
