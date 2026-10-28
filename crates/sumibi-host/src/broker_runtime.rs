@@ -10,8 +10,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use sumibi_ipc::{
-    broker::BrokerPolicyGate, framed::FrameInbox, Error as IpcError, Pipe, ReadBatch, ReadRequest,
-    Stop, WriteBatch, WriteRequest,
+    broker::BrokerPolicyGate, framed::FrameInbox, Error as IpcError, Pipe, Stop, WriteBatch,
+    WriteRequest,
 };
 use sumibi_protocol::{
     broker_session::Event,
@@ -968,64 +968,6 @@ impl Drop for BrokerPolicyRuntime<'_> {
     }
 }
 
-/// The disposable two-client fixture reads one frame from each pipe concurrently.
-/// Complete each batch before touching either pipe again; a partially decoded
-/// frame stays in its connection's inbox for the next bounded read.
-fn read_frame_pair(
-    first: &mut Connection,
-    second: &mut Connection,
-    stop: &Stop,
-    deadline: Instant,
-) -> sumibi_ipc::Result<(Envelope, Envelope)> {
-    let mut first_hello = None;
-    let mut second_hello = None;
-    loop {
-        if first_hello.is_none() {
-            first_hello = first.inbox.next_frame()?;
-        }
-        if second_hello.is_none() {
-            second_hello = second.inbox.next_frame()?;
-        }
-        if let Some(first_frame) = first_hello.take() {
-            if let Some(second_frame) = second_hello.take() {
-                return Ok((first_frame, second_frame));
-            }
-            first_hello = Some(first_frame);
-        }
-        let mut slots = Vec::new();
-        let mut requests = Vec::new();
-        if first_hello.is_none() {
-            slots.push(0);
-            requests.push(ReadRequest {
-                pipe: &mut first.pipe,
-                stop,
-                deadline,
-            });
-        }
-        if second_hello.is_none() {
-            slots.push(1);
-            requests.push(ReadRequest {
-                pipe: &mut second.pipe,
-                stop,
-                deadline,
-            });
-        }
-        let mut batch = ReadBatch::new(requests)?;
-        let mut chunks = Vec::new();
-        while let Some((index, result)) = batch.wait_next()? {
-            chunks.push((slots[index], result?));
-        }
-        drop(batch);
-        for (slot, bytes) in chunks {
-            if slot == 0 {
-                first.inbox.push(bytes)?;
-            } else {
-                second.inbox.push(bytes)?;
-            }
-        }
-    }
-}
-
 /// Child-process fixture for the explicit spike build. It uses the same Host
 /// runtime and authenticated pipes as the product path, but no network, store,
 /// registration or persistent credential. The parent owns the stop event.
@@ -1033,7 +975,7 @@ pub fn serve_diagnostic(
     bootstrap: &sumibi_ipc::bootstrap::Bootstrap,
     diagnostic_enabled: bool,
 ) -> sumibi_ipc::Result<()> {
-    use crate::broker_workers::{BrokerWorkLoop, BrokerWorkers, OwnerStep};
+    use crate::broker_workers::{BrokerWorkLoop, OwnerStep};
     use crate::manual::{Credential, Destination, Scheme};
     use std::time::Duration;
 
@@ -1105,98 +1047,71 @@ pub fn serve_diagnostic(
         .grant_manual_consent(&destination)
         .map_err(|_| IpcError::PolicyDenied)?;
     publish_diagnostic(&mut runtime, bootstrap.stop(), deadline, 3, true, None)?;
-    let (request, second_request) = {
-        let [first, second] = runtime.connections.as_mut_slice() else {
-            return Err(IpcError::InvalidMessage);
-        };
-        let (first_frame, second_frame) =
-            read_frame_pair(first, second, bootstrap.stop(), deadline)?;
-        if first.key == request_key && second.key == result_key {
-            (first_frame, second_frame)
-        } else if first.key == result_key && second.key == request_key {
-            (second_frame, first_frame)
-        } else {
-            return Err(IpcError::InvalidMessage);
-        }
-    };
-    let Event::Convert(convert) = runtime
-        .receive(request_key, request, Instant::now())
-        .map_err(|_| IpcError::PolicyDenied)?
-    else {
-        return Err(IpcError::InvalidMessage);
-    };
-    if convert.request != 1 || convert.text != "nihongo" {
-        return Err(IpcError::InvalidMessage);
-    }
-    let Event::Convert(second) = runtime
-        .receive(result_key, second_request, Instant::now())
-        .map_err(|_| IpcError::PolicyDenied)?
-    else {
-        return Err(IpcError::InvalidMessage);
-    };
-    if second.request != 1 || second.text != "second" {
-        return Err(IpcError::InvalidMessage);
-    }
-    let result_ticket = runtime
-        .job_ticket(result_key, second.request)
-        .ok_or(IpcError::InvalidMessage)?;
-    let cancelled_ticket = runtime
-        .job_ticket(request_key, convert.request)
-        .ok_or(IpcError::InvalidMessage)?;
-    let mut workers = BrokerWorkers::new();
-    workers
-        .submit(cancelled_ticket.clone(), |ticket| {
-            if ticket
-                .stop()
-                .wait_until(Instant::now() + Duration::from_secs(5))
-                .unwrap_or(false)
-            {
-                Err(ErrorCode::Cancelled)
-            } else {
-                Err(ErrorCode::Unavailable)
-            }
-        })
-        .map_err(|_| IpcError::WorkerFailed)?;
-    workers
-        .submit(result_ticket.clone(), |ticket| {
-            if ticket
-                .stop()
-                .wait_until(Instant::now() + Duration::from_millis(10))
-                .unwrap_or(true)
-                || ticket.is_cancelled()
-            {
-                Err(ErrorCode::Cancelled)
-            } else {
-                Ok("完了".into())
-            }
-        })
-        .map_err(|_| IpcError::WorkerFailed)?;
-    let completion = loop {
-        if let Some(completion) = workers.try_completion() {
-            break completion;
+    let first_admitted = Arc::new(AtomicBool::new(false));
+    let mut cancelled_ticket = None;
+    let mut result_ticket = None;
+    let mut result_delivered = false;
+    while !result_delivered {
+        if bootstrap.stop().is_cancelled()? {
+            return Err(IpcError::Cancelled);
         }
         if Instant::now() >= deadline {
             return Err(IpcError::Timeout);
         }
-        std::thread::sleep(Duration::from_millis(1));
-    };
-    if completion.reply.key != result_key
-        || completion.reply.request != second.request
-        || !matches!(completion.outcome.as_deref(), Ok("完了"))
-    {
-        return Err(IpcError::InvalidMessage);
+        let admitted = first_admitted.clone();
+        match owner
+            .advance(&mut runtime, bootstrap.stop(), deadline, move |request| {
+                move |ticket: JobTicket| match request.text.as_str() {
+                    "nihongo" => {
+                        if ticket.stop().wait_until(ticket.deadline()).unwrap_or(false) {
+                            Err(ErrorCode::Cancelled)
+                        } else {
+                            Err(ErrorCode::Timeout)
+                        }
+                    }
+                    "second" => {
+                        while !admitted.load(Ordering::Acquire)
+                            && !ticket.is_cancelled()
+                            && Instant::now() < ticket.deadline()
+                        {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        if ticket.is_cancelled() || Instant::now() >= ticket.deadline() {
+                            Err(ErrorCode::Cancelled)
+                        } else {
+                            Ok("完了".into())
+                        }
+                    }
+                    _ => Err(ErrorCode::Rejected),
+                }
+            })
+            .map_err(|_| IpcError::InvalidMessage)?
+        {
+            OwnerStep::Submitted { key, request: 1 }
+                if key == request_key && cancelled_ticket.is_none() =>
+            {
+                cancelled_ticket = runtime.job_ticket(key, 1);
+                first_admitted.store(true, Ordering::Release);
+            }
+            OwnerStep::Submitted { key, request: 1 }
+                if key == result_key && result_ticket.is_none() =>
+            {
+                result_ticket = runtime.job_ticket(key, 1);
+            }
+            OwnerStep::Completed {
+                key,
+                request: 1,
+                delivered: true,
+                succeeded: true,
+            } if key == result_key && cancelled_ticket.is_some() && result_ticket.is_some() => {
+                result_delivered = true;
+            }
+            OwnerStep::Broker(PollStep::Idle) => std::thread::sleep(Duration::from_millis(1)),
+            _ => return Err(IpcError::InvalidMessage),
+        }
     }
-    let now = Instant::now();
-    if !completion
-        .publish(
-            &mut runtime,
-            bootstrap.stop(),
-            now + Duration::from_millis(500),
-        )
-        .map_err(|_| IpcError::PolicyDenied)?
-    {
-        return Err(IpcError::InvalidMessage);
-    }
+    let cancelled_ticket = cancelled_ticket.ok_or(IpcError::InvalidMessage)?;
+    let result_ticket = result_ticket.ok_or(IpcError::InvalidMessage)?;
     source
         .revoke_manual_consent()
         .map_err(|_| IpcError::PolicyDenied)?;
@@ -1206,16 +1121,10 @@ pub fn serve_diagnostic(
         deadline,
         4,
         false,
-        Some((request_key, convert.request)),
+        Some((request_key, 1)),
     )?;
-    while workers.active_count() != 0 {
-        if workers.try_completion().is_some() {
-            return Err(IpcError::InvalidMessage);
-        }
-        if Instant::now() >= deadline {
-            return Err(IpcError::Timeout);
-        }
-        std::thread::sleep(Duration::from_millis(1));
+    if !owner.stop_and_reap(deadline) {
+        return Err(IpcError::WorkerFailed);
     }
     if !cancelled_ticket.is_cancelled() || result_ticket.is_cancelled() {
         return Err(IpcError::InvalidMessage);

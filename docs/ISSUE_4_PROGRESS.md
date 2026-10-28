@@ -231,7 +231,7 @@
   後続frameを保持する。HostのHello後に連結された要求、active接続の不正本文に
   よる当該pipeのみの退役を実pipeで確認した。
 - 最大8本の`ReadBatch`で各pipeのoverlapped Readを先に開始し、完了と開始失敗を
-  接続別に回収する。実pipeで遅い接続と開始失敗の独立性を確認した。子processの
+  接続別に回収する。実pipeで遅い接続と開始失敗の独立性を確認した。当時の子process
   2接続Host診断はHelloとConvertの双方を並行受信し、接続順・要求到着順を変えて
   成功。全Rustテスト237件、Broker回帰、Clippyが成功し、通常Hostへ復元した。
   製品Hostの継続accept/read/worker調停ループは引き続き必要。
@@ -354,6 +354,12 @@
   子fixtureは標準Fileから接続するため、client側のBroker認証をこの検査だけで
   証明するものではない。製品TIPの共有発見・所有TSFへの配送は未接続。
   全Rustテスト281件。
+- 子Broker診断の初回2要求も`BrokerWorkLoop::advance`へ移した。後から届く
+  要求の受理を待ってから結果workerを完了させ、所有側で結果を配送する。
+  政策失効時は同じ所有側poolの取消workerを回収し、再許可後の次要求まで継続。
+  以前の診断専用`ReadBatch`読取は除き、`ReadBatch`自体の並行I/Oは実pipe単体検査で
+  維持する。Broker実子process回帰と`Test-Spike.ps1 -SkipDesktop`が成功し、
+  既定HostとパッシブTIPへ復元した。
 
 ## 次の受入作業
 

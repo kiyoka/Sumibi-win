@@ -22,7 +22,9 @@ OS acceptと実worker完了を一緒に扱う製品の継続I/O調停ループ�
 異なる政策元なら受付taskを消費せず、正しい元で後から同じpipeを受け付ける。
 設定変更の受領が接続済み・未予約のpipeより先に完了した場合、そのpipeのReadyは
 受領済み最新版だけを含む。
-診断子Brokerの初期Hello/Readyもこの所有側入口を使う。破棄した受付のOS枠は
+診断子Brokerの初期Hello/Readyと2要求のworker結果もこの所有側入口を使う。
+政策失効では同じpoolの取消workerを回収してから再許可後の次要求へ進む。
+破棄した受付のOS枠は
 有限期限で戻り、生存中の別接続から追加instanceを作り直せることを確認した。
 別の実processを固定した受付ではそのprocessの接続を受理し、同じlogon SIDの
 別processからの接続を`WrongPeer`で拒否した。子Brokerの2本は引き続き同一親process
@@ -36,8 +38,9 @@ Hostの単体結合検査では、一つの`BrokerPolicyRuntime`に親processと
 `WriteBatch`が返すのは投入時の位置であり、製品の呼出し側がその位置を
 接続key・世代・政策版・Broker起動IDへ結び付けて完了を処理する。
 受信側は`FrameInbox`で分割・連結frameの未読部分を接続ごとに保持し、
-`ReadBatch`で最大8本のReadを先に開始する。子process診断の2接続Helloと
-Convertは並行受信する。`poll_active_message`は分割frameの途中でも別接続の
+`ReadBatch`で最大8本のReadを先に開始でき、実pipe単体検査で遅い接続との独立性を
+確認した。子process診断のHelloとConvertは所有側の`poll_once`で接続を巡回する。
+`poll_active_message`は分割frameの途中でも別接続の
 完成frameを先に処理でき、部分frameを10秒で退役させる。診断では失効・
 再許可後の次要求に使用したが、製品の継続調停ループには未接続。
 `poll_reserved_hello`はHello途中にも政策公開を挟める。2本の部分Helloを
