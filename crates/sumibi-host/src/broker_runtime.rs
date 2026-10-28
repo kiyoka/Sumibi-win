@@ -2758,6 +2758,73 @@ mod tests {
     }
 
     #[test]
+    fn broker_boot_rejects_an_elapsed_rotation_deadline_without_retiring() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, _) = source();
+        let expired = Instant::now() - Duration::from_millis(1);
+        assert!(matches!(
+            BrokerBoot::start(&source, 2, expired),
+            Err(RuntimeError::Transport(IpcError::Timeout))
+        ));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+        let name = boot.name().clone();
+        let boot_id = boot.boot_id();
+        let mut boot = match boot.rotate(expired) {
+            Err(RotateError::Expired(boot)) => boot,
+            _ => panic!("elapsed rotation changed the boot"),
+        };
+        assert!(boot.boot_id() == boot_id);
+        assert_eq!(boot.name().bootstrap(), name.bootstrap());
+        assert!(Server::create_shared(&name, 2).is_err());
+        let stop = Stop::new().unwrap();
+        boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let mut client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Accepted { key: 1, .. } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("unchanged boot did not accept a client"),
+            }
+        }
+        client
+            .write_all(
+                message::encode(&hello(1, boot_id)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(1)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("unchanged boot did not activate a client"),
+            }
+        }
+        read_frame(&mut client, &stop, deadline);
+        assert_eq!(boot.active_count(), 1);
+        drop(client);
+        let next = boot
+            .rotate(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        assert!(next.boot_id() != boot_id);
+    }
+
+    #[test]
     fn repeated_cancelled_worker_reaps_do_not_fill_the_completion_channel() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {

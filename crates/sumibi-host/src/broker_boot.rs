@@ -8,7 +8,7 @@ use crate::manual::OrderedConversionTransport;
 use crate::policy::{PolicyAuthority, PolicyVersion};
 use std::sync::Arc;
 use std::time::Instant;
-use sumibi_ipc::{AcceptTask, Nonce, PinnedProcess, SharedAnchor, Stop};
+use sumibi_ipc::{AcceptTask, Error as IpcError, Nonce, PinnedProcess, SharedAnchor, Stop};
 use sumibi_protocol::message::{Convert, ErrorCode, Id, Policy};
 
 /// Owns the first pipe instance through idle periods and retires every
@@ -24,10 +24,12 @@ pub struct BrokerBoot<'a> {
     source: &'a PolicyAuthority,
 }
 
-/// A timed-out rotation returns the retiring boot with its resources still
+/// An elapsed deadline returns the running boot without starting retirement.
+/// A timed-out retirement returns the retiring boot with its resources still
 /// owned for a bounded retry. Its authenticated connections are already closed.
 /// A new-boot failure occurs only after the old boot has fully retired.
 pub enum RotateError<'a> {
+    Expired(Box<BrokerBoot<'a>>),
     Pending(Box<BrokerBoot<'a>>),
     Start(RuntimeError),
 }
@@ -35,6 +37,7 @@ pub enum RotateError<'a> {
 impl std::fmt::Debug for RotateError<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Expired(_) => formatter.write_str("RotateError::Expired"),
             Self::Pending(_) => formatter.write_str("RotateError::Pending"),
             Self::Start(error) => formatter
                 .debug_tuple("RotateError::Start")
@@ -53,6 +56,9 @@ impl<'a> BrokerBoot<'a> {
         max_instances: u32,
         deadline: Instant,
     ) -> Result<Self, RuntimeError> {
+        if Instant::now() >= deadline {
+            return Err(RuntimeError::Transport(IpcError::Timeout));
+        }
         let name = Nonce::random().map_err(RuntimeError::Transport)?;
         let anchor = SharedAnchor::create(&name, max_instances, deadline)
             .map_err(RuntimeError::Transport)?;
@@ -174,11 +180,15 @@ impl<'a> BrokerBoot<'a> {
 
     /// Reap the old boot, release its first pipe instance, then create a new
     /// random name and ID under the same authority. The one deadline covers
-    /// both phases. Pending returns the retiring boot, which must be retried;
-    /// its old connections cannot resume. Start means the old boot is gone.
+    /// both phases. Expired returns a running boot without closing it. Pending
+    /// returns the retiring boot, whose old connections cannot resume. Start
+    /// means the old boot is gone.
     #[must_use = "retry a pending rotation with its returned BrokerBoot"]
     pub fn rotate(mut self, deadline: Instant) -> Result<Self, RotateError<'a>> {
-        if !self.retire_for_restart(deadline) {
+        if Instant::now() >= deadline {
+            return Err(RotateError::Expired(Box::new(self)));
+        }
+        if !self.retire_for_restart(deadline) || Instant::now() >= deadline {
             return Err(RotateError::Pending(Box::new(self)));
         }
         let source = self.source;

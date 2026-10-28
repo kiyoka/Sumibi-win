@@ -446,6 +446,10 @@
 - 実pipeで接続履歴64件を使い切り、新規受付を`Exhausted`で止めることを確認。
   切替後は履歴予算と接続keyを初期化して新しいclientのReadyを返した。
   切替直前に変更された政策も新Bootが最新版として取り込む。全Rustテスト307件。
+- 切替の呼出し時点で期限切れなら旧Bootを退役させず、同じpipe名と起動IDで
+  引き続き受付・Hello・Readyを通す。旧Bootを失わずに再試行できる。
+  全Rustテスト308件。登録不要のBroker回帰と`Test-Spike.ps1 -SkipDesktop`も成功し、
+  既定HostとパッシブTIPへ復元した。
 
 ## 次の受入作業
 

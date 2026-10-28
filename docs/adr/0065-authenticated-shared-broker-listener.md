@@ -25,6 +25,7 @@ logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer
 
 `BrokerBoot::rotate`は旧接続・受付・workerの退役を確認し、旧アンカーを
 解放してから新しいランダム名と起動IDのBootを作る。期限は両段階で共用する。
+呼出し前に期限が切れていれば`Expired`で稼働中のBootを返し、受付を止めない。
 `Pending`は旧Bootを返すが、旧接続は既に閉じている。所有者はそのBootを
 保持して退役を再試行し、元の接続を再開させない。`Start`は旧Bootが完全に
 解放された後の新規作成失敗を示す。所有者は新規起動を改めて試す。
@@ -91,6 +92,8 @@ logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer
 - 待機受付を回収してから切替え、旧名の解放と新名でのHello・Readyを実pipeで確認。
   切替時に政策元の最新版を読み直す。退出しないworkerでは切替えを保留して
   旧Bootを保持し、退出後の再試行で成功。
+- 切替呼出し時点で期限が過ぎていれば退役を始めず、旧Bootの実pipe受付と
+  Hello・Readyが引き続き成立することを確認。
 - 実pipeで64回の受付・Hello・Ready・切断を行い、履歴上限で新規受付を拒否。
   切替後は履歴予算と接続keyが新Bootで初期化され、再び受付できることを確認。
 - 診断用子Brokerの親process向け2受付、政策通知、取消、結果。`tools/Test-Broker.ps1`と
