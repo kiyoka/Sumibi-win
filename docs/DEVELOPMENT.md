@@ -151,6 +151,16 @@ Windows PowerShell 5.1の独立した読取検証で、所有者・正確な3 AC
 メモリー内ACL117ケースも両PowerShellで成功。保護state上のjournalファイル作成・
 管理者権限での復旧試験はまだ行っていない。
 
+実ファイルの継承ACLは、管理者として開いた64-bit PowerShellから次で検査する。
+UACを別プロセスで起動せず、空の保護stateと親ACLを先に確認してから
+`current.bin`を排他的に新規作成する。空の通常ファイル・所有者・3 ACEを検査し、
+成功時だけ試験ファイルを削除する。予期しない内容やACLなら保持して停止する。
+この検査はまだ管理者権限で実行していない。
+
+```powershell
+.\tools\Test-RegistrationStoreFileAclDev.ps1
+```
+
 ## 開発用COM登録（明示実行のみ）
 
 一般アプリでのロード経路を切り分けるため、現ユーザーの64-bit COM登録を個別に検証できる。

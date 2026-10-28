@@ -42,6 +42,9 @@ fmt、workspace Clippy 2構成、passive TIP Clippy、模擬fixture45ケース�
 `Removed`履歴の退避、次回journal開始を単体試験用backendで確認した。
 `Test-Spike.ps1 -SkipDesktop`を完走し、パッシブTIPと通常Hostへ復元した。
 ログは`target/issue-4-store-transaction-regression.log`に保存した。
+実ファイルACLの検査scriptは管理者Shellから直接実行する形で用意した。
+通常ユーザーでは作成前に拒否され、保護stateが空のままなことを再確認した。
+管理者側の実ファイル作成・復旧は未実施である。
 
 2026-10-29 の固定journal store追加分では、通常/Host spikeの各Rust 351件、
 fmt、workspace Clippy 2構成、passive TIP Clippy、模擬fixture45ケース、

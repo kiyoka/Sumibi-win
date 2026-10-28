@@ -73,6 +73,10 @@ Windows PowerShell 5.1の両方で、Administrators所有、継承を止めた�
 再解析点なし、内容0件を再検証した。通常ユーザーによる新規ファイル作成はOSに拒否され、
 再検査でも内容0件だった。保護state上での実journalファイル作成と
 管理者権限でのクラッシュ復旧は未検証である。
+`Test-RegistrationStoreFileAclDev.ps1`は、管理者として開いたPowerShellから
+空の保護stateに`current.bin`を作り、実ファイルの継承ACLを確認する手順として用意した。
+通常ユーザーからは権限不足で作成前に拒否され、stateが空のままなことを確認した。
+管理者権限での実行は未実施である。
 
 次に必要なのは、保護state内に作るjournalファイルの実ACL・中断後の再開確認、固定pathを使う
 製品backendの保護配置・署名・依存物検査、実HKLM/TSFの所有証拠と衝突判定、
