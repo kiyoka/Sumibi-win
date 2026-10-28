@@ -2784,6 +2784,13 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         let limit = sumibi_protocol::policy_fanout::MAX_ATTACHMENTS;
         let mut last_client = None;
+        let spare_name = Nonce::random().unwrap();
+        let mut accepts = vec![AcceptTask::start(
+            Server::create(&spare_name).unwrap(),
+            PinnedProcess::current().unwrap(),
+            deadline,
+        )
+        .unwrap()];
 
         for index in 1..=limit {
             let (server, mut client) = connected(&stop, deadline);
@@ -2815,6 +2822,23 @@ mod tests {
             runtime.reserve(extra_server),
             Err(RuntimeError::Exhausted)
         ));
+        let _spare_client = Pipe::connect(&spare_name, PinnedProcess::current().unwrap()).unwrap();
+        let mut owner = BrokerWorkLoop::new();
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Ok("unused".into())
+                })
+                .unwrap()
+            {
+                OwnerStep::AdmissionRejected(RuntimeError::Exhausted) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("already-pending accept did not reject at the lifetime cap"),
+            }
+        }
+        assert!(accepts.is_empty());
         assert_eq!(runtime.last_key, limit as u64);
         assert_eq!(runtime.active_count(), 1);
 

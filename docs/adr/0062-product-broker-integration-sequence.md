@@ -27,7 +27,8 @@ shutdownでは全受付taskのStopを先に立て、受付workerと変換worker�
 同じ有限期限で確認する。未終了taskは保持して再試行し、終了前に同じpipe名の
 Brokerを起動したと報告しない。
 Broker寿命中の64接続履歴を使い切ったら新規受付を止め、既存接続の結果配送は
-維持する。Hostは旧接続とworkerを有限に退役させてから、新しいBroker起動IDと
+維持する。上限到達前から待っていたOS受付の完了も`AdmissionRejected`として
+既存接続を巻き込まず閉じる。Hostは旧接続とworkerを有限に退役させてから、新しいBroker起動IDと
 pipe名で再起動する必要がある。この製品ローテーションは未接続。
 製品Hostの信頼できるpeer発見と、全接続が消えたときの安全な再起動は未接続。
 `BrokerWorkLoop::advance_with_accept`はHost政策の公開を先に確認し、完了済み受付を

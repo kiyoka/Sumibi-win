@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use sumibi_ipc::{AcceptTask, Error as IpcError, Pipe, Stop};
 use sumibi_protocol::broker_session::Event;
 use sumibi_protocol::message::{Convert, ErrorCode, Id};
-use sumibi_protocol::policy_fanout::MAX_SESSIONS;
+use sumibi_protocol::policy_fanout::{FanoutError, MAX_SESSIONS};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkerPoolError {
@@ -77,6 +77,9 @@ pub enum OwnerStep {
         published: Option<PublicationOutcome>,
     },
     AcceptFailed(IpcError),
+    /// The OS peer was authenticated, but this Broker has no capacity for a
+    /// new session. Existing connections remain active.
+    AdmissionRejected(RuntimeError),
     Completed {
         key: u64,
         request: u64,
@@ -222,10 +225,14 @@ impl BrokerWorkLoop {
         };
         accepts.remove(index);
         match result {
-            Ok(pipe) => {
-                let (key, published) = self.accept(runtime, pipe, stop, deadline)?;
-                Ok(Some(OwnerStep::Accepted { key, published }))
-            }
+            Ok(pipe) => match self.accept(runtime, pipe, stop, deadline) {
+                Ok((key, published)) => Ok(Some(OwnerStep::Accepted { key, published })),
+                Err(error @ RuntimeError::Exhausted)
+                | Err(error @ RuntimeError::Fanout(FanoutError::Full)) => {
+                    Ok(Some(OwnerStep::AdmissionRejected(error)))
+                }
+                Err(error) => Err(error),
+            },
             Err(error) => Ok(Some(OwnerStep::AcceptFailed(error))),
         }
     }
