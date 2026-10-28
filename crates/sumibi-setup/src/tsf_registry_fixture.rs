@@ -384,12 +384,7 @@ pub(super) fn run(args: &[OsString]) -> Result<(), Failure> {
     if action == "drop-enable" {
         let key = reg::open(roots[0].0, &layout.language, KEY_READ | KEY_WRITE)?
             .ok_or("partial profile absent")?;
-        if reg::snapshot(key.0)?
-            != *layout
-                .expected
-                .at(&layout.language)
-                .ok_or("profile model missing")?
-        {
+        if !layout.profile_is_complete(&reg::snapshot(key.0)?) {
             return Err("partial fixture profile changed".into());
         }
         reg::delete_value(key.0, "Enable")?;

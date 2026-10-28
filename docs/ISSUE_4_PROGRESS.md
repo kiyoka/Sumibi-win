@@ -482,7 +482,7 @@
 低整合性レジストリ切替えで実COM/TSF APIを取引journalへ接続した。
 Windows 11 x64の通常ユーザーから47ケースが成功し、途中終了後の別プロセス復旧、
 無効profile、カテゴリの双方向binding、未知項目での変更停止を確認した。
-通常/Host spikeの各Rust 345件と`Test-Spike.ps1 -SkipDesktop`も成功した。
+通常/Host spikeの各Rust 347件と`Test-Spike.ps1 -SkipDesktop`も成功した。
 試験用GUIDと隔離されたkeyだけを扱い、製品の恒久登録・有効化は行っていない。
 
 ## Issue #4 の受入条件との照合

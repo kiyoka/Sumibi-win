@@ -22,6 +22,31 @@ fn full_native_schema_and_empty_hive_have_exact_resource_states() {
     }
 }
 #[test]
+fn both_observed_profile_flag_layouts_are_complete_but_one_sided_flags_are_not() {
+    let layout = layout();
+    let mut without_flags = layout.expected.clone();
+    without_flags
+        .at_mut(&layout.language)
+        .values
+        .remove("hiddeninsettingui");
+    without_flags
+        .at_mut(&layout.language)
+        .values
+        .remove("subiteminsettingui");
+    assert_eq!(
+        layout.classify(&without_flags, Resource::LanguageProfile),
+        Observation::Owned
+    );
+    for missing in ["hiddeninsettingui", "subiteminsettingui"] {
+        let mut one_sided = layout.expected.clone();
+        one_sided.at_mut(&layout.language).values.remove(missing);
+        assert_eq!(
+            layout.classify(&one_sided, Resource::LanguageProfile),
+            Observation::OwnedIncomplete
+        );
+    }
+}
+#[test]
 fn different_namespace_artifacts_and_production_class_are_rejected() {
     for field in 0..5 {
         let mut identity = spec(&"a".repeat(32));
@@ -80,6 +105,8 @@ fn altered_owner_path_threading_description_enable_or_type_is_never_owned() {
         (layout.language.clone(), "description", reg::string("Other")),
         (layout.language.clone(), "enable", reg::dword(1)),
         (layout.language.clone(), "enable", reg::string("0")),
+        (layout.language.clone(), "hiddeninsettingui", reg::dword(0)),
+        (layout.language.clone(), "subiteminsettingui", reg::dword(1)),
     ] {
         let mut tree = layout.expected.clone();
         tree.at_mut(&path).values.insert(name.into(), value);

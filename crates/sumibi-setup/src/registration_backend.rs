@@ -83,6 +83,13 @@ impl Layout {
         lang.values
             .insert("description".into(), reg::string(DESCRIPTION));
         lang.values.insert("enable".into(), reg::dword(0));
+        // Windows Server 2022 records both settings UI flags; Windows 11
+        // build 26300 omits them. Both forms are observed only with these
+        // exact DWORD values, and a one-sided pair is incomplete.
+        lang.values
+            .insert("hiddeninsettingui".into(), reg::dword(1));
+        lang.values
+            .insert("subiteminsettingui".into(), reg::dword(0));
         for (forward, reverse, _) in &categories {
             expected.at_mut(forward);
             expected.at_mut(reverse);
@@ -96,6 +103,27 @@ impl Layout {
             categories,
             expected,
         })
+    }
+    pub fn profile_is_complete(&self, content: &Tree) -> bool {
+        let expected = self.expected.at(&self.language).expect("profile model");
+        if !content.children.is_empty()
+            || !matches!(content.values.len(), 2 | 4)
+            || content.values.get("description") != expected.values.get("description")
+            || content.values.get("enable") != expected.values.get("enable")
+        {
+            return false;
+        }
+        match (
+            content.values.get("hiddeninsettingui"),
+            content.values.get("subiteminsettingui"),
+        ) {
+            (None, None) => true,
+            (Some(hidden), Some(subitem)) => {
+                Some(hidden) == expected.values.get("hiddeninsettingui")
+                    && Some(subitem) == expected.values.get("subiteminsettingui")
+            }
+            _ => false,
+        }
     }
     fn classify(&self, tree: &Tree, resource: Resource) -> Observation {
         if !tree.subset_of(&self.expected) {
@@ -115,7 +143,10 @@ impl Layout {
             Resource::LanguageProfile => {
                 if tree.at(&self.service).is_none() && tree.at(r"software\microsoft").is_none() {
                     Observation::Absent
-                } else if tree.at(&self.language) == self.expected.at(&self.language) {
+                } else if tree
+                    .at(&self.language)
+                    .is_some_and(|profile| self.profile_is_complete(profile))
+                {
                     Observation::Owned
                 } else {
                     Observation::OwnedIncomplete

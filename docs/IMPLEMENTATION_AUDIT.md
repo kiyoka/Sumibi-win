@@ -35,12 +35,14 @@
 ## 2. Windowsで実行済みの検証
 
 2026-10-29 の実API隔離試験追加分では、Windows 11 Home 10.0.26300 x64、通常ユーザー権限の
-自動検査で、通常/Host spike の各 Rust 345件、fmt、workspace Clippy 2構成、passive TIP Clippyが成功した。
+自動検査で、通常/Host spike の各 Rust 347件、fmt、workspace Clippy 2構成、passive TIP Clippyが成功した。
+Windows Server 2022のCIで非表示profileに追加の正確な2値が現れたため、
+両方ある形と両方ない形だけを完成と認める所有判定の回帰を追加し、Windows 11で再検証した。
 模擬fixture45ケース、実COM/TSF隔離fixture47ケース、メモリー内ACL105ケースが成功した。
 実API試験はPowerShell 7とWindows PowerShell 5.1で実行した。保護DLLの
 現在ユーザーCOM所有9ケースとCOM/TSF一時登録・解除も再確認した。
 試験用HKCU rootの残件はなく、desktop操作を伴う全回帰は省略した。
-ログは`target/issue-4-native-registration-regression.log`と`target/native-registration-backend.log`。
+ログは`target/issue-4-native-registration-crossversion-regression.log`と`target/native-registration-backend.log`。
 
 2026-10-28 の登録準備追加分では、Windows 11 Home 10.0.26300 x64、通常ユーザー権限の
 自動検査で、通常/Host spike の各 Rust 327件、fmt、workspace Clippy 2構成、passive TIP Clippy が成功した。

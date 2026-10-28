@@ -44,6 +44,10 @@ OSの`msctf.dll`はこの後にSystem32からロードし、エクスポート�
 
 試験用COM classの正確な所有marker、DLL path、threading modelと、TSF profileの
 説明・無効状態、2カテゴリの双方向bindingを閉じたschemaで確認する。
+Windows Server 2022では非表示profileに`HiddenInSettingUI=1`と
+`SubItemInSettingUI=0`のDWORD値が追加され、Windows 11 build 26300では追加されなかった。
+この2値が両方ない形、または型と値まで一致する両方ある形だけを完成状態とする。
+片側だけ残る場合は未完成として復旧対象にし、別の値なら所有衝突として停止する。
 試験用Machine全体がこのschemaの部分集合であること、User/Classesのcanaryが空であることを
 毎回確認する。未知の値・子・型、別の所有情報、意図のない段階があれば全操作を停止する。
 観測は深さ・node数・値数・値長・合計byte数を制限し、読取り前後のキー統計で変化も拒否する。
