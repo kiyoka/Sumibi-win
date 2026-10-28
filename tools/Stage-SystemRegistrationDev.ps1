@@ -14,6 +14,22 @@ $writeRights = [System.Security.AccessControl.FileSystemRights]::Write -bor
     [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
     [System.Security.AccessControl.FileSystemRights]::TakeOwnership -bor
     0x50000000 # GENERIC_WRITE and GENERIC_ALL
+$replaceParentRights = [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+    [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+    [System.Security.AccessControl.FileSystemRights]::TakeOwnership -bor
+    0x10000000 # GENERIC_ALL
+
+function Test-DriveRootAcl {
+    param([string]$Path)
+    $acl = Get-Acl -LiteralPath $Path
+    foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+        if ($rule.AccessControlType -eq 'Allow' -and
+            $rule.IdentityReference.Value -in $broadSids -and
+            ($rule.FileSystemRights -band $replaceParentRights) -ne 0) {
+            throw "General users can replace the protected parent from the drive root: $Path"
+        }
+    }
+}
 
 function Test-ParentAcl {
     param([string]$Path)
@@ -93,6 +109,8 @@ if (-not [string]::Equals($resolvedRoot, $expectedRoot, [System.StringComparison
     throw 'This development staging script is limited to D:\Program Files\Sumibi.'
 }
 $parent = Split-Path -Path $resolvedRoot -Parent
+$driveRoot = [System.IO.Path]::GetPathRoot($parent)
+Test-DriveRootAcl -Path $driveRoot
 $parentItem = Get-Item -LiteralPath $parent -ErrorAction Stop
 if (-not $parentItem.PSIsContainer -or
     ($parentItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
@@ -158,6 +176,10 @@ $receiptPath = Join-Path $versionPath 'staging.json'
     machineRegistrationPerformed = $false
 } | ConvertTo-Json | Set-Content -LiteralPath $receiptPath -Encoding UTF8
 Set-ProtectedAcl -Path $receiptPath -Directory $false
+
+# Re-read the protected copy through the same gate used before a future
+# registration trial. Failure leaves the version for administrator diagnosis.
+& (Join-Path $PSScriptRoot 'Verify-SystemRegistrationDev.ps1') -InstalledDll $installedDll
 
 Write-Output "Protected development DLL: $installedDll"
 Write-Output 'The self-signed certificate remains untrusted; no HKLM or TSF registration was performed.'

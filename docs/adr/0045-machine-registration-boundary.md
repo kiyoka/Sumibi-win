@@ -82,3 +82,14 @@ DLL に明示 ACL を設定する。同じ版を上書きしない。配置後�
 Administrators/SYSTEM は FullControl、Users は ReadAndExecute だった。
 署名済み DLL の SHA-256 は元の manifest と一致し、`plan-system-dev` も成功した。
 署名は `UnknownError (UntrustedRoot)` のままで、ルート信頼と機械登録は行っていない。
+
+後続の読取専用 `Verify-SystemRegistrationDev.ps1` は、配置後にドライブ root・親・install root・版・DLL・
+receipt の ACL と所有者を再検査し、版内を DLL と receipt の2ファイルに限定する。
+receipt のハッシュ・版名・開発用署名と未信頼状態を照合してから、配置先 DLL を
+`plan-system-dev` で検査する。配置コマンドも最後に同じ検証を呼び出す。
+
+同日の配置 DLL を Visual Studio の `dumpbin /DEPENDENTS` で確認したところ、
+COM/Windows API と API set のほかに `VCRUNTIME140.dll` を参照していた。
+検証 PC では `C:\Windows\System32\VCRUNTIME140.dll` が存在し、署名状態は
+`Valid` だった。この観測は将来のビルドの依存物を保証しないため、製品導入時は
+ビルドごとに依存 DLL と実際のロード先を再確認する。

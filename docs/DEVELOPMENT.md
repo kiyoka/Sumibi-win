@@ -55,6 +55,17 @@ Administrators 所有、Administrators と SYSTEM はフルアクセス、Users 
 自己署名証明書は信頼ストアへ追加しない。これは配置の検証であり、HKLM/TSF
 登録、既定 IME の変更、配布用署名の確認は行わない。
 
+配置後は一般ユーザーの PowerShell から独立した読取専用検証を繰り返せる。
+`<保護配置 DLL>` には配置コマンドが表示した絶対パスを指定する。
+
+```powershell
+.\tools\Verify-SystemRegistrationDev.ps1 -InstalledDll '<保護配置 DLL>'
+```
+
+ドライブ root と保護先の親、版別配置の ACL・所有者、版内の余分なファイル、receipt とハッシュ、
+開発用署名と未信頼状態、パッシブ DLL と既存登録の衝突を調べる。
+配置スクリプトも最後に同じ検証を実行する。検証成功は機械登録の実行許可ではない。
+
 ## 開発用COM登録（明示実行のみ）
 
 一般アプリでのロード経路を切り分けるため、現ユーザーの64-bit COM登録を個別に検証できる。
