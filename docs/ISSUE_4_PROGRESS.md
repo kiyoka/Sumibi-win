@@ -486,7 +486,9 @@ Windows 11 x64の通常ユーザーから47ケースが成功し、途中終了�
 試験用GUIDと隔離されたkeyだけを扱い、製品の恒久登録・有効化は行っていない。
 続いて[ADR 0068](adr/0068-fixed-registration-journal-store.md)で、固定ロックを
 journalの寿命へ結び付け、解除済みjournalの退避と次回取引を追加した。
-保護state候補の親ACLを読み取り、state未作成を確認した。実配置と管理者試験は次段階に残る。
+保護state候補の親ACLを読み、利用者のUAC承認後に空のstateを作成した。
+両PowerShellで所有者・ACL・内容を再検証し、通常ユーザーの書込はOSに拒否された。
+state内の実journalファイル作成と管理者権限の復旧試験は次段階に残る。
 通常/Host spikeの各Rust 351件、メモリー内ACL117ケース、模擬登録45ケース、
 隔離した実API47ケースが成功した。画面操作を伴う回帰は今回省略した。
 

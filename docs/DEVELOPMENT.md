@@ -143,9 +143,11 @@ stateの有無を確認するには次を実行する。未作成ならその旨
 ```
 
 `-Provision`は管理者PowerShellからのみ、新しい空のstateディレクトリを作成する。
-現在の検証PCでは未実行で、保護state上でのjournal作成・管理者試験はまだ行っていない。
-その前に`Test-SystemRegistrationDevAcl.ps1`のメモリー内117ケース、
-PowerShell 7/Windows PowerShell 5.1の読取専用検証を確認した。
+2026-10-29、この検証PCで利用者のUAC承認後に作成した。PowerShell 7と
+Windows PowerShell 5.1の独立した読取検証で、所有者・正確な3 ACE・内容0件を確認した。
+通常ユーザーの新規ファイル作成は拒否され、再検査でも空のままだった。
+メモリー内ACL117ケースも両PowerShellで成功。保護state上のjournalファイル作成・
+管理者権限での復旧試験はまだ行っていない。
 
 ## 開発用COM登録（明示実行のみ）
 

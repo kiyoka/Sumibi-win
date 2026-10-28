@@ -39,8 +39,10 @@ fmt、workspace Clippy 2構成、passive TIP Clippy、模擬fixture45ケース�
 隔離した実COM/TSF APIの47ケース、メモリー内ACL117ケースが成功した。
 `Test-Spike.ps1 -SkipDesktop`を完走し、パッシブTIPと通常Hostへ復元した。
 既存保護DLLの読取検証、state候補の親ACL確認、非管理者の作成拒否も確認した。
-`D:\Program Files\Sumibi\registration-state`は未作成であり、保護state上の
-ファイル作成・管理者権限での取引は今回の実行範囲に含まない。
+利用者のUAC承認で`D:\Program Files\Sumibi\registration-state`を作成し、
+両PowerShellの読取検証でAdministrators所有・正確な3 ACE・内容0件を確認した。
+通常ユーザーの新規ファイル作成は拒否された。保護state上のjournalファイル作成と
+管理者権限での取引は今回の実行範囲に含まない。
 ログは`target/issue-4-registration-store-regression.log`に保存した。
 
 2026-10-29 の実API隔離試験追加分では、Windows 11 Home 10.0.26300 x64、通常ユーザー権限の

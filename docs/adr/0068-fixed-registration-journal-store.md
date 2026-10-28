@@ -1,7 +1,7 @@
 # ADR 0068: 登録journalの固定ロックと解除後の世代交代
 
 2026-10-29 / Issue #4 / draft PR #10。状態: journal storeの寿命と開発用保護配置の検証手順を追加。
-実機の保護stateディレクトリは未作成、製品の機械登録は未接続。
+実機の保護stateディレクトリを作成・検証。製品の機械登録は未接続。
 
 ## 状況
 
@@ -59,9 +59,13 @@ storeのRust API自体は任意pathのACLを認証したとは主張しない。
 Windows x64の単体試験で、同時ロック拒否、途中取引の退避拒否、解除後の世代交代、
 退避と新journal作成の間の中断、空journal再開、未知・破損ファイルの保持を確認した。
 ACL policyはメモリー内117ケースをPowerShell 7とWindows PowerShell 5.1で通した。
-このPCの保護install rootは読取確認し、`registration-state`は未作成だった。
-そのため保護state上での実ファイル作成・クラッシュ復旧と管理者実行は未検証である。
+このPCの保護install rootを読取確認した後、利用者のUAC承認を得て
+`registration-state`を管理者権限で作成した。通常ユーザーからPowerShell 7と
+Windows PowerShell 5.1の両方で、Administrators所有、継承を止めた正確な3 ACE、
+再解析点なし、内容0件を再検証した。通常ユーザーによる新規ファイル作成はOSに拒否され、
+再検査でも内容0件だった。保護state上での実journalファイル作成と
+管理者権限でのクラッシュ復旧は未検証である。
 
-次に必要なのは、保護stateの実作成とファイルACLの実確認、固定pathを使う
+次に必要なのは、保護state内に作るjournalファイルの実ACL・中断後の再開確認、固定pathを使う
 製品backendの保護配置・署名・依存物検査、実HKLM/TSFの所有証拠と衝突判定、
 登録・解除の管理者試験、版更新と旧版DLL参照の扱いである。
