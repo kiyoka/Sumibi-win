@@ -23,6 +23,10 @@ logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer
 `retire_for_restart`がfalseなら旧資源を保持して再試行し、trueの後に旧Bootを
 破棄する。型自体はTIPの発見・署名・配置を行わない。
 
+通常終了は値を消費する`BrokerBoot::shutdown`で行う。期限切れなら稼働中の
+Bootを`Expired`で返し、回収が未完了なら退役中のBootを`Pending`で返す。
+どちらも所有者が保持して期限を改めて再試行する。成功時だけアンカーを解放する。
+
 `BrokerBoot::rotate`は旧接続・受付・workerの退役を確認し、旧アンカーを
 解放してから新しいランダム名と起動IDのBootを作る。期限は両段階で共用する。
 呼出し前に期限が切れていれば`Expired`で稼働中のBootを返し、受付を止めない。
@@ -93,7 +97,8 @@ logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer
   切替時に政策元の最新版を読み直す。退出しないworkerでは切替えを保留して
   旧Bootを保持し、退出後の再試行で成功。
 - 切替呼出し時点で期限が過ぎていれば退役を始めず、旧Bootの実pipe受付と
-  Hello・Readyが引き続き成立することを確認。
+  Hello・Readyが引き続き成立することを確認。終了APIでも同じ期限前判定と
+  待機受付の回収後のアンカー解放を確認。
 - 実pipeで64回の受付・Hello・Ready・切断を行い、履歴上限で新規受付を拒否。
   切替後は履歴予算と接続keyが新Bootで初期化され、再び受付できることを確認。
 - 診断用子Brokerの親process向け2受付、政策通知、取消、結果。`tools/Test-Broker.ps1`と

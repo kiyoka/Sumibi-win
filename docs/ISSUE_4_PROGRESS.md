@@ -450,6 +450,9 @@
   引き続き受付・Hello・Readyを通す。旧Bootを失わずに再試行できる。
   全Rustテスト308件。登録不要のBroker回帰と`Test-Spike.ps1 -SkipDesktop`も成功し、
   既定HostとパッシブTIPへ復元した。
+- 通常終了も`BrokerBoot::shutdown`でBootの所有権と回収結果を一緒に返す。
+  期限切れでは稼働中のBoot、回収未完了では退役中のBootを保持して再試行できる。
+  待機受付の回収後だけアンカーを解放する実pipe回帰を確認した。
 
 ## 次の受入作業
 

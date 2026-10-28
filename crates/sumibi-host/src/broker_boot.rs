@@ -34,6 +34,22 @@ pub enum RotateError<'a> {
     Start(RuntimeError),
 }
 
+/// An elapsed deadline leaves the boot running. A pending retirement has
+/// already closed authenticated connections but still owns outstanding work.
+pub enum ShutdownError<'a> {
+    Expired(Box<BrokerBoot<'a>>),
+    Pending(Box<BrokerBoot<'a>>),
+}
+
+impl std::fmt::Debug for ShutdownError<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Expired(_) => formatter.write_str("ShutdownError::Expired"),
+            Self::Pending(_) => formatter.write_str("ShutdownError::Pending"),
+        }
+    }
+}
+
 impl std::fmt::Debug for RotateError<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -178,22 +194,33 @@ impl<'a> BrokerBoot<'a> {
             .retire_for_restart(&mut self.runtime, &mut self.accepts, deadline)
     }
 
+    /// Release this boot only after all authenticated pipes, pending accepts
+    /// and workers have retired. On failure the caller keeps ownership and
+    /// retries with a fresh deadline. No pipe name is reused by this method.
+    #[must_use = "retry shutdown with the returned BrokerBoot"]
+    pub fn shutdown(mut self, deadline: Instant) -> Result<(), ShutdownError<'a>> {
+        if Instant::now() >= deadline {
+            return Err(ShutdownError::Expired(Box::new(self)));
+        }
+        if !self.retire_for_restart(deadline) || Instant::now() >= deadline {
+            return Err(ShutdownError::Pending(Box::new(self)));
+        }
+        Ok(())
+    }
+
     /// Reap the old boot, release its first pipe instance, then create a new
     /// random name and ID under the same authority. The one deadline covers
     /// both phases. Expired returns a running boot without closing it. Pending
     /// returns the retiring boot, whose old connections cannot resume. Start
     /// means the old boot is gone.
     #[must_use = "retry a pending rotation with its returned BrokerBoot"]
-    pub fn rotate(mut self, deadline: Instant) -> Result<Self, RotateError<'a>> {
-        if Instant::now() >= deadline {
-            return Err(RotateError::Expired(Box::new(self)));
-        }
-        if !self.retire_for_restart(deadline) || Instant::now() >= deadline {
-            return Err(RotateError::Pending(Box::new(self)));
-        }
+    pub fn rotate(self, deadline: Instant) -> Result<Self, RotateError<'a>> {
         let source = self.source;
         let max_instances = self.max_instances;
-        drop(self);
+        self.shutdown(deadline).map_err(|error| match error {
+            ShutdownError::Expired(boot) => RotateError::Expired(boot),
+            ShutdownError::Pending(boot) => RotateError::Pending(boot),
+        })?;
         Self::start(source, max_instances, deadline).map_err(RotateError::Start)
     }
 }

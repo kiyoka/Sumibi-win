@@ -1324,7 +1324,7 @@ fn publish_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::broker_boot::{BrokerBoot, RotateError};
+    use crate::broker_boot::{BrokerBoot, RotateError, ShutdownError};
     use crate::broker_workers::{BrokerWorkLoop, BrokerWorkers, OwnerStep, WorkerPoolError};
     use crate::diagnostic_http::DiagnosticLoopbackHttp;
     use crate::manual::{
@@ -2219,10 +2219,9 @@ mod tests {
         boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
             .unwrap();
         assert_eq!(boot.pending_accept_count(), 1);
-        assert!(boot.retire_for_restart(Instant::now() + Duration::from_millis(500)));
-        assert_eq!(boot.pending_accept_count(), 0);
-        assert!(Server::create_shared(&name, 3).is_err());
-        drop(boot);
+        assert!(boot
+            .shutdown(Instant::now() + Duration::from_millis(500))
+            .is_ok());
         assert!(Server::create_shared(&name, 3).is_ok());
     }
 
@@ -2773,6 +2772,10 @@ mod tests {
         let boot = BrokerBoot::start(&source, 2, deadline).unwrap();
         let name = boot.name().clone();
         let boot_id = boot.boot_id();
+        let boot = match boot.shutdown(expired) {
+            Err(ShutdownError::Expired(boot)) => boot,
+            _ => panic!("elapsed shutdown changed the boot"),
+        };
         let mut boot = match boot.rotate(expired) {
             Err(RotateError::Expired(boot)) => boot,
             _ => panic!("elapsed rotation changed the boot"),
@@ -2822,6 +2825,9 @@ mod tests {
             .rotate(Instant::now() + Duration::from_secs(1))
             .unwrap();
         assert!(next.boot_id() != boot_id);
+        assert!(next
+            .shutdown(Instant::now() + Duration::from_millis(500))
+            .is_ok());
     }
 
     #[test]
