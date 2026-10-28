@@ -1324,7 +1324,7 @@ fn publish_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::broker_boot::BrokerBoot;
+    use crate::broker_boot::{BrokerBoot, RotateError};
     use crate::broker_workers::{BrokerWorkLoop, BrokerWorkers, OwnerStep, WorkerPoolError};
     use crate::diagnostic_http::DiagnosticLoopbackHttp;
     use crate::manual::{
@@ -2483,6 +2483,159 @@ mod tests {
         assert!(Server::create_shared(&name, 3).is_err());
         drop(boot);
         assert!(Server::create_shared(&name, 3).is_ok());
+    }
+
+    #[test]
+    fn broker_boot_rotates_only_after_reaping_its_pending_accept() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, _) = source();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 3, deadline).unwrap();
+        let old_name = boot.name().clone();
+        let old_id = boot.boot_id();
+        boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let mut next = boot
+            .rotate(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        assert!(next.boot_id() != old_id);
+        assert_ne!(next.name().bootstrap(), old_name.bootstrap());
+        assert_eq!(next.pending_accept_count(), 0);
+        assert!(Server::create_shared(&old_name, 3).is_ok());
+        assert!(Server::create_shared(next.name(), 3).is_err());
+        let stop = Stop::new().unwrap();
+        next.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let mut client = Pipe::connect(next.name(), PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            match next
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Accepted { key: 1, .. } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("rotated boot did not accept a client"),
+            }
+        }
+        client
+            .write_all(
+                message::encode(&hello(1, next.boot_id())).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        loop {
+            match next
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(1)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("rotated boot did not activate a client"),
+            }
+        }
+        read_frame(&mut client, &stop, deadline);
+        drop(client);
+        assert!(next.retire_for_restart(Instant::now() + Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn broker_boot_rotation_returns_a_stuck_worker_for_retry() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut boot = BrokerBoot::start(&source, 3, deadline).unwrap();
+        let old_name = boot.name().clone();
+        let old_id = boot.boot_id();
+        boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let mut client = Pipe::connect(&old_name, PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Accepted { key: 1, .. } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("rotation client was not accepted"),
+            }
+        }
+        client
+            .write_all(message::encode(&hello(1, old_id)).unwrap(), &stop, deadline)
+            .unwrap();
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(1)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("rotation client did not activate"),
+            }
+        }
+        read_frame(&mut client, &stop, deadline);
+        let mut request = convert(1, 1, 1, boot.policy());
+        if let message::Message::Convert(convert) = &mut request.message {
+            convert.timeout_ms = 5000;
+        }
+        client
+            .write_all(message::encode(&request).unwrap(), &stop, deadline)
+            .unwrap();
+        let release = Arc::new(AtomicBool::new(false));
+        let worker_release = release.clone();
+        loop {
+            let worker_release = worker_release.clone();
+            match boot
+                .advance(&stop, deadline, move |_| {
+                    move |ticket: JobTicket| {
+                        while !worker_release.load(Ordering::Acquire)
+                            && Instant::now() < ticket.deadline()
+                        {
+                            std::thread::yield_now();
+                        }
+                        Err(ErrorCode::Cancelled)
+                    }
+                })
+                .unwrap()
+            {
+                OwnerStep::Submitted { key: 1, request: 1 } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("rotation worker was not submitted"),
+            }
+        }
+        let old = match boot.rotate(Instant::now() + Duration::from_millis(20)) {
+            Err(RotateError::Pending(old)) => old,
+            _ => panic!("rotation did not retain a running worker"),
+        };
+        assert_eq!(old.active_worker_count(), 1);
+        assert!(Server::create_shared(&old_name, 3).is_err());
+        release.store(true, Ordering::Release);
+        drop(client);
+        let mut next = old.rotate(Instant::now() + Duration::from_secs(1)).unwrap();
+        assert!(next.boot_id() != old_id);
+        assert!(Server::create_shared(&old_name, 3).is_ok());
+        assert!(next.retire_for_restart(Instant::now() + Duration::from_millis(500)));
     }
 
     #[test]

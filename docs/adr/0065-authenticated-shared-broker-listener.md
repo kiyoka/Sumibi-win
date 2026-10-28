@@ -23,6 +23,13 @@ logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer
 `retire_for_restart`がfalseなら旧資源を保持して再試行し、trueの後に旧Bootを
 破棄する。型自体はTIPの発見・署名・配置を行わない。
 
+`BrokerBoot::rotate`は旧接続・受付・workerの退役を確認し、旧アンカーを
+解放してから新しいランダム名と起動IDのBootを作る。期限は両段階で共用する。
+`Pending`は旧Bootを返すが、旧接続は既に閉じている。所有者はそのBootを
+保持して退役を再試行し、元の接続を再開させない。`Start`は旧Bootが完全に
+解放された後の新規作成失敗を示す。所有者は新規起動を改めて試す。
+新しい名前の配布とTIPの再接続は、配置と発見を担う製品側の責務とする。
+
 ## 所有側の順序
 
 1. HostがBroker起動IDとpipe名を用意し、`SharedAnchor::create`を完了する。
@@ -81,6 +88,8 @@ logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer
 - 起動handleで固定した別processを`BrokerBoot`から受付し、Hello・Convert・結果、
   子process退出、旧Boot退役とアンカー解放後の同名pipe再作成を確認。子fixtureは
   標準File接続なのでclient側のBroker相互認証はこの検査の範囲外。
+- 待機受付を回収してから切替え、旧名の解放と新名でのHello・Readyを実pipeで確認。
+  退出しないworkerでは切替えを保留して旧Bootを保持し、退出後の再試行で成功。
 - 診断用子Brokerの親process向け2受付、政策通知、取消、結果。`tools/Test-Broker.ps1`と
   `tools/Test-Spike.ps1 -SkipDesktop`が成功し、既定HostとパッシブTIPへ復元。
 

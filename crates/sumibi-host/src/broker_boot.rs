@@ -20,6 +20,28 @@ pub struct BrokerBoot<'a> {
     accepts: Vec<AcceptTask>,
     anchor: SharedAnchor,
     name: Nonce,
+    max_instances: u32,
+    source: &'a PolicyAuthority,
+}
+
+/// A timed-out rotation returns the retiring boot with its resources still
+/// owned for a bounded retry. Its authenticated connections are already closed.
+/// A new-boot failure occurs only after the old boot has fully retired.
+pub enum RotateError<'a> {
+    Pending(Box<BrokerBoot<'a>>),
+    Start(RuntimeError),
+}
+
+impl std::fmt::Debug for RotateError<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending(_) => formatter.write_str("RotateError::Pending"),
+            Self::Start(error) => formatter
+                .debug_tuple("RotateError::Start")
+                .field(error)
+                .finish(),
+        }
+    }
 }
 
 impl<'a> BrokerBoot<'a> {
@@ -41,6 +63,8 @@ impl<'a> BrokerBoot<'a> {
             accepts: Vec::new(),
             anchor,
             name,
+            max_instances,
+            source,
         })
     }
 
@@ -68,6 +92,10 @@ impl<'a> BrokerBoot<'a> {
 
     pub fn pending_accept_count(&self) -> usize {
         self.accepts.len()
+    }
+
+    pub fn active_worker_count(&self) -> usize {
+        self.owner.active_count()
     }
 
     /// The owner supplies a trusted process pin before an OS instance exists.
@@ -142,5 +170,20 @@ impl<'a> BrokerBoot<'a> {
     pub fn retire_for_restart(&mut self, deadline: Instant) -> bool {
         self.owner
             .retire_for_restart(&mut self.runtime, &mut self.accepts, deadline)
+    }
+
+    /// Reap the old boot, release its first pipe instance, then create a new
+    /// random name and ID under the same authority. The one deadline covers
+    /// both phases. Pending returns the retiring boot, which must be retried;
+    /// its old connections cannot resume. Start means the old boot is gone.
+    #[must_use = "retry a pending rotation with its returned BrokerBoot"]
+    pub fn rotate(mut self, deadline: Instant) -> Result<Self, RotateError<'a>> {
+        if !self.retire_for_restart(deadline) {
+            return Err(RotateError::Pending(Box::new(self)));
+        }
+        let source = self.source;
+        let max_instances = self.max_instances;
+        drop(self);
+        Self::start(source, max_instances, deadline).map_err(RotateError::Start)
     }
 }
