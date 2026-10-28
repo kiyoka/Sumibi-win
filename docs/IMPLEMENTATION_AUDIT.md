@@ -34,6 +34,15 @@
 
 ## 2. Windowsで実行済みの検証
 
+2026-10-29 の退避journal検証追加分では、通常/Host spikeの各Rust 353件、
+fmt、workspace Clippy 2構成、passive TIP Clippy、模擬fixture45ケース、
+隔離した実COM/TSF APIの47ケース、メモリー内ACL117ケースが成功した。
+退避済み履歴の不完全末尾・取引ID不一致・未解除段階を内容変更なしで拒否する。
+固定storeを開き直した後も、取引エンジンの`Installed`保持、明示解除、
+`Removed`履歴の退避、次回journal開始を単体試験用backendで確認した。
+`Test-Spike.ps1 -SkipDesktop`を完走し、パッシブTIPと通常Hostへ復元した。
+ログは`target/issue-4-store-transaction-regression.log`に保存した。
+
 2026-10-29 の固定journal store追加分では、通常/Host spikeの各Rust 351件、
 fmt、workspace Clippy 2構成、passive TIP Clippy、模擬fixture45ケース、
 隔離した実COM/TSF APIの47ケース、メモリー内ACL117ケースが成功した。

@@ -131,7 +131,9 @@ PowerShell 7とWindows PowerShell 5.1で確認した。登録・解除の中断�
 
 解除完了後の次回登録に備え、`install_store`は固定の`registration.lock`を保持し、
 `Removed`となった`current.bin`だけを取引ID付きの退避ファイルへ移す。
-journalの寿命はRustの型でロックに結び付ける。中断・破損・同名退避先の扱いは
+journalの寿命はRustの型でロックに結び付ける。退避済みの全journalは
+完全な`Removed`履歴とファイル名の取引ID一致を読取専用で確認する。
+中断・破損・同名退避先の扱いは
 [ADR 0068](adr/0068-fixed-registration-journal-store.md)に記録する。
 製品の機械登録コマンドにはまだ接続していない。
 

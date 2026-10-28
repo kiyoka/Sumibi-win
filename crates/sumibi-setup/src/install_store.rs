@@ -37,10 +37,10 @@ fn archive_name(transaction: &str) -> Result<String> {
     Ok(format!("removed-{}.bin", transaction.to_ascii_lowercase()))
 }
 
-fn is_archive_name(name: &str) -> bool {
+fn archive_id(name: &str) -> Option<&str> {
     name.strip_prefix("removed-")
         .and_then(|value| value.strip_suffix(".bin"))
-        .is_some_and(|id| {
+        .filter(|id| {
             id.len() == 32
                 && id
                     .bytes()
@@ -103,15 +103,19 @@ impl RegistrationStoreLock {
                 .ok_or_else(|| failure("non-UTF-8 store item"))?;
             if name == LOCK || name == CURRENT {
                 plain(&entry.path(), false)?;
-            } else if is_archive_name(name) {
+            } else if let Some(id) = archive_id(name) {
                 plain(&entry.path(), false)?;
                 archives += 1;
+                if archives > MAX_ARCHIVES {
+                    return Err(failure("registration archive count limit reached"));
+                }
+                let last = FileJournal::inspect_complete(&entry.path())?;
+                if last.phase != Phase::Removed || !last.spec.transaction.eq_ignore_ascii_case(id) {
+                    return Err(failure("archived journal identity or phase mismatch"));
+                }
             } else {
                 return Err(failure("unexpected item in registration store"));
             }
-        }
-        if archives > MAX_ARCHIVES {
-            return Err(failure("registration archive count limit reached"));
         }
         Ok(archives)
     }

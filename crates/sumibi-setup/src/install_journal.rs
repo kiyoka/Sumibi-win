@@ -124,6 +124,35 @@ impl FileJournal {
         Self::open_impl(path, false)
     }
 
+    /// Inspect a retired journal without repairing or otherwise modifying it.
+    /// An archive is written only after a complete Removed checkpoint, so an
+    /// incomplete tail is evidence to preserve and reject.
+    pub(crate) fn inspect_complete(path: &Path) -> Result<Checkpoint> {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        let mut options = OpenOptions::new();
+        options.read(true).share_mode(0).custom_flags(0x0020_0000);
+        let mut file = options.open(path).map_err(io)?;
+        let metadata = file.metadata().map_err(io)?;
+        if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
+            return Err(Error("registration journal must be a plain file".into()));
+        }
+        if metadata.len() > MAX_BYTES as u64 {
+            return Err(Error("registration journal exceeds size limit".into()));
+        }
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(MAX_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(io)?;
+        let history = decode(&bytes)?;
+        if history.valid_bytes != bytes.len() {
+            return Err(Error("incomplete archived registration journal".into()));
+        }
+        history
+            .latest
+            .ok_or_else(|| Error("empty archived registration journal".into()))
+    }
+
     fn open_impl(path: &Path, create: bool) -> Result<Self> {
         use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
         let mut options = OpenOptions::new();
