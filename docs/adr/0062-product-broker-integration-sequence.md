@@ -37,6 +37,10 @@ OS instanceの1件を占めるため実client上限は7件。所有側の接続k
 Hostの`begin_anchor_accept`はBrokerの接続履歴上限を確認してからOS instanceを作る。
 診断用子Brokerもこのアンカーを保持してから親process向け2受付を開始し、
 既存の子process回帰を通した。
+アンカー1件と実受付7件で8 endpoint枠を満たし、取消・回収後の再受付と
+アンカー付きshutdown後の同名pipe再作成を実pipeで確認した。
+実clientが0件の間の失効・再許可も所有側で完了させ、後から来た接続へ最新版の
+Readyと結果を返した。
 製品Hostの信頼できるpeer発見と、アンカーを保持した常駐ループは未接続。
 `BrokerWorkLoop::advance_with_accept`はHost政策の公開を先に確認し、完了済み受付を
 一件だけ取り出してkeyを予約し、受付が未完了ならworkerと既存pipeを進める。

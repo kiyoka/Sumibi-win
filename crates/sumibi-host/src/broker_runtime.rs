@@ -1807,28 +1807,22 @@ mod tests {
                 _ => panic!("worker was not submitted before shutdown"),
             }
         }
-        let first_name = Nonce::random().unwrap();
-        let second_name = Nonce::random().unwrap();
+        let name = Nonce::random().unwrap();
+        let anchor = SharedAnchor::create(&name, 3, deadline).unwrap();
         let mut accepts = vec![
-            AcceptTask::start(
-                Server::create(&first_name).unwrap(),
-                PinnedProcess::current().unwrap(),
-                deadline,
-            )
-            .unwrap(),
-            AcceptTask::start(
-                Server::create(&second_name).unwrap(),
-                PinnedProcess::current().unwrap(),
-                deadline,
-            )
-            .unwrap(),
+            runtime
+                .begin_anchor_accept(&anchor, PinnedProcess::current().unwrap(), deadline)
+                .unwrap(),
+            runtime
+                .begin_anchor_accept(&anchor, PinnedProcess::current().unwrap(), deadline)
+                .unwrap(),
         ];
         assert!(owner
             .stop_and_reap_with_accepts(&mut accepts, Instant::now() + Duration::from_millis(500)));
         assert!(accepts.is_empty());
         assert_eq!(owner.active_count(), 0);
-        assert!(Server::create(&first_name).is_ok());
-        assert!(Server::create(&second_name).is_ok());
+        drop(anchor);
+        assert!(Server::create_shared(&name, 3).is_ok());
     }
 
     #[test]
@@ -2958,12 +2952,28 @@ mod tests {
             }
             assert!(matches!(
                 read_frame(&mut client, &stop, deadline).message,
-                message::Message::Ready(_)
+                message::Message::Ready(ready) if ready.policy == runtime.policy()
             ));
             if client_id == 1 {
                 assert!(runtime.disconnect(key));
                 drop(client);
                 assert_eq!(runtime.active_count(), 0);
+                let revoked = source.revoke_manual_consent().unwrap();
+                assert_eq!(
+                    owner
+                        .acknowledge_version(&mut runtime, revoked, &stop, deadline)
+                        .unwrap()
+                        .completion,
+                    DeliveryCompletion::ExactOrClosed
+                );
+                let granted = source.grant_manual_consent(&destination).unwrap();
+                assert_eq!(
+                    owner
+                        .acknowledge_version(&mut runtime, granted, &stop, deadline)
+                        .unwrap()
+                        .completion,
+                    DeliveryCompletion::ExactOrClosed
+                );
                 continue;
             }
             client

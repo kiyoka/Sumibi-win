@@ -353,21 +353,18 @@ impl SharedAnchor {
         let self_client = match self_client {
             Ok(handle) => handle,
             Err(error) => {
-                let _ = accepting.cancel_and_reap(deadline);
-                return Err(error);
+                return Err(Self::failed_creation(&mut accepting, error));
             }
         };
         if let Err(error) = client_peer.verify(raw(&self_client), false) {
-            let _ = accepting.cancel_and_reap(deadline);
-            return Err(error);
+            return Err(Self::failed_creation(&mut accepting, error));
         }
         let server = loop {
             if let Some(result) = accepting.poll() {
                 break result?;
             }
             if Instant::now() >= deadline {
-                let _ = accepting.cancel_and_reap(deadline);
-                return Err(Error::Timeout);
+                return Err(Self::failed_creation(&mut accepting, Error::Timeout));
             }
             thread::sleep(Duration::from_millis(1));
         };
@@ -375,6 +372,13 @@ impl SharedAnchor {
             server,
             _self_client: self_client,
         })
+    }
+
+    fn failed_creation(accepting: &mut AcceptTask, reason: Error) -> Error {
+        match accepting.cancel_and_reap(Instant::now() + Duration::from_millis(500)) {
+            Ok(true) => reason,
+            Ok(false) | Err(_) => Error::Retired,
+        }
     }
 
     /// The expected process must come from a trusted launch or discovery
@@ -1510,6 +1514,40 @@ mod tests {
         }
         drop(anchor);
         assert!(Server::create_shared(&name, 3).is_ok());
+    }
+
+    #[test]
+    fn shared_anchor_reserves_one_of_eight_endpoint_slots() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let anchor = SharedAnchor::create(&name, MAX_ENDPOINTS as u32, deadline).unwrap();
+        let mut accepts: Vec<_> = (0..MAX_ENDPOINTS - 1)
+            .map(|_| {
+                anchor
+                    .begin_accept(PinnedProcess::current().unwrap(), deadline)
+                    .unwrap()
+            })
+            .collect();
+        assert!(matches!(
+            anchor.begin_accept(PinnedProcess::current().unwrap(), deadline),
+            Err(Error::Capacity)
+        ));
+        for task in &mut accepts {
+            assert!(task
+                .cancel_and_reap(Instant::now() + Duration::from_millis(500))
+                .unwrap());
+        }
+        drop(accepts);
+        let mut next = anchor
+            .begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        assert!(next
+            .cancel_and_reap(Instant::now() + Duration::from_millis(500))
+            .unwrap());
     }
 
     #[test]
