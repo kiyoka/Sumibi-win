@@ -7,13 +7,14 @@ use crate::broker_workers::{BrokerWorkLoop, OwnerStep};
 use crate::manual::OrderedConversionTransport;
 use crate::policy::{PolicyAuthority, PolicyVersion};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use sumibi_ipc::{AcceptTask, Error as IpcError, Nonce, PinnedProcess, SharedAnchor, Stop};
 use sumibi_protocol::message::{Convert, ErrorCode, Id, Policy};
 
 /// Owns the first pipe instance through idle periods and retires every
 /// accepted connection, pending accept and worker before a new boot.
-/// Field order keeps the anchor alive until the other resources are dropped.
+/// Field order drops the anchor last; use `shutdown` or `rotate` to confirm
+/// worker and accept threads have exited before releasing the pipe name.
 pub struct BrokerBoot<'a> {
     runtime: BrokerPolicyRuntime<'a>,
     owner: BrokerWorkLoop,
@@ -24,20 +25,22 @@ pub struct BrokerBoot<'a> {
     source: &'a PolicyAuthority,
 }
 
-/// An elapsed deadline returns the running boot without starting retirement.
+/// An elapsed or overlong deadline returns the running boot without retirement.
 /// A timed-out retirement returns the retiring boot with its resources still
 /// owned for a bounded retry. Its authenticated connections are already closed.
 /// A new-boot failure occurs only after the old boot has fully retired.
 pub enum RotateError<'a> {
     Expired(Box<BrokerBoot<'a>>),
+    InvalidDeadline(Box<BrokerBoot<'a>>),
     Pending(Box<BrokerBoot<'a>>),
     Start(RuntimeError),
 }
 
-/// An elapsed deadline leaves the boot running. A pending retirement has
+/// An elapsed or overlong deadline leaves the boot running. A pending retirement has
 /// already closed authenticated connections but still owns outstanding work.
 pub enum ShutdownError<'a> {
     Expired(Box<BrokerBoot<'a>>),
+    InvalidDeadline(Box<BrokerBoot<'a>>),
     Pending(Box<BrokerBoot<'a>>),
 }
 
@@ -45,6 +48,7 @@ impl std::fmt::Debug for ShutdownError<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Expired(_) => formatter.write_str("ShutdownError::Expired"),
+            Self::InvalidDeadline(_) => formatter.write_str("ShutdownError::InvalidDeadline"),
             Self::Pending(_) => formatter.write_str("ShutdownError::Pending"),
         }
     }
@@ -54,6 +58,7 @@ impl std::fmt::Debug for RotateError<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Expired(_) => formatter.write_str("RotateError::Expired"),
+            Self::InvalidDeadline(_) => formatter.write_str("RotateError::InvalidDeadline"),
             Self::Pending(_) => formatter.write_str("RotateError::Pending"),
             Self::Start(error) => formatter
                 .debug_tuple("RotateError::Start")
@@ -72,8 +77,8 @@ impl<'a> BrokerBoot<'a> {
         max_instances: u32,
         deadline: Instant,
     ) -> Result<Self, RuntimeError> {
-        if Instant::now() >= deadline {
-            return Err(RuntimeError::Transport(IpcError::Timeout));
+        if let Some(error) = deadline_error(deadline) {
+            return Err(RuntimeError::Transport(error));
         }
         let name = Nonce::random().map_err(RuntimeError::Transport)?;
         let anchor = SharedAnchor::create(&name, max_instances, deadline)
@@ -186,8 +191,9 @@ impl<'a> BrokerBoot<'a> {
             .acknowledge_version(&mut self.runtime, requested, stop, deadline)
     }
 
-    /// Call before dropping this boot and starting another. False means a
-    /// worker or OS accept still owns resources; retain this value and retry.
+    /// Low-level retirement step for callers already holding this boot. Prefer
+    /// `shutdown` or `rotate`, which validate the deadline and retain ownership
+    /// on failure. False means a worker or OS accept still owns resources.
     #[must_use = "keep this Broker boot alive and retry if retirement is incomplete"]
     pub fn retire_for_restart(&mut self, deadline: Instant) -> bool {
         self.owner
@@ -196,11 +202,13 @@ impl<'a> BrokerBoot<'a> {
 
     /// Release this boot only after all authenticated pipes, pending accepts
     /// and workers have retired. On failure the caller keeps ownership and
-    /// retries with a fresh deadline. No pipe name is reused by this method.
+    /// retries with a deadline within 60 seconds. No pipe name is reused here.
     #[must_use = "retry shutdown with the returned BrokerBoot"]
     pub fn shutdown(mut self, deadline: Instant) -> Result<(), ShutdownError<'a>> {
-        if Instant::now() >= deadline {
-            return Err(ShutdownError::Expired(Box::new(self)));
+        match deadline_error(deadline) {
+            Some(IpcError::Timeout) => return Err(ShutdownError::Expired(Box::new(self))),
+            Some(_) => return Err(ShutdownError::InvalidDeadline(Box::new(self))),
+            None => {}
         }
         if !self.retire_for_restart(deadline) || Instant::now() >= deadline {
             return Err(ShutdownError::Pending(Box::new(self)));
@@ -210,7 +218,7 @@ impl<'a> BrokerBoot<'a> {
 
     /// Reap the old boot, release its first pipe instance, then create a new
     /// random name and ID under the same authority. The one deadline covers
-    /// both phases. Expired returns a running boot without closing it. Pending
+    /// both phases. Expired and InvalidDeadline return a running boot. Pending
     /// returns the retiring boot, whose old connections cannot resume. Start
     /// means the old boot is gone.
     #[must_use = "retry a pending rotation with its returned BrokerBoot"]
@@ -219,8 +227,20 @@ impl<'a> BrokerBoot<'a> {
         let max_instances = self.max_instances;
         self.shutdown(deadline).map_err(|error| match error {
             ShutdownError::Expired(boot) => RotateError::Expired(boot),
+            ShutdownError::InvalidDeadline(boot) => RotateError::InvalidDeadline(boot),
             ShutdownError::Pending(boot) => RotateError::Pending(boot),
         })?;
         Self::start(source, max_instances, deadline).map_err(RotateError::Start)
+    }
+}
+
+fn deadline_error(deadline: Instant) -> Option<IpcError> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        Some(IpcError::Timeout)
+    } else if remaining > Duration::from_secs(60) {
+        Some(IpcError::InvalidArgument)
+    } else {
+        None
     }
 }

@@ -2757,7 +2757,7 @@ mod tests {
     }
 
     #[test]
-    fn broker_boot_rejects_an_elapsed_rotation_deadline_without_retiring() {
+    fn broker_boot_rejects_invalid_deadlines_without_retiring() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {
             return;
@@ -2768,10 +2768,23 @@ mod tests {
             BrokerBoot::start(&source, 2, expired),
             Err(RuntimeError::Transport(IpcError::Timeout))
         ));
+        let overlong = Instant::now() + Duration::from_secs(61);
+        assert!(matches!(
+            BrokerBoot::start(&source, 2, overlong),
+            Err(RuntimeError::Transport(IpcError::InvalidArgument))
+        ));
         let deadline = Instant::now() + Duration::from_secs(5);
         let boot = BrokerBoot::start(&source, 2, deadline).unwrap();
         let name = boot.name().clone();
         let boot_id = boot.boot_id();
+        let boot = match boot.shutdown(overlong) {
+            Err(ShutdownError::InvalidDeadline(boot)) => boot,
+            _ => panic!("overlong shutdown changed the boot"),
+        };
+        let boot = match boot.rotate(overlong) {
+            Err(RotateError::InvalidDeadline(boot)) => boot,
+            _ => panic!("overlong rotation changed the boot"),
+        };
         let boot = match boot.shutdown(expired) {
             Err(ShutdownError::Expired(boot)) => boot,
             _ => panic!("elapsed shutdown changed the boot"),
