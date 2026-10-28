@@ -310,6 +310,9 @@ impl<'a> BrokerPolicyRuntime<'a> {
         if self.failed {
             return Err(RuntimeError::Retired);
         }
+        if self.fanout.remaining_attachment_budget() == 0 {
+            return Err(RuntimeError::Exhausted);
+        }
         if self.pending.len() + self.connections.len() >= MAX_SESSIONS {
             return Err(RuntimeError::Fanout(FanoutError::Full));
         }
@@ -327,6 +330,10 @@ impl<'a> BrokerPolicyRuntime<'a> {
         Ok(key)
     }
 
+    pub fn remaining_attachment_budget(&self) -> usize {
+        self.fanout.remaining_attachment_budget()
+    }
+
     /// Start the next bounded OS accept while this authenticated shared
     /// instance still owns the pipe name. The caller supplies a process pinned
     /// by its trusted launch or discovery path; this method never discovers a
@@ -339,6 +346,9 @@ impl<'a> BrokerPolicyRuntime<'a> {
     ) -> Result<AcceptTask, RuntimeError> {
         if self.failed {
             return Err(RuntimeError::Retired);
+        }
+        if self.remaining_attachment_budget() == 0 {
+            return Err(RuntimeError::Exhausted);
         }
         let pipe = self
             .connections
@@ -2755,6 +2765,90 @@ mod tests {
             message::Message::Ready(_)
         ));
         assert_eq!(runtime.active_count(), 3);
+    }
+
+    #[test]
+    fn attachment_limit_stops_new_accepts_but_keeps_the_last_client_usable() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let limit = sumibi_protocol::policy_fanout::MAX_ATTACHMENTS;
+        let mut last_client = None;
+
+        for index in 1..=limit {
+            let (server, mut client) = connected(&stop, deadline);
+            let key = runtime
+                .attach(server, hello(index as u128, id(90)), &stop, deadline)
+                .unwrap();
+            assert_eq!(key, index as u64);
+            assert!(matches!(
+                read_frame(&mut client, &stop, deadline).message,
+                message::Message::Ready(_)
+            ));
+            if index == limit {
+                last_client = Some(client);
+            } else {
+                assert!(runtime.disconnect(key));
+            }
+        }
+        assert_eq!(runtime.remaining_attachment_budget(), 0);
+        assert!(matches!(
+            runtime.begin_replacement_accept(
+                limit as u64,
+                PinnedProcess::current().unwrap(),
+                deadline
+            ),
+            Err(RuntimeError::Exhausted)
+        ));
+        let (extra_server, _extra_client) = connected(&stop, deadline);
+        assert!(matches!(
+            runtime.reserve(extra_server),
+            Err(RuntimeError::Exhausted)
+        ));
+        assert_eq!(runtime.last_key, limit as u64);
+        assert_eq!(runtime.active_count(), 1);
+
+        let mut client = last_client.unwrap();
+        client
+            .write_all(
+                message::encode(&convert(limit as u128, 1, 1, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        loop {
+            match runtime.poll_once(&stop, deadline).unwrap() {
+                PollStep::Received {
+                    key,
+                    event: Event::Convert(request),
+                } if key == limit as u64 && request.request == 1 => break,
+                PollStep::Idle if Instant::now() < deadline => std::thread::yield_now(),
+                _ => panic!("last attached client could not send after the lifetime cap"),
+            }
+        }
+        let ticket = runtime.job_ticket(limit as u64, 1).unwrap();
+        assert!(runtime
+            .publish_result(
+                ticket.reply_context(Instant::now()),
+                "継続".into(),
+                &stop,
+                Instant::now() + Duration::from_millis(300)
+            )
+            .unwrap());
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Result(result) if result.text == "継続"
+        ));
     }
 
     #[test]

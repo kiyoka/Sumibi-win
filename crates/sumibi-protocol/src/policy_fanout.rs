@@ -84,6 +84,12 @@ impl PolicyFanout {
         self.subscribers.len()
     }
 
+    /// A Broker must drain and restart with a fresh boot ID when this reaches
+    /// zero. Keeping the replay history bounded is part of the session model.
+    pub fn remaining_attachment_budget(&self) -> usize {
+        MAX_ATTACHMENTS - self.attachments
+    }
+
     /// Identify an activated transport by its authenticated connection key.
     /// A reserved key has no client identity until Hello succeeds.
     pub fn session_id(&self, key: u64) -> Option<Id> {
