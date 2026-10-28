@@ -323,6 +323,13 @@
   HTTP応答待機workerの取消後に同じpipeで再許可の次要求を受けることを確認した。
   workerが期限内に終わらなければ設定完了を成功とせずTimeoutを返す。
   全Rustテスト265件と診断featureのClippyが成功。
+- `AcceptTask`でOSの接続待ちを有限期限の専用threadへ移し、所有側からは非同期に
+  結果を取得する。結果は固定された親processとdesktop tokenを照合した後のpipe
+  だけを含む。取消が受付完了と競合してもpipeを公開しない。子Brokerの診断2接続を
+  この受付へ接続し、2本目のOS accept中に1本目のHelloとReadyを完了する段階的な
+  子process検査を追加した。さらに受付待ち中の政策失効・再許可、worker結果、
+  後続接続の最新版Readyを実pipeで確認した。全Rustテスト269件、Broker回帰、
+  Clippyが成功し、既定Hostへ復元した。製品Hostの共有発見と長寿命の受付は未接続。
 
 ## 次の受入作業
 
@@ -330,8 +337,8 @@
 [ADR 0062](adr/0062-product-broker-integration-sequence.md)に記録した。
 
 1. `BrokerWorkLoop`と`BrokerPolicyRuntime`を製品Hostの継続するOS acceptへ接続する。
-   現在の子Brokerは診断用の2接続を順番に受け付ける。長寿命の受付中も政策通知、
-   worker完了、別接続の部分Helloを進める調停が必要。設定UIの操作完了と
+   現在の子Brokerは診断用の2接続を非同期に受け付け、受付中の政策通知とworker
+   完了も実pipeで確認した。長寿命の製品受付、設定UIの操作完了と
    所有TSFでの結果適用前再検査も製品経路で実証する。
 2. 配置されたBrokerの信頼できる発見・署名・更新・起動を実装する。
 3. 一般アプリへ製品TIPのキー配送と所有対象の失効を接続し、入力先ごとの保護情報を肯定的に検証する。

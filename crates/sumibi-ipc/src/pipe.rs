@@ -2,7 +2,9 @@ use crate::identity::PinnedProcess;
 use crate::support::{last_error, own, raw, Error, Local, Nonce, Result};
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use windows::core::{HRESULT, PCWSTR};
 use windows::Win32::Foundation::*;
@@ -195,6 +197,78 @@ impl Server {
             .verify(raw(&pipe.resource.handle), true)?;
         pipe.authenticated = true;
         Ok(pipe)
+    }
+}
+
+/// One bounded OS accept running outside the Broker owner thread. The result
+/// contains a pipe only after the pinned peer and desktop token checks pass.
+/// An owner may poll other connections while this task waits. Dropping the
+/// task signals cancellation; the worker retains its kernel buffers until the
+/// overlapped operation drains, within the supplied finite deadline.
+pub struct AcceptTask {
+    stop: Stop,
+    receive: Receiver<Result<Pipe>>,
+    worker: Option<JoinHandle<()>>,
+    finished: bool,
+}
+
+impl AcceptTask {
+    pub fn start(server: Server, peer: PinnedProcess, deadline: Instant) -> Result<Self> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Error::Timeout);
+        }
+        if remaining > Duration::from_secs(60) {
+            return Err(Error::InvalidArgument);
+        }
+        let stop = Stop::new()?;
+        let worker_stop = stop.clone();
+        let (send, receive) = mpsc::sync_channel(1);
+        let worker = thread::Builder::new()
+            .name("sumibi-pipe-accept".into())
+            .spawn(move || {
+                let accepted = server.accept(peer, &worker_stop, deadline);
+                let _ = send.send(accepted);
+            })
+            .map_err(|_| Error::WorkerFailed)?;
+        Ok(Self {
+            stop,
+            receive,
+            worker: Some(worker),
+            finished: false,
+        })
+    }
+
+    pub fn cancel(&self) -> Result<()> {
+        self.stop.cancel()
+    }
+
+    /// Return immediately. A result is delivered once; a failed accept does
+    /// not expose a partially authenticated endpoint to the owner.
+    pub fn poll(&mut self) -> Option<Result<Pipe>> {
+        if self.finished {
+            return None;
+        }
+        let result = match self.receive.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return None,
+            Err(TryRecvError::Disconnected) => Err(Error::WorkerFailed),
+        };
+        self.finished = true;
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        Some(match self.stop.is_cancelled() {
+            Ok(false) => result,
+            Ok(true) => Err(Error::Cancelled),
+            Err(error) => Err(error),
+        })
+    }
+}
+
+impl Drop for AcceptTask {
+    fn drop(&mut self) {
+        let _ = self.stop.cancel();
     }
 }
 
@@ -921,6 +995,86 @@ mod tests {
             let client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
             (accepted.join().unwrap().unwrap(), client)
         })
+    }
+
+    #[test]
+    fn accept_task_returns_only_an_authenticated_pipe_without_blocking_owner_poll() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let server = Server::create(&name).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut accepting =
+            AcceptTask::start(server, PinnedProcess::current().unwrap(), deadline).unwrap();
+        assert!(accepting.poll().is_none());
+        let stop = Stop::new().unwrap();
+        let mut client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        let mut accepted = loop {
+            if let Some(result) = accepting.poll() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        };
+        assert!(accepting.poll().is_none());
+        client.write_all(vec![29], &stop, deadline).unwrap();
+        assert_eq!(
+            accepted
+                .start_read(&stop, deadline)
+                .unwrap()
+                .wait()
+                .unwrap()
+                .bytes,
+            [29]
+        );
+    }
+
+    #[test]
+    fn accept_task_cancel_retires_pending_server_without_exposing_pipe() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let server = Server::create(&name).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut accepting =
+            AcceptTask::start(server, PinnedProcess::current().unwrap(), deadline).unwrap();
+        accepting.cancel().unwrap();
+        loop {
+            if let Some(result) = accepting.poll() {
+                assert!(matches!(result, Err(Error::Cancelled)));
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(accepting.poll().is_none());
+    }
+
+    #[test]
+    fn accept_task_cancel_discards_an_already_connected_peer() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let server = Server::create(&name).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut accepting =
+            AcceptTask::start(server, PinnedProcess::current().unwrap(), deadline).unwrap();
+        let _client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        accepting.cancel().unwrap();
+        loop {
+            if let Some(result) = accepting.poll() {
+                assert!(matches!(result, Err(Error::Cancelled)));
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 
     #[test]

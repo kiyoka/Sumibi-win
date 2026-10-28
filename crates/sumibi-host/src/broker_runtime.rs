@@ -1047,37 +1047,59 @@ pub fn serve_diagnostic(
         .map_err(|_| IpcError::PolicyDenied)?;
     let mut owner = BrokerWorkLoop::new();
     let deadline = Instant::now() + Duration::from_secs(10);
-    let (first_key, second_key) = bootstrap.accept_policy_runtime_pair(deadline, |pipe| {
-        let (key, published) = owner
-            .accept(&mut runtime, pipe, bootstrap.stop(), deadline)
-            .map_err(|_| IpcError::PolicyDenied)?;
-        if published.is_some() {
-            return Err(IpcError::InvalidMessage);
+    let mut accepts = bootstrap.begin_policy_runtime_pair(deadline)?.map(Some);
+    let mut accepted = Vec::with_capacity(2);
+    let mut activated = Vec::with_capacity(2);
+    while activated.len() != 2 {
+        if bootstrap.stop().is_cancelled()? {
+            return Err(IpcError::Cancelled);
         }
-        Ok(key)
-    })?;
-    let (first_hello, second_hello) = {
-        let [first, second] = runtime.pending.as_mut_slice() else {
-            return Err(IpcError::InvalidMessage);
-        };
-        if first.key != first_key || second.key != second_key {
-            return Err(IpcError::InvalidMessage);
+        if Instant::now() >= deadline {
+            return Err(IpcError::Timeout);
         }
-        read_frame_pair(first, second, bootstrap.stop(), deadline)?
-    };
-    let first_session = first_hello.session;
-    let second_session = second_hello.session;
-    runtime
-        .activate(first_key, first_hello, bootstrap.stop(), deadline)
-        .map_err(|_| IpcError::InvalidMessage)?;
-    runtime
-        .activate(second_key, second_hello, bootstrap.stop(), deadline)
-        .map_err(|_| IpcError::InvalidMessage)?;
+        for task in &mut accepts {
+            let Some(result) = task.as_mut().and_then(sumibi_ipc::AcceptTask::poll) else {
+                continue;
+            };
+            *task = None;
+            let (key, published) = owner
+                .accept(&mut runtime, result?, bootstrap.stop(), deadline)
+                .map_err(|_| IpcError::PolicyDenied)?;
+            if published.is_some() {
+                return Err(IpcError::InvalidMessage);
+            }
+            accepted.push(key);
+        }
+        for &key in &accepted {
+            if activated.iter().any(|(active, _)| *active == key) {
+                continue;
+            }
+            if let Some(hello) = runtime
+                .poll_reserved_hello(key, bootstrap.stop(), deadline)
+                .map_err(|_| IpcError::InvalidMessage)?
+            {
+                let session = hello.session;
+                runtime
+                    .activate(key, hello, bootstrap.stop(), deadline)
+                    .map_err(|_| IpcError::InvalidMessage)?;
+                activated.push((key, session));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
     let session_one = Id::new(1).ok_or(IpcError::InvalidMessage)?;
     let session_two = Id::new(2).ok_or(IpcError::InvalidMessage)?;
-    let (request_key, result_key) = match (first_session, second_session) {
-        (first, second) if first == session_one && second == session_two => (first_key, second_key),
-        (first, second) if first == session_two && second == session_one => (second_key, first_key),
+    let (request_key, result_key) = match activated.as_slice() {
+        [(first_key, first), (second_key, second)]
+            if *first == session_one && *second == session_two =>
+        {
+            (*first_key, *second_key)
+        }
+        [(first_key, first), (second_key, second)]
+            if *first == session_two && *second == session_one =>
+        {
+            (*second_key, *first_key)
+        }
         _ => return Err(IpcError::InvalidMessage),
     };
     let credential = Credential::new("diagnostic-only".into()).ok_or(IpcError::InvalidArgument)?;
@@ -1291,7 +1313,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::time::Duration;
-    use sumibi_ipc::{Nonce, PinnedProcess, Server};
+    use sumibi_ipc::{AcceptTask, Nonce, PinnedProcess, Server};
     use sumibi_protocol::{
         broker_session::{BrokerError, Event},
         message::{Cancel, Convert, Hello, Revision},
@@ -1876,6 +1898,162 @@ mod tests {
             message::Message::Result(result) if result.request == 1 && result.text == "日本語"
         ));
         assert_eq!(owner.active_count(), 0);
+    }
+
+    #[test]
+    fn owner_loop_publishes_and_completes_work_while_next_os_accept_is_pending() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (first_server, mut first_client) = connected(&stop, deadline);
+        let second_name = Nonce::random().unwrap();
+        let second_server = Server::create(&second_name).unwrap();
+        let mut next_accept =
+            AcceptTask::start(second_server, PinnedProcess::current().unwrap(), deadline).unwrap();
+        let mut owner = BrokerWorkLoop::new();
+        let (first_key, published) = owner
+            .accept(&mut runtime, first_server, &stop, deadline)
+            .unwrap();
+        assert_eq!(first_key, 1);
+        assert!(published.is_none());
+        assert!(next_accept.poll().is_none());
+
+        first_client
+            .write_all(message::encode(&hello(1, id(90))).unwrap(), &stop, deadline)
+            .unwrap();
+        loop {
+            match owner
+                .advance(&mut runtime, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(1)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("unexpected owner step while the second accept is pending"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut first_client, &stop, deadline).message,
+            message::Message::Ready(ready) if ready.policy.allowed
+        ));
+        source.revoke_manual_consent().unwrap();
+        assert!(matches!(
+            owner.advance(&mut runtime, &stop, deadline, |_| {
+                |_: JobTicket| Err(ErrorCode::Unavailable)
+            }),
+            Ok(OwnerStep::Published(_))
+        ));
+        assert!(matches!(
+            read_frame(&mut first_client, &stop, deadline).message,
+            message::Message::PolicyChanged(next) if !next.allowed
+        ));
+        source.grant_manual_consent(&destination).unwrap();
+        assert!(matches!(
+            owner.advance(&mut runtime, &stop, deadline, |_| {
+                |_: JobTicket| Err(ErrorCode::Unavailable)
+            }),
+            Ok(OwnerStep::Published(_))
+        ));
+        assert!(matches!(
+            read_frame(&mut first_client, &stop, deadline).message,
+            message::Message::PolicyChanged(next) if next.allowed
+        ));
+        assert!(next_accept.poll().is_none());
+
+        let current = runtime.policy();
+        first_client
+            .write_all(
+                message::encode(&convert(1, 1, 1, current)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        loop {
+            match owner
+                .advance(&mut runtime, &stop, deadline, |_| {
+                    |_: JobTicket| Ok("日本語".into())
+                })
+                .unwrap()
+            {
+                OwnerStep::Submitted { key: 1, request: 1 } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("unexpected owner step before worker submission"),
+            }
+        }
+        loop {
+            match owner
+                .advance(&mut runtime, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Completed {
+                    key: 1,
+                    request: 1,
+                    delivered: true,
+                    succeeded: true,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("unexpected owner step before worker completion"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut first_client, &stop, deadline).message,
+            message::Message::Result(result) if result.text == "日本語"
+        ));
+        assert!(next_accept.poll().is_none());
+
+        let mut second_client =
+            Pipe::connect(&second_name, PinnedProcess::current().unwrap()).unwrap();
+        let second_server = loop {
+            if let Some(result) = next_accept.poll() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        let (second_key, published) = owner
+            .accept(&mut runtime, second_server, &stop, deadline)
+            .unwrap();
+        assert_eq!(second_key, 2);
+        assert!(published.is_none());
+        second_client
+            .write_all(message::encode(&hello(2, id(90))).unwrap(), &stop, deadline)
+            .unwrap();
+        loop {
+            match owner
+                .advance(&mut runtime, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(2)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("unexpected owner step while activating second client"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut second_client, &stop, deadline).message,
+            message::Message::Ready(ready) if ready.policy == current
+        ));
     }
 
     #[test]

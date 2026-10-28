@@ -1,7 +1,7 @@
 //! Restricted broker launch. This is not per-user broker discovery or
 //! executable signature verification. Callers must supply a trusted full path.
 use crate::support::{own, raw, Error, Nonce, Result};
-use crate::{PinnedProcess, Pipe, Server, Stop};
+use crate::{AcceptTask, PinnedProcess, Pipe, Server, Stop};
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle};
@@ -179,6 +179,19 @@ impl Launched {
         let second = Pipe::connect(&name, launched.peer()?)?;
         Ok((launched, first, second, boot, name))
     }
+    pub(crate) fn connect_policy_runtime_first(
+        path: &Path,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<(Self, Pipe, Nonce, Nonce)> {
+        Self::connect_service(
+            path,
+            Mode::DiagnosticPolicyRuntime,
+            stop,
+            deadline,
+            Service::Fanout,
+        )
+    }
     pub(crate) fn peer(&self) -> Result<PinnedProcess> {
         PinnedProcess::from_launch_handle(self.process.as_handle())
     }
@@ -315,27 +328,20 @@ impl Bootstrap {
         &self.stop
     }
 
-    /// Create only the disposable two-client service launched by this parent.
-    /// Both accepted endpoints verify the pinned parent and desktop identities.
-    /// `on_accept` reserves each key before the next OS accept begins.
-    pub fn accept_policy_runtime_pair(
-        &self,
-        deadline: Instant,
-        mut on_accept: impl FnMut(Pipe) -> Result<u64>,
-    ) -> Result<(u64, u64)> {
+    /// Start both bounded OS accepts without blocking the Broker owner. The
+    /// owner reserves a key only after each task returns an authenticated pipe.
+    pub fn begin_policy_runtime_pair(&self, deadline: Instant) -> Result<[AcceptTask; 2]> {
         if !self.is_policy_runtime_diagnostic() {
             return Err(Error::PolicyDenied);
         }
         let first = Server::create_pair(&self.name)?;
         let second = first.additional()?;
-        self.ready()?;
         let first_peer = PinnedProcess::from_launch_handle(self.parent.as_handle())?;
         let second_peer = PinnedProcess::from_launch_handle(self.parent.as_handle())?;
-        let first = first.accept(first_peer, &self.stop, deadline)?;
-        let first_key = on_accept(first)?;
-        let second = second.accept(second_peer, &self.stop, deadline)?;
-        let second_key = on_accept(second)?;
-        Ok((first_key, second_key))
+        let first = AcceptTask::start(first, first_peer, deadline)?;
+        let second = AcceptTask::start(second, second_peer, deadline)?;
+        self.ready()?;
+        Ok([first, second])
     }
 
     pub fn parse(args: &[OsString]) -> Result<Self> {
