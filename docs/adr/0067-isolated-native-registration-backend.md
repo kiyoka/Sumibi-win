@@ -15,7 +15,8 @@
 製品CLSIDとは異なる試験ごとのGUIDを使い、専用の低整合性プロセスからWindowsの
 `ITfInputProcessorProfileMgr`と`ITfCategoryMgr`を実際に呼ぶ。
 COMキーは試験用backendが排他的に作成する。各操作にはADR 0066の取引エンジンと
-`FileJournal`を使い、プロセスを意図的に終了した後、新しいプロセスから再読込みする。
+[ADR 0068](0068-fixed-registration-journal-store.md)の固定storeを使い、
+プロセスを意図的に終了した後、新しいプロセスから再読込みする。
 
 レジストリの変更先は試験ごとに新設する
 `HKCU\Software\Sumibi\NativeRegistrationFixture\<32桁ID>` の `Machine`、`User`、
@@ -58,7 +59,11 @@ Windows 11 build 26300 の試験では、`UnregisterProfile`と`UnregisterCatego
 中断後の「OwnedIncomplete」として再観測する。未知の内容が加われば削除せず停止する。
 この観測レイアウトを製品HKLMにそのまま転用しない。OS版と登録先ごとの所有証拠が必要。
 
-journalは試験用ワーカーと同じ専用ディレクトリの`journal-<ID>.bin`に置く。
+journalは試験用ワーカーのディレクトリ内に、試験IDごとの
+`journal-<ID>/registration.lock`と`journal-<ID>/current.bin`として置く。
+各ディレクトリには低整合性ラベルを付け、workerが書込み・再開できるようにする。
+固定ロックはTSFオブジェクトを生成する前に取得し、登録操作の終了まで保持する。
+この試験用配置は通常ユーザーが変更できるため、製品の保護state配置を証明しない。
 ハッシュ・thumbprint・DLL pathは試験用の固定値で、製品DLLの署名や配置を証明しない。
 試験用DLL pathのファイルは存在せず、DLLをロード・有効化しない。
 成功後は、完全に空で所有markerが一致する試験用rootだけを解除する。
@@ -75,6 +80,7 @@ COM空/部分作成・解除API前後・空コンテナ整理中/後の中断を
 
 Windows 11 Home 10.0.26300 x64、Rust 1.99.1、通常ユーザー、
 PowerShell 7とWindows PowerShell 5.1の双方で47ケースが成功した。
+固定storeへの移行後も両PowerShellで同じ47ケースを再実行し、成功した。
 終了後、試験用rootは消え、実HKCU/HKLMの試験GUIDのCOM/TIPキーは存在しない。
 試験中に製品CLSID、既定IME、証明書信頼、恒久HKLM登録は変更しない。
 

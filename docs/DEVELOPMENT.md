@@ -128,6 +128,10 @@ cargo build -p sumibi-setup --locked --offline
 PowerShell 7とWindows PowerShell 5.1で確認した。登録・解除の中断、別プロセス復旧、
 無効profile、2カテゴリの双方向binding、既知の空キー整理、未知項目や別所有情報の
 変更前拒否を扱う。ケースごとのjournalとmanifestは`target/native-registration-<ID>/`に残す。
+後続の固定store接続後も47ケースが成功した。各試験IDには
+`journal-<ID>/registration.lock`と`journal-<ID>/current.bin`を使い、
+低整合性workerが中断後に同じ固定ロックを再取得する。保存先は試験用で、
+製品の保護配置としては使わない。
 失敗時は原因調査のため、試験用rootとworkerも保存する。
 仕組み、正確な所有証拠と製品登録へ進む条件は
 [ADR 0067](adr/0067-isolated-native-registration-backend.md)を参照。

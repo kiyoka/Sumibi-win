@@ -56,6 +56,17 @@ function Invoke-Worker {
     } finally { $process.Dispose() }
 }
 
+function Initialize-Fixture {
+    param([string]$Id)
+    $null = Invoke-Worker -Action init -Id $Id -Normal
+    $journalDir = Join-Path $workerDir "journal-$Id"
+    $null = New-Item -Path $journalDir -ItemType Directory -ErrorAction Stop
+    # The low-integrity worker must be able to append its own test journal.
+    # This directory remains user-writable and is never a machine trust root.
+    & icacls.exe $journalDir /setintegritylevel '(OI)(CI)L' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not label native fixture journal directory Low: $journalDir" }
+}
+
 $cases = @([pscustomobject]@{Stage='none'; Index=0; Kind='normal'})
 foreach ($stage in @('create-before', 'create-after', 'create-fail', 'delete-before', 'delete-after-api', 'delete-during-prune', 'delete-after')) {
     foreach ($index in 0..3) {
@@ -67,7 +78,7 @@ foreach ($stage in @('com-empty', 'com-partial')) { $cases += [pscustomobject]@{
 $passed = 0
 foreach ($case in $cases) {
     $id = [guid]::NewGuid().ToString('N')
-    $null = Invoke-Worker -Action init -Id $id -Normal
+    Initialize-Fixture -Id $id
     if ($case.Kind -eq 'normal') {
         $denied = Invoke-Worker -Action install -Id $id -Normal -Expected 1
         if (-not $denied.Contains('requires low integrity')) { throw 'Normal-integrity worker did not fail at its safety gate.' }
@@ -97,7 +108,7 @@ foreach ($kind in @('value', 'child', 'owner', 'enabled', 'second-profile', 'use
     $indices = if ($kind -in @('value', 'child')) { @(0, 1, 2, 3) } elseif ($kind -in @('enabled', 'second-profile')) { @(1) } else { @(0) }
     foreach ($index in $indices) {
         $id = [guid]::NewGuid().ToString('N')
-        $null = Invoke-Worker -Action init -Id $id -Normal
+        Initialize-Fixture -Id $id
         $null = Invoke-Worker -Action install -Id $id
         $null = Invoke-Worker -Action inject -Id $id -Stage $kind -Index $index
         $before = Invoke-Worker -Action inspect -Id $id -Normal
@@ -116,7 +127,7 @@ foreach ($kind in @('value', 'child', 'owner', 'enabled', 'second-profile', 'use
 }
 foreach ($index in @(1, 2, 3)) {
     $id = [guid]::NewGuid().ToString('N')
-    $null = Invoke-Worker -Action init -Id $id -Normal
+    Initialize-Fixture -Id $id
     $null = Invoke-Worker -Action install -Id $id -Stage create-after -Index $index -Expected 77
     $mutation = if ($index -eq 1) { 'drop-enable' } else { 'drop-alias' }
     $null = Invoke-Worker -Action $mutation -Id $id -Index $index

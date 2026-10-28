@@ -69,6 +69,9 @@ Windows x64の単体試験で、同時ロック拒否、途中取引の退避拒
 専用HKCU登録fixtureの各workerも固定storeを使うように変更し、中断後の別プロセス復旧と
 別プロセスからの重複ロック拒否を含む46ケースを通した。このfixtureの保存先は
 ユーザー書込可能であり、製品用保護ACLの証明ではない。
+低整合性の隔離レジストリで実COM/TSF APIを呼ぶfixtureも、試験IDごとの
+固定storeへ移した。実APIの登録・中断復旧・解除・衝突拒否47ケースを再実行し、
+製品のCLSIDや実HKLMを変更せずに成功した。
 ACL policyはメモリー内117ケースをPowerShell 7とWindows PowerShell 5.1で通した。
 このPCの保護install rootを読取確認した後、利用者のUAC承認を得て
 `registration-state`を管理者権限で作成した。通常ユーザーからPowerShell 7と

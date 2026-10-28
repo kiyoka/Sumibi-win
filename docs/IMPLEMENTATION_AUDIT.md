@@ -34,6 +34,17 @@
 
 ## 2. Windowsで実行済みの検証
 
+2026-10-29、隔離した実COM/TSF API fixtureのjournalも試験IDごとの固定storeへ移した。
+ロックをTSFオブジェクト生成前に取得する順序で47ケースを再確認した。
+低整合性workerによる登録・中断後の別プロセス復旧・解除・衝突拒否47ケースが成功した。
+PowerShell 7とWindows PowerShell 5.1の双方で成功し、通常/Host spikeのRust各353件、
+fmt、Clippy、HKCU fixture46ケース、ACL117ケースを含む画面操作不要の全回帰も通過した。
+全回帰後の証拠ディレクトリで47個の試験用storeにそれぞれlockとcurrentが残ることも確認した。
+試験用storeはユーザー書込可能で、製品の保護ACLや実HKLM登録は検証していない。
+ログは`target/issue-4-native-fixed-store-final.log`、
+`target/issue-4-native-fixed-store-regression.log`と
+`target/issue-4-native-fixed-store-ps51.log`に保存した。
+
 2026-10-29、HKCU登録fixtureを固定storeへ移した。中断後の別プロセス復旧と
 別プロセスからの`registration.lock`取得拒否を含む46ケースが成功した。
 通常/Host spikeのRust各353件、fmt、Clippy、隔離した実COM/TSF API47ケース、

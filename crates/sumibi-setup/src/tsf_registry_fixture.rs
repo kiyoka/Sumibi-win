@@ -3,7 +3,7 @@ use super::registration_backend::{self as backend, Cut, Layout, RedirectedBacken
 use super::registration_native::{Apartment, Factories};
 use super::registration_registry::{self as reg, Failure, Key};
 use std::ffi::OsString;
-use sumibi_setup::install_journal::FileJournal;
+use sumibi_setup::install_store::RegistrationStoreLock;
 use sumibi_setup::install_transaction::{
     self as tx, Backend, Journal, Observation, Phase, Resource, RESOURCES,
 };
@@ -403,6 +403,15 @@ pub(super) fn run(args: &[OsString]) -> Result<(), Failure> {
         reg::delete_key(roots[0].0, path)?;
         return reg::flush(roots[0].0);
     }
+    let exe = std::env::current_exe()?;
+    let journal_dir = exe
+        .parent()
+        .ok_or("native worker directory missing")?
+        .join(format!("journal-{id}"));
+    // Hold the fixed lock before creating TSF objects, through the complete
+    // registration operation. This disposable low-integrity fixture remains
+    // user-writable and is not a machine registration trust boundary.
+    let store = RegistrationStoreLock::acquire_at_verified_directory(&journal_dir)?;
     let _apartment = Apartment::new()?;
     let _redirect = Redirect::new(&roots)?;
     let factories = Factories::new()?;
@@ -417,15 +426,12 @@ pub(super) fn run(args: &[OsString]) -> Result<(), Failure> {
         backend.prune_empty(&identity, Resource::ComServer)?;
         return Ok(());
     }
-    let exe = std::env::current_exe()?;
-    let journal_path = exe
-        .parent()
-        .ok_or("native worker directory missing")?
-        .join(format!("journal-{id}.bin"));
     let mut journal = if action == "install" {
-        FileJournal::create(&journal_path)?
+        store.begin_new()?
     } else {
-        FileJournal::open(&journal_path)?
+        store
+            .open_current()?
+            .ok_or("native fixture journal missing")?
     };
     match action {
         "install" => tx::install(&mut backend, &mut journal, identity)?,
