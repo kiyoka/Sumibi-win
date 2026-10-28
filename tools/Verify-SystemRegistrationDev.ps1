@@ -3,19 +3,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$adminSid = 'S-1-5-32-544'
-$systemSid = 'S-1-5-18'
-$usersSid = 'S-1-5-32-545'
-$writeRights = [System.Security.AccessControl.FileSystemRights]::Write -bor
-    [System.Security.AccessControl.FileSystemRights]::Delete -bor
-    [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
-    [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-    [System.Security.AccessControl.FileSystemRights]::TakeOwnership -bor
-    0x50000000 # GENERIC_WRITE and GENERIC_ALL
-$replaceParentRights = [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
-    [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-    [System.Security.AccessControl.FileSystemRights]::TakeOwnership -bor
-    0x10000000 # GENERIC_ALL
+. (Join-Path $PSScriptRoot 'SystemRegistrationDevAcl.ps1')
 
 function Assert-PlainItem {
     param([string]$Path, [bool]$Directory)
@@ -23,71 +11,6 @@ function Assert-PlainItem {
     if ($item.PSIsContainer -ne $Directory -or
         ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
         throw "Expected a plain protected item: $Path"
-    }
-}
-
-function Assert-ParentAcl {
-    param([string]$Path)
-    $acl = Get-Acl -LiteralPath $Path
-    $broad = @('S-1-1-0', 'S-1-5-11', $usersSid)
-    foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
-        if ($rule.AccessControlType -eq 'Allow' -and
-            $rule.IdentityReference.Value -in $broad -and
-            ($rule.FileSystemRights -band $writeRights) -ne 0) {
-            throw "General users can modify the install parent: $Path"
-        }
-    }
-}
-
-function Assert-DriveRootAcl {
-    param([string]$Path)
-    $acl = Get-Acl -LiteralPath $Path
-    $broad = @('S-1-1-0', 'S-1-5-11', $usersSid)
-    foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
-        if ($rule.AccessControlType -eq 'Allow' -and
-            $rule.IdentityReference.Value -in $broad -and
-            ($rule.FileSystemRights -band $replaceParentRights) -ne 0) {
-            throw "General users can replace the protected parent from the drive root: $Path"
-        }
-    }
-}
-
-function Assert-ProtectedAcl {
-    param([string]$Path, [bool]$Directory)
-    $acl = Get-Acl -LiteralPath $Path
-    if (-not $acl.AreAccessRulesProtected -or
-        $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $adminSid) {
-        throw "Unexpected owner or inherited ACL: $Path"
-    }
-    $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
-    if ($rules.Count -ne 3) {
-        throw "Expected exactly three explicit access rules: $Path"
-    }
-    $expectedInheritance = if ($Directory) {
-        [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
-    } else {
-        [System.Security.AccessControl.InheritanceFlags]::None
-    }
-    foreach ($sid in @($adminSid, $systemSid, $usersSid)) {
-        $matching = @($rules | Where-Object { $_.IdentityReference.Value -eq $sid })
-        if ($matching.Count -ne 1) {
-            throw "Missing or duplicate access rule for $sid`: $Path"
-        }
-        $rule = $matching[0]
-        if ($rule.AccessControlType -ne 'Allow' -or $rule.IsInherited -or
-            $rule.InheritanceFlags -ne $expectedInheritance -or
-            $rule.PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None) {
-            throw "Unexpected access rule form: $Path"
-        }
-        $expectedRights = if ($sid -eq $usersSid) {
-            [System.Security.AccessControl.FileSystemRights]::ReadAndExecute -bor
-                [System.Security.AccessControl.FileSystemRights]::Synchronize
-        } else {
-            [System.Security.AccessControl.FileSystemRights]::FullControl
-        }
-        if ($rule.FileSystemRights -ne $expectedRights) {
-            throw "Unexpected access rights for $sid`: $Path"
-        }
     }
 }
 
@@ -103,16 +26,16 @@ $parent = Split-Path -Path $root -Parent
 $driveRoot = [System.IO.Path]::GetPathRoot($parent)
 $receiptPath = Join-Path $versionPath 'staging.json'
 Assert-PlainItem -Path $driveRoot -Directory $true
-Assert-DriveRootAcl -Path $driveRoot
+Assert-SumibiAncestorAcl -Path $driveRoot -Kind DriveRoot
 Assert-PlainItem -Path $parent -Directory $true
-Assert-ParentAcl -Path $parent
+Assert-SumibiAncestorAcl -Path $parent -Kind InstallParent
 foreach ($item in @($root, $versionPath)) {
     Assert-PlainItem -Path $item -Directory $true
-    Assert-ProtectedAcl -Path $item -Directory $true
+    Assert-SumibiProtectedAcl -Path $item -Directory $true
 }
 foreach ($item in @($path, $receiptPath)) {
     Assert-PlainItem -Path $item -Directory $false
-    Assert-ProtectedAcl -Path $item -Directory $false
+    Assert-SumibiProtectedAcl -Path $item -Directory $false
 }
 $contents = @(Get-ChildItem -LiteralPath $versionPath -Force)
 if ($contents.Count -ne 2 -or

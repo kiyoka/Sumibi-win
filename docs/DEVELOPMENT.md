@@ -66,6 +66,12 @@ Administrators 所有、Administrators と SYSTEM はフルアクセス、Users 
 開発用署名と未信頼状態、パッシブ DLL と既存登録の衝突を調べる。
 配置スクリプトも最後に同じ検証を実行する。検証成功は機械登録の実行許可ではない。
 
+親の ACL 検査は Users 等の広い group だけでなく、個別 user・独自 group を含む全ての
+非特権 principal を調べる。SYSTEM/Administrators/TrustedInstaller 以外の所有者も拒否する。
+`Program Files` は継承を無効にしていることを要求し、その下の保護 root も明示 ACL に限定する。
+共通の `SystemRegistrationDevAcl.ps1` を配置/検証の両方で使う。
+`.\tools\Test-SystemRegistrationDevAcl.ps1` はディスクの ACL を変更せず、メモリー内の105ケースを検査する。
+
 保護配置した DLL を現在ユーザー限定で一時登録し、別プロセスからの COM 起動と
 プロセス内 TSF profile の動作、解除後の再検証まで行うには次を実行する。
 管理者権限は不要だが、現在ユーザーのレジストリへ書き込める通常の PowerShell が必要。
@@ -76,6 +82,30 @@ Administrators 所有、Administrators と SYSTEM はフルアクセス、Users 
 
 この試験は HKLM や恒久 TSF profile を変更しない。失敗時には終了後の
 `plan-system-dev` と現在ユーザーの対象 COM キーを確認する。
+
+### 登録途中終了と復旧の検査
+
+登録・解除の取引エンジンは、実際の COM/TSF を登録する前に専用 HKCU fixture で検証できる。
+通常ユーザーの PowerShell で次を実行する。管理者権限や画面操作は不要。
+
+```powershell
+cargo test -p sumibi-setup --lib --locked --offline
+cargo build -p sumibi-setup --locked --offline
+.\target\debug\sumibi-setup.exe registration-transaction-test
+```
+
+子プロセスを作成・部分書込み・削除の各段階で終了し、新しいプロセスから journal を開いて復旧する。
+所有情報の不一致、未知の値/子キー、有効化 flag の変化がある場合は、他の項目も削除しない。
+成功した取引の通常 recover は登録を保持し、明示 uninstall だけが解除を開始する。
+2026-10-28、Windows x64 の通常ユーザー権限で45ケースが成功し、各 fixture root の解除を確認した。
+
+書込みは `HKCU\Software\Sumibi\RegistrationTransactionFixture\<取引ID>` に限る。
+fixture の項目は模擬 COM/profile/category で、実 COM/TSF・HKLM・既定 IME・証明書ストアを変更せず、
+DLL もロードしない。記録は `target/debug/registration-transaction-fixture/<ID>/journal.bin` に残す。
+失敗時は journal と専用 root を残して停止する。`registration-fixture-worker` は同検査の内部子コマンドで、
+製品登録や任意のレジストリ path を受け付ける入口ではない。
+所有証拠、記録の上限、破損/書込み失敗の扱い、実 backend の残条件は
+[ADR 0066](adr/0066-registration-journal-and-recovery.md) を参照。
 
 ## 開発用COM登録（明示実行のみ）
 
@@ -103,6 +133,22 @@ cargo build -p sumibi-tip -p sumibi-setup --locked --offline
 `register-com-dev`が永続的に登録するのは`HKCU\Software\Classes\CLSID\{E927D4AB-2EC9-4DD3-A921-A4620B95A410}`の
 `InprocServer32`と所有マーカーのみ。恒久TSF言語プロファイルや既定IMEには触れない。
 一般アプリの入力欄で変換できることを示す検査ではない。開発中のDLLを配布・製品登録しない。
+
+2026-10-28から開発用所有 marker は `sumibi-win-com-dev-v2|<canonical DLL path>` とし、
+`InprocServer32` の path と完全一致させる。class は marker 1値と既知の子1個、server は
+既定 path/Apartment の2値・子なしに限定する。未知の値/子、marker/path/threading の不一致、
+型/UTF-16不正があれば、検証と解除は保持して停止する。旧 v1 marker の自動移行/削除はしない。
+更新前の旧ツールで開発登録を解除してから新ツールへ切り替える。この検証 PC には旧登録が残っていない。
+開発コマンドは今回の取引 journal へ接続しておらず、異常終了後の自動復旧を保証する機械 installer ではない。
+
+```powershell
+.\tools\Test-ComRegistrationOwnership.ps1 -InstalledDll '<保護配置 DLL>'
+```
+
+同スクリプトは実際の現在ユーザー COM 登録に8種類の不一致を注入し、verify/unregister が
+変更せず拒否することを snapshot 比較で確認する。自分が注入した値/空の子だけを元へ戻して解除する。
+9番目は COM 起動できない無害な text DLL fixture を使い、新規登録の失敗後にキーが残らないことを確認する。
+同日、保護配置 DLL を使う9ケースが成功。HKLM、TSF profile、証明書信頼は変更しない。
 2026-10-24、通常ユーザーのWindowsで登録直後と別プロセスからのCOM生成が成功し、
 解除後に当該HKCUキーが存在しないことと再検証が失敗することを確認した。
 Windowsの[ユーザー別COM登録](https://learn.microsoft.com/en-us/windows/win32/com/classes-and-servers)、

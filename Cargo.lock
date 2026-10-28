@@ -112,6 +112,8 @@ dependencies = [
 name = "sumibi-setup"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "sumibi-core",
  "sumibi-ipc",
  "sumibi-protocol",

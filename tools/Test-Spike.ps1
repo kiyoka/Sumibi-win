@@ -29,6 +29,7 @@ $restorePassiveTip = $false
 Push-Location -LiteralPath $workspacePath
 try {
     $env:CARGO_INCREMENTAL = '0'
+    & (Join-Path $PSScriptRoot 'Test-SystemRegistrationDevAcl.ps1')
     Invoke-Cargo -Arguments @('fmt', '--all', '--check')
     Invoke-Cargo -Arguments @('test', '--workspace', '--locked', '--offline')
     Invoke-Cargo -Arguments @('test', '--workspace', '--features', 'sumibi-host/spike', '--locked', '--offline')
@@ -37,6 +38,8 @@ try {
     Invoke-Cargo -Arguments @('clippy', '-p', 'sumibi-host', '--all-features', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings')
     Invoke-Cargo -Arguments @('build', '--workspace', '--locked', '--offline')
     $restorePassiveTip = $true
+    & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') registration-transaction-test
+    if ($LASTEXITCODE -ne 0) { throw 'Registration transaction fixture failed; inspect its preserved journal.' }
     Invoke-Cargo -Arguments @('run', '-p', 'sumibi-tip', '--features', 'spike', '--example', 'load_smoke', '--locked', '--offline', '--', 'target/debug/sumibi_tip.dll')
     foreach ($name in @('self-test', 'edit-test', 'key-test')) { Invoke-Spike -Name $name }
     if (!$SkipDesktop) {

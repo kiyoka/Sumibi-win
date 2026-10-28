@@ -4,71 +4,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'SystemRegistrationDevAcl.ps1')
 $adminSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $systemSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
 $usersSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
-$broadSids = @('S-1-1-0', 'S-1-5-11', 'S-1-5-32-545')
-$writeRights = [System.Security.AccessControl.FileSystemRights]::Write -bor
-    [System.Security.AccessControl.FileSystemRights]::Delete -bor
-    [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
-    [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-    [System.Security.AccessControl.FileSystemRights]::TakeOwnership -bor
-    0x50000000 # GENERIC_WRITE and GENERIC_ALL
-$replaceParentRights = [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
-    [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-    [System.Security.AccessControl.FileSystemRights]::TakeOwnership -bor
-    0x10000000 # GENERIC_ALL
-
-function Test-DriveRootAcl {
-    param([string]$Path)
-    $acl = Get-Acl -LiteralPath $Path
-    foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
-        if ($rule.AccessControlType -eq 'Allow' -and
-            $rule.IdentityReference.Value -in $broadSids -and
-            ($rule.FileSystemRights -band $replaceParentRights) -ne 0) {
-            throw "General users can replace the protected parent from the drive root: $Path"
-        }
-    }
-}
-
-function Test-ParentAcl {
-    param([string]$Path)
-    $acl = Get-Acl -LiteralPath $Path
-    foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
-        if ($rule.AccessControlType -eq 'Allow' -and
-            $rule.IdentityReference.Value -in $broadSids -and
-            ($rule.FileSystemRights -band $writeRights) -ne 0) {
-            throw "The parent directory allows general users to modify it: $Path"
-        }
-    }
-}
-
-function Test-ProtectedAcl {
-    param([string]$Path)
-    $acl = Get-Acl -LiteralPath $Path
-    if (-not $acl.AreAccessRulesProtected -or
-        $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $adminSid.Value) {
-        throw "The staged path has an unprotected ACL or unexpected owner: $Path"
-    }
-    $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
-    $identities = @($rules | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
-    if ($identities.Count -ne 3 -or
-        $adminSid.Value -notin $identities -or
-        $systemSid.Value -notin $identities -or
-        $usersSid.Value -notin $identities) {
-        throw "The staged path has an unexpected access rule: $Path"
-    }
-    foreach ($rule in $rules) {
-        if ($rule.AccessControlType -ne 'Allow' -or $rule.IsInherited) {
-            throw "The staged path has an unexpected inherited or deny rule: $Path"
-        }
-        if ($rule.IdentityReference.Value -eq $usersSid.Value -and
-            ($rule.FileSystemRights -band $writeRights) -ne 0) {
-            throw "Users have excessive access to the staged path: $Path"
-        }
-    }
-}
-
 function Set-ProtectedAcl {
     param([string]$Path, [bool]$Directory)
     if ($Directory) {
@@ -93,7 +32,7 @@ function Set-ProtectedAcl {
         $acl.AddAccessRule($rule)
     }
     Set-Acl -LiteralPath $Path -AclObject $acl
-    Test-ProtectedAcl -Path $Path
+    Assert-SumibiProtectedAcl -Path $Path -Directory $Directory
 }
 
 $principal = [System.Security.Principal.WindowsPrincipal]::new(
@@ -110,13 +49,18 @@ if (-not [string]::Equals($resolvedRoot, $expectedRoot, [System.StringComparison
 }
 $parent = Split-Path -Path $resolvedRoot -Parent
 $driveRoot = [System.IO.Path]::GetPathRoot($parent)
-Test-DriveRootAcl -Path $driveRoot
+$driveItem = Get-Item -LiteralPath $driveRoot -ErrorAction Stop
+if (-not $driveItem.PSIsContainer -or
+    ($driveItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+    throw 'The drive root is missing or is a reparse point.'
+}
+Assert-SumibiAncestorAcl -Path $driveRoot -Kind DriveRoot
 $parentItem = Get-Item -LiteralPath $parent -ErrorAction Stop
 if (-not $parentItem.PSIsContainer -or
     ($parentItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
     throw 'The protected parent directory is missing or is a reparse point.'
 }
-Test-ParentAcl -Path $parent
+Assert-SumibiAncestorAcl -Path $parent -Kind InstallParent
 $source = (Resolve-Path -LiteralPath $SignedDll).ProviderPath
 $sourceItem = Get-Item -LiteralPath $source -ErrorAction Stop
 if ($sourceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
@@ -155,7 +99,7 @@ if (-not (Test-Path -LiteralPath $resolvedRoot)) {
         ($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
         throw 'The install root is not a plain directory.'
     }
-    Test-ProtectedAcl -Path $resolvedRoot
+    Assert-SumibiProtectedAcl -Path $resolvedRoot -Directory $true
 }
 
 $null = New-Item -ItemType Directory -Path $versionPath -ErrorAction Stop

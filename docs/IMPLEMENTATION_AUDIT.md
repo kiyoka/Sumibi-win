@@ -23,7 +23,7 @@
 | 設定・資格情報 | Host内メモリーの一貫した設定・認可スナップショットを追加。接続先・キー変更、同意付与・取消で版と送信可否を更新。IPC用の秘密を含まない政策値と変更カーソルを追加し、型付きProtocolで取消と旧結果拒否を検証（[ADR 0049](adr/0049-host-in-memory-policy-authority.md)）。保存・UI・Credential Manager・実IPC配送は未実装 | 形式版・原子的保存・秘密分離・認可取消の実配送・破損回復 |
 | 追加候補・辞書 | 未実装。Mac移植範囲に目的を記録 | 件数決定・現在候補・出所・索引ハッシュ・LICENSE |
 | Decisions | 未実装。Mac契約を参照した後続案 | API再確認、独立同意、固定窓、永続回数予約、手動優先 |
-| 導入・更新・配布 | 現ユーザーの開発用COM登録・別プロセス生成確認・解除とプロセス内TSF検査が成功。パッシブDLLの読取専用事前確認、未信頼の自己署名、Dドライブの保護配置と独立した再検証を追加。HKLM/恒久TSF登録コードはまだない。spike DLLは配布不可 | 信頼できる配布署名、マシン登録・解除の実証、Host起動、更新・削除・旧版復旧 |
+| 導入・更新・配布 | 現ユーザーの開発用COM登録・別プロセス生成確認・解除とプロセス内TSF検査が成功。パッシブDLLの読取専用事前確認、未信頼の自己署名、Dドライブの保護配置と独立した再検証を追加。取引エンジンと先行記録・逆順復旧を専用HKCU fixtureの別process中断/衝突45ケースで確認（[ADR 0066](adr/0066-registration-journal-and-recovery.md)）。HKLM/恒久TSF backendはまだない。spike DLLは配布不可 | 信頼できる配布署名、実COM/TSFの所有証拠と永続化、保護journal、マシン登録・解除の実証、Host起動、更新・削除・旧版復旧 |
 
 2026-10-25、未発行の未来要求番号を持つBroker応答を接続異常として拒否し、
 認証済み実子processで退役と再送不可を確認した（[ADR 0056](adr/0056-future-reply-id-is-terminal.md)）。
@@ -33,6 +33,19 @@
 （[ADR 0018](adr/0018-retained-manual-range-and-source-validation.md)）。
 
 ## 2. Windowsで実行済みの検証
+
+2026-10-28 の登録準備追加分では、Windows 11 Home 10.0.26300 x64、通常ユーザー権限の
+自動検査で、通常/Host spike の各 Rust 327件、fmt、workspace Clippy 2構成、passive TIP Clippy が成功した。
+先行記録と復旧の単体19件を含む。HKCU fixture の子process終了/衝突45ケース、
+メモリー内 ACL 105ケース、実現在ユーザー COM 所有9ケースも成功した。
+ACL と COM 所有 script は PowerShell 7 と Windows PowerShell 5.1 の両方で実行した。
+同じ保護 DLL の実 COM 起動・プロセス内 TSF 有効化・解除を再確認し、終了後の
+HKCU/HKLM の対象 CLSID/TIP key と取引別 fixture root が存在しないことを確認した。
+保護配置 DLL の hash は維持され、自己署名ルートは未信頼のまま。
+HKLM/恒久 TSF writer と一般アプリ入力の受入は未実装で、今回は省略なし desktop 全回帰を再実行していない。
+ログは `target/issue-4-registration-tests-{default,spike}.log`、
+`target/issue-4-registration-fixture.log`、`target/issue-4-com-ownership*.log`、
+`target/issue-4-protected-tsf-roundtrip.log` に保存した。
 
 | 検証 | 基準コミットまでの結果 | 限界 |
 | --- | --- | --- |

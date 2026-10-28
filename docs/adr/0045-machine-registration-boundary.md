@@ -14,6 +14,9 @@
 既存CLSID/TSF登録との衝突を調べる。これはDLLをロードするがレジストリは読取専用とする。
 「事前確認成功」は設置可能という判定ではない。
 
+後続の取引と復旧は [ADR 0066](0066-registration-journal-and-recovery.md) に実装する。
+現時点の backend は専用 HKCU fixture のみで、この決定の HKLM/恒久 TSF 境界を変更しない。
+
 登録実装へ進む条件は、管理者だけが変更できる安定配置先、DLLと依存物のACL検証、
 署名方針、別の版へ更新する際の参照寿命と失敗時復旧、同一CLSIDの所有確認、
 正確なTSF登録解除、プロファイルのユーザー有効化と既定IMEを変更しない操作の分離である。
@@ -98,3 +101,10 @@ COM/Windows API と API set のほかに `VCRUNTIME140.dll` を参照してい�
 別プロセス COM 起動、プロセス内 TSF profile の有効化、解除後の再検証が成功した。
 これは保護配置先からの実ロードと現在ユーザー登録の後始末を確認する段階であり、
 HKLM/恒久 profile の登録や一般アプリでの有効化は確認していない。
+
+同日の追加点検で、親 ACL を広い group の SID だけで検査すると個別 user/独自 group への
+危険な許可を見落とすことが分かった。配置と読取検証の共通 policy で全非特権 principal の
+適用される Allow ACE と所有者を検査する。SYSTEM/Administrators/TrustedInstaller のみを
+特権扱いし、保護された次の子へ伝播しない InheritOnly ACE は現 ancestor の権限から除く。
+`Program Files` の継承無効と、root/版/DLL/receipt の正確な3 ACE を要求する。
+メモリー内の105 ACL ケースと既存保護 DLL の読取検証が成功し、実 ACL の変更は行っていない。

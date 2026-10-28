@@ -21,6 +21,8 @@ mod recovery_view;
 #[cfg(windows)]
 mod registration;
 #[cfg(windows)]
+mod registration_fixture;
+#[cfg(windows)]
 mod render;
 #[cfg(windows)]
 mod system_registration;
