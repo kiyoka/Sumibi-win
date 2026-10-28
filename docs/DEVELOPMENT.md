@@ -20,6 +20,41 @@ cargo build -p sumibi-tip --locked --offline
 [RegisterProfile](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-registerprofile)を参照。
 実装境界は[ADR 0045](adr/0045-machine-registration-boundary.md)に記録する。
 
+### 検証用コピーへの自己署名
+
+機械登録の準備用に、パッシブDLLを`target/system-dev/`の新しい版別フォルダへ
+コピーして署名できる。初回は現在ユーザーの`My`ストアにエクスポート不可の
+コード署名証明書を作る。再実行では表示されたthumbprintを指定して再利用する。
+
+```powershell
+cargo build -p sumibi-tip --no-default-features --locked --offline
+.\tools\Prepare-SystemRegistrationDev.ps1 -CreateCertificate
+.\tools\Prepare-SystemRegistrationDev.ps1 -CertificateThumbprint <表示されたthumbprint>
+```
+
+出力フォルダには署名済みDLL、公開証明書、SHA-256と署名状態の`manifest.json`を置く。
+元の`target/debug/sumibi_tip.dll`は変更しない。自己署名のルートを信頼ストアへ
+追加しないため、署名状態は`UnknownError (UntrustedRoot)`になる。この状態は
+署名の存在を確認する開発準備に限り、保護配置や機械登録の許可を意味しない。
+スクリプトはHKLMとTSF登録を変更しない。
+
+### 検証用 DLL の保護配置
+
+署名済みコピーを `D:\Program Files\Sumibi` の SHA-256 に基づく版別フォルダへ
+配置する。管理者 PowerShell で次を実行する。`<署名済みDLL>` には前節の
+`target/system-dev/<日時>/sumibi_tip.dll` の絶対パスを指定する。
+
+```powershell
+.\tools\Stage-SystemRegistrationDev.ps1 -SignedDll '<署名済みDLL>'
+```
+
+スクリプトは署名・manifest・親フォルダの ACL を確認し、新しい配置先を
+Administrators 所有、Administrators と SYSTEM はフルアクセス、Users は
+読み取りと実行だけの ACL にする。配置先の DLL と `staging.json` も同じ保護を
+適用する。同じハッシュの版が既にある場合は上書きせず停止する。
+自己署名証明書は信頼ストアへ追加しない。これは配置の検証であり、HKLM/TSF
+登録、既定 IME の変更、配布用署名の確認は行わない。
+
 ## 開発用COM登録（明示実行のみ）
 
 一般アプリでのロード経路を切り分けるため、現ユーザーの64-bit COM登録を個別に検証できる。

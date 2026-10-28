@@ -56,3 +56,29 @@ CLSID/TSF登録衝突なしを確認した。現在ユーザー限定の`Test-Re
    解除する。既存の登録を上書きしない。解除後に対象が残っていないことを確認する。
 4. 旧版DLLを使用中のprocessを強制終了・上書きせず、別版への更新と失敗時の
    旧版復旧を試験してから通常PCへの導入を判断する。
+
+## 検証用自己署名コピー
+
+`tools/Prepare-SystemRegistrationDev.ps1`は、パッシブDLLと既存登録の読取専用
+検査後、現在ユーザーの`My`ストアにエクスポート不可の開発用コード署名証明書を
+作成する。元のDLLを変更せず、`target/system-dev/`の別コピーをSHA-256で照合して
+署名する。署名後もCOM export、spike export不在、登録衝突を再検査し、公開証明書と
+ハッシュ・署名状態のmanifestを出す。秘密鍵はエクスポートしない。
+
+この自己署名ルートは信頼ストアに追加せず、`Get-AuthenticodeSignature`は
+`UnknownError (UntrustedRoot)`を報告する。署名済みコピーもユーザーが書き換えられる
+ワークスペース内にあるため、まだHKLM登録先にはしない。製品用の信頼された署名、
+保護配置からの更新、参照中DLLの復旧、登録解除の検証は引き続き必要。
+
+検証用の保護配置先は `D:\Program Files\Sumibi` とする。
+`tools/Stage-SystemRegistrationDev.ps1` は管理者権限でのみ実行し、
+`manifest.json` に記録した署名済み DLL のハッシュと自己署名状態を検査する。
+親フォルダの一般ユーザー書込権限を拒否し、Administrators 所有の版別フォルダと
+DLL に明示 ACL を設定する。同じ版を上書きしない。配置後も自己署名ルートは
+未信頼のままで、HKLM/TSF 登録には使用しない。
+
+2026-10-28、`D:\Program Files\Sumibi\dev-d74b8348334397d6` への配置を実行した。
+親、版別ディレクトリ、DLL、receipt は Administrators 所有で継承なし、
+Administrators/SYSTEM は FullControl、Users は ReadAndExecute だった。
+署名済み DLL の SHA-256 は元の manifest と一致し、`plan-system-dev` も成功した。
+署名は `UnknownError (UntrustedRoot)` のままで、ルート信頼と機械登録は行っていない。
