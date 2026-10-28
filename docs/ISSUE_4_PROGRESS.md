@@ -356,7 +356,8 @@
   全Rustテスト281件。
 - 子Broker診断の初回2要求も`BrokerWorkLoop::advance`へ移した。後から届く
   要求の受理を待ってから結果workerを完了させ、所有側で結果を配送する。
-  政策失効時は同じ所有側poolの取消workerを回収し、再許可後の次要求まで継続。
+  政策通知も同じ入口で公開し、失効時は同じ所有側poolの取消workerを回収して
+  `acknowledge_version`が版と実際のworker終了を確認してから再許可後の次要求へ継続。
   以前の診断専用`ReadBatch`読取は除き、`ReadBatch`自体の並行I/Oは実pipe単体検査で
   維持する。Broker実子process回帰と`Test-Spike.ps1 -SkipDesktop`が成功し、
   既定HostとパッシブTIPへ復元した。

@@ -22,8 +22,9 @@ OS acceptと実worker完了を一緒に扱う製品の継続I/O調停ループ�
 異なる政策元なら受付taskを消費せず、正しい元で後から同じpipeを受け付ける。
 設定変更の受領が接続済み・未予約のpipeより先に完了した場合、そのpipeのReadyは
 受領済み最新版だけを含む。
-診断子Brokerの初期Hello/Readyと2要求のworker結果もこの所有側入口を使う。
-政策失効では同じpoolの取消workerを回収してから再許可後の次要求へ進む。
+診断子Brokerの初期Hello/Ready、政策通知、2要求のworker結果もこの所有側入口を使う。
+政策失効では`acknowledge_version`が同じpoolの取消workerを回収し、版の配送と
+実際のworker終了を確認してから再許可後の次要求へ進む。
 破棄した受付のOS枠は
 有限期限で戻り、生存中の別接続から追加instanceを作り直せることを確認した。
 別の実processを固定した受付ではそのprocessの接続を受理し、同じlogon SIDの

@@ -1042,11 +1042,27 @@ pub fn serve_diagnostic(
     source
         .replace_credential(Some(credential))
         .map_err(|_| IpcError::PolicyDenied)?;
-    publish_diagnostic(&mut runtime, bootstrap.stop(), deadline, 2, false, None)?;
+    publish_diagnostic(
+        &mut owner,
+        &mut runtime,
+        bootstrap.stop(),
+        deadline,
+        2,
+        false,
+        None,
+    )?;
     source
         .grant_manual_consent(&destination)
         .map_err(|_| IpcError::PolicyDenied)?;
-    publish_diagnostic(&mut runtime, bootstrap.stop(), deadline, 3, true, None)?;
+    publish_diagnostic(
+        &mut owner,
+        &mut runtime,
+        bootstrap.stop(),
+        deadline,
+        3,
+        true,
+        None,
+    )?;
     let first_admitted = Arc::new(AtomicBool::new(false));
     let mut cancelled_ticket = None;
     let mut result_ticket = None;
@@ -1112,10 +1128,11 @@ pub fn serve_diagnostic(
     }
     let cancelled_ticket = cancelled_ticket.ok_or(IpcError::InvalidMessage)?;
     let result_ticket = result_ticket.ok_or(IpcError::InvalidMessage)?;
-    source
+    let revoked = source
         .revoke_manual_consent()
         .map_err(|_| IpcError::PolicyDenied)?;
     publish_diagnostic(
+        &mut owner,
         &mut runtime,
         bootstrap.stop(),
         deadline,
@@ -1123,16 +1140,39 @@ pub fn serve_diagnostic(
         false,
         Some((request_key, 1)),
     )?;
-    if !owner.stop_and_reap(deadline) {
-        return Err(IpcError::WorkerFailed);
+    let acknowledgment = owner
+        .acknowledge_version(&mut runtime, revoked, bootstrap.stop(), deadline)
+        .map_err(|_| IpcError::PolicyDenied)?;
+    if acknowledgment.completion != DeliveryCompletion::ExactOrClosed
+        || acknowledgment.current.authorization != 4
+        || acknowledgment.current.allowed
+    {
+        return Err(IpcError::InvalidMessage);
     }
     if !cancelled_ticket.is_cancelled() || result_ticket.is_cancelled() {
         return Err(IpcError::InvalidMessage);
     }
-    source
+    let granted = source
         .grant_manual_consent(&destination)
         .map_err(|_| IpcError::PolicyDenied)?;
-    publish_diagnostic(&mut runtime, bootstrap.stop(), deadline, 5, true, None)?;
+    publish_diagnostic(
+        &mut owner,
+        &mut runtime,
+        bootstrap.stop(),
+        deadline,
+        5,
+        true,
+        None,
+    )?;
+    let acknowledgment = owner
+        .acknowledge_version(&mut runtime, granted, bootstrap.stop(), deadline)
+        .map_err(|_| IpcError::PolicyDenied)?;
+    if acknowledgment.completion != DeliveryCompletion::ExactOrClosed
+        || acknowledgment.current.authorization != 5
+        || !acknowledgment.current.allowed
+    {
+        return Err(IpcError::InvalidMessage);
+    }
     let mut resumed = false;
     let mut awaiting_resume = false;
     while !bootstrap.stop().is_cancelled()? && Instant::now() < deadline {
@@ -1182,6 +1222,7 @@ pub fn serve_diagnostic(
 }
 
 fn publish_diagnostic(
+    owner: &mut crate::broker_workers::BrokerWorkLoop,
     runtime: &mut BrokerPolicyRuntime<'_>,
     stop: &Stop,
     deadline: Instant,
@@ -1189,14 +1230,20 @@ fn publish_diagnostic(
     allowed: bool,
     expected_cancelled: Option<(u64, u64)>,
 ) -> sumibi_ipc::Result<()> {
-    let outcome = runtime
-        .publish_current(stop, deadline)
+    use crate::broker_workers::OwnerStep;
+    let OwnerStep::Published(outcome) = owner
+        .advance(runtime, stop, deadline, |_| {
+            |_: JobTicket| Err(ErrorCode::Unavailable)
+        })
         .map_err(|_| IpcError::PolicyDenied)?
-        .ok_or(IpcError::InvalidMessage)?;
+    else {
+        return Err(IpcError::InvalidMessage);
+    };
     if outcome.policy.authorization != authorization
         || outcome.policy.allowed != allowed
         || outcome.delivered.len() != 2
         || !outcome.closed.is_empty()
+        || outcome.completion != DeliveryCompletion::ExactOrClosed
         || outcome.cancelled != expected_cancelled.into_iter().collect::<Vec<_>>()
     {
         return Err(IpcError::InvalidMessage);
