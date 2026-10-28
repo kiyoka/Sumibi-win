@@ -206,6 +206,7 @@ impl Server {
         pipe.resource
             .peer
             .verify(raw(&pipe.resource.handle), true)?;
+        remaining(deadline)?;
         pipe.authenticated = true;
         Ok(pipe)
     }
@@ -218,6 +219,7 @@ impl Server {
 /// overlapped operation drains, within the supplied finite deadline.
 pub struct AcceptTask {
     stop: Stop,
+    deadline: Instant,
     receive: Receiver<Result<Pipe>>,
     worker: Option<JoinHandle<()>>,
     finished: bool,
@@ -244,6 +246,7 @@ impl AcceptTask {
             .map_err(|_| Error::WorkerFailed)?;
         Ok(Self {
             stop,
+            deadline,
             receive,
             worker: Some(worker),
             finished: false,
@@ -269,11 +272,17 @@ impl AcceptTask {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
-        Some(match self.stop.is_cancelled() {
-            Ok(false) => result,
-            Ok(true) => Err(Error::Cancelled),
-            Err(error) => Err(error),
-        })
+        Some(
+            match self.stop.is_cancelled() {
+                Ok(false) => result,
+                Ok(true) => Err(Error::Cancelled),
+                Err(error) => Err(error),
+            }
+            .and_then(|pipe| {
+                remaining(self.deadline)?;
+                Ok(pipe)
+            }),
+        )
     }
 }
 
@@ -1152,6 +1161,32 @@ mod tests {
             assert!(Instant::now() < deadline + Duration::from_secs(1));
             thread::sleep(Duration::from_millis(1));
         }
+        assert!(Server::create(&name).is_ok());
+    }
+
+    #[test]
+    fn accept_task_discards_a_valid_connection_collected_after_its_deadline() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let server = Server::create(&name).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let mut accepting =
+            AcceptTask::start(server, PinnedProcess::current().unwrap(), deadline).unwrap();
+        let client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        thread::sleep(Duration::from_millis(150));
+        loop {
+            if let Some(result) = accepting.poll() {
+                assert!(matches!(result, Err(Error::Timeout)));
+                break;
+            }
+            assert!(Instant::now() < deadline + Duration::from_secs(1));
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(accepting.poll().is_none());
+        drop(client);
         assert!(Server::create(&name).is_ok());
     }
 
