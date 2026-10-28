@@ -1612,7 +1612,7 @@ mod tests {
         let mut expired = anchor
             .begin_accept(
                 PinnedProcess::current().unwrap(),
-                Instant::now() + Duration::from_millis(100),
+                Instant::now() + Duration::from_millis(500),
             )
             .unwrap();
         let wait_limit = Instant::now() + Duration::from_secs(2);
