@@ -39,7 +39,8 @@ logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer
 終了時の取消通知は進行中の送信mutexを待たない。workerが送信を終えるか
 取消を観測するまでの退出確認を、所有側の有限期限で行う。期限切れなら
 終了成功とは扱わず、残ったworkerを保持して再試行する。通常の政策変更では
-送信順序を固定するため、従来どおり送信mutexの解放を待つ。
+送信順序を固定するため、従来どおり送信mutexの解放を待つ。政策元とBrokerの
+状態が矛盾してRuntimeを終端する場合も、終了通知はmutexを待たない。
 
 ## 期限と失敗
 
@@ -62,6 +63,7 @@ logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer
   同名pipe再作成と旧結果の拒否。
 - 送信mutexを保持したwriterがいても終了通知は先に完了し、退出しないworkerは
   期限切れとして報告され、解放後の再試行で回収される。
+- 政策状態の矛盾による終端も送信mutexを待たず、接続とjobを退役させる。
 - 診断用子Brokerの親process向け2受付、政策通知、取消、結果。`tools/Test-Broker.ps1`と
   `tools/Test-Spike.ps1 -SkipDesktop`が成功し、既定HostとパッシブTIPへ復元。
 

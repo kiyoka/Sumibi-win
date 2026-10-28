@@ -282,7 +282,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
     /// accepts before releasing its shared anchor or starting a new boot.
     pub fn retire_for_restart(&mut self) {
         self.failed = true;
-        self.close_all_inner(false);
+        self.close_all();
     }
 
     /// Clone the admission token after `receive` returns Convert. A worker
@@ -1016,16 +1016,10 @@ impl<'a> BrokerPolicyRuntime<'a> {
     }
 
     fn close_all(&mut self) {
-        self.close_all_inner(true);
-    }
-
-    fn close_all_inner(&mut self, wait_for_send: bool) {
         for job in self.jobs.drain(..) {
-            if wait_for_send {
-                job.cancel();
-            } else {
-                job.request_cancel();
-            }
+            // All callers have already made this runtime terminal. Signalling
+            // does not wait for a writer's mutex; the owner reaps its worker.
+            job.request_cancel();
         }
         for connection in self.pending.drain(..) {
             self.fanout.abandon_key(connection.key);
@@ -1039,7 +1033,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
 
 impl Drop for BrokerPolicyRuntime<'_> {
     fn drop(&mut self) {
-        self.close_all_inner(false);
+        self.close_all();
     }
 }
 
@@ -5498,7 +5492,11 @@ mod tests {
         if !supported() {
             return;
         }
-        let (source, _) = source();
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
         let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
         let stop = Stop::new().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -5507,15 +5505,32 @@ mod tests {
             .attach(server, hello(1, id(90)), &stop, deadline)
             .unwrap();
         read_frame(&mut client, &stop, deadline);
+        let policy = runtime.policy();
+        runtime
+            .receive(1, convert(1, 1, 1, policy), Instant::now())
+            .unwrap();
+        let ticket = runtime.job_ticket(1, 1).unwrap();
+        let send_guard = ticket.send_lock.lock().unwrap();
         let diverged = Policy {
             authorization: runtime.policy().authorization + 1,
             ..runtime.policy()
         };
         runtime.gate.publish(&mut runtime.fanout, diverged).unwrap();
-        assert!(matches!(
-            runtime.publish_current(&stop, deadline),
-            Err(RuntimeError::Relay(RelayError::Diverged))
-        ));
+        std::thread::scope(|scope| {
+            let (done, received) = std::sync::mpsc::channel();
+            let runtime_ref = &mut runtime;
+            let stop_ref = &stop;
+            scope.spawn(move || {
+                done.send(runtime_ref.publish_current(stop_ref, deadline))
+                    .unwrap();
+            });
+            assert!(matches!(
+                received.recv_timeout(Duration::from_millis(500)),
+                Ok(Err(RuntimeError::Relay(RelayError::Diverged)))
+            ));
+            drop(send_guard);
+        });
+        assert!(ticket.is_cancelled());
         assert_eq!(runtime.active_count(), 0);
         assert!(matches!(
             runtime.publish_current(&stop, deadline),
