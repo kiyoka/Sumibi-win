@@ -1324,6 +1324,7 @@ fn publish_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::broker_boot::BrokerBoot;
     use crate::broker_workers::{BrokerWorkLoop, BrokerWorkers, OwnerStep, WorkerPoolError};
     use crate::diagnostic_http::DiagnosticLoopbackHttp;
     use crate::manual::{
@@ -2023,6 +2024,197 @@ mod tests {
             Instant::now() + Duration::from_millis(500)
         ));
         assert_eq!(owner.active_count(), 0);
+    }
+
+    #[test]
+    fn broker_boot_keeps_one_identity_across_clients_and_retires_before_reuse() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 3, deadline).unwrap();
+        let name = boot.name().clone();
+        let boot_id = boot.boot_id();
+        let initial_budget = boot.remaining_attachment_budget();
+        assert!(Server::create_shared(&name, 3).is_err());
+
+        for (expected_key, client_id) in [(1, 1), (2, 2)] {
+            boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+                .unwrap();
+            let mut client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+            loop {
+                match boot
+                    .advance(&stop, deadline, |_| |_: JobTicket| Ok("日本語".into()))
+                    .unwrap()
+                {
+                    OwnerStep::Accepted { key, .. } if key == expected_key => break,
+                    OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                        std::thread::yield_now();
+                    }
+                    _ => panic!("boot did not accept the pinned client"),
+                }
+            }
+            assert_eq!(boot.pending_accept_count(), 0);
+            client
+                .write_all(
+                    message::encode(&hello(client_id, boot_id)).unwrap(),
+                    &stop,
+                    deadline,
+                )
+                .unwrap();
+            loop {
+                match boot
+                    .advance(&stop, deadline, |_| |_: JobTicket| Ok("日本語".into()))
+                    .unwrap()
+                {
+                    OwnerStep::Broker(PollStep::Activated(key)) if key == expected_key => break,
+                    OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                        std::thread::yield_now();
+                    }
+                    _ => panic!("boot did not activate the pinned client"),
+                }
+            }
+            assert_eq!(
+                boot.remaining_attachment_budget(),
+                initial_budget - expected_key as usize
+            );
+            assert!(matches!(
+                read_frame(&mut client, &stop, deadline).message,
+                message::Message::Ready(ready) if ready.broker == boot_id && ready.policy == boot.policy()
+            ));
+            client
+                .write_all(
+                    message::encode(&convert(client_id, 1, 1, boot.policy())).unwrap(),
+                    &stop,
+                    deadline,
+                )
+                .unwrap();
+            loop {
+                match boot
+                    .advance(&stop, deadline, |_| |_: JobTicket| Ok("日本語".into()))
+                    .unwrap()
+                {
+                    OwnerStep::Submitted { key, request: 1 } if key == expected_key => break,
+                    OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                        std::thread::yield_now();
+                    }
+                    _ => panic!("boot did not submit the request"),
+                }
+            }
+            loop {
+                match boot
+                    .advance(&stop, deadline, |_| |_: JobTicket| Ok("日本語".into()))
+                    .unwrap()
+                {
+                    OwnerStep::Completed {
+                        key,
+                        request: 1,
+                        delivered: true,
+                        succeeded: true,
+                    } if key == expected_key => break,
+                    OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                        std::thread::yield_now();
+                    }
+                    _ => panic!("boot did not complete the request"),
+                }
+            }
+            assert!(matches!(
+                read_frame(&mut client, &stop, deadline).message,
+                message::Message::Result(result) if result.text == "日本語"
+            ));
+            drop(client);
+            loop {
+                match boot
+                    .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                    .unwrap()
+                {
+                    OwnerStep::Broker(PollStep::Closed { key, .. }) if key == expected_key => break,
+                    OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                        std::thread::yield_now();
+                    }
+                    _ => panic!("boot did not close the departed client"),
+                }
+            }
+            assert_eq!(boot.active_count(), 0);
+            assert!(Server::create_shared(&name, 3).is_err());
+        }
+        assert!(boot.retire_for_restart(Instant::now() + Duration::from_millis(500)));
+        drop(boot);
+        assert!(Server::create_shared(&name, 3).is_ok());
+    }
+
+    #[test]
+    fn broker_boot_rejects_a_foreign_authority_before_accepting() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        let source = Arc::new(source);
+        let foreign = Arc::new(PolicyAuthority::new(destination));
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+        boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let _client = Pipe::connect(boot.name(), PinnedProcess::current().unwrap()).unwrap();
+        assert!(matches!(
+            boot.advance_manual(foreign, Arc::new(DiagnosticLoopbackHttp), &stop, deadline,),
+            Err(RuntimeError::InvalidTarget)
+        ));
+        assert_eq!(boot.pending_accept_count(), 1);
+        loop {
+            match boot
+                .advance_manual(
+                    source.clone(),
+                    Arc::new(DiagnosticLoopbackHttp),
+                    &stop,
+                    deadline,
+                )
+                .unwrap()
+            {
+                OwnerStep::Accepted { key: 1, .. } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("correct authority did not accept the retained pipe"),
+            }
+        }
+        assert!(boot.retire_for_restart(Instant::now() + Duration::from_millis(500)));
+        assert!(matches!(
+            boot.begin_accept(
+                PinnedProcess::current().unwrap(),
+                Instant::now() + Duration::from_millis(500)
+            ),
+            Err(RuntimeError::Retired)
+        ));
+    }
+
+    #[test]
+    fn broker_boot_reaps_a_pending_accept_before_releasing_its_anchor() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, _) = source();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 3, deadline).unwrap();
+        let name = boot.name().clone();
+        boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        assert_eq!(boot.pending_accept_count(), 1);
+        assert!(boot.retire_for_restart(Instant::now() + Duration::from_millis(500)));
+        assert_eq!(boot.pending_accept_count(), 0);
+        assert!(Server::create_shared(&name, 3).is_err());
+        drop(boot);
+        assert!(Server::create_shared(&name, 3).is_ok());
     }
 
     #[test]

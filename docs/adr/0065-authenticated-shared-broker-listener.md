@@ -16,6 +16,13 @@ pipe名、PID、同じユーザーのSID、Helloのsession IDだけをpeerの証
 アプリケーションI/Oへ渡さず、8件のI/O予算の外に保持する。各実instanceは
 logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer検査を使う。
 
+`BrokerBoot`は製品Host向けに、ランダムな名前と同じ値の起動ID、アンカー、
+政策Runtime、worker所有側、待機受付を一つの寿命で保持する。受付は外部の
+信頼経路で取得した`PinnedProcess`だけを受け取り、実clientが0件の期間も
+アンカーを保持する。接続履歴の残数を所有側へ返し、枯渇時の再起動を判断できる。
+`retire_for_restart`がfalseなら旧資源を保持して再試行し、trueの後に旧Bootを
+破棄する。型自体はTIPの発見・署名・配置を行わない。
+
 ## 所有側の順序
 
 1. HostがBroker起動IDとpipe名を用意し、`SharedAnchor::create`を完了する。
@@ -66,6 +73,9 @@ logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer
 - 送信mutexを保持したwriterがいても終了通知は先に完了し、退出しないworkerは
   期限切れとして報告され、解放後の再試行で回収される。
 - 政策状態の矛盾による終端も送信mutexを待たず、接続とjobを退役させる。
+- `BrokerBoot`で0件の期間を挟む2接続を同じ起動IDで処理し、退役後に旧pipe名を
+  再作成。異なる政策元はOS受付の消費前に拒否し、正しい元で同じ受付を継続。
+  待機受付だけがある状態でも退役とアンカー解放の順序を確認。
 - 診断用子Brokerの親process向け2受付、政策通知、取消、結果。`tools/Test-Broker.ps1`と
   `tools/Test-Spike.ps1 -SkipDesktop`が成功し、既定HostとパッシブTIPへ復元。
 

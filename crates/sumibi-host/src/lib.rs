@@ -3,6 +3,8 @@
 #![forbid(unsafe_code)]
 
 #[cfg(windows)]
+pub mod broker_boot;
+#[cfg(windows)]
 pub mod broker_policy;
 #[cfg(windows)]
 pub mod broker_runtime;
