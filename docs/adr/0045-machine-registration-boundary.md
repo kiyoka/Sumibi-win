@@ -93,3 +93,8 @@ COM/Windows API と API set のほかに `VCRUNTIME140.dll` を参照してい�
 検証 PC では `C:\Windows\System32\VCRUNTIME140.dll` が存在し、署名状態は
 `Valid` だった。この観測は将来のビルドの依存物を保証しないため、製品導入時は
 ビルドごとに依存 DLL と実際のロード先を再確認する。
+
+保護配置した同じ DLL を `Test-ProtectedRegisteredTsf.ps1` で現在ユーザーに一時登録し、
+別プロセス COM 起動、プロセス内 TSF profile の有効化、解除後の再検証が成功した。
+これは保護配置先からの実ロードと現在ユーザー登録の後始末を確認する段階であり、
+HKLM/恒久 profile の登録や一般アプリでの有効化は確認していない。

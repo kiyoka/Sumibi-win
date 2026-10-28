@@ -66,6 +66,17 @@ Administrators 所有、Administrators と SYSTEM はフルアクセス、Users 
 開発用署名と未信頼状態、パッシブ DLL と既存登録の衝突を調べる。
 配置スクリプトも最後に同じ検証を実行する。検証成功は機械登録の実行許可ではない。
 
+保護配置した DLL を現在ユーザー限定で一時登録し、別プロセスからの COM 起動と
+プロセス内 TSF profile の動作、解除後の再検証まで行うには次を実行する。
+管理者権限は不要だが、現在ユーザーのレジストリへ書き込める通常の PowerShell が必要。
+
+```powershell
+.\tools\Test-ProtectedRegisteredTsf.ps1 -InstalledDll '<保護配置 DLL>'
+```
+
+この試験は HKLM や恒久 TSF profile を変更しない。失敗時には終了後の
+`plan-system-dev` と現在ユーザーの対象 COM キーを確認する。
+
 ## 開発用COM登録（明示実行のみ）
 
 一般アプリでのロード経路を切り分けるため、現ユーザーの64-bit COM登録を個別に検証できる。
