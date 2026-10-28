@@ -2634,6 +2634,12 @@ mod tests {
         };
         assert_eq!(old.active_worker_count(), 1);
         assert!(Server::create_shared(&old_name, 3).is_err());
+        assert!(matches!(
+            client
+                .start_read(&stop, Instant::now() + Duration::from_millis(200))
+                .and_then(|operation| operation.wait()),
+            Err(IpcError::Disconnected)
+        ));
         release.store(true, Ordering::Release);
         drop(client);
         let mut next = old.rotate(Instant::now() + Duration::from_secs(1)).unwrap();
