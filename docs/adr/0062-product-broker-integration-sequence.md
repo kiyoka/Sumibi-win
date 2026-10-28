@@ -159,6 +159,10 @@ Hostの設定変更はRelayが最新版へまとめて公開する。公開後�
 I/O調停点で接続する。
 別Brokerの同じ接続keyからの遅延完了は、起動IDが違うため拒否する。
 
+Host所有の`BrokerWorkLoop`は、準備済みOS acceptと既存接続の処理を交互に選ぶ。
+既存接続が待機中なら連続した受付だけでそのframeを飢餓させず、既存接続が
+idleなら同じstepで準備済み受付を進める。どちらの順序でも政策公開を先に行う。
+
 Hostの送信開始guardは、診断loopback HTTPの資格情報headerと本文の
 書込を失効と順序付けた（[ADR 0064](0064-outbound-send-start-order.md)）。
 製品HTTPS adapter、worker I/Oの取消、設定UIの完了待機への接続は残る。

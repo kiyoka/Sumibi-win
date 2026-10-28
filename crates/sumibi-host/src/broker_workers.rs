@@ -105,6 +105,7 @@ pub enum OwnerStep {
 /// never started. The work factory receives text only after policy admission.
 pub struct BrokerWorkLoop {
     workers: BrokerWorkers,
+    accept_first: bool,
 }
 
 impl Default for BrokerWorkLoop {
@@ -117,6 +118,7 @@ impl BrokerWorkLoop {
     pub fn new() -> Self {
         Self {
             workers: BrokerWorkers::new(),
+            accept_first: true,
         }
     }
 
@@ -213,10 +215,40 @@ impl BrokerWorkLoop {
         F: FnOnce(Convert) -> W,
         W: FnOnce(JobTicket) -> Result<String, ErrorCode> + Send + 'static,
     {
-        if let Some(step) = self.poll_accept(runtime, accepts, stop, deadline)? {
-            return Ok(step);
+        self.advance_around_accept(runtime, accepts, stop, deadline, |owner, runtime| {
+            owner.advance(runtime, stop, deadline, make_work)
+        })
+    }
+
+    /// A ready accept and an established session each get a turn. Policy
+    /// publication remains first in either path; an idle session check can
+    /// still admit a ready peer in the same owner step.
+    fn advance_around_accept<F>(
+        &mut self,
+        runtime: &mut BrokerPolicyRuntime<'_>,
+        accepts: &mut Vec<AcceptTask>,
+        stop: &Stop,
+        deadline: Instant,
+        advance: F,
+    ) -> Result<OwnerStep, RuntimeError>
+    where
+        F: FnOnce(&mut Self, &mut BrokerPolicyRuntime<'_>) -> Result<OwnerStep, RuntimeError>,
+    {
+        if self.accept_first {
+            if let Some(step) = self.poll_accept(runtime, accepts, stop, deadline)? {
+                self.accept_first = false;
+                return Ok(step);
+            }
         }
-        self.advance(runtime, stop, deadline, make_work)
+        let step = advance(self, runtime)?;
+        self.accept_first = true;
+        if matches!(step, OwnerStep::Broker(PollStep::Idle)) {
+            if let Some(accepted) = self.poll_accept(runtime, accepts, stop, deadline)? {
+                self.accept_first = false;
+                return Ok(accepted);
+            }
+        }
+        Ok(step)
     }
 
     fn poll_accept(
@@ -309,10 +341,9 @@ impl BrokerWorkLoop {
         if !runtime.uses_source(&authority) {
             return Err(RuntimeError::InvalidTarget);
         }
-        if let Some(step) = self.poll_accept(runtime, accepts, stop, deadline)? {
-            return Ok(step);
-        }
-        self.advance_manual(runtime, authority, transport, stop, deadline)
+        self.advance_around_accept(runtime, accepts, stop, deadline, |owner, runtime| {
+            owner.advance_manual(runtime, authority, transport, stop, deadline)
+        })
     }
 
     pub fn advance<F, W>(

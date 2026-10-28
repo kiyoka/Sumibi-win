@@ -2207,6 +2207,103 @@ mod tests {
     }
 
     #[test]
+    fn broker_boot_serves_an_active_request_between_ready_accepts() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 4, deadline).unwrap();
+
+        boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let mut active = Pipe::connect(boot.name(), PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("done".into()))
+                .unwrap()
+            {
+                OwnerStep::Accepted { key: 1, .. } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("first peer was not accepted"),
+            }
+        }
+        active
+            .write_all(
+                message::encode(&hello(1, boot.boot_id())).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("done".into()))
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(1)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("first peer did not activate"),
+            }
+        }
+        read_frame(&mut active, &stop, deadline);
+
+        boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let _second = Pipe::connect(boot.name(), PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("done".into()))
+                .unwrap()
+            {
+                OwnerStep::Accepted { key: 2, .. } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("second peer was not accepted"),
+            }
+        }
+        active
+            .write_all(
+                message::encode(&convert(1, 1, 1, boot.policy())).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let _third = Pipe::connect(boot.name(), PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("done".into()))
+                .unwrap()
+            {
+                OwnerStep::Submitted { key: 1, request: 1 } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                OwnerStep::Accepted { key: 3, .. } => {
+                    panic!("a later accept overtook the active request")
+                }
+                _ => panic!("active request was not submitted"),
+            }
+        }
+        assert_eq!(boot.pending_accept_count(), 1);
+        assert!(boot
+            .shutdown(Instant::now() + Duration::from_secs(1))
+            .is_ok());
+    }
+
+    #[test]
     fn broker_boot_reaps_a_pending_accept_before_releasing_its_anchor() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {
