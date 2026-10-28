@@ -1304,8 +1304,11 @@ mod tests {
         self, Credential, Destination, ManualRequest, OrderedConversionTransport, Scheme, SendGate,
     };
     use std::cell::Cell;
+    use std::fs::OpenOptions;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::os::windows::io::AsHandle;
+    use std::process::{Child, Command, Stdio};
     use std::time::Duration;
     use sumibi_ipc::{AcceptTask, Nonce, PinnedProcess, Server};
     use sumibi_protocol::{
@@ -1316,6 +1319,59 @@ mod tests {
 
     fn id(value: u128) -> Id {
         Id::new(value).unwrap()
+    }
+
+    struct FixtureChild(Child);
+
+    impl Drop for FixtureChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn cross_process_client_fixture() {
+        let Ok(name) = std::env::var("SUMIBI_HOST_TEST_CHILD_NAME") else {
+            return;
+        };
+        let name = Nonce::from_bootstrap(&name).unwrap();
+        let path = format!(r"\\.\pipe\Sumibi-peer-{}", name.bootstrap());
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let mut session = sumibi_protocol::session::ClientSession::new(id(2), id(90));
+        file.write_all(&session.hello().unwrap()).unwrap();
+        let ready = read_fixture_frame(&mut file);
+        assert!(matches!(
+            session.receive(&ready, Instant::now()).unwrap().event,
+            Some(sumibi_protocol::session::Event::Ready(policy)) if policy.allowed
+        ));
+        let convert = session.begin(1, "second", 5000, Instant::now()).unwrap();
+        file.write_all(&convert).unwrap();
+        let reply = read_fixture_frame(&mut file);
+        assert!(matches!(
+            session.receive(&reply, Instant::now()).unwrap().event,
+            Some(sumibi_protocol::session::Event::Reply {
+                request: 1,
+                outcome: sumibi_protocol::session::Outcome::Result(text),
+                ..
+            }) if text == "完了"
+        ));
+    }
+
+    fn read_fixture_frame(file: &mut std::fs::File) -> Vec<u8> {
+        let mut header = [0; 4];
+        file.read_exact(&mut header).unwrap();
+        let length = u32::from_le_bytes(header) as usize;
+        assert!((1..=sumibi_protocol::MAX_FRAME_BYTES).contains(&length));
+        let mut frame = Vec::with_capacity(4 + length);
+        frame.extend(header);
+        frame.resize(4 + length, 0);
+        file.read_exact(&mut frame[4..]).unwrap();
+        frame
     }
 
     fn supported() -> bool {
@@ -2390,6 +2446,150 @@ mod tests {
         assert!(matches!(
             read_frame(&mut first_client, &stop, deadline).message,
             message::Message::Ready(_)
+        ));
+    }
+
+    #[test]
+    fn owner_loop_serves_a_distinct_process_and_keeps_the_existing_client() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (server, mut first_client) = connected(&stop, deadline);
+        runtime
+            .attach(server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut first_client, &stop, deadline);
+
+        let name = Nonce::random().unwrap();
+        let server = Server::create(&name).unwrap();
+        let mut child = FixtureChild(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "broker_runtime::tests::cross_process_client_fixture",
+                ])
+                .env("SUMIBI_HOST_TEST_CHILD_NAME", name.bootstrap())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let peer = PinnedProcess::from_launch_handle(child.0.as_handle()).unwrap();
+        let mut accepts = vec![AcceptTask::start(server, peer, deadline).unwrap()];
+        let mut owner = BrokerWorkLoop::new();
+        let mut accepted = false;
+        let mut activated = false;
+        let mut submitted = false;
+        loop {
+            assert!(Instant::now() < deadline);
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |request| {
+                    move |_: JobTicket| {
+                        if request.text == "second" {
+                            Ok("完了".into())
+                        } else {
+                            Err(ErrorCode::Rejected)
+                        }
+                    }
+                })
+                .unwrap()
+            {
+                OwnerStep::Accepted {
+                    key: 2,
+                    published: None,
+                } if !accepted => accepted = true,
+                OwnerStep::Broker(PollStep::Activated(2)) if accepted && !activated => {
+                    activated = true;
+                }
+                OwnerStep::Submitted { key: 2, request: 1 } if activated && !submitted => {
+                    submitted = true;
+                }
+                OwnerStep::Completed {
+                    key: 2,
+                    request: 1,
+                    delivered: true,
+                    succeeded: true,
+                } if submitted => break,
+                OwnerStep::Broker(PollStep::Idle) => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("distinct process did not complete its authenticated request"),
+            }
+        }
+        assert!(accepts.is_empty());
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        first_client
+            .write_all(
+                message::encode(&convert(1, 1, 1, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        loop {
+            assert!(Instant::now() < deadline);
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |request| {
+                    move |_: JobTicket| {
+                        if request.text == "nihongo" {
+                            Ok("継続".into())
+                        } else {
+                            Err(ErrorCode::Rejected)
+                        }
+                    }
+                })
+                .unwrap()
+            {
+                OwnerStep::Submitted { key: 1, request: 1 } => break,
+                OwnerStep::Broker(PollStep::Closed { key: 2, .. }) => {}
+                OwnerStep::Broker(PollStep::Idle) => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("first client did not submit after child process exit"),
+            }
+        }
+        loop {
+            assert!(Instant::now() < deadline);
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Completed {
+                    key: 1,
+                    request: 1,
+                    delivered: true,
+                    succeeded: true,
+                } => break,
+                OwnerStep::Broker(PollStep::Closed { key: 2, .. }) => {}
+                OwnerStep::Broker(PollStep::Idle) => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("first client did not complete after child process exit"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut first_client, &stop, deadline).message,
+            message::Message::Result(result) if result.text == "継続"
         ));
     }
 

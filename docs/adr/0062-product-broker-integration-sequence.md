@@ -27,6 +27,11 @@ OS acceptと実worker完了を一緒に扱う製品の継続I/O調停ループ�
 別の実processを固定した受付ではそのprocessの接続を受理し、同じlogon SIDの
 別processからの接続を`WrongPeer`で拒否した。子Brokerの2本は引き続き同一親process
 からの接続であり、異なるTIP間の共有・発見までは示していない。
+Hostの単体結合検査では、一つの`BrokerPolicyRuntime`に親processと別の子processを
+それぞれ固定し、子processのHello・Convert・結果を通した。子process終了後も親側の
+既存接続で次要求を処理した。子fixtureのclient側は標準Fileで接続しているため、
+この検査だけではBroker側processの相互認証を示さない。製品TIPを対象にした
+配置・共有発見と所有TSFへの結果配送は引き続き別の受入条件である。
 共有Hostの長寿命受付には、信頼できるTIP process発見と接続ごとのpeer固定が必要。
 `WriteBatch`が返すのは投入時の位置であり、製品の呼出し側がその位置を
 接続key・世代・政策版・Broker起動IDへ結び付けて完了を処理する。
