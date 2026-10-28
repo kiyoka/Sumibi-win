@@ -22,7 +22,11 @@ Brokerの予約は未受取・受取済み結果も含め合計4件に制限し�
 `broker-key-test`は実DLLのキーから、`broker-input-test`は非同期デモの入力と終了まで検証します。
 `broker-demo`では同じ非同期の固定変換を手動で試せます（[起動と操作](docs/DEVELOPMENT.md#実dllのキーから非同期変換を試す)）。
 起動したBrokerを連続要求で再利用するworker専用APIも追加しています。`broker-channel-test`で同じ子process・取消・期限・容量・終了を検証できます（[起動手順](docs/DEVELOPMENT.md#broker接続の再利用を検証する)、[契約](docs/adr/0016-authenticated-reusable-broker-channel.md)）。既存デモもEXE workerを通して同じBrokerを再利用し、取消・失敗後は次の明示操作で新しい接続を使います。`broker-worker-test`でworkerの容量・配送・終了を検証できます（[所有と寿命](docs/adr/0017-reusable-worker-and-owner-delivery.md)）。
-常駐Broker、一般アプリの入力基盤、HTTP通信はまだありません。
+Issue #4のHost側ライブラリでは、認証済みの共有pipe受付、設定版の通知、有限worker、
+取消と結果配送を所有側ループへ接続しています。自己接続アンカーで実clientが0件の間も
+pipe名を保持し、接続履歴の上限に達したら新規受付だけを止めます
+（[受入進捗](docs/ISSUE_4_PROGRESS.md)）。製品Hostの常駐起動、一般アプリの入力基盤、
+製品HTTPS通信はまだ接続していません。
 手動変換待ちの文字・Backspace・Enter・Convertを有限に保持するCoreを追加しました。FIFO順序、消費前の容量確保、結果不明時の停止を検証し、Enterは自動配送しません（[Coreの設計](docs/adr/0033-bounded-core-waiting-input.md)）。
 `waiting-input-test`で専用adapterから実DLL・非同期workerへ接続し、26ケースを検証できます。受入れ前に既存の共有救済枠を予約し、未適用の入力と結果不明を区別します（[共有枠と順序](docs/adr/0034-shared-recovery-waiting-adapter.md)）。
 `waiting-demo`でF7または日本語キーボードの変換キーによる変換中の入力を試せます。最大4件・8秒で待機を止め、Enterは救済へ移します。F8で待機・通常入力の救済を順に確認し、表示中の1件をF9で破棄・F10でコピーできます。救済は最大10分です。`waiting-demo-test`で配送・確認・開始失敗・期限とEsc後の通常入力・容量超過表示、修飾付き変換キーの非消費の61ケースを検証できます（[起動と操作](docs/DEVELOPMENT.md#待機入力デモを試す)、[期限と通常入力](docs/adr/0040-waiting-deadline-and-unadmitted-fallback.md)、[容量超過表示](docs/adr/0042-waiting-capacity-fallback-feedback.md)）。変換キーは合成キー経路で確認済みですが、実キーボードでの配送は未確認です。製品キー・一般アプリへの接続は未実装です。

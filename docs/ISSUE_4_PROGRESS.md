@@ -390,6 +390,13 @@
   所有側は`AdmissionRejected`でその接続だけを閉じ、既存接続の処理を続ける。
   全Rustテスト291件。新しいBroker起動IDでの
   製品側ローテーションはまだ未接続。
+- `SharedAnchor`はBroker自身を固定peerとする最初のpipe instanceを占有し、
+  実clientが0件になってもpipe名と`FILE_FLAG_FIRST_PIPE_INSTANCE`の所有を維持する。
+  自己接続handleは本文I/Oに使わず、実client用instanceは各々別の固定processを
+  認証する。実pipeで0件の期間を3回またぐ受付と、所有側ループのkey 1→2および
+  2件目の結果配送を確認した。最大8 instanceのうち1件をアンカーに使うため、
+  同時に受け付ける実clientは最大7件。全Rustテスト293件。製品Hostの常駐経路と
+  信頼できるTIP発見は未接続。
 
 ## 次の受入作業
 

@@ -316,6 +316,75 @@ impl Drop for AcceptTask {
     }
 }
 
+/// Keep the first shared pipe instance occupied by this Broker process, so
+/// the name remains owned even when no real client is connected or pending.
+/// The self-client handle carries no application data and does not consume an
+/// I/O permit; the server side still consumes one of the eight endpoint slots.
+/// At most `max_instances - 1` real clients can be served at once.
+pub struct SharedAnchor {
+    server: Pipe,
+    _self_client: OwnedHandle,
+}
+
+impl SharedAnchor {
+    pub fn create(name: &Nonce, max_instances: u32, deadline: Instant) -> Result<Self> {
+        let server = Server::create_shared(name, max_instances)?;
+        let server_peer = PinnedProcess::current()?;
+        let client_peer = PinnedProcess::current()?;
+        let mut accepting = AcceptTask::start(server, server_peer, deadline)?;
+        let pipe_name = name.pipe_name();
+        // SAFETY: the first instance is already owned by this process and no
+        // name has been advertised yet. This handle is held only as a sentinel;
+        // it never reads or writes user data. The usual peer check still runs.
+        let self_client = unsafe {
+            match CreateFileW(
+                PCWSTR(pipe_name.as_ptr()),
+                GENERIC_READ.0 | GENERIC_WRITE.0,
+                FILE_SHARE_MODE(0),
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                None,
+            ) {
+                Ok(handle) => Ok(own(handle)),
+                Err(error) => Err(Error::from(error)),
+            }
+        };
+        let self_client = match self_client {
+            Ok(handle) => handle,
+            Err(error) => {
+                let _ = accepting.cancel_and_reap(deadline);
+                return Err(error);
+            }
+        };
+        if let Err(error) = client_peer.verify(raw(&self_client), false) {
+            let _ = accepting.cancel_and_reap(deadline);
+            return Err(error);
+        }
+        let server = loop {
+            if let Some(result) = accepting.poll() {
+                break result?;
+            }
+            if Instant::now() >= deadline {
+                let _ = accepting.cancel_and_reap(deadline);
+                return Err(Error::Timeout);
+            }
+            thread::sleep(Duration::from_millis(1));
+        };
+        Ok(Self {
+            server,
+            _self_client: self_client,
+        })
+    }
+
+    /// The expected process must come from a trusted launch or discovery
+    /// path. A caller may replace a rejected or timed-out accept without
+    /// releasing the first instance or changing the pipe name.
+    pub fn begin_accept(&self, peer: PinnedProcess, deadline: Instant) -> Result<AcceptTask> {
+        AcceptTask::start(self.server.replacement()?, peer, deadline)
+    }
+}
+
 struct Resource {
     handle: OwnedHandle,
     peer: PinnedProcess,
@@ -1400,6 +1469,47 @@ mod tests {
                 .bytes,
             [42]
         );
+    }
+
+    #[test]
+    fn shared_anchor_keeps_the_first_instance_across_zero_client_intervals() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let anchor = SharedAnchor::create(&name, 3, deadline).unwrap();
+        assert!(Server::create_shared(&name, 3).is_err());
+        let stop = Stop::new().unwrap();
+
+        for byte in [11, 22, 33] {
+            let mut accepting = anchor
+                .begin_accept(PinnedProcess::current().unwrap(), deadline)
+                .unwrap();
+            let mut client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+            let mut server = loop {
+                if let Some(result) = accepting.poll() {
+                    break result.unwrap();
+                }
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(1));
+            };
+            client.write_all(vec![byte], &stop, deadline).unwrap();
+            assert_eq!(
+                server
+                    .start_read(&stop, deadline)
+                    .unwrap()
+                    .wait()
+                    .unwrap()
+                    .bytes,
+                [byte]
+            );
+            drop(server);
+            drop(client);
+        }
+        drop(anchor);
+        assert!(Server::create_shared(&name, 3).is_ok());
     }
 
     #[test]

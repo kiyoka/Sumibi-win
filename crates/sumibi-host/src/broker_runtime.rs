@@ -1299,7 +1299,7 @@ mod tests {
     use std::os::windows::io::AsHandle;
     use std::process::{Child, Command, Stdio};
     use std::time::Duration;
-    use sumibi_ipc::{AcceptTask, Nonce, PinnedProcess, Server};
+    use sumibi_ipc::{AcceptTask, Nonce, PinnedProcess, Server, SharedAnchor};
     use sumibi_protocol::{
         broker_session::{BrokerError, Event},
         message::{Cancel, Convert, Hello, Revision},
@@ -2873,6 +2873,110 @@ mod tests {
             read_frame(&mut client, &stop, deadline).message,
             message::Message::Result(result) if result.text == "継続"
         ));
+    }
+
+    #[test]
+    fn shared_anchor_keeps_owner_keys_monotonic_across_zero_active_clients() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let mut owner = BrokerWorkLoop::new();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let name = Nonce::random().unwrap();
+        let anchor = SharedAnchor::create(&name, 3, deadline).unwrap();
+
+        for client_id in 1..=2 {
+            let mut accepts = vec![anchor
+                .begin_accept(PinnedProcess::current().unwrap(), deadline)
+                .unwrap()];
+            let mut client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+            let key = loop {
+                match owner
+                    .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                        |_: JobTicket| Ok("完了".into())
+                    })
+                    .unwrap()
+                {
+                    OwnerStep::Accepted { key, .. } => break key,
+                    OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                        std::thread::yield_now();
+                    }
+                    _ => panic!("anchored client was not accepted"),
+                }
+            };
+            assert_eq!(key, client_id);
+            client
+                .write_all(
+                    message::encode(&hello(client_id as u128, id(90))).unwrap(),
+                    &stop,
+                    deadline,
+                )
+                .unwrap();
+            loop {
+                match owner
+                    .advance(&mut runtime, &stop, deadline, |_| {
+                        |_: JobTicket| Ok("完了".into())
+                    })
+                    .unwrap()
+                {
+                    OwnerStep::Broker(PollStep::Activated(activated)) if activated == key => break,
+                    OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                        std::thread::yield_now();
+                    }
+                    _ => panic!("anchored client did not activate"),
+                }
+            }
+            assert!(matches!(
+                read_frame(&mut client, &stop, deadline).message,
+                message::Message::Ready(_)
+            ));
+            if client_id == 1 {
+                assert!(runtime.disconnect(key));
+                drop(client);
+                assert_eq!(runtime.active_count(), 0);
+                continue;
+            }
+            client
+                .write_all(
+                    message::encode(&convert(2, 1, 1, runtime.policy())).unwrap(),
+                    &stop,
+                    deadline,
+                )
+                .unwrap();
+            let mut submitted = false;
+            loop {
+                match owner
+                    .advance(&mut runtime, &stop, deadline, |_| {
+                        |_: JobTicket| Ok("完了".into())
+                    })
+                    .unwrap()
+                {
+                    OwnerStep::Submitted { key: 2, request: 1 } => submitted = true,
+                    OwnerStep::Completed {
+                        key: 2,
+                        request: 1,
+                        delivered: true,
+                        ..
+                    } if submitted => break,
+                    OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                        std::thread::yield_now();
+                    }
+                    _ => panic!("second anchored client did not receive a result"),
+                }
+            }
+            assert!(matches!(
+                read_frame(&mut client, &stop, deadline).message,
+                message::Message::Result(result) if result.text == "完了"
+            ));
+        }
     }
 
     #[test]
