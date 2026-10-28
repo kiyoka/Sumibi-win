@@ -84,6 +84,15 @@ impl PolicyFanout {
         self.subscribers.len()
     }
 
+    /// Identify an activated transport by its authenticated connection key.
+    /// A reserved key has no client identity until Hello succeeds.
+    pub fn session_id(&self, key: u64) -> Option<Id> {
+        self.subscribers
+            .iter()
+            .find(|subscriber| subscriber.key == key)
+            .map(|subscriber| subscriber.session_id)
+    }
+
     /// Claim a monotonic key at OS accept, before its Hello is complete.
     /// Reserved Hellos may then complete in either order. Dropping a pending
     /// pipe must abandon its reservation; the key still cannot be reused.
@@ -584,9 +593,13 @@ mod tests {
         let mut fanout = PolicyFanout::new(id(90), policy()).unwrap();
         assert_eq!(fanout.reserve_key(1), Ok(()));
         assert_eq!(fanout.reserve_key(2), Ok(()));
+        assert!(fanout.session_id(1).is_none());
+        assert!(fanout.session_id(2).is_none());
         attach_ready(&mut fanout, 2, 2, now);
         attach_ready(&mut fanout, 1, 1, now);
         assert_eq!(fanout.active_count(), 2);
+        assert!(fanout.session_id(1) == Some(id(1)));
+        assert!(fanout.session_id(2) == Some(id(2)));
         assert!(matches!(
             fanout.attach(1, hello(3), now),
             Err(FanoutError::Duplicate)
@@ -597,6 +610,7 @@ mod tests {
         assert_eq!(fanout.reserve_key(9), Err(FanoutError::Full));
         assert!(fanout.abandon_key(3));
         assert!(!fanout.abandon_key(3));
+        assert!(fanout.session_id(3).is_none());
         assert!(matches!(
             fanout.attach(3, hello(3), now),
             Err(FanoutError::StaleKey)

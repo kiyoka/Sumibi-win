@@ -14,7 +14,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use sumibi_ipc::{Error as IpcError, Pipe, Stop};
+use sumibi_ipc::{AcceptTask, Error as IpcError, Pipe, Stop};
 use sumibi_protocol::broker_session::Event;
 use sumibi_protocol::message::{Convert, ErrorCode, Id};
 use sumibi_protocol::policy_fanout::MAX_SESSIONS;
@@ -70,6 +70,11 @@ pub struct BrokerWorkers {
 /// `poll_once` after this step's initial source check.
 pub enum OwnerStep {
     Published(PublicationOutcome),
+    Accepted {
+        key: u64,
+        published: Option<PublicationOutcome>,
+    },
+    AcceptFailed(IpcError),
     Completed {
         key: u64,
         request: u64,
@@ -150,6 +155,56 @@ impl BrokerWorkLoop {
         Ok((key, published))
     }
 
+    /// Advance one owner step across bounded OS accepts, Host publication,
+    /// worker completions and authenticated frames. Each accept task holds a
+    /// pinned peer; a failed OS accept is reported without reserving a key or
+    /// retiring unrelated connections. A successful accept publishes any
+    /// newer Host policy before reserving its never-reused key.
+    pub fn advance_with_accept<F, W>(
+        &mut self,
+        runtime: &mut BrokerPolicyRuntime<'_>,
+        accepts: &mut Vec<AcceptTask>,
+        stop: &Stop,
+        deadline: Instant,
+        make_work: F,
+    ) -> Result<OwnerStep, RuntimeError>
+    where
+        F: FnOnce(Convert) -> W,
+        W: FnOnce(JobTicket) -> Result<String, ErrorCode> + Send + 'static,
+    {
+        if let Some(step) = self.poll_accept(runtime, accepts, stop, deadline)? {
+            return Ok(step);
+        }
+        self.advance(runtime, stop, deadline, make_work)
+    }
+
+    fn poll_accept(
+        &mut self,
+        runtime: &mut BrokerPolicyRuntime<'_>,
+        accepts: &mut Vec<AcceptTask>,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<Option<OwnerStep>, RuntimeError> {
+        if let Some(outcome) = runtime.publish_current(stop, deadline)? {
+            return Ok(Some(OwnerStep::Published(outcome)));
+        }
+        let Some((index, result)) = accepts
+            .iter_mut()
+            .enumerate()
+            .find_map(|(index, task)| task.poll().map(|result| (index, result)))
+        else {
+            return Ok(None);
+        };
+        accepts.remove(index);
+        match result {
+            Ok(pipe) => {
+                let (key, published) = self.accept(runtime, pipe, stop, deadline)?;
+                Ok(Some(OwnerStep::Accepted { key, published }))
+            }
+            Err(error) => Ok(Some(OwnerStep::AcceptFailed(error))),
+        }
+    }
+
     /// Product-facing manual conversion dispatch. The runtime and worker
     /// must share the same Host authority; otherwise equal version numbers
     /// from unrelated authorities could authorize the wrong destination.
@@ -189,6 +244,30 @@ impl BrokerWorkLoop {
                 .map_err(classify_send_error)
             }
         })
+    }
+
+    /// Product-facing manual dispatch while bounded OS accepts remain live.
+    /// The source identity check precedes both admission of a new pipe and
+    /// submission of text to a worker.
+    pub fn advance_manual_with_accept<T>(
+        &mut self,
+        runtime: &mut BrokerPolicyRuntime<'_>,
+        accepts: &mut Vec<AcceptTask>,
+        authority: Arc<PolicyAuthority>,
+        transport: Arc<T>,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<OwnerStep, RuntimeError>
+    where
+        T: OrderedConversionTransport + Send + Sync + 'static,
+    {
+        if !runtime.uses_source(&authority) {
+            return Err(RuntimeError::InvalidTarget);
+        }
+        if let Some(step) = self.poll_accept(runtime, accepts, stop, deadline)? {
+            return Ok(step);
+        }
+        self.advance_manual(runtime, authority, transport, stop, deadline)
     }
 
     pub fn advance<F, W>(

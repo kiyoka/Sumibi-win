@@ -1047,8 +1047,7 @@ pub fn serve_diagnostic(
         .map_err(|_| IpcError::PolicyDenied)?;
     let mut owner = BrokerWorkLoop::new();
     let deadline = Instant::now() + Duration::from_secs(10);
-    let mut accepts = bootstrap.begin_policy_runtime_pair(deadline)?.map(Some);
-    let mut accepted = Vec::with_capacity(2);
+    let mut accepts = Vec::from(bootstrap.begin_policy_runtime_pair(deadline)?);
     let mut activated = Vec::with_capacity(2);
     while activated.len() != 2 {
         if bootstrap.stop().is_cancelled()? {
@@ -1057,35 +1056,30 @@ pub fn serve_diagnostic(
         if Instant::now() >= deadline {
             return Err(IpcError::Timeout);
         }
-        for task in &mut accepts {
-            let Some(result) = task.as_mut().and_then(sumibi_ipc::AcceptTask::poll) else {
-                continue;
-            };
-            *task = None;
-            let (key, published) = owner
-                .accept(&mut runtime, result?, bootstrap.stop(), deadline)
-                .map_err(|_| IpcError::PolicyDenied)?;
-            if published.is_some() {
-                return Err(IpcError::InvalidMessage);
-            }
-            accepted.push(key);
-        }
-        for &key in &accepted {
-            if activated.iter().any(|(active, _)| *active == key) {
-                continue;
-            }
-            if let Some(hello) = runtime
-                .poll_reserved_hello(key, bootstrap.stop(), deadline)
-                .map_err(|_| IpcError::InvalidMessage)?
-            {
-                let session = hello.session;
-                runtime
-                    .activate(key, hello, bootstrap.stop(), deadline)
-                    .map_err(|_| IpcError::InvalidMessage)?;
+        match owner
+            .advance_with_accept(
+                &mut runtime,
+                &mut accepts,
+                bootstrap.stop(),
+                deadline,
+                |_| |_: JobTicket| Err(ErrorCode::Unavailable),
+            )
+            .map_err(|_| IpcError::InvalidMessage)?
+        {
+            OwnerStep::Accepted {
+                published: None, ..
+            } => {}
+            OwnerStep::Broker(PollStep::Activated(key)) => {
+                let session = runtime
+                    .fanout
+                    .session_id(key)
+                    .ok_or(IpcError::InvalidMessage)?;
                 activated.push((key, session));
             }
+            OwnerStep::Broker(PollStep::Idle) => std::thread::sleep(Duration::from_millis(1)),
+            OwnerStep::AcceptFailed(error) => return Err(error),
+            _ => return Err(IpcError::InvalidMessage),
         }
-        std::thread::sleep(Duration::from_millis(1));
     }
     let session_one = Id::new(1).ok_or(IpcError::InvalidMessage)?;
     let session_two = Id::new(2).ok_or(IpcError::InvalidMessage)?;
@@ -1917,22 +1911,25 @@ mod tests {
         let (first_server, mut first_client) = connected(&stop, deadline);
         let second_name = Nonce::random().unwrap();
         let second_server = Server::create(&second_name).unwrap();
-        let mut next_accept =
-            AcceptTask::start(second_server, PinnedProcess::current().unwrap(), deadline).unwrap();
+        let mut accepts =
+            vec![
+                AcceptTask::start(second_server, PinnedProcess::current().unwrap(), deadline)
+                    .unwrap(),
+            ];
         let mut owner = BrokerWorkLoop::new();
         let (first_key, published) = owner
             .accept(&mut runtime, first_server, &stop, deadline)
             .unwrap();
         assert_eq!(first_key, 1);
         assert!(published.is_none());
-        assert!(next_accept.poll().is_none());
+        assert!(accepts[0].poll().is_none());
 
         first_client
             .write_all(message::encode(&hello(1, id(90))).unwrap(), &stop, deadline)
             .unwrap();
         loop {
             match owner
-                .advance(&mut runtime, &stop, deadline, |_| {
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
                     |_: JobTicket| Err(ErrorCode::Unavailable)
                 })
                 .unwrap()
@@ -1950,7 +1947,7 @@ mod tests {
         ));
         source.revoke_manual_consent().unwrap();
         assert!(matches!(
-            owner.advance(&mut runtime, &stop, deadline, |_| {
+            owner.advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
                 |_: JobTicket| Err(ErrorCode::Unavailable)
             }),
             Ok(OwnerStep::Published(_))
@@ -1961,7 +1958,7 @@ mod tests {
         ));
         source.grant_manual_consent(&destination).unwrap();
         assert!(matches!(
-            owner.advance(&mut runtime, &stop, deadline, |_| {
+            owner.advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
                 |_: JobTicket| Err(ErrorCode::Unavailable)
             }),
             Ok(OwnerStep::Published(_))
@@ -1970,7 +1967,7 @@ mod tests {
             read_frame(&mut first_client, &stop, deadline).message,
             message::Message::PolicyChanged(next) if next.allowed
         ));
-        assert!(next_accept.poll().is_none());
+        assert!(accepts[0].poll().is_none());
 
         let current = runtime.policy();
         first_client
@@ -1982,7 +1979,7 @@ mod tests {
             .unwrap();
         loop {
             match owner
-                .advance(&mut runtime, &stop, deadline, |_| {
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
                     |_: JobTicket| Ok("日本語".into())
                 })
                 .unwrap()
@@ -1996,7 +1993,7 @@ mod tests {
         }
         loop {
             match owner
-                .advance(&mut runtime, &stop, deadline, |_| {
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
                     |_: JobTicket| Err(ErrorCode::Unavailable)
                 })
                 .unwrap()
@@ -2017,28 +2014,34 @@ mod tests {
             read_frame(&mut first_client, &stop, deadline).message,
             message::Message::Result(result) if result.text == "日本語"
         ));
-        assert!(next_accept.poll().is_none());
+        assert!(accepts[0].poll().is_none());
 
         let mut second_client =
             Pipe::connect(&second_name, PinnedProcess::current().unwrap()).unwrap();
-        let second_server = loop {
-            if let Some(result) = next_accept.poll() {
-                break result.unwrap();
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Accepted {
+                    key: 2,
+                    published: None,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("unexpected owner step while accepting second client"),
             }
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(1));
-        };
-        let (second_key, published) = owner
-            .accept(&mut runtime, second_server, &stop, deadline)
-            .unwrap();
-        assert_eq!(second_key, 2);
-        assert!(published.is_none());
+        }
+        assert!(accepts.is_empty());
         second_client
             .write_all(message::encode(&hello(2, id(90))).unwrap(), &stop, deadline)
             .unwrap();
         loop {
             match owner
-                .advance(&mut runtime, &stop, deadline, |_| {
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
                     |_: JobTicket| Err(ErrorCode::Unavailable)
                 })
                 .unwrap()
@@ -2053,6 +2056,273 @@ mod tests {
         assert!(matches!(
             read_frame(&mut second_client, &stop, deadline).message,
             message::Message::Ready(ready) if ready.policy == current
+        ));
+    }
+
+    #[test]
+    fn owner_loop_retains_an_active_client_after_an_accept_timeout() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (server, mut client) = connected(&stop, deadline);
+        runtime
+            .attach(server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut client, &stop, deadline);
+        let missing = Server::create(&Nonce::random().unwrap()).unwrap();
+        let mut accepts = vec![AcceptTask::start(
+            missing,
+            PinnedProcess::current().unwrap(),
+            Instant::now() + Duration::from_millis(100),
+        )
+        .unwrap()];
+        let mut owner = BrokerWorkLoop::new();
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::AcceptFailed(IpcError::Timeout) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("unexpected step while the second accept times out"),
+            }
+        }
+        assert!(accepts.is_empty());
+        assert_eq!(runtime.active_keys(), [1]);
+        let policy = runtime.policy();
+        client
+            .write_all(
+                message::encode(&convert(1, 1, 1, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Ok("継続".into())
+                })
+                .unwrap()
+            {
+                OwnerStep::Submitted { key: 1, request: 1 } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("active client did not submit after accept timeout"),
+            }
+        }
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Completed {
+                    key: 1,
+                    request: 1,
+                    delivered: true,
+                    succeeded: true,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("active client did not complete after accept timeout"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Result(result) if result.text == "継続"
+        ));
+    }
+
+    #[test]
+    fn owner_loop_publishes_current_policy_before_taking_a_completed_accept() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let name = Nonce::random().unwrap();
+        let server = Server::create(&name).unwrap();
+        let mut accepts =
+            vec![AcceptTask::start(server, PinnedProcess::current().unwrap(), deadline).unwrap()];
+        let mut client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut owner = BrokerWorkLoop::new();
+        let OwnerStep::Published(outcome) = owner
+            .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                |_: JobTicket| Err(ErrorCode::Unavailable)
+            })
+            .unwrap()
+        else {
+            panic!("Host policy must be published before accepting the pipe");
+        };
+        assert!(outcome.policy.allowed);
+        assert!(outcome.delivered.is_empty());
+        assert_eq!(accepts.len(), 1);
+        assert_eq!(runtime.pending_count(), 0);
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Accepted {
+                    key: 1,
+                    published: None,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("authenticated pipe was not reserved"),
+            }
+        }
+        client
+            .write_all(message::encode(&hello(1, id(90))).unwrap(), &stop, deadline)
+            .unwrap();
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(1)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("new client did not activate under the current Host policy"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Ready(ready) if ready.policy == outcome.policy
+        ));
+    }
+
+    #[test]
+    fn owner_loop_takes_a_later_accept_task_without_consuming_the_earlier_one() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, _) = source();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let first_name = Nonce::random().unwrap();
+        let second_name = Nonce::random().unwrap();
+        let first = Server::create(&first_name).unwrap();
+        let second = Server::create(&second_name).unwrap();
+        let mut accepts = vec![
+            AcceptTask::start(first, PinnedProcess::current().unwrap(), deadline).unwrap(),
+            AcceptTask::start(second, PinnedProcess::current().unwrap(), deadline).unwrap(),
+        ];
+        let mut second_client =
+            Pipe::connect(&second_name, PinnedProcess::current().unwrap()).unwrap();
+        let mut owner = BrokerWorkLoop::new();
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Accepted {
+                    key: 1,
+                    published: None,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("later accept task did not finish first"),
+            }
+        }
+        assert_eq!(accepts.len(), 1);
+        assert!(accepts[0].poll().is_none());
+        second_client
+            .write_all(message::encode(&hello(2, id(90))).unwrap(), &stop, deadline)
+            .unwrap();
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(1)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("later accepted client did not activate"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut second_client, &stop, deadline).message,
+            message::Message::Ready(_)
+        ));
+
+        let mut first_client =
+            Pipe::connect(&first_name, PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Accepted {
+                    key: 2,
+                    published: None,
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("earlier accept task was lost"),
+            }
+        }
+        assert!(accepts.is_empty());
+        first_client
+            .write_all(message::encode(&hello(1, id(90))).unwrap(), &stop, deadline)
+            .unwrap();
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Err(ErrorCode::Unavailable)
+                })
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(2)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("earlier accepted client did not activate"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut first_client, &stop, deadline).message,
+            message::Message::Ready(_)
         ));
     }
 
@@ -2150,9 +2420,16 @@ mod tests {
             request
         });
         let mut owner = BrokerWorkLoop::new();
+        let pending_server = Server::create(&Nonce::random().unwrap()).unwrap();
+        let mut accepts =
+            vec![
+                AcceptTask::start(pending_server, PinnedProcess::current().unwrap(), deadline)
+                    .unwrap(),
+            ];
         assert!(matches!(
-            owner.advance_manual(
+            owner.advance_manual_with_accept(
                 &mut runtime,
+                &mut accepts,
                 source.clone(),
                 Arc::new(DiagnosticLoopbackHttp),
                 &stop,
@@ -2173,8 +2450,9 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
-            owner.advance_manual(
+            owner.advance_manual_with_accept(
                 &mut runtime,
+                &mut accepts,
                 source.clone(),
                 Arc::new(DiagnosticLoopbackHttp),
                 &stop,
@@ -2184,8 +2462,9 @@ mod tests {
         ));
         loop {
             match owner
-                .advance_manual(
+                .advance_manual_with_accept(
                     &mut runtime,
+                    &mut accepts,
                     source.clone(),
                     Arc::new(DiagnosticLoopbackHttp),
                     &stop,
@@ -2213,6 +2492,7 @@ mod tests {
         assert!(request
             .windows(b"POST /new".len())
             .any(|part| part == b"POST /new"));
+        assert_eq!(accepts.len(), 1);
     }
 
     #[test]

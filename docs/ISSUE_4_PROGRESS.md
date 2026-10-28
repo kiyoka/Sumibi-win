@@ -1,6 +1,6 @@
 # Issue #4 の受入進捗
 
-2026-10-26 / [Issue #4](https://github.com/kiyoka/Sumibi-win/issues/4) /
+2026-10-28 / [Issue #4](https://github.com/kiyoka/Sumibi-win/issues/4) /
 [draft PR #10](https://github.com/kiyoka/Sumibi-win/pull/10)。
 ここでいう成功は、明記した診断Host・専用TSF入力欄・合成本文での結果に限る。
 製品の一般アプリ対応や実API利用を意味しない。
@@ -330,6 +330,14 @@
   子process検査を追加した。さらに受付待ち中の政策失効・再許可、worker結果、
   後続接続の最新版Readyを実pipeで確認した。全Rustテスト269件、Broker回帰、
   Clippyが成功し、既定Hostへ復元した。製品Hostの共有発見と長寿命の受付は未接続。
+- `BrokerWorkLoop::advance_with_accept`と`advance_manual_with_accept`で、受付結果、
+  政策公開、worker結果、既存pipeのframeを所有側の1ステップへまとめた。OS受付の
+  期限切れは既存接続を退役させず、後続の変換結果を返す。先に接続したpipeが
+  待機中でも後の受付完了を先に取り出し、未公開政策を新pipeのkey予約より先に
+  完了する。診断HTTPの宛先変更後の送信も受付待ち中に通した。子BrokerのHelloも
+  この入口へ接続し、2本目を待ちながら1本目のReadyを返す。受付取消・期限切れ・
+  instance差替えでOS枠が戻る実pipe検査を追加した。全Rustテスト275件とBroker
+  回帰が成功。製品TIPの信頼できる発見と長寿命Host起動は引き続き必要。
 
 ## 次の受入作業
 
@@ -338,7 +346,7 @@
 
 1. `BrokerWorkLoop`と`BrokerPolicyRuntime`を製品Hostの継続するOS acceptへ接続する。
    現在の子Brokerは診断用の2接続を非同期に受け付け、受付中の政策通知とworker
-   完了も実pipeで確認した。長寿命の製品受付、設定UIの操作完了と
+   完了も同じ所有側入口で実pipe確認した。長寿命の製品受付、設定UIの操作完了と
    所有TSFでの結果適用前再検査も製品経路で実証する。
 2. 配置されたBrokerの信頼できる発見・署名・更新・起動を実装する。
 3. 一般アプリへ製品TIPのキー配送と所有対象の失効を接続し、入力先ごとの保護情報を肯定的に検証する。

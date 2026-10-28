@@ -1078,6 +1078,127 @@ mod tests {
     }
 
     #[test]
+    fn accept_task_timeout_releases_the_first_instance() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let server = Server::create(&name).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let mut accepting =
+            AcceptTask::start(server, PinnedProcess::current().unwrap(), deadline).unwrap();
+        loop {
+            if let Some(result) = accepting.poll() {
+                assert!(matches!(result, Err(Error::Timeout)));
+                break;
+            }
+            assert!(Instant::now() < deadline + Duration::from_secs(1));
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(Server::create(&name).is_ok());
+    }
+
+    #[test]
+    fn dropping_a_pending_accept_releases_the_first_instance() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let server = Server::create(&name).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let accepting =
+            AcceptTask::start(server, PinnedProcess::current().unwrap(), deadline).unwrap();
+        drop(accepting);
+        loop {
+            if Server::create(&name).is_ok() {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn replacement_accept_preserves_the_other_authenticated_connection() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let first = Server::create_pair(&name).unwrap();
+        let second = first.additional().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let peer = || PinnedProcess::current().unwrap();
+        let mut accepts = vec![
+            AcceptTask::start(first, peer(), deadline).unwrap(),
+            AcceptTask::start(second, peer(), deadline).unwrap(),
+        ];
+        let first_client = Pipe::connect(&name, peer()).unwrap();
+        let first_server = loop {
+            if let Some((index, result)) = accepts
+                .iter_mut()
+                .enumerate()
+                .find_map(|(index, task)| task.poll().map(|result| (index, result)))
+            {
+                accepts.remove(index);
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(accepts.len(), 1);
+        assert!(accepts[0].poll().is_none());
+        let mut second_client = Pipe::connect(&name, peer()).unwrap();
+        let mut second_server = loop {
+            if let Some(result) = accepts[0].poll() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        };
+        drop(accepts);
+        drop(first_client);
+        drop(first_server);
+
+        let replacement = second_server.replacement_pair().unwrap();
+        let mut accepting = AcceptTask::start(replacement, peer(), deadline).unwrap();
+        assert!(accepting.poll().is_none());
+        let mut replacement_client = Pipe::connect(&name, peer()).unwrap();
+        let mut replacement_server = loop {
+            if let Some(result) = accepting.poll() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        };
+        let stop = Stop::new().unwrap();
+        second_client.write_all(vec![1], &stop, deadline).unwrap();
+        replacement_client
+            .write_all(vec![2], &stop, deadline)
+            .unwrap();
+        assert_eq!(
+            second_server
+                .start_read(&stop, deadline)
+                .unwrap()
+                .wait()
+                .unwrap()
+                .bytes,
+            [1]
+        );
+        assert_eq!(
+            replacement_server
+                .start_read(&stop, deadline)
+                .unwrap()
+                .wait()
+                .unwrap()
+                .bytes,
+            [2]
+        );
+    }
+
+    #[test]
     fn endpoint_budget_is_reserved_before_creation_and_returned_on_drop() {
         let _guard = PIPE_TEST_LOCK.lock().unwrap();
         let permits: Vec<_> = (0..MAX_ENDPOINTS)

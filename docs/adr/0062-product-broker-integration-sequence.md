@@ -15,6 +15,12 @@ OS acceptと実worker完了を一緒に扱う製品の継続I/O調停ループ�
 所有側のpollに認証済みpipeだけを返す。子Brokerは2本の受付を並行開始し、
 2本目が未接続の間に1本目のHelloとReadyを完了する。所有側では次の受付を
 待ちながら既存接続の政策失効・再許可とworker完了を処理できることを実pipeで確認。
+`BrokerWorkLoop::advance_with_accept`はHost政策の公開を先に確認し、完了済み受付を
+一件だけ取り出してkeyを予約し、受付が未完了ならworkerと既存pipeを進める。
+受付の期限切れは`AcceptFailed`として返し、他の認証済み接続は維持する。
+`advance_manual_with_accept`は同じ政策元を確認してから現行宛先の送信workerへ渡す。
+診断子Brokerの初期Hello/Readyもこの所有側入口を使う。破棄した受付のOS枠は
+有限期限で戻り、生存中の別接続から追加instanceを作り直せることを確認した。
 共有Hostの長寿命受付には、信頼できるTIP process発見と接続ごとのpeer固定が必要。
 `WriteBatch`が返すのは投入時の位置であり、製品の呼出し側がその位置を
 接続key・世代・政策版・Broker起動IDへ結び付けて完了を処理する。
