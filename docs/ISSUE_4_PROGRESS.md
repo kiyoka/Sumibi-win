@@ -361,6 +361,10 @@
   以前の診断専用`ReadBatch`読取は除き、`ReadBatch`自体の並行I/Oは実pipe単体検査で
   維持する。Broker実子process回帰と`Test-Spike.ps1 -SkipDesktop`が成功し、
   既定HostとパッシブTIPへ復元した。
+- 設定変更が連続して取消workerを回収すると、既に退役したworkerの完了が8件の
+  channelを埋め、次の取消workerを送信待ちのまま残す問題を修正した。回収時に
+  退役済み完了を破棄し、生存中の別接続の完了だけを次の所有側stepへ保持する。
+  9件連続の取消回収と、同時に残る生存結果の配送を実pipeで検査した。
 
 ## 次の受入作業
 

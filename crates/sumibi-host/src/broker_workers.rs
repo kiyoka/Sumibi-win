@@ -9,6 +9,7 @@ use crate::manual::{
 };
 use crate::policy::ChangeError;
 use crate::policy::{PolicyAuthority, PolicyVersion};
+use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::sync::Arc;
@@ -61,6 +62,7 @@ struct Slot {
 pub struct BrokerWorkers {
     send: SyncSender<WorkerCompletion>,
     receive: Receiver<WorkerCompletion>,
+    queued: VecDeque<WorkerCompletion>,
     slots: Vec<Slot>,
 }
 
@@ -389,6 +391,7 @@ impl BrokerWorkers {
         Self {
             send,
             receive,
+            queued: VecDeque::new(),
             slots: Vec::new(),
         }
     }
@@ -441,9 +444,12 @@ impl BrokerWorkers {
     /// before publishing any returned result.
     pub fn try_completion(&mut self) -> Option<WorkerCompletion> {
         loop {
-            let completion = match self.receive.try_recv() {
-                Ok(completion) => completion,
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return None,
+            let completion = match self.queued.pop_front() {
+                Some(completion) => completion,
+                None => match self.receive.try_recv() {
+                    Ok(completion) => completion,
+                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => return None,
+                },
             };
             let identity = (
                 completion.reply.broker,
@@ -463,11 +469,37 @@ impl BrokerWorkers {
         }
     }
 
-    /// Reap only tickets the runtime has already cancelled. A live worker's
-    /// completion remains queued for the next owner step. At most eight jobs
-    /// can send into the eight-slot channel, so an exit cannot block on send.
+    /// Reap only tickets the runtime has already cancelled. Drain stale
+    /// completions on every pass: otherwise repeated settings changes can
+    /// fill the bounded channel with results of already-reaped workers and
+    /// leave a later cancelled worker blocked in send(). Keep live results
+    /// for the next owner step, bounded by the eight active slots.
     pub fn reap_cancelled(&mut self, deadline: Instant) -> bool {
         loop {
+            self.queued.retain(|completion| {
+                self.slots.iter().any(|slot| {
+                    slot.identity
+                        == (
+                            completion.reply.broker,
+                            completion.reply.key,
+                            completion.reply.request,
+                        )
+                        && !slot.ticket.is_cancelled()
+                })
+            });
+            while let Ok(completion) = self.receive.try_recv() {
+                if self.slots.iter().any(|slot| {
+                    slot.identity
+                        == (
+                            completion.reply.broker,
+                            completion.reply.key,
+                            completion.reply.request,
+                        )
+                        && !slot.ticket.is_cancelled()
+                }) {
+                    self.queued.push_back(completion);
+                }
+            }
             let mut index = 0;
             while index < self.slots.len() {
                 if self.slots[index].ticket.is_cancelled() && self.slots[index].thread.is_finished()

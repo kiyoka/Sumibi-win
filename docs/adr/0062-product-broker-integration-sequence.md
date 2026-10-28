@@ -25,6 +25,9 @@ OS acceptと実worker完了を一緒に扱う製品の継続I/O調停ループ�
 診断子Brokerの初期Hello/Ready、政策通知、2要求のworker結果もこの所有側入口を使う。
 政策失効では`acknowledge_version`が同じpoolの取消workerを回収し、版の配送と
 実際のworker終了を確認してから再許可後の次要求へ進む。
+連続する取消回収では退役済み完了をchannelから排出し、生存中の完了だけを
+所有側へ保持する。これにより古い完了が8件のchannelを占めても次のworkerの
+終了を妨げない。
 破棄した受付のOS枠は
 有限期限で戻り、生存中の別接続から追加instanceを作り直せることを確認した。
 別の実processを固定した受付ではそのprocessの接続を受理し、同じlogon SIDの

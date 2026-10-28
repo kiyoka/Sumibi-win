@@ -1708,6 +1708,98 @@ mod tests {
     }
 
     #[test]
+    fn repeated_cancelled_worker_reaps_do_not_fill_the_completion_channel() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut workers = BrokerWorkers::new();
+
+        // Each settings acknowledgment can retire a different worker without
+        // the owner taking a normal completion step between acknowledgments.
+        // The ninth send used to block behind eight stale completions.
+        for client_id in 1..=9 {
+            let (server, mut client) = connected(&stop, deadline);
+            let key = runtime
+                .attach(server, hello(client_id, id(90)), &stop, deadline)
+                .unwrap();
+            read_frame(&mut client, &stop, deadline);
+            runtime
+                .receive(key, convert(client_id, 1, 1, policy), Instant::now())
+                .unwrap();
+            let ticket = runtime.job_ticket(key, 1).unwrap();
+            workers
+                .submit(ticket.clone(), |_| Err(ErrorCode::Cancelled))
+                .unwrap();
+            ticket.cancel();
+            assert!(workers.reap_cancelled(Instant::now() + Duration::from_millis(500)));
+            assert_eq!(workers.active_count(), 0);
+            runtime.disconnect(key);
+        }
+        assert!(workers.try_completion().is_none());
+    }
+
+    #[test]
+    fn cancelled_worker_reap_preserves_another_queued_result() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (first_server, mut first_client) = connected(&stop, deadline);
+        let first_key = runtime
+            .attach(first_server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut first_client, &stop, deadline);
+        let (second_server, mut second_client) = connected(&stop, deadline);
+        let second_key = runtime
+            .attach(second_server, hello(2, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut second_client, &stop, deadline);
+        let mut workers = BrokerWorkers::new();
+        for key in [first_key, second_key] {
+            runtime
+                .receive(key, convert(key as u128, 1, 1, policy), Instant::now())
+                .unwrap();
+        }
+        let cancelled = runtime.job_ticket(first_key, 1).unwrap();
+        let live = runtime.job_ticket(second_key, 1).unwrap();
+        workers
+            .submit(cancelled.clone(), |_| Err(ErrorCode::Cancelled))
+            .unwrap();
+        workers.submit(live, |_| Ok("継続".into())).unwrap();
+        cancelled.cancel();
+        assert!(workers.reap_cancelled(Instant::now() + Duration::from_millis(500)));
+        let result = loop {
+            if let Some(result) = workers.try_completion() {
+                break result;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert_eq!(result.reply.key, second_key);
+        assert_eq!(result.outcome, Ok("継続".into()));
+        assert!(workers.try_completion().is_none());
+    }
+
+    #[test]
     fn accepted_request_deadline_cannot_be_extended_by_worker() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {
