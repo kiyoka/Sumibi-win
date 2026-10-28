@@ -378,6 +378,11 @@
 - 受付側のpeer認証が終わっていても、所有側が期限後に結果を回収した場合は
   接続を公開せずTimeoutで閉じる。有限期限の直後に接続結果を回収する実pipe検査を
   追加し、全Rustテスト288件が成功した。
+- `AcceptTask::cancel_and_reap`で取消後のOS受付workerの退出を有限期限で確認できる。
+  `BrokerWorkLoop::stop_and_reap_with_accepts`は全受付を先に取消し、変換workerも
+  回収してからpipe名を再利用可能にする。未終了なら失敗を返し、taskを残して
+  再試行できる。2受付と進行中の変換workerを同時停止する実pipe検査を追加した。
+  全Rustテスト290件。
 
 ## 次の受入作業
 

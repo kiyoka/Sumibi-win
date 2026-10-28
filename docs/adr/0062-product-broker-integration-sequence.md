@@ -23,6 +23,9 @@
 同じgroupの次の受付を作れる。
 誤った同ユーザーprocessの受付失敗は既存接続を切断せず、生存接続から差替えを作る。
 OS受付が期限内でも所有側の結果回収が期限後なら、その認証済みpipeを公開しない。
+shutdownでは全受付taskのStopを先に立て、受付workerと変換workerの実際の退出を
+同じ有限期限で確認する。未終了taskは保持して再試行し、終了前に同じpipe名の
+Brokerを起動したと報告しない。
 製品Hostの信頼できるpeer発見と、全接続が消えたときの安全な再起動は未接続。
 `BrokerWorkLoop::advance_with_accept`はHost政策の公開を先に確認し、完了済み受付を
 一件だけ取り出してkeyを予約し、受付が未完了ならworkerと既存pipeを進める。

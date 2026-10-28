@@ -1731,6 +1731,77 @@ mod tests {
     }
 
     #[test]
+    fn owner_shutdown_reaps_pending_accepts_and_worker_before_pipe_name_reuse() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let policy = runtime.policy();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (server, mut client) = connected(&stop, deadline);
+        runtime
+            .attach(server, hello(1, id(90)), &stop, deadline)
+            .unwrap();
+        read_frame(&mut client, &stop, deadline);
+        client
+            .write_all(
+                message::encode(&convert(1, 1, 1, policy)).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        let mut owner = BrokerWorkLoop::new();
+        loop {
+            match owner
+                .advance(&mut runtime, &stop, deadline, |_| {
+                    |ticket: JobTicket| {
+                        let _ = ticket
+                            .stop()
+                            .wait_until(Instant::now() + Duration::from_secs(3));
+                        Err(ErrorCode::Cancelled)
+                    }
+                })
+                .unwrap()
+            {
+                OwnerStep::Submitted { key: 1, request: 1 } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("worker was not submitted before shutdown"),
+            }
+        }
+        let first_name = Nonce::random().unwrap();
+        let second_name = Nonce::random().unwrap();
+        let mut accepts = vec![
+            AcceptTask::start(
+                Server::create(&first_name).unwrap(),
+                PinnedProcess::current().unwrap(),
+                deadline,
+            )
+            .unwrap(),
+            AcceptTask::start(
+                Server::create(&second_name).unwrap(),
+                PinnedProcess::current().unwrap(),
+                deadline,
+            )
+            .unwrap(),
+        ];
+        assert!(owner
+            .stop_and_reap_with_accepts(&mut accepts, Instant::now() + Duration::from_millis(500)));
+        assert!(accepts.is_empty());
+        assert_eq!(owner.active_count(), 0);
+        assert!(Server::create(&first_name).is_ok());
+        assert!(Server::create(&second_name).is_ok());
+    }
+
+    #[test]
     fn repeated_cancelled_worker_reaps_do_not_fill_the_completion_channel() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {

@@ -257,6 +257,30 @@ impl AcceptTask {
         self.stop.cancel()
     }
 
+    /// Cancel and confirm that the OS accept worker has released its pipe
+    /// instance before the caller reuses this name for another Broker boot.
+    /// False means the worker still owns the instance at the caller's finite
+    /// deadline; dropping the task still signals cancellation.
+    pub fn cancel_and_reap(&mut self, deadline: Instant) -> Result<bool> {
+        self.cancel()?;
+        if self.finished {
+            return Ok(true);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining > Duration::from_secs(60) {
+            return Err(Error::InvalidArgument);
+        }
+        loop {
+            if self.poll().is_some() {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     /// Return immediately. A result is delivered once; a failed accept does
     /// not expose a partially authenticated endpoint to the owner.
     pub fn poll(&mut self) -> Option<Result<Pipe>> {
@@ -1117,6 +1141,27 @@ mod tests {
             thread::sleep(Duration::from_millis(1));
         }
         assert!(accepting.poll().is_none());
+    }
+
+    #[test]
+    fn shared_pending_accepts_reap_before_reusing_the_pipe_name() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let first = Server::create_shared(&name, 2).unwrap();
+        let second = first.additional().unwrap();
+        let accept_deadline = Instant::now() + Duration::from_secs(5);
+        let mut first =
+            AcceptTask::start(first, PinnedProcess::current().unwrap(), accept_deadline).unwrap();
+        let mut second =
+            AcceptTask::start(second, PinnedProcess::current().unwrap(), accept_deadline).unwrap();
+        let shutdown_deadline = Instant::now() + Duration::from_millis(500);
+        assert!(first.cancel_and_reap(shutdown_deadline).unwrap());
+        assert!(second.cancel_and_reap(shutdown_deadline).unwrap());
+        assert!(second.cancel_and_reap(shutdown_deadline).unwrap());
+        assert!(Server::create_shared(&name, 2).is_ok());
     }
 
     #[test]

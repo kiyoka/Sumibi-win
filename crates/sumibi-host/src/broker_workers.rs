@@ -125,6 +125,29 @@ impl BrokerWorkLoop {
         self.workers.stop_and_reap(deadline)
     }
 
+    /// Signal every pending OS accept before waiting for workers and accept
+    /// tasks to exit. Leave unfinished tasks with the caller for a later
+    /// bounded retry; a successful return releases every pending instance.
+    pub fn stop_and_reap_with_accepts(
+        &mut self,
+        accepts: &mut Vec<AcceptTask>,
+        deadline: Instant,
+    ) -> bool {
+        let mut accepts_signalled = true;
+        for task in accepts.iter() {
+            accepts_signalled &= task.cancel().is_ok();
+        }
+        let workers_done = self.workers.stop_and_reap(deadline);
+        let mut accepts_done = true;
+        for task in accepts.iter_mut() {
+            accepts_done &= task.cancel_and_reap(deadline).unwrap_or(false);
+        }
+        if accepts_done {
+            accepts.clear();
+        }
+        accepts_signalled && workers_done && accepts_done
+    }
+
     /// Settings completion includes transport publication and the exit of
     /// workers cancelled by that publication. A previously completed policy
     /// version may still have cancelled workers awaiting bounded I/O exit.
