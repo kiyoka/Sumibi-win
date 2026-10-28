@@ -571,6 +571,9 @@ impl BrokerWorkers {
         for slot in &self.slots {
             slot.ticket.request_cancel();
         }
+        // Even an elapsed shutdown deadline permits a nonblocking check for
+        // completions that have already arrived.
+        let _ = self.try_completion();
         while !self.slots.is_empty() && Instant::now() < deadline {
             let _ = self.try_completion();
             if !self.slots.is_empty() {

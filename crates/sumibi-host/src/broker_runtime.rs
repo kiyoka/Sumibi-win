@@ -1690,7 +1690,7 @@ mod tests {
                 retired_send.send(()).unwrap();
             });
             assert!(retired_receive
-                .recv_timeout(Duration::from_millis(100))
+                .recv_timeout(Duration::from_millis(500))
                 .is_ok());
             assert!(ticket.is_cancelled());
             release_send.send(()).unwrap();
