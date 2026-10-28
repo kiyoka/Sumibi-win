@@ -119,12 +119,23 @@ impl Server {
     /// Allow exactly two instances for the disposable multi-client probe.
     /// Normal one-client services keep their original one-instance boundary.
     pub(crate) fn create_pair(name: &Nonce) -> Result<Self> {
-        Self::create_instance(name, true, 2)
+        Self::create_shared(name, 2)
     }
-    /// Create another instance only while the first instance is still owned
-    /// by this process. Every instance receives the same restricted ACL and
-    /// consumes an endpoint permit before opening a kernel handle.
-    pub(crate) fn additional(&self) -> Result<Self> {
+
+    /// Reserve a local pipe name for up to eight independently authenticated
+    /// client processes. The caller must obtain and pin each expected process
+    /// through a trusted launch or discovery path before accepting it.
+    pub fn create_shared(name: &Nonce, max_instances: u32) -> Result<Self> {
+        if !(2..=MAX_ENDPOINTS as u32).contains(&max_instances) {
+            return Err(Error::InvalidArgument);
+        }
+        Self::create_instance(name, true, max_instances)
+    }
+
+    /// Create another instance while this pipe name is still owned. Every
+    /// instance receives the same restricted ACL and consumes an endpoint
+    /// permit before opening a kernel handle.
+    pub fn additional(&self) -> Result<Self> {
         if self.max_instances == 1 {
             return Err(Error::InvalidArgument);
         }
@@ -185,7 +196,7 @@ impl Server {
                 handle: self.handle,
                 peer,
                 _permit: self.permit,
-                pair_name: (self.max_instances == 2).then_some(self.name),
+                group: (self.max_instances > 1).then_some((self.name, self.max_instances)),
             }),
             closed: false,
             authenticated: false,
@@ -276,7 +287,7 @@ struct Resource {
     handle: OwnedHandle,
     peer: PinnedProcess,
     _permit: Permit,
-    pair_name: Option<Nonce>,
+    group: Option<(Nonce, u32)>,
 }
 pub struct Pipe {
     resource: Arc<Resource>,
@@ -285,16 +296,16 @@ pub struct Pipe {
     busy: bool,
 }
 impl Pipe {
-    /// Replenish a disposable diagnostic pair only while an authenticated
-    /// server instance remains live. The kernel still enforces two instances.
-    pub(crate) fn replacement_pair(&self) -> Result<Server> {
-        self.check()?;
-        let name = self
-            .resource
-            .pair_name
-            .as_ref()
-            .ok_or(Error::InvalidArgument)?;
-        Server::create_instance(name, false, 2)
+    /// Replenish a shared pipe group while an authenticated server instance
+    /// still owns the name. A departed client need not remain alive for the
+    /// owner to create the next listener. The kernel and process-wide permit
+    /// enforce its capacity.
+    pub fn replacement(&self) -> Result<Server> {
+        if !self.authenticated {
+            return Err(Error::Closed);
+        }
+        let (name, max_instances) = self.resource.group.as_ref().ok_or(Error::InvalidArgument)?;
+        Server::create_instance(name, false, *max_instances)
     }
     /// Opening does not wait/retry. The launcher must ensure that this exact
     /// expected server is ready; missing/busy pipes are terminal to this attempt.
@@ -321,7 +332,7 @@ impl Pipe {
                 handle,
                 peer,
                 _permit: permit,
-                pair_name: None,
+                group: None,
             }),
             closed: false,
             authenticated: true,
@@ -1207,7 +1218,7 @@ mod tests {
         drop(first_client);
         drop(first_server);
 
-        let replacement = second_server.replacement_pair().unwrap();
+        let replacement = second_server.replacement().unwrap();
         let mut accepting = AcceptTask::start(replacement, peer(), deadline).unwrap();
         assert!(accepting.poll().is_none());
         let mut replacement_client = Pipe::connect(&name, peer()).unwrap();
@@ -1244,6 +1255,74 @@ mod tests {
     }
 
     #[test]
+    fn shared_group_accepts_three_and_replenishes_one_instance() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        assert!(matches!(
+            Server::create_shared(&name, 1),
+            Err(Error::InvalidArgument)
+        ));
+        assert!(matches!(
+            Server::create_shared(&name, MAX_ENDPOINTS as u32 + 1),
+            Err(Error::InvalidArgument)
+        ));
+        let first = Server::create_shared(&name, 3).unwrap();
+        let second = first.additional().unwrap();
+        let third = first.additional().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let peer = || PinnedProcess::current().unwrap();
+        let mut accepts = vec![
+            AcceptTask::start(first, peer(), deadline).unwrap(),
+            AcceptTask::start(second, peer(), deadline).unwrap(),
+            AcceptTask::start(third, peer(), deadline).unwrap(),
+        ];
+        let clients: Vec<_> = (0..3)
+            .map(|_| Pipe::connect(&name, peer()).unwrap())
+            .collect();
+        let mut servers = Vec::new();
+        while !accepts.is_empty() {
+            if let Some((index, result)) = accepts
+                .iter_mut()
+                .enumerate()
+                .find_map(|(index, task)| task.poll().map(|result| (index, result)))
+            {
+                accepts.remove(index);
+                servers.push(result.unwrap());
+            } else {
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+        assert_eq!(servers.len(), 3);
+        drop(servers.remove(0));
+        drop(clients);
+        let replacement = servers[0].replacement().unwrap();
+        let mut accepting = AcceptTask::start(replacement, peer(), deadline).unwrap();
+        let mut client = Pipe::connect(&name, peer()).unwrap();
+        let mut server = loop {
+            if let Some(result) = accepting.poll() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        };
+        let stop = Stop::new().unwrap();
+        client.write_all(vec![42], &stop, deadline).unwrap();
+        assert_eq!(
+            server
+                .start_read(&stop, deadline)
+                .unwrap()
+                .wait()
+                .unwrap()
+                .bytes,
+            [42]
+        );
+    }
+
+    #[test]
     fn accept_task_authenticates_a_distinct_pinned_process() {
         if !native_pipe_tests_supported() {
             return;
@@ -1265,6 +1344,122 @@ mod tests {
         assert!(accepted.authenticated);
         drop(child.stdin.take());
         assert!(child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn shared_group_rearms_after_its_only_client_process_exits() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let first = Server::create_shared(&name, 2).unwrap();
+        let mut child = accept_test_child(Some(&name));
+        let peer = PinnedProcess::from_launch_handle(child.as_handle()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut accepting = AcceptTask::start(first, peer, deadline).unwrap();
+        let old_server = loop {
+            if let Some(result) = accepting.poll() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        };
+        drop(child.stdin.take());
+        assert!(child.wait().unwrap().success());
+        let replacement = old_server.replacement().unwrap();
+        let mut accepting =
+            AcceptTask::start(replacement, PinnedProcess::current().unwrap(), deadline).unwrap();
+        let mut client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        let mut server = loop {
+            if let Some(result) = accepting.poll() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        };
+        let stop = Stop::new().unwrap();
+        client.write_all(vec![7], &stop, deadline).unwrap();
+        assert_eq!(
+            server
+                .start_read(&stop, deadline)
+                .unwrap()
+                .wait()
+                .unwrap()
+                .bytes,
+            [7]
+        );
+    }
+
+    #[test]
+    fn wrong_peer_does_not_retire_another_shared_connection() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let first = Server::create_shared(&name, 2).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut accepting =
+            AcceptTask::start(first, PinnedProcess::current().unwrap(), deadline).unwrap();
+        let mut first_client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        let mut first_server = loop {
+            if let Some(result) = accepting.poll() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        };
+
+        let mut child = accept_test_child(None);
+        let wrong_peer = PinnedProcess::from_launch_handle(child.as_handle()).unwrap();
+        let second = first_server.replacement().unwrap();
+        let mut accepting = AcceptTask::start(second, wrong_peer, deadline).unwrap();
+        let wrong_client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            if let Some(result) = accepting.poll() {
+                assert!(matches!(result, Err(Error::WrongPeer)));
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+        drop(wrong_client);
+        drop(child.stdin.take());
+        assert!(child.wait().unwrap().success());
+
+        let replacement = first_server.replacement().unwrap();
+        let mut accepting =
+            AcceptTask::start(replacement, PinnedProcess::current().unwrap(), deadline).unwrap();
+        let mut second_client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        let mut second_server = loop {
+            if let Some(result) = accepting.poll() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        };
+        let stop = Stop::new().unwrap();
+        first_client.write_all(vec![1], &stop, deadline).unwrap();
+        second_client.write_all(vec![2], &stop, deadline).unwrap();
+        assert_eq!(
+            first_server
+                .start_read(&stop, deadline)
+                .unwrap()
+                .wait()
+                .unwrap()
+                .bytes,
+            [1]
+        );
+        assert_eq!(
+            second_server
+                .start_read(&stop, deadline)
+                .unwrap()
+                .wait()
+                .unwrap()
+                .bytes,
+            [2]
+        );
     }
 
     #[test]

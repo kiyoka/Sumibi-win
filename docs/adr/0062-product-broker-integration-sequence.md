@@ -9,12 +9,20 @@
 診断専用の2接続Brokerがある。
 診断の政策通知は有限な`WriteBatch`で先に2本の書込を開始し、完了した
 接続ごとに結果を返す。部分書込の残りは同じ接続で再開して、次回は別接続を
-先に確認する。開始・完了に失敗した接続だけの結果も返せる。診断の2接続以外で
-OS acceptと実worker完了を一緒に扱う製品の継続I/O調停ループはまだない。
+先に確認する。開始・完了に失敗した接続だけの結果も返せる。Hostライブラリでは
+3接続と受付差替えを所有側ループで確認したが、製品Host EXEの継続I/O調停ループは
+まだ接続していない。
 `AcceptTask`は固定processを認証するOS acceptを有限期限の専用threadへ置き、
 所有側のpollに認証済みpipeだけを返す。子Brokerは2本の受付を並行開始し、
 2本目が未接続の間に1本目のHelloとReadyを完了する。所有側では次の受付を
 待ちながら既存接続の政策失効・再許可とworker完了を処理できることを実pipeで確認。
+共有pipe groupは2～8 instanceを同じACLとendpoint枠で作る。Hostは生存中の
+認証済み接続から、次の固定peerを対象に`begin_replacement_accept`できる。
+3接続の有効化・結果配送、1接続の切断後の4件目の受付を実pipeで確認した。
+唯一のclient processが退出した後も認証済みserver handleを保持していれば
+同じgroupの次の受付を作れる。
+誤った同ユーザーprocessの受付失敗は既存接続を切断せず、生存接続から差替えを作る。
+製品Hostの信頼できるpeer発見と、全接続が消えたときの安全な再起動は未接続。
 `BrokerWorkLoop::advance_with_accept`はHost政策の公開を先に確認し、完了済み受付を
 一件だけ取り出してkeyを予約し、受付が未完了ならworkerと既存pipeを進める。
 受付の期限切れは`AcceptFailed`として返し、他の認証済み接続は維持する。

@@ -365,6 +365,16 @@
   channelを埋め、次の取消workerを送信待ちのまま残す問題を修正した。回収時に
   退役済み完了を破棄し、生存中の別接続の完了だけを次の所有側stepへ保持する。
   9件連続の取消回収と、同時に残る生存結果の配送を実pipeで検査した。
+- 共有pipe groupを2件専用から最大8件へ一般化し、各instanceを同じACL・
+  process全体のendpoint枠で制限した。`BrokerPolicyRuntime::begin_replacement_accept`は
+  生存中の認証済み接続から次の受付instanceを作り、呼出し側が信頼経路で固定した
+  processだけを受け付ける。3接続を所有側ループで有効化し、3件目の要求結果を
+  配送後、1件目を閉じて4件目を受け直す実pipe検査が成功した。
+  唯一のclient processが終了しても、認証済みserver handleを保持している間は
+  同じgroup内で次の受付を作り直せることも別processの実pipeで確認した。
+  別processに固定した受付へ同じユーザーの誤ったprocessが接続した場合、拒否後も
+  既存接続を維持して差替え受付を作れる。全Rustテスト287件。TIP processの共有発見と
+  製品Hostの常駐起動はまだ別途必要。
 
 ## 次の受入作業
 
@@ -372,8 +382,7 @@
 [ADR 0062](adr/0062-product-broker-integration-sequence.md)に記録した。
 
 1. `BrokerWorkLoop`と`BrokerPolicyRuntime`を製品Hostの継続するOS acceptへ接続する。
-   現在の子Brokerは診断用の2接続を非同期に受け付け、受付中の政策通知とworker
-   完了も同じ所有側入口で実pipe確認した。長寿命の製品受付、設定UIの操作完了と
+   共有groupの3接続と差替え受付まで実pipeで確認した。長寿命の製品受付、設定UIの操作完了と
    所有TSFでの結果適用前再検査も製品経路で実証する。
 2. 配置されたBrokerの信頼できる発見・署名・更新・起動を実装する。
 3. 一般アプリへ製品TIPのキー配送と所有対象の失効を接続し、入力先ごとの保護情報を肯定的に検証する。

@@ -613,7 +613,7 @@ fn serve_failed_notice(
     if order.active_count() != 1 {
         return Err(Error::InvalidMessage);
     }
-    let replacement = first.replacement_pair()?;
+    let replacement = first.replacement()?;
     let regranted = Policy {
         authorization: revoked.authorization + 1,
         allowed: true,

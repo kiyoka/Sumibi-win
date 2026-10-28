@@ -10,8 +10,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use sumibi_ipc::{
-    broker::BrokerPolicyGate, framed::FrameInbox, Error as IpcError, Pipe, Stop, WriteBatch,
-    WriteRequest,
+    broker::BrokerPolicyGate, framed::FrameInbox, AcceptTask, Error as IpcError, PinnedProcess,
+    Pipe, Stop, WriteBatch, WriteRequest,
 };
 use sumibi_protocol::{
     broker_session::Event,
@@ -325,6 +325,29 @@ impl<'a> BrokerPolicyRuntime<'a> {
             inbox: FrameInbox::default(),
         });
         Ok(key)
+    }
+
+    /// Start the next bounded OS accept while this authenticated shared
+    /// instance still owns the pipe name. The caller supplies a process pinned
+    /// by its trusted launch or discovery path; this method never discovers a
+    /// peer from an untrusted pipe name or PID alone.
+    pub fn begin_replacement_accept(
+        &self,
+        key: u64,
+        peer: PinnedProcess,
+        deadline: Instant,
+    ) -> Result<AcceptTask, RuntimeError> {
+        if self.failed {
+            return Err(RuntimeError::Retired);
+        }
+        let pipe = self
+            .connections
+            .iter()
+            .chain(self.pending.iter())
+            .find(|entry| entry.key == key)
+            .ok_or(RuntimeError::MissingPipe)?;
+        let server = pipe.pipe.replacement().map_err(RuntimeError::Transport)?;
+        AcceptTask::start(server, peer, deadline).map_err(RuntimeError::Transport)
     }
 
     /// Publish first, then expire jobs and poll one frame per connection in
@@ -2495,6 +2518,172 @@ mod tests {
             read_frame(&mut first_client, &stop, deadline).message,
             message::Message::Ready(_)
         ));
+    }
+
+    #[test]
+    fn shared_owner_rearms_accept_after_three_clients_without_losing_live_pipes() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let mut runtime = BrokerPolicyRuntime::new(&source, id(90)).unwrap();
+        let mut owner = BrokerWorkLoop::new();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let name = Nonce::random().unwrap();
+        let first = Server::create_shared(&name, 3).unwrap();
+        let mut accepts =
+            vec![AcceptTask::start(first, PinnedProcess::current().unwrap(), deadline).unwrap()];
+        let mut clients = Vec::new();
+
+        for client_id in 1..=3 {
+            let mut client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+            let key = loop {
+                match owner
+                    .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                        |_: JobTicket| Ok("完了".into())
+                    })
+                    .unwrap()
+                {
+                    OwnerStep::Accepted { key, .. } => break key,
+                    OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                        std::thread::yield_now();
+                    }
+                    _ => panic!("shared OS accept did not finish"),
+                }
+            };
+            assert_eq!(key, client_id);
+            if client_id < 3 {
+                accepts.push(
+                    runtime
+                        .begin_replacement_accept(key, PinnedProcess::current().unwrap(), deadline)
+                        .unwrap(),
+                );
+            }
+            client
+                .write_all(
+                    message::encode(&hello(client_id as u128, id(90))).unwrap(),
+                    &stop,
+                    deadline,
+                )
+                .unwrap();
+            loop {
+                match owner
+                    .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                        |_: JobTicket| Ok("完了".into())
+                    })
+                    .unwrap()
+                {
+                    OwnerStep::Broker(PollStep::Activated(activated)) if activated == key => break,
+                    OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                        std::thread::yield_now();
+                    }
+                    _ => panic!("shared client did not activate"),
+                }
+            }
+            assert!(matches!(
+                read_frame(&mut client, &stop, deadline).message,
+                message::Message::Ready(_)
+            ));
+            clients.push(client);
+        }
+        assert_eq!(runtime.active_count(), 3);
+        assert!(accepts.is_empty());
+        clients[2]
+            .write_all(
+                message::encode(&convert(3, 1, 1, runtime.policy())).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Ok("完了".into())
+                })
+                .unwrap()
+            {
+                OwnerStep::Submitted { key: 3, request: 1 } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("third client request was not admitted"),
+            }
+        }
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Ok("unused".into())
+                })
+                .unwrap()
+            {
+                OwnerStep::Completed {
+                    key: 3,
+                    request: 1,
+                    delivered: true,
+                    ..
+                } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("third client result was not delivered"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut clients[2], &stop, deadline).message,
+            message::Message::Result(result) if result.text == "完了"
+        ));
+
+        assert!(runtime.disconnect(1));
+        drop(clients.remove(0));
+        accepts.push(
+            runtime
+                .begin_replacement_accept(2, PinnedProcess::current().unwrap(), deadline)
+                .unwrap(),
+        );
+        let mut fourth = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        let fourth_key = loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Ok("unused".into())
+                })
+                .unwrap()
+            {
+                OwnerStep::Accepted { key, .. } => break key,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("replacement client was not accepted"),
+            }
+        };
+        assert_eq!(fourth_key, 4);
+        fourth
+            .write_all(message::encode(&hello(4, id(90))).unwrap(), &stop, deadline)
+            .unwrap();
+        loop {
+            match owner
+                .advance_with_accept(&mut runtime, &mut accepts, &stop, deadline, |_| {
+                    |_: JobTicket| Ok("unused".into())
+                })
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(4)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("replacement client did not activate"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut fourth, &stop, deadline).message,
+            message::Message::Ready(_)
+        ));
+        assert_eq!(runtime.active_count(), 3);
     }
 
     #[test]
