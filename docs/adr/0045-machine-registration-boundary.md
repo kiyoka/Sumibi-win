@@ -49,7 +49,9 @@ CLSID/TSF登録衝突なしを確認した。現在ユーザー限定の`Test-Re
    書込権限と署名を検証する。作業ツリーのDLLを登録先にしない。
 2. 管理者権限で既存CLSID・TSF profile・categoryの所有を再確認してから、
    COM class、TSF service、言語profile、必要なcategoryを登録する。
-   プロファイルのユーザー有効化は別操作とし、既定IMEを変更しない。
+   `RegisterProfile`の`bEnabledByDefault`はfalseとし、診断用の
+   `TF_RP_LOCALPROCESS`を製品profileに付けない。ユーザー有効化は別操作とし、
+   既定IMEを変更しない。
 3. 各段階の失敗では、この試行が作成したキー・profile・categoryだけを逆順に
    解除する。既存の登録を上書きしない。解除後に対象が残っていないことを確認する。
 4. 旧版DLLを使用中のprocessを強制終了・上書きせず、別版への更新と失敗時の
