@@ -1601,6 +1601,46 @@ mod tests {
     }
 
     #[test]
+    fn shared_anchor_rearms_after_an_accept_deadline() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let anchor =
+            SharedAnchor::create(&name, 3, Instant::now() + Duration::from_secs(5)).unwrap();
+        let mut expired = anchor
+            .begin_accept(
+                PinnedProcess::current().unwrap(),
+                Instant::now() + Duration::from_millis(100),
+            )
+            .unwrap();
+        let wait_limit = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(result) = expired.poll() {
+                assert!(matches!(result, Err(Error::Timeout)));
+                break;
+            }
+            assert!(Instant::now() < wait_limit);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(Server::create_shared(&name, 3).is_err());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut accepting = anchor
+            .begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        let server = loop {
+            if let Some(result) = accepting.poll() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        };
+        assert!(server.authenticated && client.authenticated);
+    }
+
+    #[test]
     fn accept_task_authenticates_a_distinct_pinned_process() {
         if !native_pipe_tests_supported() {
             return;
