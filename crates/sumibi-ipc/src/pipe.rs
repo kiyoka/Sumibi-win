@@ -1551,6 +1551,56 @@ mod tests {
     }
 
     #[test]
+    fn shared_anchor_survives_wrong_peer_accept_and_rearms() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let anchor = SharedAnchor::create(&name, 3, deadline).unwrap();
+        let mut wrong_peer = accept_test_child(None);
+        let child_pin = PinnedProcess::from_launch_handle(wrong_peer.as_handle()).unwrap();
+        let mut rejecting = anchor.begin_accept(child_pin, deadline).unwrap();
+        let client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            if let Some(result) = rejecting.poll() {
+                assert!(matches!(result, Err(Error::WrongPeer)));
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+        drop(client);
+        drop(wrong_peer.stdin.take());
+        assert!(wrong_peer.wait().unwrap().success());
+        assert!(Server::create_shared(&name, 3).is_err());
+
+        let mut accepting = anchor
+            .begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let mut client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        let mut server = loop {
+            if let Some(result) = accepting.poll() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        };
+        let stop = Stop::new().unwrap();
+        client.write_all(vec![73], &stop, deadline).unwrap();
+        assert_eq!(
+            server
+                .start_read(&stop, deadline)
+                .unwrap()
+                .wait()
+                .unwrap()
+                .bytes,
+            [73]
+        );
+    }
+
+    #[test]
     fn accept_task_authenticates_a_distinct_pinned_process() {
         if !native_pipe_tests_supported() {
             return;
