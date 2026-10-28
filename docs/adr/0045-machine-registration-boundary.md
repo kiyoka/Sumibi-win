@@ -28,3 +28,17 @@ AppContainerと32-bitプロセス対応も別途判断する。
 参考: Microsoftの[Text Service Registration](https://learn.microsoft.com/en-us/windows/win32/tsf/text-service-registration)、
 [RegisterProfile](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-registerprofile)、
 [COM Classes and Servers](https://learn.microsoft.com/en-us/windows/win32/com/classes-and-servers)。
+
+## 2026-10-28 の登録準備確認
+
+パッシブDLLを`cargo build -p sumibi-tip --no-default-features --locked --offline`で
+明示的に再ビルドし、`plan-system-dev`がCOM export、spike export不在、既存の
+CLSID/TSF登録衝突なしを確認した。現在ユーザー限定の`Test-RegisteredTsf.ps1`では
+レジストリからのCOM起動、プロセス内TSF profileの有効化と解除が成功した。
+終了後の`plan-system-dev`でも衝突なしを再確認した。
+
+現ワークスペースの`target/debug/sumibi_tip.dll`は`Get-AuthenticodeSignature`で
+`NotSigned`、`icacls`では作業ユーザーに`(F)`がある。これをHKLMのCOMサーバー
+として登録する条件は満たしていない。今回の確認はHKLMを書き換えていない。
+次に、管理者だけが変更できる配置先と依存DLLを固定し、署名・ACL確認、版別の
+配置と参照寿命、登録失敗時の復旧と完全な解除を実装してから機械登録を試す。
