@@ -1,8 +1,19 @@
 # Issue #1後の実装順序
 
-2026-10-25更新。最小試作の根拠は[受入記録](ISSUE_1_ACCEPTANCE.md)。
+2026-10-28更新。最小試作の根拠は[受入記録](ISSUE_1_ACCEPTANCE.md)。
 Issue #4の現在の達成範囲と未達条件は[受入進捗](ISSUE_4_PROGRESS.md)にまとめる。
 各段階は直前の安全条件を満たしてから進める。未実装を本Issueの既存機能として扱わない。
+
+## Issue #4 の次の統合作業
+
+Hostライブラリには、認証付き共有待受の`BrokerBoot`、所有側の受付・政策・worker調停、
+期限付きの終了と新起動IDへの切替がある。別processを起動handleで固定した実pipe、
+接続履歴64件の上限と切替、登録不要の診断Hostを検査済み
+（[ADR 0065](adr/0065-authenticated-shared-broker-listener.md)）。
+次は製品Host EXEの継続する所有ループにこのBootを接続し、信頼できるTIP processの
+発見・固定と新しいpipe名の配布を設計・実装する。設定変更のreceiptを製品UIへ返し、
+一般アプリでの所有TSF結果適用前の再検査まで結ぶ。恒久的なTSF登録は配置・署名・
+更新条件を満たしてから扱う（[ADR 0045](adr/0045-machine-registration-boundary.md)）。
 
 ## 1. Core・認証付きIPC・製品用入力基盤
 

@@ -450,6 +450,13 @@ overlapped pipeも追加した（[ADR 0003](adr/0003-pinned-desktop-peers.md)）
 診断用の親子processでは、起動時に固定したprocess handleと両側のトークン・
 pipe peer IDで相互照合する（[ADR 0003](adr/0003-pinned-desktop-peers.md)）。
 製品Brokerを共有して発見する配置・署名・更新・起動の経路は未実装である。
+Hostライブラリの`BrokerBoot`は最初のpipe instanceを保持し、実clientが0件でも
+同名pipeの所有を続ける。受付には信頼経路から固定した`PinnedProcess`を要求する。
+接続履歴64件の上限後は旧接続・受付・workerを有限期限で退役させ、アンカーを
+解放してから別名・別起動IDへ切り替える。期限切れや未回収時は旧Bootを返して
+再試行できる。通常終了も同じ回収条件を使う
+（[ADR 0065](adr/0065-authenticated-shared-broker-listener.md)）。製品Host EXEの
+継続ループ、TIPの信頼できる共有発見、新名の配布は未接続である。
 
 | メッセージ | 内容・受信側の条件 |
 | --- | --- |
