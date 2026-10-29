@@ -8,6 +8,7 @@ use sumibi_tip::spike::{
     FUNCTION_TEST_CONTROL, FUNCTION_TEST_KEY_SINK, FUNCTION_TEST_MANAGER_SINK,
 };
 use windows::Win32::Foundation::{LPARAM, WAIT_OBJECT_0, WAIT_TIMEOUT, WPARAM};
+use windows::Win32::System::Threading::WaitForSingleObject;
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT,
 };
@@ -21,6 +22,12 @@ pub(crate) fn exercise_broker_keys(
     unsafe {
         for case in [
             "apply",
+            "shared-ready",
+            "shared-revoke",
+            "shared-inflight-revoke",
+            "shared-text-restored",
+            "shared-selection-restored",
+            "shared-focus-restored",
             "reuse",
             "reuse-late-cancel",
             "reuse-delivery-reentry",
@@ -70,7 +77,7 @@ pub(crate) fn exercise_broker_keys(
                 crate::window_host::Association::new(manager, &window, &document.0)?;
             manager.SetFocus(&document.0)?;
             pump_tsf_messages(&messages)?;
-            let other = if case == "focus-restored" {
+            let other = if matches!(case, "focus-restored" | "shared-focus-restored") {
                 Some(scope_fixture::other_document(manager, client)?)
             } else {
                 None
@@ -86,11 +93,27 @@ pub(crate) fn exercise_broker_keys(
             let sink: ITfKeyEventSink = provider
                 .GetFunction(&FUNCTION_TEST_KEY_SINK, &ITfKeyEventSink::IID)?
                 .cast()?;
-            let bridge = Bridge::new(if case == "disabled" {
-                Mode::Disabled
+            let (shared, bridge) = if case.starts_with("shared-") {
+                let (fixture, worker) = crate::broker_shared_fixture::Fixture::start(
+                    case == "shared-inflight-revoke",
+                    matches!(
+                        case,
+                        "shared-text-restored"
+                            | "shared-selection-restored"
+                            | "shared-focus-restored"
+                    ),
+                )?;
+                (Some(fixture), Bridge::new_prepared(worker)?)
             } else {
-                Mode::DiagnosticFixed { delay_ms: 200 }
-            })?;
+                (
+                    None,
+                    Bridge::new(if case == "disabled" {
+                        Mode::Disabled
+                    } else {
+                        Mode::DiagnosticFixed { delay_ms: 200 }
+                    })?,
+                )
+            };
             let transport = bridge.to_interface::<ISpikeBrokerTransport>();
             let reentry = Rc::new(Cell::new(false));
             if case == "reuse-delivery-reentry" {
@@ -142,6 +165,30 @@ pub(crate) fn exercise_broker_keys(
             };
             let at_capacity = matches!(case, "capacity" | "capacity-completed" | "capacity-result");
             let before_reads = store.get().reads.get();
+            if case == "shared-revoke" {
+                shared.as_ref().ok_or("missing shared fixture")?.revoke()?;
+                let handle = bridge
+                    .get()
+                    .wait_handle()
+                    .ok_or("missing idle worker event")?;
+                if WaitForSingleObject(handle, 5000) != WAIT_OBJECT_0 {
+                    return Err("shared policy notification timed out".into());
+                }
+                assert!(!sink.OnPreservedKey(&context, &COMMAND_CONVERT)?.as_bool());
+                assert_eq!(store.get().reads.get(), before_reads);
+                assert!(!bridge.get().active());
+                assert!(store.get().undo.borrow().is_empty());
+                let mut pending = u64::MAX;
+                broker.Pending(&mut pending).ok()?;
+                assert_eq!(pending, 0);
+                bridge.get().shutdown()?;
+                shared.ok_or("missing shared fixture")?.finish()?;
+                control.RevokeContext().ok()?;
+                association.close()?;
+                manager.SetFocus(None)?;
+                println!("DLL key / shared Host / revoke before capture: OK");
+                continue;
+            }
             // SimulatePreservedKey itself may ask the store for TSF metadata.
             // Isolate the DLL callback when measuring its pre-capture reads.
             let eaten = if at_capacity {
@@ -178,7 +225,28 @@ pub(crate) fn exercise_broker_keys(
             assert_ne!(id, 0);
             assert!(bridge.get().active());
             let mut replacement = None;
+            if matches!(
+                case,
+                "shared-inflight-revoke"
+                    | "shared-text-restored"
+                    | "shared-selection-restored"
+                    | "shared-focus-restored"
+            ) {
+                let fixture = shared.as_ref().ok_or("missing shared fixture")?;
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !fixture.submitted() {
+                    if Instant::now() >= deadline {
+                        return Err("shared request was not submitted".into());
+                    }
+                    pump_tsf_messages(&messages)?;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
             match case {
+                "shared-inflight-revoke" => {
+                    let fixture = shared.as_ref().ok_or("missing shared fixture")?;
+                    fixture.revoke()?;
+                }
                 "double-key" => {
                     let reads = store.get().reads.get();
                     assert!(!keys
@@ -200,7 +268,7 @@ pub(crate) fn exercise_broker_keys(
                     broker.Pending(&mut pending).ok()?;
                     assert_eq!(pending, 0);
                 }
-                "text-restored" => {
+                "text-restored" | "shared-text-restored" => {
                     store
                         .get()
                         .external_text("prefix NIHONGO suffix".encode_utf16().collect())?;
@@ -210,7 +278,7 @@ pub(crate) fn exercise_broker_keys(
                         .external_text("prefix nihongo suffix".encode_utf16().collect())?;
                     pump_tsf_messages(&messages)?;
                 }
-                "selection-restored" => {
+                "selection-restored" | "shared-selection-restored" => {
                     let original = store.get().selection.get();
                     let mut changed = original;
                     changed.acpEnd = 10;
@@ -227,7 +295,7 @@ pub(crate) fn exercise_broker_keys(
                     sink.OnSelectionChange()?;
                     pump_tsf_messages(&messages)?;
                 }
-                "focus-restored" => {
+                "focus-restored" | "shared-focus-restored" => {
                     let next = other.as_ref().ok_or("missing second input field")?;
                     manager.SetFocus(&next.0)?;
                     assert!(manager.GetFocus()? == next.0);
@@ -304,7 +372,7 @@ pub(crate) fn exercise_broker_keys(
             }
             let apply = matches!(
                 case,
-                "apply" | "double-key" | "stale-reply" | "replace-transport"
+                "apply" | "shared-ready" | "double-key" | "stale-reply" | "replace-transport"
             ) || case.starts_with("reuse");
             assert_eq!(
                 delivery,
@@ -395,6 +463,9 @@ pub(crate) fn exercise_broker_keys(
             store.get().write_hook.borrow_mut().take();
             store.get().deny_lock.set(false);
             bridge.get().shutdown()?;
+            if let Some(fixture) = shared {
+                fixture.finish()?;
+            }
             if let Some(bridge) = &replacement {
                 bridge.get().shutdown()?;
             }

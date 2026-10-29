@@ -116,6 +116,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sumibi-core",
+ "sumibi-host",
  "sumibi-ipc",
  "sumibi-protocol",
  "sumibi-tip",

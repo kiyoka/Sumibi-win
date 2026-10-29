@@ -42,7 +42,7 @@ pub unsafe trait ISpikeBroker: IUnknown {
 /// obtains finite transport capacity and a never-reused ID BEFORE text capture.
 /// Start borrows bounded UTF-16 for this call only. No Rust allocations or COM
 /// targets cross the ABI. Cancel releases a reservation or signals an EXE job.
-#[interface("8950b6a6-e17e-4f87-8898-26c49a0f4879")]
+#[interface("d08a892e-d0ce-4bb8-9d46-b7076d23a8aa")]
 pub unsafe trait ISpikeBrokerTransport: IUnknown {
     pub fn Reserve(&self, request: *mut u64) -> HRESULT;
     pub fn Start(
@@ -56,6 +56,7 @@ pub unsafe trait ISpikeBrokerTransport: IUnknown {
         length: u32,
     ) -> HRESULT;
     pub fn Cancel(&self, request: u64) -> HRESULT;
+    pub fn Policy(&self, request: u64, settings: *mut u64, authorization: *mut u64) -> HRESULT;
 }
 
 pub(crate) struct Broker {
@@ -109,6 +110,22 @@ impl Broker {
         self.last_request.set(id);
         let result = (|| {
             let deadline = Instant::now() + Duration::from_secs(5);
+            let mut settings = 0;
+            let mut authorization = 0;
+            // SAFETY: scalar outputs belong to this owner thread. Failure
+            // cancels the reservation before any input text is captured.
+            unsafe {
+                self.transport
+                    .Policy(id, &mut settings, &mut authorization)
+                    .ok()?;
+            }
+            if settings == 0 || authorization == 0 || !self.policy.get().allowed {
+                return Err(E_ABORT.into());
+            }
+            let mut policy = self.policy.get();
+            policy.revision.settings = settings;
+            policy.revision.authorization = authorization;
+            self.policy.set(policy);
             let ticket = ManualEdit::capture(
                 manager,
                 &self.context,

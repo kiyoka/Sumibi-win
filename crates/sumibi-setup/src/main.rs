@@ -1,6 +1,8 @@
 #[cfg(windows)]
 mod broker_bridge;
 #[cfg(windows)]
+mod broker_shared_fixture;
+#[cfg(windows)]
 mod channel_probe;
 #[cfg(windows)]
 mod edit_host;

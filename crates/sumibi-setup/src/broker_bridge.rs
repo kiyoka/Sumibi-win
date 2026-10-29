@@ -18,7 +18,7 @@ use windows::Win32::Foundation::{E_ABORT, E_INVALIDARG, E_UNEXPECTED, HANDLE, RP
 #[implement(ISpikeBrokerTransport)]
 pub(crate) struct Bridge {
     owner: ThreadId,
-    executable: PathBuf,
+    executable: Option<PathBuf>,
     mode: Mode,
     reserved: RefCell<Option<(u64, Permit)>>,
     worker: RefCell<Option<Worker>>,
@@ -57,10 +57,35 @@ impl Bridge {
         }
         Ok(ComObject::new(Self {
             owner: thread::current().id(),
-            executable,
+            executable: Some(executable),
             mode,
             reserved: RefCell::new(None),
             worker: RefCell::new(None),
+            pending: Cell::new(None),
+            exchange: Cell::new(None),
+            input_check: RefCell::new(None),
+            checking_input: Cell::new(false),
+            delivering: Cell::new(false),
+            last_worker_error: Cell::new(None),
+            last_dll_error: Cell::new(None),
+        }))
+    }
+    /// Diagnostic fixture only: the caller has already pinned the shared
+    /// Host and completed Ready away from the TSF callback.
+    pub(crate) fn new_prepared(worker: Worker) -> Result<ComObject<Self>> {
+        let policy = worker
+            .prepared_policy()
+            .map_err(|_| windows::core::Error::from(E_ABORT))?
+            .ok_or(E_ABORT)?;
+        if !policy.allowed || worker.is_closed() {
+            return Err(E_ABORT.into());
+        }
+        Ok(ComObject::new(Self {
+            owner: thread::current().id(),
+            executable: None,
+            mode: Mode::Pinned,
+            reserved: RefCell::new(None),
+            worker: RefCell::new(Some(worker)),
             pending: Cell::new(None),
             exchange: Cell::new(None),
             input_check: RefCell::new(None),
@@ -79,7 +104,9 @@ impl Bridge {
     /// Handle remains owned by this bridge until drain/shutdown on this thread.
     /// A Cancel callback only signals it; it does not remove the pending work.
     pub(crate) fn wait_handle(&self) -> Option<HANDLE> {
-        self.pending.get()?;
+        if self.pending.get().is_none() && self.mode != Mode::Pinned {
+            return None;
+        }
         self.worker
             .borrow()
             .as_ref()
@@ -239,12 +266,13 @@ impl ISpikeBrokerTransport_Impl for Bridge_Impl {
                 .as_ref()
                 .is_none_or(|worker| worker.is_closed());
             if needs_worker {
+                let executable = self.executable.as_ref().ok_or(E_ABORT)?;
                 // Dropping an old facade only signals; its EXE thread keeps
                 // the global slot until child/pipe cleanup actually finishes.
                 self.worker.borrow_mut().take();
                 let reservation =
                     Reservation::acquire().map_err(|_| windows::core::Error::from(E_ABORT))?;
-                let worker = Worker::new(reservation, self.executable.clone(), self.mode)
+                let worker = Worker::new(reservation, executable.clone(), self.mode)
                     .map_err(|_| windows::core::Error::from(E_ABORT))?;
                 *self.worker.borrow_mut() = Some(worker);
             }
@@ -264,6 +292,43 @@ impl ISpikeBrokerTransport_Impl for Bridge_Impl {
             *self.reserved.borrow_mut() = Some((id, permit));
             unsafe {
                 output.write(id);
+            }
+            Ok(())
+        })
+    }
+    unsafe fn Policy(&self, request: u64, settings: *mut u64, authorization: *mut u64) -> HRESULT {
+        boundary(|| {
+            self.check()?;
+            if settings.is_null() || authorization.is_null() || settings == authorization {
+                return Err(E_INVALIDARG.into());
+            }
+            // SAFETY: outputs are non-null independent scalar slots.
+            unsafe {
+                settings.write(0);
+                authorization.write(0);
+            }
+            if request == 0 || self.reserved.borrow().as_ref().map(|(id, _)| *id) != Some(request) {
+                return Err(E_ABORT.into());
+            }
+            let (settings_value, authorization_value) = if self.mode == Mode::Pinned {
+                let worker = self.worker.borrow();
+                let policy = worker
+                    .as_ref()
+                    .ok_or(E_ABORT)?
+                    .prepared_policy()
+                    .map_err(|_| windows::core::Error::from(E_ABORT))?
+                    .ok_or(E_ABORT)?;
+                if !policy.allowed {
+                    return Err(E_ABORT.into());
+                }
+                (policy.settings, policy.authorization)
+            } else {
+                (1, 1)
+            };
+            // SAFETY: checked pointers remain borrowed only for this call.
+            unsafe {
+                settings.write(settings_value);
+                authorization.write(authorization_value);
             }
             Ok(())
         })
