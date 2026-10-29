@@ -11,7 +11,8 @@ use windows::Win32::Foundation::{HANDLE, HWND};
 use windows::Win32::Security::Cryptography::CryptHashCertificate2;
 use windows::Win32::Security::WinTrust::*;
 use windows::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+    FileIdInfo, GetFileInformationByHandleEx, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_SHARE_READ,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +24,7 @@ pub enum InspectionError {
     CleanupFailed(i32),
     SignerUnavailable,
     UnexpectedSigner,
+    FileIdentityUnavailable,
 }
 
 /// SHA-256 of the signer certificate's DER bytes, not its subject name or a
@@ -40,6 +42,12 @@ pub struct VerifiedFile {
 impl VerifiedFile {
     pub fn signer(&self) -> SignerFingerprint {
         self.signer
+    }
+    /// Compare live open handles, not path spelling. This is an observation;
+    /// it does not prove a running process mapped this file or secure parents.
+    pub fn matches_path(&self, path: &Path) -> Result<bool, InspectionError> {
+        let candidate = open_plain_local_file(path)?;
+        Ok(file_identity(&self._file)? == file_identity(&candidate)?)
     }
 }
 
@@ -59,26 +67,9 @@ pub fn inspect_signer(path: &Path) -> Result<SignerFingerprint, InspectionError>
 }
 
 fn inspect_open(path: &Path) -> Result<(File, SignerFingerprint), InspectionError> {
-    if !matches!(path.components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
-        || !path.is_absolute()
-    {
-        return Err(InspectionError::InvalidPath);
-    }
+    let file = open_plain_local_file(path)?;
     let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-    if wide.is_empty() || wide.contains(&0) {
-        return Err(InspectionError::InvalidPath);
-    }
     wide.push(0);
-    let file = OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ.0)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
-        .open(path)
-        .map_err(|_| InspectionError::OpenFailed)?;
-    let metadata = file.metadata().map_err(|_| InspectionError::OpenFailed)?;
-    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
-        return Err(InspectionError::NotPlainFile);
-    }
     let mut file_info = WINTRUST_FILE_INFO {
         cbStruct: std::mem::size_of::<WINTRUST_FILE_INFO>() as u32,
         pcwszFilePath: PCWSTR(wide.as_ptr()),
@@ -126,6 +117,52 @@ fn inspect_open(path: &Path) -> Result<(File, SignerFingerprint), InspectionErro
         return Err(InspectionError::CleanupFailed(closed));
     }
     result.map(|signer| (file, signer))
+}
+
+fn open_plain_local_file(path: &Path) -> Result<File, InspectionError> {
+    if !matches!(path.components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
+        || !path.is_absolute()
+    {
+        return Err(InspectionError::InvalidPath);
+    }
+    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if wide.is_empty() || wide.contains(&0) {
+        return Err(InspectionError::InvalidPath);
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ.0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(path)
+        .map_err(|_| InspectionError::OpenFailed)?;
+    let metadata = file.metadata().map_err(|_| InspectionError::OpenFailed)?;
+    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+        return Err(InspectionError::NotPlainFile);
+    }
+    Ok(file)
+}
+
+fn file_identity(file: &File) -> Result<(u64, [u8; 16]), InspectionError> {
+    let mut info = FILE_ID_INFO::default();
+    // SAFETY: the file is open and the output has the size and alignment of
+    // FILE_ID_INFO for the FileIdInfo information class.
+    unsafe {
+        GetFileInformationByHandleEx(
+            HANDLE(file.as_raw_handle()),
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    }
+    .map_err(|_| InspectionError::FileIdentityUnavailable)?;
+    identity_from_info(info)
+}
+
+fn identity_from_info(info: FILE_ID_INFO) -> Result<(u64, [u8; 16]), InspectionError> {
+    if info.FileId.Identifier == [0; 16] {
+        return Err(InspectionError::FileIdentityUnavailable);
+    }
+    Ok((info.VolumeSerialNumber, info.FileId.Identifier))
 }
 
 /// Check one pinned certificate fingerprint after successful chain validation.
@@ -218,6 +255,14 @@ mod tests {
         ));
     }
     #[test]
+    fn unavailable_file_ids_are_never_treated_as_matching() {
+        let info = FILE_ID_INFO::default();
+        assert_eq!(
+            identity_from_info(info),
+            Err(InspectionError::FileIdentityUnavailable)
+        );
+    }
+    #[test]
     fn inspects_an_embedded_signed_system_tool_when_present() {
         let path =
             Path::new(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
@@ -264,12 +309,18 @@ mod tests {
         impl Drop for Cleanup {
             fn drop(&mut self) {
                 let _ = std::fs::remove_file(self.0.join("copy.exe"));
+                let _ = std::fs::remove_file(self.0.join("alias.exe"));
+                let _ = std::fs::remove_file(self.0.join("other.exe"));
                 let _ = std::fs::remove_dir(&self.0);
             }
         }
         let _cleanup = Cleanup(directory.clone());
         let path = directory.join("copy.exe");
         std::fs::copy(source, &path).unwrap();
+        let alias = directory.join("alias.exe");
+        let other = directory.join("other.exe");
+        std::fs::hard_link(&path, &alias).unwrap();
+        std::fs::copy(source, &other).unwrap();
         let mut wrong = expected;
         wrong.0[0] ^= 1;
         assert!(matches!(
@@ -284,6 +335,17 @@ mod tests {
         drop(writer);
         let lease = retain_expected_signer(&path, expected).unwrap();
         assert_eq!(lease.signer(), expected);
+        assert_eq!(lease.matches_path(&path), Ok(true));
+        assert_eq!(lease.matches_path(&alias), Ok(true));
+        assert_eq!(lease.matches_path(&other), Ok(false));
+        assert_eq!(
+            lease.matches_path(Path::new("relative.exe")),
+            Err(InspectionError::InvalidPath)
+        );
+        assert_eq!(
+            lease.matches_path(&directory.join("missing.exe")),
+            Err(InspectionError::OpenFailed)
+        );
         assert!(OpenOptions::new().write(true).open(&path).is_err());
         assert!(std::fs::remove_file(&path).is_err());
         // The OS loader must still be able to open this disposable signed
@@ -311,5 +373,7 @@ mod tests {
         drop(lease);
         assert!(OpenOptions::new().write(true).open(&path).is_ok());
         std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(&alias).unwrap();
+        std::fs::remove_file(&other).unwrap();
     }
 }

@@ -32,6 +32,14 @@ handleを返す。保持中はWindowsの共有モードで他の書込・削除o
 このhandleは親ディレクトリの安全性、パス置換、実行中processのイメージとの同一性、
 オンライン失効、製品の起動許可を単独では保証しない。製品起動への接続は未実装。
 
+`VerifiedFile::matches_path`は保持中のhandleと別途開いた候補handleについて、
+`FILE_ID_INFO`のvolume serialと128-bit file IDを照合する。再解析点・通常ファイル
+以外を拒否し、IDを取得できない場合や未対応を示すゼロIDは一致と扱わない。
+同じファイルのhard linkは一致し、内容と署名が同一でも別コピーは不一致とする。
+両handleを開いている間の照合であり、IDを永続的な識別子として保存しない。
+この判定だけでは、観測したprocessが同じファイルを実行している保証や、
+親ディレクトリの保護・再解析点の安全性を得られない。
+
 `PinnedProcess::observed_image_path`は、既に固定した生存process handleからWindowsの
 `QueryFullProcessImageNameW`でWin32形式のパスを取得する。取得前後にprocess生存と
 tokenの一致を確認し、空・相対・不正な長さの結果を拒否する。これは同期照会なので
@@ -56,3 +64,4 @@ AppContainer等の非対応環境ではスキップするため、成功表示�
 [CryptHashCertificate2](https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-crypthashcertificate2)。
 実行イメージ名の照会: [QueryFullProcessImageNameW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew)。
 ファイル共有: [CreateFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilea)。
+開いているファイルのID: [FILE_ID_INFO](https://learn.microsoft.com/windows/win32/api/winbase/ns-winbase-file_id_info)。
