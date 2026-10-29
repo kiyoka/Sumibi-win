@@ -54,8 +54,17 @@ SDDLによる不正ACLの試験と、既存のDドライブ保護配置DLLの読
 検査後は書込・削除を共有しないhandleを返す。不正な所有者・ACE・継承・権限は拒否する。
 このhandleだけではそれ以前の親ディレクトリや中身の安全性を証明しない。
 SDDL単体試験に加え、`D:\Program Files\Sumibi`、その開発版ディレクトリ、
-`registration-state`のACLを読み取り専用で確認した。ドライブrootと`Program Files`は
-異なるACL規則が必要で、この入口による一連の親検証は未実装である。
+`registration-state`のACLを読み取り専用で確認した。
+
+`open_development_ancestor`はドライブrootとinstall parentを別の権限規則で検査し、
+対象のdirectory handleを削除共有なしで保持する。所有者をAdministrators、SYSTEM、
+TrustedInstallerに限定し、それ以外への危険な許可を拒否する。install parentでは
+書込・削除も拒否し、継承を無効にする。rootと親で異なる規則の取り違え、相対パス、
+親移動、未知のACE形式も拒否する。inherit-only ACEを無視できるのは、その子が
+独立に継承無効と検証される場合に限る。
+不正なSDDLの試験と、Dドライブのroot・`Program Files`・Sumibi・開発版・DLLを
+同時に開いた読取試験が成功した。これは各部品の診断であり、一連の階層を製品の
+起動経路として認証するAPIではない。署名の信頼と実行中イメージの同一性も残る。
 
 `PinnedProcess::observed_image_path`は、既に固定した生存process handleからWindowsの
 `QueryFullProcessImageNameW`でWin32形式のパスを取得する。取得前後にprocess生存と
