@@ -84,6 +84,12 @@ peer、取消を拒否する。別processへ配布した後の変換と、別の
 拒否し、停止・不正形式・別Host・期限切れを準備イベントで通知する。別process
 Hostと専用TSFホストの結合試験で変換・UndoとHost終了後の拒否を確認した。
 bootstrap pipeの発見と確立はこのAPIの範囲外である。
+`Worker::prepare_listener`は、事前作成した専用serverと信頼経路で固定したHostを
+受け取り、接続待ち、相互認証、受渡し、Ready確認をすべてworkerで行う。
+所有側は準備eventを監視し、それまでの予約を拒否する。接続待機中の停止、
+別processの接続、期限切れ、Host終了を検査した。専用TSF試験でもHostの接続を
+意図的に止め、本文取得前の拒否と接続後の変換・Undoを確認した。
+serverの作成・配布とHostの信頼できる発見は呼出し側に残る。
 診断bridgeは準備中workerを受け取り、所有側が準備eventと非ブロッキングな
 政策snapshotを確認できる。準備eventはmanual-resetであり、結果観測後は待機対象から
 外す。Host側の受渡しを意図的に止めた専用TSF試験では、その間の変換キーが

@@ -5,7 +5,7 @@ use crate::bootstrap::Mode;
 use crate::channel::{Channel, Reply, MAX_REQUESTS};
 use crate::job::{Request, Reservation};
 use crate::support::{own, raw};
-use crate::{Error, Nonce, PinnedProcess, Pipe, Result, Stop};
+use crate::{Error, Nonce, PinnedProcess, Pipe, Result, Server, Stop};
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -173,6 +173,10 @@ enum Target {
         pipe: Pipe,
         peer: PinnedProcess,
     },
+    Listening {
+        server: Server,
+        peer: PinnedProcess,
+    },
 }
 struct Finished {
     state: Arc<State>,
@@ -273,6 +277,30 @@ impl Worker {
         Self::spawn(
             reservation,
             Target::Handoff { pipe, peer: host },
+            Mode::Pinned,
+            Some(deadline),
+        )
+    }
+
+    /// Accept one bootstrap connection and prepare its authenticated offer on
+    /// the worker thread. The caller supplies a pre-created server and a Host
+    /// pin obtained from a trusted source; this does not discover a Host.
+    pub fn prepare_listener(
+        reservation: Reservation,
+        server: Server,
+        host: PinnedProcess,
+        deadline: Instant,
+    ) -> Result<Self> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Error::Timeout);
+        }
+        if remaining > Duration::from_secs(60) {
+            return Err(Error::InvalidArgument);
+        }
+        Self::spawn(
+            reservation,
+            Target::Listening { server, peer: host },
             Mode::Pinned,
             Some(deadline),
         )
@@ -503,6 +531,20 @@ fn run(
                     )
                 })
             }
+            Some(Target::Listening { server, peer }) => peer
+                .try_clone()
+                .and_then(|expected| server.accept(expected, &state.stop, deadline))
+                .and_then(|pipe| crate::handoff::receive(pipe, &peer, &state.stop, deadline))
+                .and_then(|offer| {
+                    Channel::connect_pinned_reserved(
+                        &offer.name,
+                        offer.broker,
+                        peer,
+                        &state.stop,
+                        deadline,
+                        reservation.clone(),
+                    )
+                }),
             _ => Err(Error::InvalidArgument),
         };
         match opened.and_then(|mut opened| {
@@ -580,7 +622,9 @@ fn run(
                         request.deadline,
                         reservation.clone(),
                     )?,
-                    Target::Handoff { .. } => return Err(Error::InvalidArgument),
+                    Target::Handoff { .. } | Target::Listening { .. } => {
+                        return Err(Error::InvalidArgument)
+                    }
                 };
                 peer = Some(opened.peer_process()?);
                 channel = Some(opened);

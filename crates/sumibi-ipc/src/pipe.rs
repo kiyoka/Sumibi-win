@@ -1368,6 +1368,106 @@ mod tests {
     }
 
     #[test]
+    fn listener_worker_rejects_input_while_accepting_and_wakes_on_shutdown() {
+        use crate::job::{Reservation, ADMISSION_TEST};
+        use crate::worker::Worker;
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let _admission = ADMISSION_TEST.lock().unwrap();
+        let server = Server::create(&Nonce::random().unwrap()).unwrap();
+        let mut worker = Worker::prepare_listener(
+            Reservation::acquire().unwrap(),
+            server,
+            PinnedProcess::current().unwrap(),
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(matches!(worker.reserve(1), Err(Error::Capacity)));
+        worker.shutdown(Duration::from_secs(1)).unwrap();
+        let event = worker.preparation_handle().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 0) },
+            WAIT_OBJECT_0
+        );
+        assert!(matches!(worker.prepared_policy(), Err(Error::Cancelled)));
+    }
+
+    #[test]
+    fn listener_worker_rejects_wrong_peer_timeout_and_host_exit() {
+        use crate::job::{Reservation, ADMISSION_TEST};
+        use crate::worker::Worker;
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let _admission = ADMISSION_TEST.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let server = Server::create(&name).unwrap();
+        let mut child = accept_test_child(None);
+        let host = PinnedProcess::from_launch_handle(child.as_handle()).unwrap();
+        let mut worker = Worker::prepare_listener(
+            Reservation::acquire().unwrap(),
+            server,
+            host,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+        let _wrong_client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        let event = worker.preparation_handle().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 3000) },
+            WAIT_OBJECT_0
+        );
+        assert!(matches!(worker.prepared_policy(), Err(Error::WrongPeer)));
+        assert!(worker.reserve(1).is_err());
+        worker.shutdown(Duration::from_secs(1)).unwrap();
+        drop(worker);
+        drop(child.stdin.take());
+        assert!(child.wait().unwrap().success());
+
+        let server = Server::create(&Nonce::random().unwrap()).unwrap();
+        let mut worker = Worker::prepare_listener(
+            Reservation::acquire().unwrap(),
+            server,
+            PinnedProcess::current().unwrap(),
+            Instant::now() + Duration::from_millis(500),
+        )
+        .unwrap();
+        assert!(matches!(worker.reserve(1), Err(Error::Capacity)));
+        let event = worker.preparation_handle().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 3000) },
+            WAIT_OBJECT_0
+        );
+        assert!(matches!(worker.prepared_policy(), Err(Error::Timeout)));
+        worker.shutdown(Duration::from_secs(1)).unwrap();
+        drop(worker);
+
+        let server = Server::create(&Nonce::random().unwrap()).unwrap();
+        let mut child = accept_test_child(None);
+        let host = PinnedProcess::from_launch_handle(child.as_handle()).unwrap();
+        let mut worker = Worker::prepare_listener(
+            Reservation::acquire().unwrap(),
+            server,
+            host,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+        drop(child.stdin.take());
+        assert!(child.wait().unwrap().success());
+        let event = worker.preparation_handle().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 3000) },
+            WAIT_OBJECT_0
+        );
+        assert!(matches!(worker.prepared_policy(), Err(Error::Disconnected)));
+        assert!(worker.reserve(1).is_err());
+        worker.shutdown(Duration::from_secs(1)).unwrap();
+    }
+
+    #[test]
     fn accept_task_returns_only_an_authenticated_pipe_without_blocking_owner_poll() {
         if !native_pipe_tests_supported() {
             return;

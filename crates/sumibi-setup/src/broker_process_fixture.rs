@@ -54,7 +54,6 @@ impl Fixture {
         let parent = PinnedProcess::current()?;
         let bootstrap_name = Nonce::random()?;
         let bootstrap_server = Server::create(&bootstrap_name)?;
-        let bootstrap_stop = Stop::new()?;
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut remote = HANDLE::default();
         // SAFETY: the fresh child receives only a duplicate of this process's
@@ -76,8 +75,8 @@ impl Fixture {
             remote.0 as usize,
             bootstrap_name.bootstrap()
         )?;
-        let pipe = bootstrap_server.accept(host.try_clone()?, &bootstrap_stop, deadline)?;
-        let worker = Worker::prepare_handoff(Reservation::acquire()?, pipe, host, deadline)?;
+        let worker =
+            Worker::prepare_listener(Reservation::acquire()?, bootstrap_server, host, deadline)?;
         if delayed {
             return Ok((fixture, worker));
         }
@@ -162,7 +161,6 @@ pub(crate) fn child(delayed: bool) -> Result<(), Failure> {
     source
         .grant_manual_consent(&destination)
         .map_err(|_| "fixture consent")?;
-    let pipe = Pipe::connect(&bootstrap_name, peer.try_clone()?)?;
     if delayed {
         let mut signal = [0];
         input.read_exact(&mut signal)?;
@@ -170,6 +168,7 @@ pub(crate) fn child(delayed: bool) -> Result<(), Failure> {
             return Err("invalid fixture release".into());
         }
     }
+    let pipe = Pipe::connect(&bootstrap_name, peer.try_clone()?)?;
     let stop = Stop::new()?;
     let reader_stop = stop.clone();
     std::thread::spawn(move || {
