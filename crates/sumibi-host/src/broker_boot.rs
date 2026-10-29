@@ -187,6 +187,21 @@ impl<'a> BrokerBoot<'a> {
         Ok(id)
     }
 
+    /// Request cancellation of one pending accept. Its ID remains reserved
+    /// until a tracked owner step reports the completed cancellation. Unknown,
+    /// completed or previous-boot IDs have no effect on other accepts.
+    pub fn cancel_accept(&self, id: AcceptId) -> Result<bool, IpcError> {
+        let Some(index) = self
+            .accept_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+        else {
+            return Ok(false);
+        };
+        self.accepts[index].cancel()?;
+        Ok(true)
+    }
+
     /// Advance one bounded accept, policy, worker or authenticated frame step.
     pub fn advance<F, W>(
         &mut self,

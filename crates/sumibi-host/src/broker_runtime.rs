@@ -2536,6 +2536,62 @@ mod tests {
     }
 
     #[test]
+    fn broker_boot_cancels_only_the_selected_tracked_accept() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, _) = source();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 3, deadline).unwrap();
+        let first = boot
+            .begin_tracked_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let second = boot
+            .begin_tracked_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        assert!(boot.cancel_accept(first).unwrap());
+        assert_eq!(boot.pending_accept_count(), 2);
+        loop {
+            let result = boot
+                .advance_tracked(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap();
+            match result.step {
+                OwnerStep::AcceptFailed(IpcError::Cancelled) => {
+                    assert!(result.accept == Some(first));
+                    break;
+                }
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now()
+                }
+                _ => panic!("selected accept did not cancel"),
+            }
+        }
+        assert!(!boot.cancel_accept(first).unwrap());
+        assert_eq!(boot.pending_accept_count(), 1);
+        let _client = Pipe::connect(boot.name(), PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            let result = boot
+                .advance_tracked(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap();
+            match result.step {
+                OwnerStep::Accepted { key: 1, .. } => {
+                    assert!(result.accept == Some(second));
+                    break;
+                }
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now()
+                }
+                _ => panic!("other accept did not complete"),
+            }
+        }
+        assert!(boot
+            .shutdown(Instant::now() + Duration::from_secs(1))
+            .is_ok());
+    }
+
+    #[test]
     fn broker_boot_acknowledges_idle_policy_before_a_later_ready() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {
