@@ -106,6 +106,7 @@ pub enum OwnerStep {
 pub struct BrokerWorkLoop {
     workers: BrokerWorkers,
     accept_first: bool,
+    completed_accept_index: Option<usize>,
 }
 
 impl Default for BrokerWorkLoop {
@@ -119,11 +120,16 @@ impl BrokerWorkLoop {
         Self {
             workers: BrokerWorkers::new(),
             accept_first: true,
+            completed_accept_index: None,
         }
     }
 
     pub fn active_count(&self) -> usize {
         self.workers.active_count()
+    }
+
+    pub(crate) fn take_completed_accept_index(&mut self) -> Option<usize> {
+        self.completed_accept_index.take()
     }
 
     pub fn stop_and_reap(&mut self, deadline: Instant) -> bool {
@@ -234,6 +240,7 @@ impl BrokerWorkLoop {
     where
         F: FnOnce(&mut Self, &mut BrokerPolicyRuntime<'_>) -> Result<OwnerStep, RuntimeError>,
     {
+        self.completed_accept_index = None;
         if self.accept_first {
             if let Some(step) = self.poll_accept(runtime, accepts, stop, deadline)? {
                 self.accept_first = false;
@@ -269,6 +276,7 @@ impl BrokerWorkLoop {
             return Ok(None);
         };
         accepts.remove(index);
+        self.completed_accept_index = Some(index);
         match result {
             Ok(pipe) => match self.accept(runtime, pipe, stop, deadline) {
                 Ok((key, published)) => Ok(Some(OwnerStep::Accepted { key, published })),

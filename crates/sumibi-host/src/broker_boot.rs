@@ -19,10 +19,25 @@ pub struct BrokerBoot<'a> {
     runtime: BrokerPolicyRuntime<'a>,
     owner: BrokerWorkLoop,
     accepts: Vec<AcceptTask>,
+    accept_ids: Vec<AcceptId>,
+    last_accept_id: u64,
     anchor: SharedAnchor,
     name: Nonce,
     max_instances: u32,
     source: &'a PolicyAuthority,
+}
+
+/// Identifies one accept within a particular Broker boot.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct AcceptId {
+    pub broker: Id,
+    pub sequence: u64,
+}
+
+pub struct BootStep {
+    /// Present only when this step consumed a pending accept.
+    pub accept: Option<AcceptId>,
+    pub step: OwnerStep,
 }
 
 /// An elapsed or overlong deadline returns the running boot without retirement.
@@ -88,6 +103,8 @@ impl<'a> BrokerBoot<'a> {
             runtime,
             owner: BrokerWorkLoop::new(),
             accepts: Vec::new(),
+            accept_ids: Vec::new(),
+            last_accept_id: 0,
             anchor,
             name,
             max_instances,
@@ -141,12 +158,33 @@ impl<'a> BrokerBoot<'a> {
         peer: PinnedProcess,
         deadline: Instant,
     ) -> Result<(), RuntimeError> {
+        self.begin_tracked_accept(peer, deadline).map(|_| ())
+    }
+
+    /// Start a pinned accept and return its never-reused identity. The owner
+    /// may associate it with trusted discovery state until a tracked step
+    /// reports completion or the boot is retired.
+    pub fn begin_tracked_accept(
+        &mut self,
+        peer: PinnedProcess,
+        deadline: Instant,
+    ) -> Result<AcceptId, RuntimeError> {
         self.check_accept_capacity()?;
+        let sequence = self
+            .last_accept_id
+            .checked_add(1)
+            .ok_or(RuntimeError::Exhausted)?;
         self.accepts.push(
             self.runtime
                 .begin_anchor_accept(&self.anchor, peer, deadline)?,
         );
-        Ok(())
+        let id = AcceptId {
+            broker: self.boot_id(),
+            sequence,
+        };
+        self.accept_ids.push(id);
+        self.last_accept_id = sequence;
+        Ok(id)
     }
 
     /// Advance one bounded accept, policy, worker or authenticated frame step.
@@ -160,13 +198,32 @@ impl<'a> BrokerBoot<'a> {
         F: FnOnce(Convert) -> W,
         W: FnOnce(JobTicket) -> Result<String, ErrorCode> + Send + 'static,
     {
-        self.owner.advance_with_accept(
+        self.advance_tracked(stop, deadline, make_work)
+            .map(|step| step.step)
+    }
+
+    pub fn advance_tracked<F, W>(
+        &mut self,
+        stop: &Stop,
+        deadline: Instant,
+        make_work: F,
+    ) -> Result<BootStep, RuntimeError>
+    where
+        F: FnOnce(Convert) -> W,
+        W: FnOnce(JobTicket) -> Result<String, ErrorCode> + Send + 'static,
+    {
+        let result = self.owner.advance_with_accept(
             &mut self.runtime,
             &mut self.accepts,
             stop,
             deadline,
             make_work,
-        )
+        );
+        let accept = self
+            .owner
+            .take_completed_accept_index()
+            .map(|index| self.accept_ids.remove(index));
+        result.map(|step| BootStep { accept, step })
     }
 
     /// Product-facing manual dispatch with the same authority as this boot.
@@ -180,14 +237,33 @@ impl<'a> BrokerBoot<'a> {
     where
         T: OrderedConversionTransport + Send + Sync + 'static,
     {
-        self.owner.advance_manual_with_accept(
+        self.advance_manual_tracked(authority, transport, stop, deadline)
+            .map(|step| step.step)
+    }
+
+    pub fn advance_manual_tracked<T>(
+        &mut self,
+        authority: Arc<PolicyAuthority>,
+        transport: Arc<T>,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<BootStep, RuntimeError>
+    where
+        T: OrderedConversionTransport + Send + Sync + 'static,
+    {
+        let result = self.owner.advance_manual_with_accept(
             &mut self.runtime,
             &mut self.accepts,
             authority,
             transport,
             stop,
             deadline,
-        )
+        );
+        let accept = self
+            .owner
+            .take_completed_accept_index()
+            .map(|index| self.accept_ids.remove(index));
+        result.map(|step| BootStep { accept, step })
     }
 
     /// Complete a settings receipt only after cancelled workers have exited.
@@ -206,8 +282,13 @@ impl<'a> BrokerBoot<'a> {
     /// on failure. False means a worker or OS accept still owns resources.
     #[must_use = "keep this Broker boot alive and retry if retirement is incomplete"]
     pub fn retire_for_restart(&mut self, deadline: Instant) -> bool {
-        self.owner
-            .retire_for_restart(&mut self.runtime, &mut self.accepts, deadline)
+        let done = self
+            .owner
+            .retire_for_restart(&mut self.runtime, &mut self.accepts, deadline);
+        if self.accepts.is_empty() {
+            self.accept_ids.clear();
+        }
+        done
     }
 
     /// Release this boot only after all authenticated pipes, pending accepts
