@@ -22,6 +22,8 @@ pub mod job;
 #[cfg(windows)]
 mod pipe;
 #[cfg(windows)]
+pub mod protected_acl;
+#[cfg(windows)]
 mod support;
 #[cfg(windows)]
 pub mod worker;

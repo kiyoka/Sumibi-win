@@ -43,6 +43,11 @@ impl VerifiedFile {
     pub fn signer(&self) -> SignerFingerprint {
         self.signer
     }
+    /// Inspect this same handle against the strict development file ACL.
+    /// Protected ancestors and launch identity remain separate requirements.
+    pub fn require_development_file_acl(&self) -> Result<(), crate::protected_acl::AclError> {
+        crate::protected_acl::check_file(&self._file)
+    }
     /// Compare live open handles, not path spelling. This is an observation;
     /// it does not prove a running process mapped this file or secure parents.
     pub fn matches_path(&self, path: &Path) -> Result<bool, InspectionError> {

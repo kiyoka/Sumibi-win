@@ -40,6 +40,15 @@ handleを返す。保持中はWindowsの共有モードで他の書込・削除o
 この判定だけでは、観測したprocessが同じファイルを実行している保証や、
 親ディレクトリの保護・再解析点の安全性を得られない。
 
+`VerifiedFile::require_development_file_acl`は保持中の同じファイルhandleから
+Windowsの`GetSecurityInfo`で所有者とDACLを取得し、開発配置で使う厳格な構成
+（Administrators所有、継承無効、Administrators/SYSTEMにFullControl、
+UsersにReadAndExecuteのみ）と照合する。未知のACE・SID、重複、異なる権限、
+NULL DACL、不正なACE長は拒否する。検査はスナップショットで、親ACLや
+再解析点、署名の信頼方針、実行中processとの同一性を検証しない。
+SDDLによる不正ACLの試験と、既存のDドライブ保護配置DLLの読取検査が成功した。
+当該DLLの自己署名は未信頼であり、署名付きの製品Hostの検査成功を意味しない。
+
 `PinnedProcess::observed_image_path`は、既に固定した生存process handleからWindowsの
 `QueryFullProcessImageNameW`でWin32形式のパスを取得する。取得前後にprocess生存と
 tokenの一致を確認し、空・相対・不正な長さの結果を拒否する。これは同期照会なので
@@ -65,3 +74,5 @@ AppContainer等の非対応環境ではスキップするため、成功表示�
 実行イメージ名の照会: [QueryFullProcessImageNameW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew)。
 ファイル共有: [CreateFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilea)。
 開いているファイルのID: [FILE_ID_INFO](https://learn.microsoft.com/windows/win32/api/winbase/ns-winbase-file_id_info)。
+ACL取得と構造: [GetSecurityInfo](https://learn.microsoft.com/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo)、
+[ACCESS_ALLOWED_ACE](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-access_allowed_ace)。
