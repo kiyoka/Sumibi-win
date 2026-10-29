@@ -360,8 +360,12 @@ impl<'a> BrokerPolicyRuntime<'a> {
         if self.failed {
             return Err(RuntimeError::Retired);
         }
-        if pending_accepts + self.pending.len() >= self.remaining_attachment_budget() {
+        let remaining = self.remaining_attachment_budget();
+        if remaining == 0 {
             return Err(RuntimeError::Exhausted);
+        }
+        if pending_accepts + self.pending.len() >= remaining {
+            return Err(RuntimeError::Transport(IpcError::Capacity));
         }
         if self.pending.len() + self.connections.len() + pending_accepts
             >= max_instances.saturating_sub(1) as usize
@@ -3030,12 +3034,37 @@ mod tests {
         assert!(initial_budget > 0);
 
         for client_id in 1..=initial_budget as u64 {
+            if client_id == initial_budget as u64 {
+                boot.begin_accept(
+                    PinnedProcess::current().unwrap(),
+                    Instant::now() + Duration::from_millis(100),
+                )
+                .unwrap();
+                assert_eq!(
+                    boot.check_accept_capacity(),
+                    Err(RuntimeError::Transport(IpcError::Capacity))
+                );
+                loop {
+                    match boot
+                        .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                        .unwrap()
+                    {
+                        OwnerStep::AcceptFailed(IpcError::Timeout) => break,
+                        OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                            std::thread::sleep(Duration::from_millis(1))
+                        }
+                        _ => panic!("last reserved history slot did not recover"),
+                    }
+                }
+                assert_eq!(boot.remaining_attachment_budget(), 1);
+                assert_eq!(boot.check_accept_capacity(), Ok(()));
+            }
             boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
                 .unwrap();
             if client_id == initial_budget as u64 {
                 assert!(matches!(
                     boot.begin_accept(PinnedProcess::current().unwrap(), deadline),
-                    Err(RuntimeError::Exhausted)
+                    Err(RuntimeError::Transport(IpcError::Capacity))
                 ));
                 assert_eq!(boot.pending_accept_count(), 1);
             }
@@ -3055,7 +3084,7 @@ mod tests {
             if client_id == initial_budget as u64 {
                 assert!(matches!(
                     boot.begin_accept(PinnedProcess::current().unwrap(), deadline),
-                    Err(RuntimeError::Exhausted)
+                    Err(RuntimeError::Transport(IpcError::Capacity))
                 ));
                 assert_eq!(boot.pending_accept_count(), 0);
             }
