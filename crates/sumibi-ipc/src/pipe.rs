@@ -1395,6 +1395,119 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_worker_notifies_creation_before_waiting_and_shutdown_retires_it() {
+        use crate::job::{Reservation, ADMISSION_TEST};
+        use crate::worker::Worker;
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let _admission = ADMISSION_TEST.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let mut worker = Worker::prepare_bootstrap(
+            Reservation::acquire().unwrap(),
+            name.clone(),
+            PinnedProcess::current().unwrap(),
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+        let event = worker.listener_handle().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 3000) },
+            WAIT_OBJECT_0
+        );
+        let end = Instant::now() + Duration::from_secs(1);
+        while !worker.listener_ready().unwrap() {
+            assert!(Instant::now() < end);
+            std::thread::yield_now();
+        }
+        assert!(
+            Server::create(&name).is_err(),
+            "created listener must own the name"
+        );
+        assert!(matches!(worker.reserve(1), Err(Error::Capacity)));
+        worker.shutdown(Duration::from_secs(1)).unwrap();
+        assert!(worker.listener_ready().is_err());
+        assert!(
+            Server::create(&name).is_ok(),
+            "shutdown must release the name"
+        );
+    }
+
+    #[test]
+    fn bootstrap_worker_reports_name_collision_without_accepting_input() {
+        use crate::job::{Reservation, ADMISSION_TEST};
+        use crate::worker::Worker;
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let _admission = ADMISSION_TEST.lock().unwrap();
+        let name = Nonce::random().unwrap();
+        let _existing = Server::create(&name).unwrap();
+        let mut worker = Worker::prepare_bootstrap(
+            Reservation::acquire().unwrap(),
+            name,
+            PinnedProcess::current().unwrap(),
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+        let event = worker.listener_handle().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 3000) },
+            WAIT_OBJECT_0
+        );
+        let end = Instant::now() + Duration::from_secs(1);
+        while worker.listener_ready().is_ok() {
+            assert!(Instant::now() < end);
+            std::thread::yield_now();
+        }
+        let ready = worker.preparation_handle().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(HANDLE(ready.as_raw_handle()), 3000) },
+            WAIT_OBJECT_0
+        );
+        let end = Instant::now() + Duration::from_secs(1);
+        while worker.prepared_policy().is_ok() {
+            assert!(Instant::now() < end);
+            std::thread::yield_now();
+        }
+        assert!(worker.reserve(1).is_err());
+        worker.shutdown(Duration::from_secs(1)).unwrap();
+    }
+
+    #[test]
+    fn bootstrap_worker_shutdown_always_notifies_listener_creation() {
+        use crate::job::{Reservation, ADMISSION_TEST};
+        use crate::worker::Worker;
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let _admission = ADMISSION_TEST.lock().unwrap();
+        let mut worker = Worker::prepare_bootstrap(
+            Reservation::acquire().unwrap(),
+            Nonce::random().unwrap(),
+            PinnedProcess::current().unwrap(),
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+        worker.shutdown(Duration::from_secs(1)).unwrap();
+        let event = worker.listener_handle().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 0) },
+            WAIT_OBJECT_0
+        );
+        assert!(worker.listener_ready().is_err());
+        let event = worker.preparation_handle().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 0) },
+            WAIT_OBJECT_0
+        );
+        assert!(worker.prepared_policy().is_err());
+    }
+
+    #[test]
     fn listener_worker_rejects_wrong_peer_timeout_and_host_exit() {
         use crate::job::{Reservation, ADMISSION_TEST};
         use crate::worker::Worker;

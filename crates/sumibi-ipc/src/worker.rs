@@ -115,6 +115,36 @@ pub struct Worker {
     worker: Option<JoinHandle<()>>,
     _reservation: Arc<Reservation>,
     preparation: Option<Arc<Preparation>>,
+    listener: Option<Arc<Listener>>,
+}
+struct Listener {
+    event: OwnedHandle,
+    result: Mutex<Option<Result<()>>>,
+}
+impl Listener {
+    fn snapshot(&self) -> Result<bool> {
+        match self.result.try_lock() {
+            Ok(slot) => match *slot {
+                None => Ok(false),
+                Some(result) => result.map(|()| true),
+            },
+            Err(TryLockError::WouldBlock) => Ok(false),
+            Err(TryLockError::Poisoned(_)) => Err(Error::WorkerFailed),
+        }
+    }
+    fn finish(&self, result: Result<()>) {
+        let mut slot = self
+            .result
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if slot.is_none() {
+            *slot = Some(result);
+            // SAFETY: event belongs to this shared listener state.
+            unsafe {
+                let _ = SetEvent(raw(&self.event));
+            }
+        }
+    }
 }
 struct Preparation {
     event: OwnedHandle,
@@ -177,16 +207,28 @@ enum Target {
         server: Server,
         peer: PinnedProcess,
     },
+    Bootstrap {
+        name: Nonce,
+        peer: PinnedProcess,
+    },
 }
 struct Finished {
     state: Arc<State>,
     wake: Arc<OwnedHandle>,
     done: Arc<OwnedHandle>,
     preparation: Option<Arc<Preparation>>,
+    listener: Option<Arc<Listener>>,
 }
 impl Drop for Finished {
     fn drop(&mut self) {
         self.state.closed.store(true, Ordering::Release);
+        if let Some(listener) = &self.listener {
+            listener.finish(Err(if self.state.stop.is_cancelled().unwrap_or(true) {
+                Error::Cancelled
+            } else {
+                Error::WorkerFailed
+            }));
+        }
         if let Some(preparation) = &self.preparation {
             preparation.finish(Err(if self.state.stop.is_cancelled().unwrap_or(true) {
                 Error::Cancelled
@@ -306,12 +348,45 @@ impl Worker {
         )
     }
 
+    /// Create the dedicated bootstrap server off the owner thread, then
+    /// accept the pinned Host and prepare its offer. Publish `name` only after
+    /// observing listener_handle and listener_ready; the pin and name's
+    /// trusted distribution remain the caller's responsibility.
+    pub fn prepare_bootstrap(
+        reservation: Reservation,
+        name: Nonce,
+        host: PinnedProcess,
+        deadline: Instant,
+    ) -> Result<Self> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Error::Timeout);
+        }
+        if remaining > Duration::from_secs(60) {
+            return Err(Error::InvalidArgument);
+        }
+        Self::spawn(
+            reservation,
+            Target::Bootstrap { name, peer: host },
+            Mode::Pinned,
+            Some(deadline),
+        )
+    }
+
     fn spawn(
         reservation: Reservation,
         target: Target,
         mode: Mode,
         prepare_deadline: Option<Instant>,
     ) -> Result<Self> {
+        let listener = if matches!(&target, Target::Bootstrap { .. }) {
+            Some(Arc::new(Listener {
+                event: unsafe { own(CreateEventW(None, true, false, None)?) },
+                result: Mutex::new(None),
+            }))
+        } else {
+            None
+        };
         let reservation = Arc::new(reservation);
         let state = Arc::new(State {
             stop: Stop::new()?,
@@ -340,6 +415,7 @@ impl Worker {
             reservation.clone(),
         );
         let worker_preparation = preparation.clone();
+        let worker_listener = listener.clone();
         let worker = std::thread::Builder::new()
             .name("sumibi-channel".into())
             .spawn(move || {
@@ -349,6 +425,7 @@ impl Worker {
                     wake: worker_wake.clone(),
                     done: worker_done,
                     preparation: worker_preparation.clone(),
+                    listener: worker_listener.clone(),
                 };
                 run(
                     target,
@@ -359,6 +436,7 @@ impl Worker {
                     &results,
                     &_reservation,
                     prepare_deadline.zip(worker_preparation.as_deref()),
+                    worker_listener.as_deref(),
                 );
             })
             .map_err(|_| Error::WorkerFailed)?;
@@ -373,6 +451,7 @@ impl Worker {
             worker: Some(worker),
             _reservation: reservation,
             preparation,
+            listener,
         })
     }
     pub fn is_closed(&self) -> bool {
@@ -430,6 +509,21 @@ impl Worker {
         self.preparation
             .as_ref()
             .map(|state| state.event.as_handle())
+    }
+
+    /// Manual-reset creation event. Stop waiting on it once its result is
+    /// observed; later shutdown uses completion_handle instead.
+    pub fn listener_handle(&self) -> Option<BorrowedHandle<'_>> {
+        self.listener.as_ref().map(|state| state.event.as_handle())
+    }
+    /// Nonblocking snapshot; false also covers a briefly contended state lock.
+    pub fn listener_ready(&self) -> Result<bool> {
+        let listener = self.listener.as_ref().ok_or(Error::InvalidArgument)?;
+        let ready = listener.snapshot()?;
+        if self.is_closed() {
+            return Err(Error::Closed);
+        }
+        Ok(ready)
     }
 
     /// None means the state is not yet available or the worker is updating it;
@@ -505,6 +599,7 @@ fn run(
     results: &mpsc::SyncSender<Completion>,
     reservation: &Arc<Reservation>,
     preparation: Option<(Instant, &Preparation)>,
+    listener: Option<&Listener>,
 ) {
     let mut target = Some(target);
     let mut channel: Option<Channel> = None;
@@ -545,6 +640,36 @@ fn run(
                         reservation.clone(),
                     )
                 }),
+            Some(Target::Bootstrap { name, peer }) => {
+                let created = Server::create(&name).and_then(|server| {
+                    if state.stop.is_cancelled()? {
+                        return Err(Error::Cancelled);
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(Error::Timeout);
+                    }
+                    Ok(server)
+                });
+                if let Some(listener) = listener {
+                    listener.finish(created.as_ref().map(|_| ()).map_err(|error| *error));
+                }
+                created
+                    .and_then(|server| {
+                        peer.try_clone()
+                            .and_then(|expected| server.accept(expected, &state.stop, deadline))
+                    })
+                    .and_then(|pipe| crate::handoff::receive(pipe, &peer, &state.stop, deadline))
+                    .and_then(|offer| {
+                        Channel::connect_pinned_reserved(
+                            &offer.name,
+                            offer.broker,
+                            peer,
+                            &state.stop,
+                            deadline,
+                            reservation.clone(),
+                        )
+                    })
+            }
             _ => Err(Error::InvalidArgument),
         };
         match opened.and_then(|mut opened| {
@@ -622,9 +747,9 @@ fn run(
                         request.deadline,
                         reservation.clone(),
                     )?,
-                    Target::Handoff { .. } | Target::Listening { .. } => {
-                        return Err(Error::InvalidArgument)
-                    }
+                    Target::Handoff { .. }
+                    | Target::Listening { .. }
+                    | Target::Bootstrap { .. } => return Err(Error::InvalidArgument),
                 };
                 peer = Some(opened.peer_process()?);
                 channel = Some(opened);
@@ -719,6 +844,17 @@ mod tests {
         assert!(matches!(preparation.snapshot(), Ok(Some(policy)) if policy.allowed));
     }
     #[test]
+    fn listener_snapshot_never_waits_for_worker_state_lock() {
+        let listener = Listener {
+            event: unsafe { own(CreateEventW(None, true, false, None).unwrap()) },
+            result: Mutex::new(Some(Ok(()))),
+        };
+        let locked = listener.result.lock().unwrap();
+        assert!(matches!(listener.snapshot(), Ok(false)));
+        drop(locked);
+        assert!(matches!(listener.snapshot(), Ok(true)));
+    }
+    #[test]
     fn request_ids_never_repeat_or_wrap_after_release() {
         let requests = Requests::default();
         assert_eq!(requests.reserve(0), Err(Error::InvalidArgument));
@@ -805,6 +941,7 @@ mod tests {
             &commands,
             &results,
             &reservation,
+            None,
             None,
         );
         assert_eq!(

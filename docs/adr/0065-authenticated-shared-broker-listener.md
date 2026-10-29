@@ -90,6 +90,12 @@ bootstrap pipeの発見と確立はこのAPIの範囲外である。
 別processの接続、期限切れ、Host終了を検査した。専用TSF試験でもHostの接続を
 意図的に止め、本文取得前の拒否と接続後の変換・Undoを確認した。
 serverの作成・配布とHostの信頼できる発見は呼出し側に残る。
+`Worker::prepare_bootstrap`は先に選んだ名前の専用serverもworker側で作成し、
+作成成功または失敗を別のmanual-reset eventで通知する。所有側は待たずに状態を
+読み、作成成功を確認してから名前を信頼経路で配布する。作成状態はsnapshotで、
+終了・停止との競合を認証と後続の準備結果でも検査する。同名pipeの先行作成、
+停止時の名前解放、接続前の入力拒否と、別process Host・専用TSFでの変換・Undoを
+確認した。名前の選択とHostの信頼できる発見・配布は引き続き呼出し側の責務である。
 診断bridgeは準備中workerを受け取り、所有側が準備eventと非ブロッキングな
 政策snapshotを確認できる。準備eventはmanual-resetであり、結果観測後は待機対象から
 外す。Host側の受渡しを意図的に止めた専用TSF試験では、その間の変換キーが

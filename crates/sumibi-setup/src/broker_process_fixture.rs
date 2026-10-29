@@ -8,7 +8,7 @@ use sumibi_host::broker_runtime::{JobTicket, PollStep};
 use sumibi_host::broker_workers::OwnerStep;
 use sumibi_host::manual::{Credential, Destination, Scheme};
 use sumibi_host::policy::PolicyAuthority;
-use sumibi_ipc::{job::Reservation, worker::Worker, Nonce, PinnedProcess, Pipe, Server, Stop};
+use sumibi_ipc::{job::Reservation, worker::Worker, Nonce, PinnedProcess, Pipe, Stop};
 use windows::Win32::Foundation::{
     DuplicateHandle, GetHandleInformation, DUPLICATE_SAME_ACCESS, HANDLE, WAIT_OBJECT_0,
 };
@@ -53,8 +53,24 @@ impl Fixture {
         let host = PinnedProcess::from_launch_handle(fixture.0.as_handle())?;
         let parent = PinnedProcess::current()?;
         let bootstrap_name = Nonce::random()?;
-        let bootstrap_server = Server::create(&bootstrap_name)?;
         let deadline = Instant::now() + Duration::from_secs(5);
+        let worker = Worker::prepare_bootstrap(
+            Reservation::acquire()?,
+            bootstrap_name.clone(),
+            host,
+            deadline,
+        )?;
+        let listener = worker.listener_handle().ok_or("missing listener event")?;
+        // SAFETY: the worker retains this event while the fixture waits.
+        if unsafe { WaitForSingleObject(HANDLE(listener.as_raw_handle()), 5000) } != WAIT_OBJECT_0 {
+            return Err("listener creation timed out".into());
+        }
+        while !worker.listener_ready()? {
+            if Instant::now() >= deadline {
+                return Err("listener unavailable".into());
+            }
+            std::thread::yield_now();
+        }
         let mut remote = HANDLE::default();
         // SAFETY: the fresh child receives only a duplicate of this process's
         // pinned handle. Its child-local value travels over the private stdin.
@@ -75,8 +91,6 @@ impl Fixture {
             remote.0 as usize,
             bootstrap_name.bootstrap()
         )?;
-        let worker =
-            Worker::prepare_listener(Reservation::acquire()?, bootstrap_server, host, deadline)?;
         if delayed {
             return Ok((fixture, worker));
         }
