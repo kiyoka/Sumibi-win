@@ -58,6 +58,9 @@ worker thread上で遅延開始し、予約・取消・結果回収に既存の�
 同一process内の試験用Brokerで、Readyの版を使った変換・1回Undo、通知後の
 同意取消、処理中の取消、および本文・選択・フォーカスの変更後の破棄を検査する。
 このfixtureは合成結果を返し、製品Hostの発見や一般アプリへの接続を実装しない。
+別processの試験用Hostでも親子のprocess handleを固定して相互認証し、
+専用TSFホストからの変換と1回Undoを確認する。Host終了後の操作では本文取得前に拒否する。
+試験用stdinを通じたhandleと名前の受渡しは、製品の発見・保護配置を代替しない。
 このeventから製品TIPの所有TSFへ届ける経路は別途必要である。
 workerは最初の要求前も固定Hostのprocess handleを待ち、Hostが終了すれば
 自ら退役して以後の予約を拒否する。

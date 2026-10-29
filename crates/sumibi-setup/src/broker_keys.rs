@@ -23,6 +23,8 @@ pub(crate) fn exercise_broker_keys(
         for case in [
             "apply",
             "shared-ready",
+            "process-ready",
+            "process-exit",
             "shared-revoke",
             "shared-inflight-revoke",
             "shared-text-restored",
@@ -93,7 +95,10 @@ pub(crate) fn exercise_broker_keys(
             let sink: ITfKeyEventSink = provider
                 .GetFunction(&FUNCTION_TEST_KEY_SINK, &ITfKeyEventSink::IID)?
                 .cast()?;
-            let (shared, bridge) = if case.starts_with("shared-") {
+            let (shared, process, bridge) = if matches!(case, "process-ready" | "process-exit") {
+                let (fixture, worker) = crate::broker_process_fixture::Fixture::start()?;
+                (None, Some(fixture), Bridge::new_prepared(worker)?)
+            } else if case.starts_with("shared-") {
                 let (fixture, worker) = crate::broker_shared_fixture::Fixture::start(
                     case == "shared-inflight-revoke",
                     matches!(
@@ -103,9 +108,10 @@ pub(crate) fn exercise_broker_keys(
                             | "shared-focus-restored"
                     ),
                 )?;
-                (Some(fixture), Bridge::new_prepared(worker)?)
+                (Some(fixture), None, Bridge::new_prepared(worker)?)
             } else {
                 (
+                    None,
                     None,
                     Bridge::new(if case == "disabled" {
                         Mode::Disabled
@@ -165,6 +171,29 @@ pub(crate) fn exercise_broker_keys(
             };
             let at_capacity = matches!(case, "capacity" | "capacity-completed" | "capacity-result");
             let before_reads = store.get().reads.get();
+            if case == "process-exit" {
+                process.ok_or("missing process fixture")?.terminate()?;
+                let handle = bridge
+                    .get()
+                    .wait_handle()
+                    .ok_or("missing idle worker event")?;
+                if WaitForSingleObject(handle, 5000) != WAIT_OBJECT_0 {
+                    return Err("process exit notification timed out".into());
+                }
+                assert!(!sink.OnPreservedKey(&context, &COMMAND_CONVERT)?.as_bool());
+                assert_eq!(store.get().reads.get(), before_reads);
+                assert!(!bridge.get().active());
+                assert!(store.get().undo.borrow().is_empty());
+                let mut pending = u64::MAX;
+                broker.Pending(&mut pending).ok()?;
+                assert_eq!(pending, 0);
+                bridge.get().shutdown()?;
+                control.RevokeContext().ok()?;
+                association.close()?;
+                manager.SetFocus(None)?;
+                println!("DLL key / separate Host / exit before capture: OK");
+                continue;
+            }
             if case == "shared-revoke" {
                 shared.as_ref().ok_or("missing shared fixture")?.revoke()?;
                 let handle = bridge
@@ -372,7 +401,12 @@ pub(crate) fn exercise_broker_keys(
             }
             let apply = matches!(
                 case,
-                "apply" | "shared-ready" | "double-key" | "stale-reply" | "replace-transport"
+                "apply"
+                    | "shared-ready"
+                    | "process-ready"
+                    | "double-key"
+                    | "stale-reply"
+                    | "replace-transport"
             ) || case.starts_with("reuse");
             assert_eq!(
                 delivery,
@@ -383,6 +417,17 @@ pub(crate) fn exercise_broker_keys(
                 },
                 "{case}"
             );
+            if case == "process-ready" {
+                let (pid, wire) = bridge
+                    .get()
+                    .last_exchange()
+                    .ok_or("missing process exchange")?;
+                assert_ne!(
+                    pid,
+                    windows::Win32::System::Threading::GetCurrentProcessId()
+                );
+                assert_eq!(wire, 1);
+            }
             if apply {
                 assert_eq!(
                     *store.get().text.borrow(),
@@ -464,6 +509,9 @@ pub(crate) fn exercise_broker_keys(
             store.get().deny_lock.set(false);
             bridge.get().shutdown()?;
             if let Some(fixture) = shared {
+                fixture.finish()?;
+            }
+            if let Some(fixture) = process {
                 fixture.finish()?;
             }
             if let Some(bridge) = &replacement {
