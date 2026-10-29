@@ -363,6 +363,14 @@ fn client_fixture() {
     };
     let stop = Stop::new().unwrap();
     let deadline = Instant::now() + Duration::from_secs(8);
+    let (name, broker) = if std::env::var_os("SUMIBI_PRIVATE_HANDOFF_PIPE").is_some() {
+        let pipe = Pipe::connect(&name, expected_host.try_clone().unwrap()).unwrap();
+        let offer = sumibi_ipc::handoff::receive(pipe, &expected_host, &stop, deadline).unwrap();
+        assert!(offer.broker.id() == broker.id());
+        (offer.name, offer.broker)
+    } else {
+        (name, broker)
+    };
     if std::env::var_os("SUMIBI_PRIVATE_WORKER").is_some() {
         let mut signal = [0];
         let prepared = std::env::var_os("SUMIBI_PRIVATE_PREPARED").is_some();
@@ -533,10 +541,20 @@ fn two_child_processes_authenticate_the_same_host_on_private_pipes() {
                     "SUMIBI_TEST_AUTHORIZATION",
                     policy.authorization.to_string(),
                 );
+        } else {
+            command.env("SUMIBI_PRIVATE_HANDOFF_PIPE", "1");
         }
         let mut child = FixtureChild(command.spawn().unwrap());
         let peer = PinnedProcess::from_launch_handle(child.0.as_handle()).unwrap();
-        let (id, name) = boot.begin_private_accept(peer, deadline).unwrap();
+        let (bootstrap_server, bootstrap_name, direct_id) = if index == 0 {
+            let name = Nonce::random().unwrap();
+            (Some(Server::create(&name).unwrap()), name, None)
+        } else {
+            let (id, name) = boot
+                .begin_private_accept(peer.try_clone().unwrap(), deadline)
+                .unwrap();
+            (None, name, Some(id))
+        };
         let mut remote = HANDLE::default();
         // SAFETY: duplicate only the pinned current-process query/synchronize
         // handle into the freshly launched child; the returned value belongs
@@ -557,10 +575,21 @@ fn two_child_processes_authenticate_the_same_host_on_private_pipes() {
             child.0.stdin.as_mut().unwrap(),
             "{} {} {}",
             remote.0 as usize,
-            name.bootstrap(),
+            bootstrap_name.bootstrap(),
             boot.name().bootstrap()
         )
         .unwrap();
+        let id = if let Some(server) = bootstrap_server {
+            let pipe = server
+                .accept(peer.try_clone().unwrap(), &stop, deadline)
+                .unwrap();
+            match boot.handoff_private_over_pipe(peer, pipe, &stop, deadline) {
+                Ok(id) => id,
+                Err(_) => panic!("authenticated pipe handoff failed"),
+            }
+        } else {
+            direct_id.unwrap()
+        };
         ids.push(id);
         children.push(child);
     }
@@ -702,6 +731,56 @@ fn private_client_rejects_a_different_host_before_sending_hello() {
         assert!(Instant::now() < deadline);
         std::thread::yield_now();
     }
+    assert!(boot
+        .shutdown(Instant::now() + Duration::from_secs(1))
+        .is_ok());
+}
+
+#[test]
+fn handoff_rejects_a_pipe_pinned_to_a_different_recipient_before_accepting() {
+    use sumibi_host::broker_boot::HandoffError;
+    use sumibi_host::broker_runtime::RuntimeError;
+    let _guard = PIPE_TEST_LOCK.lock().unwrap();
+    if matches!(
+        PinnedProcess::current(),
+        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+    ) {
+        return;
+    }
+    let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
+    let source = PolicyAuthority::new(destination);
+    let stop = Stop::new().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+    let name = Nonce::random().unwrap();
+    let server = Server::create(&name).unwrap();
+    let (accepted, client) = std::thread::scope(|scope| {
+        let handle =
+            scope.spawn(|| server.accept(PinnedProcess::current().unwrap(), &stop, deadline));
+        let client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        (handle.join().unwrap().unwrap(), client)
+    });
+    let mut child = FixtureChild(
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "host_lifetime_fixture"])
+            .env("SUMIBI_PRIVATE_HOST_FIXTURE", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let other = PinnedProcess::from_launch_handle(child.0.as_handle()).unwrap();
+    assert!(matches!(
+        boot.handoff_private_over_pipe(other, accepted, &stop, deadline),
+        Err(HandoffError::Start(RuntimeError::Transport(
+            sumibi_ipc::Error::WrongPeer
+        )))
+    ));
+    assert_eq!(boot.pending_accept_count(), 0);
+    drop(client);
+    drop(child.0.stdin.take());
+    assert!(child.0.wait().unwrap().success());
     assert!(boot
         .shutdown(Instant::now() + Duration::from_secs(1))
         .is_ok());

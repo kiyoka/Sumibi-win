@@ -12,6 +12,8 @@ pub mod channel;
 #[cfg(windows)]
 pub mod framed;
 #[cfg(windows)]
+pub mod handoff;
+#[cfg(windows)]
 mod identity;
 #[cfg(windows)]
 pub mod job;

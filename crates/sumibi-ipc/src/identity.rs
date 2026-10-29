@@ -89,6 +89,30 @@ impl PinnedProcess {
     pub fn as_handle(&self) -> BorrowedHandle<'_> {
         self.handle.as_handle()
     }
+    /// Duplicate the same already pinned process, retaining its original
+    /// identity and creation-time checks. Never construct from a bare PID.
+    pub fn try_clone(&self) -> Result<Self> {
+        self.alive()?;
+        let duplicate = Self::from_launch_handle(self.as_handle())?;
+        self.require_same(&duplicate)?;
+        Ok(duplicate)
+    }
+    pub(crate) fn require_same(&self, other: &Self) -> Result<()> {
+        primary_thread()?;
+        self.alive()?;
+        other.alive()?;
+        if self.stamp != other.stamp
+            || self.identity != other.identity
+            || identity(self.raw())? != self.identity
+            || !self
+                .identity
+                .same_desktop(&identity(unsafe { GetCurrentProcess() })?)
+        {
+            return Err(Error::WrongPeer);
+        }
+        self.alive()?;
+        other.alive()
+    }
     pub(crate) fn raw(&self) -> HANDLE {
         raw(&self.handle)
     }

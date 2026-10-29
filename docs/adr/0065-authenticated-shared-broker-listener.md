@@ -72,6 +72,13 @@ worker thread上で遅延開始し、予約・取消・結果回収に既存の�
 このAPI自体は製品発見や署名検証を実装しない。
 別processの試験用Hostから専用TSFホストへの受渡しにもこのAPIを使い、
 変換・UndoとHost終了後の本文取得前拒否を再確認した。
+`handoff_private_over_pipe`は相互認証済みの専用pipeを使って接続先とBoot IDを
+一度だけ送る。pipeが持つ固定peerと受付に渡したprocessの作成時刻・tokenを
+照合し、一致しなければ受付作成前に拒否する。受信側も独立に固定したHostを
+照合し、固定長・版付きの名前とIDだけを期限付きで読み取る。不正形式、異なる
+peer、取消を拒否する。別processへ配布した後の変換と、別の2接続目の継続を
+実pipeで確認した。専用pipeとprocess handleの信頼できる発見・確立は引き続き
+呼出し側に必要であり、配布成功は受信側による読取完了の確認を意味しない。
 このeventから製品TIPの所有TSFへ届ける経路は別途必要である。
 workerは最初の要求前も固定Hostのprocess handleを待ち、Hostが終了すれば
 自ら退役して以後の予約を拒否する。

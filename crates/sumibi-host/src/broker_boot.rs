@@ -8,7 +8,9 @@ use crate::manual::OrderedConversionTransport;
 use crate::policy::{PolicyAuthority, PolicyVersion};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use sumibi_ipc::{AcceptTask, Error as IpcError, Nonce, PinnedProcess, Server, SharedAnchor, Stop};
+use sumibi_ipc::{
+    AcceptTask, Error as IpcError, Nonce, PinnedProcess, Pipe, Server, SharedAnchor, Stop,
+};
 use sumibi_protocol::message::{Convert, ErrorCode, Id, Policy};
 
 /// Owns the first pipe instance through idle periods and retires every
@@ -277,6 +279,26 @@ impl<'a> BrokerBoot<'a> {
         }
         guard.id = None;
         Ok(id)
+    }
+
+    /// Transfer an offer over a dedicated pipe already authenticated to the
+    /// same pinned peer. This performs bounded I/O and belongs off the TSF
+    /// owner thread. The caller still establishes trust in the process pin.
+    pub fn handoff_private_over_pipe(
+        &mut self,
+        peer: PinnedProcess,
+        pipe: Pipe,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<AcceptId, HandoffError<IpcError>> {
+        pipe.require_peer(&peer)
+            .map_err(|error| HandoffError::Start(RuntimeError::Transport(error)))?;
+        let recipient = peer
+            .try_clone()
+            .map_err(|error| HandoffError::Start(RuntimeError::Transport(error)))?;
+        self.handoff_private_accept(peer, deadline, |name, broker, end| {
+            sumibi_ipc::handoff::send(pipe, &recipient, name, broker, stop, end)
+        })
     }
 
     /// Request cancellation of one pending accept. Its ID remains reserved

@@ -402,6 +402,12 @@ pub struct Pipe {
     busy: bool,
 }
 impl Pipe {
+    /// Verify that this authenticated pipe is bound to the independently
+    /// pinned process, before handing it any bootstrap data.
+    pub fn require_peer(&self, peer: &PinnedProcess) -> Result<()> {
+        self.check()?;
+        self.resource.peer.require_same(peer)
+    }
     /// Replenish a shared pipe group while an authenticated server instance
     /// still owns the name. A departed client need not remain alive for the
     /// owner to create the next listener. The kernel and process-wide permit
@@ -1157,6 +1163,94 @@ mod tests {
             let client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
             (accepted.join().unwrap().unwrap(), client)
         })
+    }
+
+    #[test]
+    fn handoff_roundtrip_requires_the_pinned_peer_and_rejects_malformed_records() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (sender, receiver) = connected_one(&stop, deadline);
+        let name = Nonce::random().unwrap();
+        let broker = Nonce::random().unwrap();
+        crate::handoff::send(
+            sender,
+            &PinnedProcess::current().unwrap(),
+            &name,
+            &broker,
+            &stop,
+            deadline,
+        )
+        .unwrap();
+        let offer = crate::handoff::receive(
+            receiver,
+            &PinnedProcess::current().unwrap(),
+            &stop,
+            deadline,
+        )
+        .unwrap();
+        assert!(offer.name.id() == name.id());
+        assert!(offer.broker.id() == broker.id());
+
+        let (mut sender, receiver) = connected_one(&stop, deadline);
+        sender.write_all(vec![b'x'; 68], &stop, deadline).unwrap();
+        assert!(matches!(
+            crate::handoff::receive(
+                receiver,
+                &PinnedProcess::current().unwrap(),
+                &stop,
+                deadline
+            ),
+            Err(Error::InvalidMessage)
+        ));
+
+        let (sender, _receiver) = connected_one(&stop, deadline);
+        let mut child = accept_test_child(None);
+        let other = PinnedProcess::from_launch_handle(child.as_handle()).unwrap();
+        assert!(matches!(
+            crate::handoff::send(sender, &other, &name, &broker, &stop, deadline),
+            Err(Error::WrongPeer)
+        ));
+        drop(child.stdin.take());
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn handoff_rejects_invalid_nonce_and_honors_cancellation() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut sender, receiver) = connected_one(&stop, deadline);
+        let mut invalid = b"SBH1".to_vec();
+        invalid.extend_from_slice(b"00000000000000000000000000000000");
+        invalid.extend_from_slice(Nonce::random().unwrap().bootstrap().as_bytes());
+        sender.write_all(invalid, &stop, deadline).unwrap();
+        assert!(matches!(
+            crate::handoff::receive(
+                receiver,
+                &PinnedProcess::current().unwrap(),
+                &stop,
+                deadline
+            ),
+            Err(Error::InvalidMessage)
+        ));
+        let (_sender, receiver) = connected_one(&stop, deadline);
+        stop.cancel().unwrap();
+        assert!(matches!(
+            crate::handoff::receive(
+                receiver,
+                &PinnedProcess::current().unwrap(),
+                &stop,
+                deadline
+            ),
+            Err(Error::Cancelled)
+        ));
     }
 
     #[test]
