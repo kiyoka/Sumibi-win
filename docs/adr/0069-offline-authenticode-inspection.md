@@ -16,10 +16,22 @@ TSFのcallbackや所有スレッドでは実行しない。
 製品の発見・起動にはこれらの追加検査と、明確な署名・失効方針が必要である。
 検査対象を開いたままにしても、既存の実行中イメージの同一性は証明できない。
 
+`inspect_signer`は署名検証の成功後、WinTrustの状態を閉じる前に最初の署名者証明書の
+DERをSHA-256で識別し、証明書を保持せず32バイトだけを返す。
+`inspect_expected_signer`は呼出し側が指定する指紋との不一致を拒否する。
+この指紋の選定・保護・ローテーションは製品の導入方針に残る。証明書が一致しても、
+保護配置や実行中イメージの同一性、オンライン失効確認を証明しない。
+取得用のWinTrust helperはMicrosoftが将来変更・廃止の可能性を示しており、
+製品組込み前に対応OSと複数署名の扱いを確認する。証明書状態の取得に失敗すれば拒否する。
+
 このPCで、署名済み`vswhere.exe`が成功し、未署名のテスト実行ファイル、
 相対パスとUNCが拒否された。署名済みツールの検査はファイルがある環境でだけ実行する。
+同じ署名済みツールの証明書指紋はPowerShellの独立した証明書取得とSHA-256で照合し、
+異なる指紋を拒否した。
 自己署名の開発DLLを製品用に信頼する変更、証明書ストアへの追加や機械登録は行わない。
 
 根拠: [WinVerifyTrust](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-winverifytrust)、
 [WINTRUST_FILE_INFO](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/ns-wintrust-wintrust_file_info)、
 [WINTRUST_DATA](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/ns-wintrust-wintrust_data)。
+署名者取得とfingerprintの根拠: [WTHelperGetProvSignerFromChain](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-wthelpergetprovsignerfromchain)、
+[CryptHashCertificate2](https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-crypthashcertificate2)。
