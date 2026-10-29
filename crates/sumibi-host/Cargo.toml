@@ -13,3 +13,6 @@ serde_json = "=1.0.154"
 
 [target.'cfg(windows)'.dependencies]
 sumibi-ipc = { path = "../sumibi-ipc" }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_System_Threading"] }

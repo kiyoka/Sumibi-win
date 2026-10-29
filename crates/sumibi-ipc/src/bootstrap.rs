@@ -14,7 +14,11 @@ use windows::Win32::System::Threading::*;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Disabled,
-    DiagnosticFixed { delay_ms: u32 },
+    /// A separately discovered, pinned shared Host. Never a launch argument.
+    Pinned,
+    DiagnosticFixed {
+        delay_ms: u32,
+    },
     DiagnosticFanoutFailedNotice,
     DiagnosticFanoutLaggingNotice,
     DiagnosticFanoutReadyFailure,

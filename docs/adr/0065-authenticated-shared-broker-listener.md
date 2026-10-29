@@ -37,6 +37,16 @@ instanceを選べず、別の固定peer用instanceに接続して拒否され得
 のみBrokerへ渡す。名前とBoot IDの信頼できる配布とclient側のHost認証は
 呼出し側に必要であり、この入口自体は製品の発見方式を完成させない。
 
+`Channel::connect_pinned`は信頼経路で固定済みのHost handleと個別pipe名、
+Boot IDを受け、OS相互認証の後にHello/Readyを完了する。保持する結果の容量、
+版の照合、通知確認と期限は従来の起動型Channelと共通である。共有Hostの
+Channelを閉じてもHost自体は停止しない。`Worker::new_pinned`はその接続を
+worker thread上で遅延開始し、予約・取消・結果回収に既存の有限枠を使う。
+`Mode::Pinned`はworker用であり、子Hostの起動引数には使えない。
+Readyの政策版を入力側へ届ける製品経路は別途必要である。
+workerは最初の要求前も固定Hostのprocess handleを待ち、Hostが終了すれば
+自ら退役して以後の予約を拒否する。
+
 通常終了は値を消費する`BrokerBoot::shutdown`で行う。期限切れなら稼働中の
 Bootを`Expired`で返し、60秒を超える期限なら`InvalidDeadline`で返す。
 回収が未完了なら退役中のBootを`Pending`で返す。
@@ -125,6 +135,16 @@ Bootを`Expired`で返し、60秒を超える期限なら`InvalidDeadline`で返
 - 同じBootで親と別の子processに別名の受付を用意し、各受付IDと接続を照合。
   子からHello・Convert・結果まで確認した。子fixtureは標準File接続であり、
   client側のHost相互認証と製品の名前配布はこの検査の対象外。
+- 別の結合検査では、起動した2子processへHostの固定process handleをそれぞれ
+  複製し、専用stdinでpipe名・Boot IDと共に渡した。各子は`Pipe::connect`で
+  Hostを照合し、Hostも各子を固定した上で同じBootへ接続し、変換結果を受信した。
+  誤Hostを固定した子はHello送信前に拒否し、別processからの接続もHostが拒否する。
+  その後は新しい名前で正しい子を受付できる。これは起動済み試験子に限定した
+  受渡しであり、一般アプリへの配布・共有Host発見は未実装。
+- 共有HostへのChannelと非同期workerを別々の子processから使用し、先の子が
+  終了した後も後のworkerが変換できることを確認。workerの取消で接続とHostの
+  jobが回収され、古い政策版の要求は本文送信前に拒否される。
+  要求前のHost終了もworkerが検出し、以後の予約を拒否する。
 - 診断用子Brokerの親process向け2受付、政策通知、取消、結果。`tools/Test-Broker.ps1`と
   `tools/Test-Spike.ps1 -SkipDesktop`が成功し、既定HostとパッシブTIPへ復元。
 

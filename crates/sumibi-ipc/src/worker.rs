@@ -5,7 +5,7 @@ use crate::bootstrap::Mode;
 use crate::channel::{Channel, Reply, MAX_REQUESTS};
 use crate::job::{Request, Reservation};
 use crate::support::{own, raw};
-use crate::{Error, PinnedProcess, Result, Stop};
+use crate::{Error, Nonce, PinnedProcess, Result, Stop};
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -106,6 +106,17 @@ pub struct Worker {
     worker: Option<JoinHandle<()>>,
     _reservation: Arc<Reservation>,
 }
+enum Target {
+    Launched {
+        executable: PathBuf,
+        mode: Mode,
+    },
+    Pinned {
+        name: Nonce,
+        boot: Nonce,
+        peer: PinnedProcess,
+    },
+}
 struct Finished {
     state: Arc<State>,
     wake: Arc<OwnedHandle>,
@@ -124,9 +135,30 @@ impl Worker {
     /// Reserve the global slot before capture. Spawns no broker until submit;
     /// this call creates bounded events/thread but performs no I/O or waits.
     pub fn new(reservation: Reservation, executable: PathBuf, mode: Mode) -> Result<Self> {
-        if !executable.is_absolute() {
+        if !executable.is_absolute() || mode == Mode::Pinned {
             return Err(Error::InvalidArgument);
         }
+        Self::spawn(reservation, Target::Launched { executable, mode }, mode)
+    }
+
+    /// Create a nonblocking worker for a separately pinned shared Host.
+    /// Discovery and the authenticated transfer of name, boot and peer are
+    /// the caller's responsibility. The first submit opens the pipe on the
+    /// worker thread; cancellation closes only this worker's connection.
+    pub fn new_pinned(
+        reservation: Reservation,
+        name: Nonce,
+        boot: Nonce,
+        peer: PinnedProcess,
+    ) -> Result<Self> {
+        Self::spawn(
+            reservation,
+            Target::Pinned { name, boot, peer },
+            Mode::Pinned,
+        )
+    }
+
+    fn spawn(reservation: Reservation, target: Target, mode: Mode) -> Result<Self> {
         let reservation = Arc::new(reservation);
         let state = Arc::new(State {
             stop: Stop::new()?,
@@ -156,8 +188,7 @@ impl Worker {
                     done: worker_done,
                 };
                 run(
-                    executable,
-                    mode,
+                    target,
                     &worker_state,
                     &worker_command,
                     &worker_wake,
@@ -279,8 +310,7 @@ impl Drop for Worker {
 
 #[allow(clippy::too_many_arguments)]
 fn run(
-    executable: PathBuf,
-    mode: Mode,
+    target: Target,
     state: &Arc<State>,
     command: &OwnedHandle,
     wake: &OwnedHandle,
@@ -288,11 +318,16 @@ fn run(
     results: &mpsc::SyncSender<Completion>,
     reservation: &Arc<Reservation>,
 ) {
+    let mut target = Some(target);
     let mut channel: Option<Channel> = None;
     let mut peer: Option<PinnedProcess> = None;
     loop {
         let mut handles = vec![HANDLE(state.stop.as_handle().as_raw_handle()), raw(command)];
-        if let Some(peer) = &peer {
+        let waiting_peer = peer.as_ref().or(match target.as_ref() {
+            Some(Target::Pinned { peer, .. }) => Some(peer),
+            _ => None,
+        });
+        if let Some(peer) = waiting_peer {
             handles.push(HANDLE(peer.as_handle().as_raw_handle()));
         }
         let wait = unsafe { WaitForMultipleObjects(&handles, false, INFINITE) };
@@ -309,13 +344,23 @@ fn run(
                 return Err(Error::Cancelled);
             }
             if channel.is_none() {
-                let opened = Channel::connect_reserved(
-                    &executable,
-                    mode,
-                    &state.stop,
-                    request.deadline,
-                    reservation.clone(),
-                )?;
+                let opened = match target.take().ok_or(Error::Closed)? {
+                    Target::Launched { executable, mode } => Channel::connect_reserved(
+                        &executable,
+                        mode,
+                        &state.stop,
+                        request.deadline,
+                        reservation.clone(),
+                    )?,
+                    Target::Pinned { name, boot, peer } => Channel::connect_pinned_reserved(
+                        &name,
+                        boot,
+                        peer,
+                        &state.stop,
+                        request.deadline,
+                        reservation.clone(),
+                    )?,
+                };
                 peer = Some(opened.peer_process()?);
                 channel = Some(opened);
             }
@@ -327,8 +372,8 @@ fn run(
         }))
         .unwrap_or(Err(Error::WorkerFailed));
         drop(request.text);
-        // Channel cleanup also signals Stop on policy/I/O errors. Preserve
-        // that original error; only an explicit owner cancellation overrides it.
+        // A launched child's cleanup may signal Stop on policy/I/O errors.
+        // Preserve that error; only explicit owner cancellation overrides it.
         if state.cancelled.load(Ordering::Acquire) {
             outcome = Err(Error::Cancelled);
         } else if outcome.is_ok() {
@@ -455,8 +500,10 @@ mod tests {
         .unwrap();
         state.stop.cancel().unwrap();
         run(
-            std::env::current_exe().unwrap(),
-            Mode::Disabled,
+            Target::Launched {
+                executable: std::env::current_exe().unwrap(),
+                mode: Mode::Disabled,
+            },
             &state,
             &command,
             &wake,

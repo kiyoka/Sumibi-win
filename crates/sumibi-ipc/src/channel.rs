@@ -1,4 +1,4 @@
-//! Reuse one explicitly launched, authenticated child for sequential requests.
+//! Reuse an authenticated launched child or independently pinned shared Host.
 //! Blocking worker-only API: launch/I/O/close/Drop must never run in a TSF or
 //! window callback. No discovery, retry, COM target or UI dispatch is provided.
 use crate::bootstrap::{Launched, Mode};
@@ -20,7 +20,8 @@ struct Connected {
     client: ClientSession,
     inbox: Inbox,
     policy: Policy,
-    child: Launched,
+    peer: PinnedProcess,
+    _child: Option<Launched>,
 }
 struct Delivery {
     _reservation: Arc<Reservation>,
@@ -71,6 +72,47 @@ impl Channel {
         deadline: Instant,
         reservation: Arc<Reservation>,
     ) -> Result<Self> {
+        let deadline = Self::connection_deadline(stop, deadline)?;
+        let (child, pipe, boot) = Launched::connect_channel(path, mode, stop, deadline)?;
+        let peer = child.peer()?;
+        Self::establish(pipe, boot, peer, Some(child), stop, deadline, reservation)
+    }
+
+    /// Connect to an already-running Host using a process handle obtained
+    /// through a trusted bootstrap. Pipe name and boot ID do not authenticate
+    /// the Host. Closing this channel never stops the shared Host process.
+    pub fn connect_pinned(
+        name: &Nonce,
+        boot: Nonce,
+        peer: PinnedProcess,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<Self> {
+        Self::connect_pinned_reserved(
+            name,
+            boot,
+            peer,
+            stop,
+            deadline,
+            Arc::new(Reservation::acquire()?),
+        )
+    }
+
+    pub(crate) fn connect_pinned_reserved(
+        name: &Nonce,
+        boot: Nonce,
+        peer: PinnedProcess,
+        stop: &Stop,
+        deadline: Instant,
+        reservation: Arc<Reservation>,
+    ) -> Result<Self> {
+        let deadline = Self::connection_deadline(stop, deadline)?;
+        let retained_peer = PinnedProcess::from_launch_handle(peer.as_handle())?;
+        let pipe = Pipe::connect(name, peer)?;
+        Self::establish(pipe, boot, retained_peer, None, stop, deadline, reservation)
+    }
+
+    fn connection_deadline(stop: &Stop, deadline: Instant) -> Result<Instant> {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(Error::Timeout);
@@ -78,9 +120,22 @@ impl Channel {
         if remaining > Duration::from_secs(60) {
             return Err(Error::InvalidArgument);
         }
-        let deadline = deadline.min(Instant::now() + Duration::from_secs(10));
+        if stop.is_cancelled()? {
+            return Err(Error::Cancelled);
+        }
+        Ok(deadline.min(Instant::now() + Duration::from_secs(10)))
+    }
+
+    fn establish(
+        mut pipe: Pipe,
+        boot: Nonce,
+        peer: PinnedProcess,
+        child: Option<Launched>,
+        stop: &Stop,
+        deadline: Instant,
+        reservation: Arc<Reservation>,
+    ) -> Result<Self> {
         let expires = Instant::now() + MAX_LIFETIME;
-        let (child, mut pipe, boot) = Launched::connect_channel(path, mode, stop, deadline)?;
         let mut client = ClientSession::new(Nonce::random()?.id(), boot.id());
         let mut inbox = Inbox::default();
         pipe.write_all(
@@ -101,7 +156,8 @@ impl Channel {
                 client,
                 inbox,
                 policy,
-                child,
+                peer,
+                _child: child,
             }),
             stop: stop.clone(),
             expires,
@@ -111,9 +167,21 @@ impl Channel {
         })
     }
 
-    /// Query/synchronize-only duplicate of the exact launched process object.
+    /// Query/synchronize-only duplicate of the exact pinned process object.
     pub fn peer_process(&self) -> Result<PinnedProcess> {
-        self.connected.as_ref().ok_or(Error::Closed)?.child.peer()
+        PinnedProcess::from_launch_handle(
+            self.connected
+                .as_ref()
+                .ok_or(Error::Closed)?
+                .peer
+                .as_handle(),
+        )
+    }
+
+    /// The policy received at Ready. A later queued notice is checked before
+    /// sending source text; callers must not treat this snapshot as a grant.
+    pub fn policy(&self) -> Option<Policy> {
+        self.connected.as_ref().map(|connected| connected.policy)
     }
 
     pub fn is_closed(&self) -> bool {

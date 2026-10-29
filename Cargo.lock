@@ -89,6 +89,7 @@ dependencies = [
  "serde_json",
  "sumibi-ipc",
  "sumibi-protocol",
+ "windows",
 ]
 
 [[package]]
