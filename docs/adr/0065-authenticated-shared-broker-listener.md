@@ -79,6 +79,11 @@ worker thread上で遅延開始し、予約・取消・結果回収に既存の�
 peer、取消を拒否する。別processへ配布した後の変換と、別の2接続目の継続を
 実pipeで確認した。専用pipeとprocess handleの信頼できる発見・確立は引き続き
 呼出し側に必要であり、配布成功は受信側による読取完了の確認を意味しない。
+`Worker::prepare_handoff`は既に認証された専用pipeと独立に固定したHostを受け、
+接続先の受信からHost認証・Readyまでをworker側で行う。準備中の本文取得用予約は
+拒否し、停止・不正形式・別Host・期限切れを準備イベントで通知する。別process
+Hostと専用TSFホストの結合試験で変換・UndoとHost終了後の拒否を確認した。
+bootstrap pipeの発見と確立はこのAPIの範囲外である。
 このeventから製品TIPの所有TSFへ届ける経路は別途必要である。
 workerは最初の要求前も固定Hostのprocess handleを待ち、Hostが終了すれば
 自ら退役して以後の予約を拒否する。

@@ -1254,6 +1254,120 @@ mod tests {
     }
 
     #[test]
+    fn handoff_worker_keeps_input_closed_during_receive_and_wakes_on_shutdown() {
+        use crate::job::{Reservation, ADMISSION_TEST};
+        use crate::worker::Worker;
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let _admission = ADMISSION_TEST.lock().unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (_sender, receiver) = connected_one(&stop, deadline);
+        let mut worker = Worker::prepare_handoff(
+            Reservation::acquire().unwrap(),
+            receiver,
+            PinnedProcess::current().unwrap(),
+            deadline,
+        )
+        .unwrap();
+        assert!(matches!(worker.reserve(1), Err(Error::Capacity)));
+        worker.shutdown(Duration::from_secs(1)).unwrap();
+        let event = worker.preparation_handle().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 0) },
+            WAIT_OBJECT_0
+        );
+        assert!(matches!(worker.prepared_policy(), Err(Error::Cancelled)));
+    }
+
+    #[test]
+    fn handoff_worker_reports_invalid_offer_before_reserving_input() {
+        use crate::job::{Reservation, ADMISSION_TEST};
+        use crate::worker::Worker;
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let _admission = ADMISSION_TEST.lock().unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut sender, receiver) = connected_one(&stop, deadline);
+        let mut worker = Worker::prepare_handoff(
+            Reservation::acquire().unwrap(),
+            receiver,
+            PinnedProcess::current().unwrap(),
+            deadline,
+        )
+        .unwrap();
+        sender.write_all(vec![b'x'; 68], &stop, deadline).unwrap();
+        let event = worker.preparation_handle().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 3000) },
+            WAIT_OBJECT_0
+        );
+        assert!(matches!(
+            worker.prepared_policy(),
+            Err(Error::InvalidMessage)
+        ));
+        assert!(worker.reserve(1).is_err());
+        worker.shutdown(Duration::from_secs(1)).unwrap();
+    }
+
+    #[test]
+    fn handoff_worker_rejects_wrong_host_and_silent_peer_before_capture() {
+        use crate::job::{Reservation, ADMISSION_TEST};
+        use crate::worker::Worker;
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let _admission = ADMISSION_TEST.lock().unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (_sender, receiver) = connected_one(&stop, deadline);
+        let mut child = accept_test_child(None);
+        let wrong_host = PinnedProcess::from_launch_handle(child.as_handle()).unwrap();
+        let mut worker = Worker::prepare_handoff(
+            Reservation::acquire().unwrap(),
+            receiver,
+            wrong_host,
+            deadline,
+        )
+        .unwrap();
+        let event = worker.preparation_handle().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 3000) },
+            WAIT_OBJECT_0
+        );
+        assert!(matches!(worker.prepared_policy(), Err(Error::WrongPeer)));
+        assert!(worker.reserve(1).is_err());
+        worker.shutdown(Duration::from_secs(1)).unwrap();
+        drop(worker);
+        drop(child.stdin.take());
+        assert!(child.wait().unwrap().success());
+
+        let (_sender, receiver) = connected_one(&stop, deadline);
+        let mut worker = Worker::prepare_handoff(
+            Reservation::acquire().unwrap(),
+            receiver,
+            PinnedProcess::current().unwrap(),
+            Instant::now() + Duration::from_millis(500),
+        )
+        .unwrap();
+        assert!(matches!(worker.reserve(1), Err(Error::Capacity)));
+        let event = worker.preparation_handle().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 3000) },
+            WAIT_OBJECT_0
+        );
+        assert!(matches!(worker.prepared_policy(), Err(Error::Timeout)));
+        assert!(worker.reserve(1).is_err());
+        worker.shutdown(Duration::from_secs(1)).unwrap();
+    }
+
+    #[test]
     fn accept_task_returns_only_an_authenticated_pipe_without_blocking_owner_poll() {
         if !native_pipe_tests_supported() {
             return;

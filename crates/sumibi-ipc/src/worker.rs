@@ -5,7 +5,7 @@ use crate::bootstrap::Mode;
 use crate::channel::{Channel, Reply, MAX_REQUESTS};
 use crate::job::{Request, Reservation};
 use crate::support::{own, raw};
-use crate::{Error, Nonce, PinnedProcess, Result, Stop};
+use crate::{Error, Nonce, PinnedProcess, Pipe, Result, Stop};
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -169,6 +169,10 @@ enum Target {
         boot: Nonce,
         peer: PinnedProcess,
     },
+    Handoff {
+        pipe: Pipe,
+        peer: PinnedProcess,
+    },
 }
 struct Finished {
     state: Arc<State>,
@@ -245,6 +249,30 @@ impl Worker {
         Self::spawn(
             reservation,
             Target::Pinned { name, boot, peer },
+            Mode::Pinned,
+            Some(deadline),
+        )
+    }
+
+    /// Receive an offer and complete authenticated Ready on the worker thread.
+    /// The bootstrap pipe and Host pin must already come from trusted setup.
+    /// No input can be reserved until both stages succeed.
+    pub fn prepare_handoff(
+        reservation: Reservation,
+        pipe: Pipe,
+        host: PinnedProcess,
+        deadline: Instant,
+    ) -> Result<Self> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Error::Timeout);
+        }
+        if remaining > Duration::from_secs(60) {
+            return Err(Error::InvalidArgument);
+        }
+        Self::spawn(
+            reservation,
+            Target::Handoff { pipe, peer: host },
             Mode::Pinned,
             Some(deadline),
         )
@@ -463,6 +491,18 @@ fn run(
                 deadline,
                 reservation.clone(),
             ),
+            Some(Target::Handoff { pipe, peer }) => {
+                crate::handoff::receive(pipe, &peer, &state.stop, deadline).and_then(|offer| {
+                    Channel::connect_pinned_reserved(
+                        &offer.name,
+                        offer.broker,
+                        peer,
+                        &state.stop,
+                        deadline,
+                        reservation.clone(),
+                    )
+                })
+            }
             _ => Err(Error::InvalidArgument),
         };
         match opened.and_then(|mut opened| {
@@ -540,6 +580,7 @@ fn run(
                         request.deadline,
                         reservation.clone(),
                     )?,
+                    Target::Handoff { .. } => return Err(Error::InvalidArgument),
                 };
                 peer = Some(opened.peer_process()?);
                 channel = Some(opened);

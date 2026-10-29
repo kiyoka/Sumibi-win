@@ -2,14 +2,13 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use sumibi_host::broker_boot::BrokerBoot;
 use sumibi_host::broker_runtime::{JobTicket, PollStep};
 use sumibi_host::broker_workers::OwnerStep;
 use sumibi_host::manual::{Credential, Destination, Scheme};
 use sumibi_host::policy::PolicyAuthority;
-use sumibi_ipc::{job::Reservation, worker::Worker, Nonce, PinnedProcess, Stop};
+use sumibi_ipc::{job::Reservation, worker::Worker, Nonce, PinnedProcess, Pipe, Server, Stop};
 use windows::Win32::Foundation::{
     DuplicateHandle, GetHandleInformation, DUPLICATE_SAME_ACCESS, HANDLE, WAIT_OBJECT_0,
 };
@@ -29,12 +28,16 @@ impl Fixture {
         let child = Command::new(std::env::current_exe()?)
             .arg("broker-process-fixture")
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
         let mut fixture = Self(child);
         let host = PinnedProcess::from_launch_handle(fixture.0.as_handle())?;
         let parent = PinnedProcess::current()?;
+        let bootstrap_name = Nonce::random()?;
+        let bootstrap_server = Server::create(&bootstrap_name)?;
+        let bootstrap_stop = Stop::new()?;
+        let deadline = Instant::now() + Duration::from_secs(5);
         let mut remote = HANDLE::default();
         // SAFETY: the fresh child receives only a duplicate of this process's
         // pinned handle. Its child-local value travels over the private stdin.
@@ -51,30 +54,12 @@ impl Fixture {
         }
         writeln!(
             fixture.0.stdin.as_mut().ok_or("missing child stdin")?,
-            "{}",
-            remote.0 as usize
+            "{} {}",
+            remote.0 as usize,
+            bootstrap_name.bootstrap()
         )?;
-        let output = fixture.0.stdout.take().ok_or("missing child stdout")?;
-        let (sender, receiver) = mpsc::sync_channel(1);
-        std::thread::spawn(move || {
-            let mut line = String::new();
-            let result = BufReader::new(output).read_line(&mut line).map(|_| line);
-            let _ = sender.send(result);
-        });
-        let line = receiver.recv_timeout(Duration::from_secs(5))??;
-        let mut fields = line.split_whitespace();
-        let name = Nonce::from_bootstrap(fields.next().ok_or("missing pipe name")?)?;
-        let broker = Nonce::from_bootstrap(fields.next().ok_or("missing broker name")?)?;
-        if fields.next().is_some() {
-            return Err("invalid fixture response".into());
-        }
-        let worker = Worker::prepare_pinned(
-            Reservation::acquire()?,
-            name,
-            broker,
-            host,
-            Instant::now() + Duration::from_secs(5),
-        )?;
+        let pipe = bootstrap_server.accept(host.try_clone()?, &bootstrap_stop, deadline)?;
+        let worker = Worker::prepare_handoff(Reservation::acquire()?, pipe, host, deadline)?;
         let ready = worker
             .preparation_handle()
             .ok_or("missing preparation event")?;
@@ -125,7 +110,12 @@ pub(crate) fn child() -> Result<(), Failure> {
     let mut input = BufReader::new(std::io::stdin());
     let mut line = String::new();
     input.read_line(&mut line)?;
-    let handle: usize = line.trim().parse()?;
+    let mut fields = line.split_whitespace();
+    let handle: usize = fields.next().ok_or("missing parent handle")?.parse()?;
+    let bootstrap_name = Nonce::from_bootstrap(fields.next().ok_or("missing bootstrap name")?)?;
+    if fields.next().is_some() {
+        return Err("invalid fixture bootstrap".into());
+    }
     let handle = HANDLE(handle as *mut _);
     if handle.is_invalid() {
         return Err("missing parent handle".into());
@@ -160,12 +150,9 @@ pub(crate) fn child() -> Result<(), Failure> {
     });
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut boot = BrokerBoot::start(&source, 2, deadline).map_err(|error| format!("{error:?}"))?;
-    boot.handoff_private_accept(peer, deadline, |name, broker, _| {
-        let mut output = std::io::stdout().lock();
-        writeln!(output, "{} {}", name.bootstrap(), broker.bootstrap())?;
-        output.flush()
-    })
-    .map_err(|_| "fixture handoff failed")?;
+    let pipe = Pipe::connect(&bootstrap_name, peer.try_clone()?)?;
+    boot.handoff_private_over_pipe(peer, pipe, &stop, deadline)
+        .map_err(|_| "fixture handoff failed")?;
     while !stop.is_cancelled()? && Instant::now() < deadline {
         match boot.advance(&stop, deadline, |_| |_: JobTicket| Ok("日本語".into())) {
             Ok(OwnerStep::Broker(PollStep::Idle)) => std::thread::sleep(Duration::from_millis(1)),
