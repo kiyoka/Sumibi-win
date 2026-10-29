@@ -80,6 +80,14 @@ impl Bridge {
         if !policy.allowed || worker.is_closed() {
             return Err(E_ABORT.into());
         }
+        Self::new_preparing(worker)
+    }
+    /// Diagnostic owner can attach while the worker receives the offer and
+    /// Ready. Reserve remains closed until the worker publishes its policy.
+    pub(crate) fn new_preparing(worker: Worker) -> Result<ComObject<Self>> {
+        if worker.preparation_handle().is_none() || worker.is_closed() {
+            return Err(E_ABORT.into());
+        }
         Ok(ComObject::new(Self {
             owner: thread::current().id(),
             executable: None,
@@ -111,6 +119,25 @@ impl Bridge {
             .borrow()
             .as_ref()
             .map(|worker| HANDLE(worker.completion_handle().as_raw_handle()))
+    }
+    /// Manual-reset event: the owner must stop waiting on it after observing
+    /// the preparation result, and use wait_handle for later completions.
+    pub(crate) fn preparation_handle(&self) -> Option<HANDLE> {
+        self.worker.borrow().as_ref().and_then(|worker| {
+            worker
+                .preparation_handle()
+                .map(|handle| HANDLE(handle.as_raw_handle()))
+        })
+    }
+    pub(crate) fn prepared(&self) -> Result<bool> {
+        self.check()?;
+        let worker = self.worker.borrow();
+        let policy = worker
+            .as_ref()
+            .ok_or(E_ABORT)?
+            .prepared_policy()
+            .map_err(|_| windows::core::Error::from(E_ABORT))?;
+        Ok(policy.is_some_and(|policy| policy.allowed))
     }
     pub(crate) fn active(&self) -> bool {
         self.delivering.get() || self.pending.get().is_some() || self.reserved.borrow().is_some()

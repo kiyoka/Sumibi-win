@@ -24,6 +24,8 @@ pub(crate) fn exercise_broker_keys(
             "apply",
             "shared-ready",
             "process-ready",
+            "process-preparing",
+            "process-preparing-exit",
             "process-exit",
             "shared-revoke",
             "shared-inflight-revoke",
@@ -95,31 +97,36 @@ pub(crate) fn exercise_broker_keys(
             let sink: ITfKeyEventSink = provider
                 .GetFunction(&FUNCTION_TEST_KEY_SINK, &ITfKeyEventSink::IID)?
                 .cast()?;
-            let (shared, process, bridge) = if matches!(case, "process-ready" | "process-exit") {
-                let (fixture, worker) = crate::broker_process_fixture::Fixture::start()?;
-                (None, Some(fixture), Bridge::new_prepared(worker)?)
-            } else if case.starts_with("shared-") {
-                let (fixture, worker) = crate::broker_shared_fixture::Fixture::start(
-                    case == "shared-inflight-revoke",
-                    matches!(
-                        case,
-                        "shared-text-restored"
-                            | "shared-selection-restored"
-                            | "shared-focus-restored"
-                    ),
-                )?;
-                (Some(fixture), None, Bridge::new_prepared(worker)?)
-            } else {
-                (
-                    None,
-                    None,
-                    Bridge::new(if case == "disabled" {
-                        Mode::Disabled
-                    } else {
-                        Mode::DiagnosticFixed { delay_ms: 200 }
-                    })?,
-                )
-            };
+            let (shared, mut process, bridge) =
+                if matches!(case, "process-preparing" | "process-preparing-exit") {
+                    let (fixture, worker) =
+                        crate::broker_process_fixture::Fixture::start_pending()?;
+                    (None, Some(fixture), Bridge::new_preparing(worker)?)
+                } else if matches!(case, "process-ready" | "process-exit") {
+                    let (fixture, worker) = crate::broker_process_fixture::Fixture::start()?;
+                    (None, Some(fixture), Bridge::new_prepared(worker)?)
+                } else if case.starts_with("shared-") {
+                    let (fixture, worker) = crate::broker_shared_fixture::Fixture::start(
+                        case == "shared-inflight-revoke",
+                        matches!(
+                            case,
+                            "shared-text-restored"
+                                | "shared-selection-restored"
+                                | "shared-focus-restored"
+                        ),
+                    )?;
+                    (Some(fixture), None, Bridge::new_prepared(worker)?)
+                } else {
+                    (
+                        None,
+                        None,
+                        Bridge::new(if case == "disabled" {
+                            Mode::Disabled
+                        } else {
+                            Mode::DiagnosticFixed { delay_ms: 200 }
+                        })?,
+                    )
+                };
             let transport = bridge.to_interface::<ISpikeBrokerTransport>();
             let reentry = Rc::new(Cell::new(false));
             if case == "reuse-delivery-reentry" {
@@ -171,6 +178,63 @@ pub(crate) fn exercise_broker_keys(
             };
             let at_capacity = matches!(case, "capacity" | "capacity-completed" | "capacity-result");
             let before_reads = store.get().reads.get();
+            if case == "process-preparing-exit" {
+                assert!(!bridge.get().prepared()?);
+                process
+                    .take()
+                    .ok_or("missing process fixture")?
+                    .terminate()?;
+                let event = bridge
+                    .get()
+                    .preparation_handle()
+                    .ok_or("missing preparation event")?;
+                if WaitForSingleObject(event, 5000) != WAIT_OBJECT_0 {
+                    return Err("process preparation failure timed out".into());
+                }
+                assert!(bridge.get().prepared().is_err());
+                assert!(!sink.OnPreservedKey(&context, &COMMAND_CONVERT)?.as_bool());
+                assert_eq!(store.get().reads.get(), before_reads);
+                assert!(!bridge.get().active());
+                assert!(store.get().undo.borrow().is_empty());
+                let mut pending = u64::MAX;
+                broker.Pending(&mut pending).ok()?;
+                assert_eq!(pending, 0);
+                bridge.get().shutdown()?;
+                control.RevokeContext().ok()?;
+                association.close()?;
+                manager.SetFocus(None)?;
+                println!("DLL key / separate Host / exit during preparation: OK");
+                continue;
+            }
+            if case == "process-preparing" {
+                assert!(!bridge.get().prepared()?);
+                assert!(!sink.OnPreservedKey(&context, &COMMAND_CONVERT)?.as_bool());
+                assert_eq!(store.get().reads.get(), before_reads);
+                assert!(!bridge.get().active());
+                assert!(store.get().undo.borrow().is_empty());
+                let mut pending = u64::MAX;
+                broker.Pending(&mut pending).ok()?;
+                assert_eq!(pending, 0);
+                process
+                    .as_mut()
+                    .ok_or("missing process fixture")?
+                    .release()?;
+                let event = bridge
+                    .get()
+                    .preparation_handle()
+                    .ok_or("missing preparation event")?;
+                if WaitForSingleObject(event, 5000) != WAIT_OBJECT_0 {
+                    return Err("process preparation timed out".into());
+                }
+                let deadline = Instant::now() + Duration::from_secs(1);
+                while !bridge.get().prepared()? {
+                    if Instant::now() >= deadline {
+                        return Err("process policy unavailable".into());
+                    }
+                    pump_tsf_messages(&messages)?;
+                    std::thread::yield_now();
+                }
+            }
             if case == "process-exit" {
                 process.ok_or("missing process fixture")?.terminate()?;
                 let handle = bridge
@@ -404,6 +468,7 @@ pub(crate) fn exercise_broker_keys(
                 "apply"
                     | "shared-ready"
                     | "process-ready"
+                    | "process-preparing"
                     | "double-key"
                     | "stale-reply"
                     | "replace-transport"
@@ -417,7 +482,7 @@ pub(crate) fn exercise_broker_keys(
                 },
                 "{case}"
             );
-            if case == "process-ready" {
+            if matches!(case, "process-ready" | "process-preparing") {
                 let (pid, wire) = bridge
                     .get()
                     .last_exchange()

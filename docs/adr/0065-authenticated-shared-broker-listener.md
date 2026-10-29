@@ -84,6 +84,12 @@ peer、取消を拒否する。別processへ配布した後の変換と、別の
 拒否し、停止・不正形式・別Host・期限切れを準備イベントで通知する。別process
 Hostと専用TSFホストの結合試験で変換・UndoとHost終了後の拒否を確認した。
 bootstrap pipeの発見と確立はこのAPIの範囲外である。
+診断bridgeは準備中workerを受け取り、所有側が準備eventと非ブロッキングな
+政策snapshotを確認できる。準備eventはmanual-resetであり、結果観測後は待機対象から
+外す。Host側の受渡しを意図的に止めた専用TSF試験では、その間の変換キーが
+本文を読まず通過し、Ready後は同じbridgeで変換・1回Undoが成功した。
+準備中にHostが終了した場合も本文を取得せず拒否した。一般アプリの所有TSFへの
+通知接続とbootstrap pipeの安全な発見は未実装である。
 このeventから製品TIPの所有TSFへ届ける経路は別途必要である。
 workerは最初の要求前も固定Hostのprocess handleを待ち、Hostが終了すれば
 自ら退役して以後の予約を拒否する。

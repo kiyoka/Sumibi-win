@@ -172,8 +172,10 @@ fn checkpoint(point: FailAfter, requested: FailAfter) -> Result<(), Failure> {
 
 pub(super) fn run() -> Result<(), Failure> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args.len() == 1 && args[0] == "broker-process-fixture" {
-        return crate::broker_process_fixture::child();
+    if args.len() == 1
+        && (args[0] == "broker-process-fixture" || args[0] == "broker-process-fixture-delayed")
+    {
+        return crate::broker_process_fixture::child(args[0] == "broker-process-fixture-delayed");
     }
     if args
         .first()

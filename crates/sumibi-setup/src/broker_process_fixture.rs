@@ -25,8 +25,26 @@ impl Fixture {
         Ok(())
     }
     pub(crate) fn start() -> Result<(Self, Worker), Failure> {
+        Self::start_inner(false)
+    }
+    pub(crate) fn start_pending() -> Result<(Self, Worker), Failure> {
+        Self::start_inner(true)
+    }
+    pub(crate) fn release(&mut self) -> Result<(), Failure> {
+        self.0
+            .stdin
+            .as_mut()
+            .ok_or("missing child stdin")?
+            .write_all(&[1])?;
+        Ok(())
+    }
+    fn start_inner(delayed: bool) -> Result<(Self, Worker), Failure> {
         let child = Command::new(std::env::current_exe()?)
-            .arg("broker-process-fixture")
+            .arg(if delayed {
+                "broker-process-fixture-delayed"
+            } else {
+                "broker-process-fixture"
+            })
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -60,6 +78,9 @@ impl Fixture {
         )?;
         let pipe = bootstrap_server.accept(host.try_clone()?, &bootstrap_stop, deadline)?;
         let worker = Worker::prepare_handoff(Reservation::acquire()?, pipe, host, deadline)?;
+        if delayed {
+            return Ok((fixture, worker));
+        }
         let ready = worker
             .preparation_handle()
             .ok_or("missing preparation event")?;
@@ -106,7 +127,7 @@ impl Drop for Fixture {
     }
 }
 
-pub(crate) fn child() -> Result<(), Failure> {
+pub(crate) fn child(delayed: bool) -> Result<(), Failure> {
     let mut input = BufReader::new(std::io::stdin());
     let mut line = String::new();
     input.read_line(&mut line)?;
@@ -141,6 +162,14 @@ pub(crate) fn child() -> Result<(), Failure> {
     source
         .grant_manual_consent(&destination)
         .map_err(|_| "fixture consent")?;
+    let pipe = Pipe::connect(&bootstrap_name, peer.try_clone()?)?;
+    if delayed {
+        let mut signal = [0];
+        input.read_exact(&mut signal)?;
+        if signal != [1] {
+            return Err("invalid fixture release".into());
+        }
+    }
     let stop = Stop::new()?;
     let reader_stop = stop.clone();
     std::thread::spawn(move || {
@@ -150,7 +179,6 @@ pub(crate) fn child() -> Result<(), Failure> {
     });
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut boot = BrokerBoot::start(&source, 2, deadline).map_err(|error| format!("{error:?}"))?;
-    let pipe = Pipe::connect(&bootstrap_name, peer.try_clone()?)?;
     boot.handoff_private_over_pipe(peer, pipe, &stop, deadline)
         .map_err(|_| "fixture handoff failed")?;
     while !stop.is_cancelled()? && Instant::now() < deadline {
