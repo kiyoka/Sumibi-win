@@ -2402,6 +2402,83 @@ mod tests {
     }
 
     #[test]
+    fn broker_boot_capacity_recovers_after_accept_timeout() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, _) = source();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+        let name = boot.name().clone();
+        let id = boot.boot_id();
+        let budget = boot.remaining_attachment_budget();
+        assert_eq!(boot.check_accept_capacity(), Ok(()));
+        boot.begin_accept(
+            PinnedProcess::current().unwrap(),
+            Instant::now() + Duration::from_millis(100),
+        )
+        .unwrap();
+        assert_eq!(
+            boot.check_accept_capacity(),
+            Err(RuntimeError::Transport(IpcError::Capacity))
+        );
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::AcceptFailed(IpcError::Timeout) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                _ => panic!("pending accept did not time out"),
+            }
+        }
+        assert_eq!(boot.pending_accept_count(), 0);
+        assert_eq!(boot.remaining_attachment_budget(), budget);
+        assert_eq!(boot.check_accept_capacity(), Ok(()));
+        assert!(boot.boot_id() == id);
+        boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let mut client = Pipe::connect(&name, PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Accepted { key: 1, .. } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now()
+                }
+                _ => panic!("replacement accept failed"),
+            }
+        }
+        client
+            .write_all(message::encode(&hello(1, id)).unwrap(), &stop, deadline)
+            .unwrap();
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(1)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now()
+                }
+                _ => panic!("replacement client did not activate"),
+            }
+        }
+        assert!(
+            matches!(read_frame(&mut client, &stop, deadline).message, message::Message::Ready(ready) if ready.broker == id)
+        );
+        assert!(boot
+            .shutdown(Instant::now() + Duration::from_secs(1))
+            .is_ok());
+    }
+
+    #[test]
     fn broker_boot_acknowledges_idle_policy_before_a_later_ready() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {

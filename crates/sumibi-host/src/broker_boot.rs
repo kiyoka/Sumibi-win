@@ -125,6 +125,15 @@ impl<'a> BrokerBoot<'a> {
         self.owner.active_count()
     }
 
+    /// Let the Host decide whether to pin another trusted process before
+    /// allocating an OS pipe instance. Capacity can recover when a pending
+    /// accept fails or an authenticated connection closes; Exhausted requires
+    /// a new Broker boot after existing work has retired.
+    pub fn check_accept_capacity(&self) -> Result<(), RuntimeError> {
+        self.runtime
+            .check_anchor_accept_capacity(self.accepts.len(), self.max_instances)
+    }
+
     /// The owner supplies a trusted process pin before an OS instance exists.
     /// A rejected/expired accept can be replaced from the same anchor.
     pub fn begin_accept(
@@ -132,8 +141,7 @@ impl<'a> BrokerBoot<'a> {
         peer: PinnedProcess,
         deadline: Instant,
     ) -> Result<(), RuntimeError> {
-        self.runtime
-            .check_anchor_accept_capacity(self.accepts.len(), self.max_instances)?;
+        self.check_accept_capacity()?;
         self.accepts.push(
             self.runtime
                 .begin_anchor_accept(&self.anchor, peer, deadline)?,
