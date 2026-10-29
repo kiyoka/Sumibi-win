@@ -1,5 +1,8 @@
 use crate::support::{last_error, own, raw, sid_text, Error, Result};
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsHandle, BorrowedHandle, OwnedHandle};
+use std::path::PathBuf;
+use windows::core::PWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::Security::*;
 use windows::Win32::System::Pipes::{GetNamedPipeClientProcessId, GetNamedPipeServerProcessId};
@@ -97,6 +100,28 @@ impl PinnedProcess {
         self.require_same(&duplicate)?;
         Ok(duplicate)
     }
+    /// Observe the Win32 image path of this already pinned live process.
+    /// This synchronous metadata query belongs off the TSF owner thread. The
+    /// path is not proof of signer, protected placement, or file identity:
+    /// the filesystem entry may have changed since the process was launched.
+    pub fn observed_image_path(&self) -> Result<PathBuf> {
+        self.require_same(self)?;
+        let mut buffer = vec![0u16; 32768];
+        let mut length = buffer.len() as u32;
+        // SAFETY: the pinned handle has query rights and the output buffer
+        // remains valid for the bounded query.
+        unsafe {
+            QueryFullProcessImageNameW(
+                self.raw(),
+                PROCESS_NAME_WIN32,
+                PWSTR(buffer.as_mut_ptr()),
+                &mut length,
+            )?;
+        }
+        let path = image_path_from_buffer(&buffer, length as usize)?;
+        self.require_same(self)?;
+        Ok(path)
+    }
     pub(crate) fn require_same(&self, other: &Self) -> Result<()> {
         primary_thread()?;
         self.alive()?;
@@ -161,6 +186,17 @@ impl PinnedProcess {
         self.alive()?;
         Ok(())
     }
+}
+
+fn image_path_from_buffer(buffer: &[u16], length: usize) -> Result<PathBuf> {
+    if length == 0 || length >= buffer.len() || buffer[..length].contains(&0) {
+        return Err(Error::InvalidMessage);
+    }
+    let path = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
+    if !path.is_absolute() {
+        return Err(Error::InvalidMessage);
+    }
+    Ok(path)
 }
 
 fn primary_thread() -> Result<()> {
@@ -296,6 +332,8 @@ pub(crate) fn identity(process: HANDLE) -> Result<Identity> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::windows::io::AsHandle;
+    use std::process::{Command, Stdio};
     fn normal() -> Identity {
         Identity {
             user: vec![1],
@@ -347,5 +385,74 @@ mod tests {
         ] {
             assert_eq!(same_stamp(expected, observed), Err(Error::WrongPeer));
         }
+    }
+    #[test]
+    fn image_path_rejects_invalid_length_embedded_nul_and_relative_names() {
+        let path: Vec<u16> = r"C:\日本語\host.exe"
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        assert!(image_path_from_buffer(&path, path.len() - 1).is_ok());
+        assert_eq!(image_path_from_buffer(&path, 0), Err(Error::InvalidMessage));
+        assert_eq!(
+            image_path_from_buffer(&path, path.len()),
+            Err(Error::InvalidMessage)
+        );
+        let nul = [b'C' as u16, 0, b'a' as u16, 0];
+        assert_eq!(image_path_from_buffer(&nul, 3), Err(Error::InvalidMessage));
+        let relative: Vec<u16> = "host.exe".encode_utf16().chain(Some(0)).collect();
+        assert_eq!(
+            image_path_from_buffer(&relative, relative.len() - 1),
+            Err(Error::InvalidMessage)
+        );
+    }
+
+    #[test]
+    fn pinned_image_observes_current_process_without_authorizing_it() {
+        let process = match PinnedProcess::current() {
+            Ok(process) => process,
+            Err(
+                Error::UnsupportedAppContainer
+                | Error::UnsupportedElevation
+                | Error::UnsupportedIntegrity,
+            ) => {
+                eprintln!("image observation skipped: unsupported caller");
+                return;
+            }
+            Err(error) => panic!("failed to pin current process: {error:?}"),
+        };
+        let observed = process.observed_image_path().unwrap();
+        let current = std::env::current_exe().unwrap();
+        assert_eq!(observed, current);
+        println!("pinned current process image observed");
+    }
+
+    #[test]
+    fn pinned_image_uses_child_handle_and_rejects_exit() {
+        if matches!(
+            PinnedProcess::current(),
+            Err(Error::UnsupportedAppContainer
+                | Error::UnsupportedElevation
+                | Error::UnsupportedIntegrity)
+        ) {
+            eprintln!("child image observation skipped: unsupported caller");
+            return;
+        }
+        let command_path = PathBuf::from(r"C:\Windows\System32\cmd.exe");
+        let mut child = Command::new(&command_path)
+            .args(["/d", "/q", "/c", "pause"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pinned = PinnedProcess::from_launch_handle(child.as_handle()).unwrap();
+        let result = pinned.observed_image_path();
+        drop(child.stdin.take());
+        let status = child.wait().unwrap();
+        assert!(status.success());
+        assert_eq!(result.unwrap(), command_path);
+        assert_eq!(pinned.observed_image_path(), Err(Error::Disconnected));
+        println!("pinned child image observed and rejected after exit");
     }
 }

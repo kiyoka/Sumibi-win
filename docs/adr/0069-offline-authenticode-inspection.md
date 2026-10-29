@@ -24,6 +24,17 @@ DERをSHA-256で識別し、証明書を保持せず32バイトだけを返す�
 取得用のWinTrust helperはMicrosoftが将来変更・廃止の可能性を示しており、
 製品組込み前に対応OSと複数署名の扱いを確認する。証明書状態の取得に失敗すれば拒否する。
 
+`PinnedProcess::observed_image_path`は、既に固定した生存process handleからWindowsの
+`QueryFullProcessImageNameW`でWin32形式のパスを取得する。取得前後にprocess生存と
+tokenの一致を確認し、空・相対・不正な長さの結果を拒否する。これは同期照会なので
+所有TSFスレッドのcallbackから呼ばない。パスはあくまで観測情報であり、そのパスに
+現在あるファイルが実行中のイメージと同一である証明や、署名者・ACLの証明ではない。
+特にパスを取り直して署名だけを確認しても、実行中イメージの認証とは扱わない。
+バッファの検証を単体試験し、実processの試験も用意した。実process試験は
+AppContainer等の非対応環境ではスキップするため、成功表示だけでは実行を意味しない。
+通常のWindows環境で利用者が実行し、自processと別processのパス取得、
+別process終了後の拒否がスキップされずに成功したことを出力で確認した。
+
 このPCで、署名済み`vswhere.exe`が成功し、未署名のテスト実行ファイル、
 相対パスとUNCが拒否された。署名済みツールの検査はファイルがある環境でだけ実行する。
 同じ署名済みツールの証明書指紋はPowerShellの独立した証明書取得とSHA-256で照合し、
@@ -35,3 +46,4 @@ DERをSHA-256で識別し、証明書を保持せず32バイトだけを返す�
 [WINTRUST_DATA](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/ns-wintrust-wintrust_data)。
 署名者取得とfingerprintの根拠: [WTHelperGetProvSignerFromChain](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-wthelpergetprovsignerfromchain)、
 [CryptHashCertificate2](https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-crypthashcertificate2)。
+実行イメージ名の照会: [QueryFullProcessImageNameW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew)。
