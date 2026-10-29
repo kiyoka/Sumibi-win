@@ -184,6 +184,23 @@ impl Channel {
         self.connected.as_ref().map(|connected| connected.policy)
     }
 
+    /// A prepared worker calls this only on its I/O thread. A queued policy
+    /// change retires the channel; callers still revalidate before capture.
+    pub(crate) fn check_idle_policy(&mut self, deadline: Instant) -> Result<()> {
+        let connected = self.connected.as_mut().ok_or(Error::Closed)?;
+        let result = reject_queued(
+            &mut connected.pipe,
+            &mut connected.client,
+            &mut connected.inbox,
+            &self.stop,
+            deadline,
+        );
+        if result.is_err() {
+            self.close();
+        }
+        result
+    }
+
     pub fn is_closed(&self) -> bool {
         self.connected.is_none()
     }

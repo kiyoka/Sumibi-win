@@ -14,11 +14,11 @@ use sumibi_ipc::{
     channel::Channel,
     job::{Request, Reservation},
     worker::Worker,
-    Nonce, PinnedProcess, Pipe, Stop,
+    Nonce, PinnedProcess, Pipe, Server, Stop,
 };
 use sumibi_protocol::message::Revision;
-use windows::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
-use windows::Win32::System::Threading::GetCurrentProcess;
+use windows::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::System::Threading::{GetCurrentProcess, WaitForSingleObject};
 
 static PIPE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -84,6 +84,264 @@ fn idle_pinned_worker_retires_when_its_host_exits_before_first_request() {
 }
 
 #[test]
+fn preparing_worker_blocks_reservation_and_reports_shutdown() {
+    let _guard = PIPE_TEST_LOCK.lock().unwrap();
+    if matches!(
+        PinnedProcess::current(),
+        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+    ) {
+        return;
+    }
+    let name = Nonce::random().unwrap();
+    let _server = Server::create(&name).unwrap();
+    let mut worker = Worker::prepare_pinned(
+        Reservation::acquire().unwrap(),
+        name,
+        Nonce::random().unwrap(),
+        PinnedProcess::current().unwrap(),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .unwrap();
+    assert!(matches!(worker.prepared_policy(), Ok(None)));
+    assert!(matches!(
+        worker.reserve(1),
+        Err(sumibi_ipc::Error::Capacity)
+    ));
+    worker.shutdown(Duration::from_secs(1)).unwrap();
+    let handle = worker.preparation_handle().unwrap();
+    // SAFETY: event is retained by the worker facade until the test ends.
+    assert_eq!(
+        unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), 0) },
+        WAIT_OBJECT_0
+    );
+    assert!(matches!(
+        worker.prepared_policy(),
+        Err(sumibi_ipc::Error::Cancelled)
+    ));
+}
+
+#[test]
+fn preparing_worker_reports_a_missing_endpoint_without_input() {
+    let _guard = PIPE_TEST_LOCK.lock().unwrap();
+    if matches!(
+        PinnedProcess::current(),
+        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+    ) {
+        return;
+    }
+    let mut worker = Worker::prepare_pinned(
+        Reservation::acquire().unwrap(),
+        Nonce::random().unwrap(),
+        Nonce::random().unwrap(),
+        PinnedProcess::current().unwrap(),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .unwrap();
+    let handle = worker.preparation_handle().unwrap();
+    // SAFETY: the worker facade keeps this event alive for the wait.
+    assert_eq!(
+        unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), 3000) },
+        WAIT_OBJECT_0
+    );
+    assert!(matches!(
+        worker.prepared_policy(),
+        Err(sumibi_ipc::Error::Os(_))
+    ));
+    assert!(worker.reserve(1).is_err());
+    worker.shutdown(Duration::from_secs(1)).unwrap();
+}
+
+#[test]
+fn preparing_worker_reports_ready_denial_without_accepting_input() {
+    let _guard = PIPE_TEST_LOCK.lock().unwrap();
+    if matches!(
+        PinnedProcess::current(),
+        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+    ) {
+        return;
+    }
+    let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
+    let source = PolicyAuthority::new(destination);
+    let stop = Stop::new().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+    let (_, name) = boot
+        .begin_private_accept(PinnedProcess::current().unwrap(), deadline)
+        .unwrap();
+    let mut worker = Worker::prepare_pinned(
+        Reservation::acquire().unwrap(),
+        name,
+        boot.name().clone(),
+        PinnedProcess::current().unwrap(),
+        deadline,
+    )
+    .unwrap();
+    loop {
+        assert!(Instant::now() < deadline);
+        let result = boot
+            .advance_tracked(&stop, deadline, |_| |_: JobTicket| Ok("unexpected".into()))
+            .unwrap();
+        match result.step {
+            OwnerStep::Accepted { .. } => {}
+            OwnerStep::Broker(PollStep::Activated(_)) => break,
+            OwnerStep::Broker(PollStep::Idle) => std::thread::yield_now(),
+            _ => panic!("denied Ready did not complete"),
+        }
+    }
+    let handle = worker.preparation_handle().unwrap();
+    // SAFETY: the event belongs to the still-live worker facade.
+    assert_eq!(
+        unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), 3000) },
+        WAIT_OBJECT_0
+    );
+    assert!(matches!(
+        worker.prepared_policy(),
+        Err(sumibi_ipc::Error::PolicyDenied)
+    ));
+    assert!(worker.reserve(1).is_err());
+    worker.shutdown(Duration::from_secs(1)).unwrap();
+    assert!(boot
+        .shutdown(Instant::now() + Duration::from_secs(1))
+        .is_ok());
+}
+
+#[test]
+fn preparation_preserves_the_request_id_until_ready_then_converts() {
+    let _guard = PIPE_TEST_LOCK.lock().unwrap();
+    if matches!(
+        PinnedProcess::current(),
+        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+    ) {
+        return;
+    }
+    let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
+    let source = PolicyAuthority::new(destination.clone());
+    source
+        .replace_credential(Credential::new("fixture".into()))
+        .unwrap();
+    source.grant_manual_consent(&destination).unwrap();
+    let stop = Stop::new().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+    let (_, name) = boot
+        .begin_private_accept(PinnedProcess::current().unwrap(), deadline)
+        .unwrap();
+    let mut worker = Worker::prepare_pinned(
+        Reservation::acquire().unwrap(),
+        name,
+        boot.name().clone(),
+        PinnedProcess::current().unwrap(),
+        deadline,
+    )
+    .unwrap();
+    assert!(matches!(worker.prepared_policy(), Ok(None)));
+    assert!(matches!(
+        worker.reserve(1),
+        Err(sumibi_ipc::Error::Capacity)
+    ));
+    loop {
+        assert!(Instant::now() < deadline);
+        match boot
+            .advance_tracked(&stop, deadline, |_| |_: JobTicket| Ok("日本語".into()))
+            .unwrap()
+            .step
+        {
+            OwnerStep::Accepted { .. } => {}
+            OwnerStep::Broker(PollStep::Activated(_)) => break,
+            OwnerStep::Broker(PollStep::Idle) => std::thread::yield_now(),
+            _ => panic!("preparation did not reach Ready"),
+        }
+    }
+    let handle = worker.preparation_handle().unwrap();
+    // SAFETY: the facade retains the event while the test waits.
+    assert_eq!(
+        unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), 3000) },
+        WAIT_OBJECT_0
+    );
+    let policy = worker.prepared_policy().unwrap().unwrap();
+    let permit = worker.reserve(1).unwrap();
+    worker
+        .submit(
+            permit,
+            Request {
+                id: 1,
+                revision: Revision {
+                    input: 1,
+                    settings: policy.settings,
+                    authorization: policy.authorization,
+                },
+                text: "nihongo".into(),
+                deadline,
+                mode: Mode::Pinned,
+            },
+        )
+        .unwrap();
+    loop {
+        assert!(Instant::now() < deadline);
+        match boot
+            .advance_tracked(&stop, deadline, |_| |_: JobTicket| Ok("日本語".into()))
+            .unwrap()
+            .step
+        {
+            OwnerStep::Submitted { request: 1, .. } => {}
+            OwnerStep::Completed {
+                request: 1,
+                delivered: true,
+                succeeded: true,
+                ..
+            } => break,
+            OwnerStep::Broker(PollStep::Idle) => std::thread::yield_now(),
+            _ => panic!("prepared request did not complete"),
+        }
+    }
+    loop {
+        if let Some(completion) = worker.try_result().unwrap() {
+            assert_eq!(completion.outcome().unwrap(), "日本語");
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    worker.shutdown(Duration::from_secs(1)).unwrap();
+    assert!(boot
+        .shutdown(Instant::now() + Duration::from_secs(1))
+        .is_ok());
+}
+
+#[test]
+fn preparing_worker_reports_a_ready_timeout() {
+    let _guard = PIPE_TEST_LOCK.lock().unwrap();
+    if matches!(
+        PinnedProcess::current(),
+        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+    ) {
+        return;
+    }
+    let name = Nonce::random().unwrap();
+    let _server = Server::create(&name).unwrap();
+    let mut worker = Worker::prepare_pinned(
+        Reservation::acquire().unwrap(),
+        name,
+        Nonce::random().unwrap(),
+        PinnedProcess::current().unwrap(),
+        Instant::now() + Duration::from_millis(250),
+    )
+    .unwrap();
+    let handle = worker.preparation_handle().unwrap();
+    // SAFETY: the event belongs to the still-live worker facade.
+    assert_eq!(
+        unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), 3000) },
+        WAIT_OBJECT_0
+    );
+    assert!(matches!(
+        worker.prepared_policy(),
+        Err(sumibi_ipc::Error::Timeout)
+    ));
+    assert!(worker.reserve(1).is_err());
+    worker.shutdown(Duration::from_secs(1)).unwrap();
+}
+
+#[test]
 fn client_fixture() {
     if std::env::var_os("SUMIBI_PRIVATE_PEER_FIXTURE").is_none() {
         return;
@@ -107,7 +365,10 @@ fn client_fixture() {
     let deadline = Instant::now() + Duration::from_secs(8);
     if std::env::var_os("SUMIBI_PRIVATE_WORKER").is_some() {
         let mut signal = [0];
-        std::io::stdin().read_exact(&mut signal).unwrap();
+        let prepared = std::env::var_os("SUMIBI_PRIVATE_PREPARED").is_some();
+        if !prepared {
+            std::io::stdin().read_exact(&mut signal).unwrap();
+        }
         let mut revision = Revision {
             input: 1,
             settings: std::env::var("SUMIBI_TEST_SETTINGS")
@@ -120,12 +381,56 @@ fn client_fixture() {
                 .unwrap(),
         };
         let stale = std::env::var_os("SUMIBI_PRIVATE_STALE").is_some();
+        let revoked = std::env::var_os("SUMIBI_PRIVATE_REVOKED").is_some();
         if stale {
             revision.authorization += 1;
         }
-        let mut worker =
+        let mut worker = if prepared {
+            Worker::prepare_pinned(
+                Reservation::acquire().unwrap(),
+                name,
+                broker,
+                expected_host,
+                deadline,
+            )
+            .unwrap()
+        } else {
             Worker::new_pinned(Reservation::acquire().unwrap(), name, broker, expected_host)
-                .unwrap();
+                .unwrap()
+        };
+        if prepared {
+            let handle = worker.preparation_handle().unwrap();
+            // SAFETY: the worker owns this event for the duration of the wait.
+            assert_eq!(
+                unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), 7000) },
+                WAIT_OBJECT_0
+            );
+            let ready = worker.prepared_policy().unwrap().unwrap();
+            assert!(ready.allowed);
+            assert_eq!(ready.settings, revision.settings);
+            assert_eq!(ready.authorization, revision.authorization);
+            revision.settings = ready.settings;
+            revision.authorization = ready.authorization;
+            if revoked {
+                std::io::stderr().write_all(b"PREPARED\n").unwrap();
+            }
+            std::io::stdin().read_exact(&mut signal).unwrap();
+        }
+        if revoked {
+            let handle = worker.completion_handle();
+            // SAFETY: the facade owns the completion event during the wait.
+            assert_eq!(
+                unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), 3000) },
+                WAIT_OBJECT_0
+            );
+            assert!(matches!(
+                worker.prepared_policy(),
+                Err(sumibi_ipc::Error::PolicyDenied)
+            ));
+            assert!(worker.reserve(1).is_err());
+            worker.shutdown(Duration::from_secs(1)).unwrap();
+            return;
+        }
         let permit = worker.reserve(1).unwrap();
         worker
             .submit(
@@ -222,6 +527,7 @@ fn two_child_processes_authenticate_the_same_host_on_private_pipes() {
             let policy = source.wire_policy().unwrap();
             command
                 .env("SUMIBI_PRIVATE_WORKER", "1")
+                .env("SUMIBI_PRIVATE_PREPARED", "1")
                 .env("SUMIBI_TEST_SETTINGS", policy.settings.to_string())
                 .env(
                     "SUMIBI_TEST_AUTHORIZATION",
@@ -698,6 +1004,118 @@ fn pinned_worker_refuses_a_stale_policy_without_submitting_text() {
             OwnerStep::Broker(PollStep::Closed { .. }) if activated => break,
             OwnerStep::Broker(PollStep::Idle) => std::thread::yield_now(),
             _ => panic!("stale worker submitted a request"),
+        }
+    }
+    loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(boot.active_worker_count(), 0);
+    assert!(boot
+        .shutdown(Instant::now() + Duration::from_secs(1))
+        .is_ok());
+}
+
+#[test]
+fn prepared_worker_rejects_revocation_before_input_is_submitted() {
+    let _guard = PIPE_TEST_LOCK.lock().unwrap();
+    if matches!(
+        PinnedProcess::current(),
+        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+    ) {
+        return;
+    }
+    let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
+    let source = PolicyAuthority::new(destination.clone());
+    source
+        .replace_credential(Credential::new("fixture".into()))
+        .unwrap();
+    source.grant_manual_consent(&destination).unwrap();
+    let policy = source.wire_policy().unwrap();
+    let stop = Stop::new().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+    let host = PinnedProcess::current().unwrap();
+    let mut child = FixtureChild(
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "client_fixture"])
+            .env("SUMIBI_PRIVATE_PEER_FIXTURE", "1")
+            .env("SUMIBI_PRIVATE_WORKER", "1")
+            .env("SUMIBI_PRIVATE_PREPARED", "1")
+            .env("SUMIBI_PRIVATE_REVOKED", "1")
+            .env("SUMIBI_TEST_SETTINGS", policy.settings.to_string())
+            .env(
+                "SUMIBI_TEST_AUTHORIZATION",
+                policy.authorization.to_string(),
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let stderr = child.0.stderr.take().unwrap();
+    let (send_ready, receive_ready) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = std::io::BufReader::new(stderr).read_line(&mut line);
+        let _ = send_ready.send(result.map(|_| line));
+    });
+    let peer = PinnedProcess::from_launch_handle(child.0.as_handle()).unwrap();
+    let (_, name) = boot.begin_private_accept(peer, deadline).unwrap();
+    let mut remote = HANDLE::default();
+    // SAFETY: only the launched child receives the pinned Host handle.
+    unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            HANDLE(host.as_handle().as_raw_handle()),
+            HANDLE(child.0.as_raw_handle()),
+            &mut remote,
+            0,
+            false,
+            DUPLICATE_SAME_ACCESS,
+        )
+        .unwrap();
+    }
+    writeln!(
+        child.0.stdin.as_mut().unwrap(),
+        "{} {} {}",
+        remote.0 as usize,
+        name.bootstrap(),
+        boot.name().bootstrap()
+    )
+    .unwrap();
+    let mut activated = false;
+    let mut notified = false;
+    loop {
+        assert!(Instant::now() < deadline);
+        let result = boot
+            .advance_tracked(&stop, deadline, |_| |_: JobTicket| Ok("unexpected".into()))
+            .unwrap();
+        match result.step {
+            OwnerStep::Accepted { .. } => {}
+            OwnerStep::Broker(PollStep::Activated(_)) => {
+                activated = true;
+                assert_eq!(
+                    receive_ready
+                        .recv_timeout(Duration::from_secs(3))
+                        .unwrap()
+                        .unwrap(),
+                    "PREPARED\n"
+                );
+                source.revoke_manual_consent().unwrap();
+            }
+            OwnerStep::Published(_) if activated && !notified => {
+                notified = true;
+                child.0.stdin.as_mut().unwrap().write_all(&[1]).unwrap();
+            }
+            OwnerStep::Broker(PollStep::Closed { .. }) if notified => break,
+            OwnerStep::Broker(PollStep::Idle) => std::thread::yield_now(),
+            _ => panic!("revoked preparation submitted text or failed unexpectedly"),
         }
     }
     loop {

@@ -43,7 +43,14 @@ Boot IDを受け、OS相互認証の後にHello/Readyを完了する。保持す
 Channelを閉じてもHost自体は停止しない。`Worker::new_pinned`はその接続を
 worker thread上で遅延開始し、予約・取消・結果回収に既存の有限枠を使う。
 `Mode::Pinned`はworker用であり、子Hostの起動引数には使えない。
-Readyの政策版を入力側へ届ける製品経路は別途必要である。
+`Worker::prepare_pinned`は入力取得より前にworker側で接続し、Readyの政策版か
+失敗を専用イベントと`prepared_policy`で所有側へ返す。準備中は予約を拒否し、
+停止・期限切れ・接続拒否でもイベントを通知する。これは取得時点の政策snapshotで、
+後続の変換時には未読通知と要求版を再確認する。準備済みworkerは待機中も
+通知を確認し、変更を検知すれば接続を退役してcompletion eventで所有側を起こす。
+待機のpoll期限は50msで、通知読取とスレッドの実行には別途時間がかかる。
+競合中の入力取得と送信は引き続き個別に再検査する。
+このeventから製品TIPの所有TSFへ届ける経路は別途必要である。
 workerは最初の要求前も固定Hostのprocess handleを待ち、Hostが終了すれば
 自ら退役して以後の予約を拒否する。
 
@@ -145,6 +152,9 @@ Bootを`Expired`で返し、60秒を超える期限なら`InvalidDeadline`で返
   終了した後も後のworkerが変換できることを確認。workerの取消で接続とHostの
   jobが回収され、古い政策版の要求は本文送信前に拒否される。
   要求前のHost終了もworkerが検出し、以後の予約を拒否する。
+- 事前接続の準備前予約拒否、Readyの版による変換、停止・接続先不在・Ready拒否・
+  Ready期限切れを確認。準備中に拒否された要求IDは消費されず、Ready後に同じIDで
+  変換できる。Ready後の同意取消を待機中に検出して所有側を起こし、次の予約を拒否する。
 - 診断用子Brokerの親process向け2受付、政策通知、取消、結果。`tools/Test-Broker.ps1`と
   `tools/Test-Spike.ps1 -SkipDesktop`が成功し、既定HostとパッシブTIPへ復元。
 

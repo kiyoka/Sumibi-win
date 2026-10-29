@@ -9,10 +9,10 @@ use crate::{Error, Nonce, PinnedProcess, Result, Stop};
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use sumibi_protocol::message::Revision;
+use sumibi_protocol::message::{Policy, Revision};
 use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Threading::{
     CreateEventW, GetProcessId, SetEvent, WaitForMultipleObjects, WaitForSingleObject, INFINITE,
@@ -105,6 +105,38 @@ pub struct Worker {
     receive: mpsc::Receiver<Completion>,
     worker: Option<JoinHandle<()>>,
     _reservation: Arc<Reservation>,
+    preparation: Option<Arc<Preparation>>,
+}
+struct Preparation {
+    event: OwnedHandle,
+    result: Mutex<Option<Result<Policy>>>,
+}
+impl Preparation {
+    fn finish(&self, result: Result<Policy>) {
+        let mut slot = self
+            .result
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if slot.is_none() {
+            *slot = Some(result);
+            // SAFETY: event is owned by this shared preparation state.
+            unsafe {
+                let _ = SetEvent(raw(&self.event));
+            }
+        }
+    }
+
+    fn invalidate(&self, error: Error) {
+        let mut slot = self
+            .result
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *slot = Some(Err(error));
+        // SAFETY: this event is owned by the preparation state.
+        unsafe {
+            let _ = SetEvent(raw(&self.event));
+        }
+    }
 }
 enum Target {
     Launched {
@@ -121,10 +153,18 @@ struct Finished {
     state: Arc<State>,
     wake: Arc<OwnedHandle>,
     done: Arc<OwnedHandle>,
+    preparation: Option<Arc<Preparation>>,
 }
 impl Drop for Finished {
     fn drop(&mut self) {
         self.state.closed.store(true, Ordering::Release);
+        if let Some(preparation) = &self.preparation {
+            preparation.finish(Err(if self.state.stop.is_cancelled().unwrap_or(true) {
+                Error::Cancelled
+            } else {
+                Error::WorkerFailed
+            }));
+        }
         unsafe {
             let _ = SetEvent(raw(&self.wake));
             let _ = SetEvent(raw(&self.done));
@@ -138,7 +178,12 @@ impl Worker {
         if !executable.is_absolute() || mode == Mode::Pinned {
             return Err(Error::InvalidArgument);
         }
-        Self::spawn(reservation, Target::Launched { executable, mode }, mode)
+        Self::spawn(
+            reservation,
+            Target::Launched { executable, mode },
+            mode,
+            None,
+        )
     }
 
     /// Create a nonblocking worker for a separately pinned shared Host.
@@ -155,10 +200,41 @@ impl Worker {
             reservation,
             Target::Pinned { name, boot, peer },
             Mode::Pinned,
+            None,
         )
     }
 
-    fn spawn(reservation: Reservation, target: Target, mode: Mode) -> Result<Self> {
+    /// Start authentication and Ready reception on the worker before input is
+    /// captured. Observe `preparation_handle` and `prepared_policy` on the
+    /// owner thread. The snapshot is rechecked when text is later sent.
+    pub fn prepare_pinned(
+        reservation: Reservation,
+        name: Nonce,
+        boot: Nonce,
+        peer: PinnedProcess,
+        deadline: Instant,
+    ) -> Result<Self> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Error::Timeout);
+        }
+        if remaining > Duration::from_secs(60) {
+            return Err(Error::InvalidArgument);
+        }
+        Self::spawn(
+            reservation,
+            Target::Pinned { name, boot, peer },
+            Mode::Pinned,
+            Some(deadline),
+        )
+    }
+
+    fn spawn(
+        reservation: Reservation,
+        target: Target,
+        mode: Mode,
+        prepare_deadline: Option<Instant>,
+    ) -> Result<Self> {
         let reservation = Arc::new(reservation);
         let state = Arc::new(State {
             stop: Stop::new()?,
@@ -169,6 +245,14 @@ impl Worker {
         let command = Arc::new(unsafe { own(CreateEventW(None, false, false, None)?) });
         let wake = Arc::new(unsafe { own(CreateEventW(None, false, false, None)?) });
         let done = Arc::new(unsafe { own(CreateEventW(None, true, false, None)?) });
+        let preparation = if prepare_deadline.is_some() {
+            Some(Arc::new(Preparation {
+                event: unsafe { own(CreateEventW(None, true, false, None)?) },
+                result: Mutex::new(None),
+            }))
+        } else {
+            None
+        };
         let (send, commands) = mpsc::sync_channel(1);
         let (results, receive) = mpsc::sync_channel(1);
         let (worker_state, worker_command, worker_wake, worker_done, worker_slot) = (
@@ -178,6 +262,7 @@ impl Worker {
             done.clone(),
             reservation.clone(),
         );
+        let worker_preparation = preparation.clone();
         let worker = std::thread::Builder::new()
             .name("sumibi-channel".into())
             .spawn(move || {
@@ -186,6 +271,7 @@ impl Worker {
                     state: worker_state.clone(),
                     wake: worker_wake.clone(),
                     done: worker_done,
+                    preparation: worker_preparation.clone(),
                 };
                 run(
                     target,
@@ -195,6 +281,7 @@ impl Worker {
                     &commands,
                     &results,
                     &_reservation,
+                    prepare_deadline.zip(worker_preparation.as_deref()),
                 );
             })
             .map_err(|_| Error::WorkerFailed)?;
@@ -208,6 +295,7 @@ impl Worker {
             receive,
             worker: Some(worker),
             _reservation: reservation,
+            preparation,
         })
     }
     pub fn is_closed(&self) -> bool {
@@ -219,6 +307,13 @@ impl Worker {
         }
         if self.is_closed() {
             return Err(Error::Closed);
+        }
+        if let Some(preparation) = &self.preparation {
+            match *preparation.result.lock().map_err(|_| Error::WorkerFailed)? {
+                None => return Err(Error::Capacity),
+                Some(Err(error)) => return Err(error),
+                Some(Ok(_)) => {}
+            }
         }
         self.state.requests.reserve(id)?;
         let permit = Permit {
@@ -254,6 +349,24 @@ impl Worker {
     }
     pub fn completion_handle(&self) -> BorrowedHandle<'_> {
         self.wake.as_handle()
+    }
+    /// Manual-reset event signalled once preparation finishes, including errors.
+    pub fn preparation_handle(&self) -> Option<BorrowedHandle<'_>> {
+        self.preparation
+            .as_ref()
+            .map(|state| state.event.as_handle())
+    }
+
+    /// None means preparation is still in progress; the returned Ready policy
+    /// is a snapshot and does not authorize a later request by itself. A
+    /// later idle policy notice retires the worker and wakes completion_handle.
+    pub fn prepared_policy(&self) -> Result<Option<Policy>> {
+        let preparation = self.preparation.as_ref().ok_or(Error::InvalidArgument)?;
+        match *preparation.result.lock().map_err(|_| Error::WorkerFailed)? {
+            None => Ok(None),
+            Some(Ok(_)) if self.is_closed() => Err(Error::Closed),
+            Some(result) => result.map(Some),
+        }
     }
     /// Duplicate this exact thread handle to observe full thread exit after
     /// dropping the facade. Waiting belongs outside callbacks, like shutdown.
@@ -317,10 +430,43 @@ fn run(
     commands: &mpsc::Receiver<Command>,
     results: &mpsc::SyncSender<Completion>,
     reservation: &Arc<Reservation>,
+    preparation: Option<(Instant, &Preparation)>,
 ) {
     let mut target = Some(target);
     let mut channel: Option<Channel> = None;
     let mut peer: Option<PinnedProcess> = None;
+    if let Some((deadline, preparation)) = preparation {
+        let opened = match target.take() {
+            Some(Target::Pinned { name, boot, peer }) => Channel::connect_pinned_reserved(
+                &name,
+                boot,
+                peer,
+                &state.stop,
+                deadline,
+                reservation.clone(),
+            ),
+            _ => Err(Error::InvalidArgument),
+        };
+        match opened.and_then(|mut opened| {
+            opened.check_idle_policy(deadline)?;
+            let policy = opened.policy().ok_or(Error::Closed)?;
+            let pinned = opened.peer_process()?;
+            if state.stop.is_cancelled()? {
+                return Err(Error::Cancelled);
+            }
+            Ok((opened, pinned, policy))
+        }) {
+            Ok((opened, pinned, policy)) => {
+                peer = Some(pinned);
+                channel = Some(opened);
+                preparation.finish(Ok(policy));
+            }
+            Err(error) => {
+                preparation.finish(Err(error));
+                return;
+            }
+        }
+    }
     loop {
         let mut handles = vec![HANDLE(state.stop.as_handle().as_raw_handle()), raw(command)];
         let waiting_peer = peer.as_ref().or(match target.as_ref() {
@@ -330,7 +476,20 @@ fn run(
         if let Some(peer) = waiting_peer {
             handles.push(HANDLE(peer.as_handle().as_raw_handle()));
         }
-        let wait = unsafe { WaitForMultipleObjects(&handles, false, INFINITE) };
+        let timeout = if preparation.is_some() { 50 } else { INFINITE };
+        let wait = unsafe { WaitForMultipleObjects(&handles, false, timeout) };
+        if wait == WAIT_TIMEOUT && preparation.is_some() {
+            let result = channel.as_mut().ok_or(Error::Closed).and_then(|channel| {
+                channel.check_idle_policy(Instant::now() + Duration::from_millis(500))
+            });
+            if let Err(error) = result {
+                if let Some((_, preparation)) = preparation {
+                    preparation.invalidate(error);
+                }
+                break;
+            }
+            continue;
+        }
         if wait.0 != WAIT_OBJECT_0.0 + 1 {
             break;
         }
@@ -510,6 +669,7 @@ mod tests {
             &commands,
             &results,
             &reservation,
+            None,
         );
         assert_eq!(
             unsafe { WaitForSingleObject(raw(&wake), 0) },
