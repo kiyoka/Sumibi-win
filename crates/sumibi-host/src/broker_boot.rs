@@ -8,7 +8,7 @@ use crate::manual::OrderedConversionTransport;
 use crate::policy::{PolicyAuthority, PolicyVersion};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use sumibi_ipc::{AcceptTask, Error as IpcError, Nonce, PinnedProcess, SharedAnchor, Stop};
+use sumibi_ipc::{AcceptTask, Error as IpcError, Nonce, PinnedProcess, Server, SharedAnchor, Stop};
 use sumibi_protocol::message::{Convert, ErrorCode, Id, Policy};
 
 /// Owns the first pipe instance through idle periods and retires every
@@ -185,6 +185,32 @@ impl<'a> BrokerBoot<'a> {
         self.accept_ids.push(id);
         self.last_accept_id = sequence;
         Ok(id)
+    }
+
+    /// Allocate a fresh single-client pipe for one independently pinned peer.
+    /// Deliver the name and boot ID only over a separately trusted bootstrap;
+    /// neither value authenticates a process. Never reuse the returned name.
+    pub fn begin_private_accept(
+        &mut self,
+        peer: PinnedProcess,
+        deadline: Instant,
+    ) -> Result<(AcceptId, Nonce), RuntimeError> {
+        self.check_accept_capacity()?;
+        let sequence = self
+            .last_accept_id
+            .checked_add(1)
+            .ok_or(RuntimeError::Exhausted)?;
+        let name = Nonce::random().map_err(RuntimeError::Transport)?;
+        let server = Server::create(&name).map_err(RuntimeError::Transport)?;
+        let task = AcceptTask::start(server, peer, deadline).map_err(RuntimeError::Transport)?;
+        let id = AcceptId {
+            broker: self.boot_id(),
+            sequence,
+        };
+        self.accepts.push(task);
+        self.accept_ids.push(id);
+        self.last_accept_id = sequence;
+        Ok((id, name))
     }
 
     /// Request cancellation of one pending accept. Its ID remains reserved

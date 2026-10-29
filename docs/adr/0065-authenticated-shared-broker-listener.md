@@ -30,6 +30,13 @@ logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer
 OS認証済みでHello待ちの接続も履歴枠を確保する。Helloが失敗した場合は
 履歴を消費せず枠を返し、成功した場合に履歴を消費する。
 
+異なるprocessを固定した複数の受付に同じpipe名を使うと、clientは特定の
+instanceを選べず、別の固定peer用instanceに接続して拒否され得る。
+`BrokerBoot::begin_private_accept`はpeerごとに新しい単一instanceのpipe名と
+受付IDを作る。同じBootの政策・履歴・同時枠で管理し、OS peerの照合後に
+のみBrokerへ渡す。名前とBoot IDの信頼できる配布とclient側のHost認証は
+呼出し側に必要であり、この入口自体は製品の発見方式を完成させない。
+
 通常終了は値を消費する`BrokerBoot::shutdown`で行う。期限切れなら稼働中の
 Bootを`Expired`で返し、60秒を超える期限なら`InvalidDeadline`で返す。
 回収が未完了なら退役中のBootを`Pending`で返す。
@@ -115,6 +122,9 @@ Bootを`Expired`で返し、60秒を超える期限なら`InvalidDeadline`で返
   OS instance作成前に拒否し、接続終了後は同じBootで受付枠を再利用した。
   履歴最後の1件を待機受付が確保している間は`Capacity`で拒否し、期限切れで
   枠が回復することを確認した。実際に使い切った後は`Exhausted`を返す。
+- 同じBootで親と別の子processに別名の受付を用意し、各受付IDと接続を照合。
+  子からHello・Convert・結果まで確認した。子fixtureは標準File接続であり、
+  client側のHost相互認証と製品の名前配布はこの検査の対象外。
 - 診断用子Brokerの親process向け2受付、政策通知、取消、結果。`tools/Test-Broker.ps1`と
   `tools/Test-Spike.ps1 -SkipDesktop`が成功し、既定HostとパッシブTIPへ復元。
 

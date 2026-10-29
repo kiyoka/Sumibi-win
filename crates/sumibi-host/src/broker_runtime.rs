@@ -1388,10 +1388,15 @@ mod tests {
         let Ok(name) = std::env::var("SUMIBI_HOST_TEST_CHILD_NAME") else {
             return;
         };
-        let name = Nonce::from_bootstrap(&name).unwrap();
+        let mut name = Nonce::from_bootstrap(&name).unwrap();
         if std::env::var_os("SUMIBI_HOST_TEST_WAIT_FOR_START").is_some() {
             let mut ready = [0];
             std::io::stdin().read_exact(&mut ready).unwrap();
+        }
+        if std::env::var_os("SUMIBI_HOST_TEST_PRIVATE_NAME").is_some() {
+            let mut bytes = [0; 32];
+            std::io::stdin().read_exact(&mut bytes).unwrap();
+            name = Nonce::from_bootstrap(std::str::from_utf8(&bytes).unwrap()).unwrap();
         }
         let path = format!(r"\\.\pipe\Sumibi-peer-{}", name.bootstrap());
         let mut file = OpenOptions::new()
@@ -1399,7 +1404,9 @@ mod tests {
             .write(true)
             .open(path)
             .unwrap();
-        let broker = if std::env::var_os("SUMIBI_HOST_TEST_BOOT_FROM_NAME").is_some() {
+        let broker = if let Ok(boot) = std::env::var("SUMIBI_HOST_TEST_BOOT") {
+            Nonce::from_bootstrap(&boot).unwrap().id()
+        } else if std::env::var_os("SUMIBI_HOST_TEST_BOOT_FROM_NAME").is_some() {
             name.id()
         } else {
             id(90)
@@ -2852,6 +2859,106 @@ mod tests {
         assert!(Server::create_shared(&name, 3).is_err());
         drop(boot);
         assert!(Server::create_shared(&name, 3).is_ok());
+    }
+
+    #[test]
+    fn broker_boot_routes_two_pinned_processes_to_private_pipes() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut boot = BrokerBoot::start(&source, 3, deadline).unwrap();
+        let mut child = FixtureChild(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "broker_runtime::tests::cross_process_client_fixture",
+                ])
+                .env("SUMIBI_HOST_TEST_CHILD_NAME", boot.name().bootstrap())
+                .env("SUMIBI_HOST_TEST_BOOT", boot.name().bootstrap())
+                .env("SUMIBI_HOST_TEST_PRIVATE_NAME", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let (parent_id, parent_name) = boot
+            .begin_private_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let child_peer = PinnedProcess::from_launch_handle(child.0.as_handle()).unwrap();
+        let (child_id, child_name) = boot.begin_private_accept(child_peer, deadline).unwrap();
+        assert_ne!(parent_name.bootstrap(), child_name.bootstrap());
+        child
+            .0
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(child_name.bootstrap().as_bytes())
+            .unwrap();
+        let mut client = Pipe::connect(&parent_name, PinnedProcess::current().unwrap()).unwrap();
+        client
+            .write_all(
+                message::encode(&hello(1, boot.boot_id())).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        let mut parent_key = None;
+        let mut child_key = None;
+        let mut parent_ready = false;
+        let mut child_finished = false;
+        while !parent_ready || !child_finished {
+            assert!(Instant::now() < deadline);
+            let step = boot
+                .advance_tracked(&stop, deadline, |_| |_: JobTicket| Ok("完了".into()))
+                .unwrap();
+            match step.step {
+                OwnerStep::Accepted { key, .. } if step.accept == Some(parent_id) => {
+                    parent_key = Some(key)
+                }
+                OwnerStep::Accepted { key, .. } if step.accept == Some(child_id) => {
+                    child_key = Some(key)
+                }
+                OwnerStep::Broker(PollStep::Activated(key)) if Some(key) == parent_key => {
+                    parent_ready = true
+                }
+                OwnerStep::Broker(PollStep::Activated(key)) if Some(key) == child_key => {}
+                OwnerStep::Submitted { key, request: 1 } if Some(key) == child_key => {}
+                OwnerStep::Completed {
+                    key,
+                    request: 1,
+                    delivered: true,
+                    succeeded: true,
+                } if Some(key) == child_key => child_finished = true,
+                OwnerStep::Broker(PollStep::Closed { key, .. })
+                    if Some(key) == child_key && child_finished => {}
+                OwnerStep::Broker(PollStep::Idle) => std::thread::yield_now(),
+                _ => panic!("private peers were not routed independently"),
+            }
+        }
+        assert!(matches!(
+            read_frame(&mut client, &stop, deadline).message,
+            message::Message::Ready(_)
+        ));
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(boot
+            .shutdown(Instant::now() + Duration::from_secs(1))
+            .is_ok());
     }
 
     #[test]
