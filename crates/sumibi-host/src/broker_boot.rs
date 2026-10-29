@@ -40,6 +40,34 @@ pub struct BootStep {
     pub step: OwnerStep,
 }
 
+/// A failed handoff retains the accept ID so the owner can track reaping and
+/// retry cancellation if signalling it failed. It is not safe to reuse the
+/// offered endpoint, even if the recipient may have received part of it.
+pub enum HandoffError<E> {
+    Start(RuntimeError),
+    Delivery {
+        id: AcceptId,
+        error: E,
+        cancel: Result<bool, IpcError>,
+    },
+    Expired {
+        id: AcceptId,
+        cancel: Result<bool, IpcError>,
+    },
+}
+
+struct CancelHandoff<'a, 'boot> {
+    boot: &'a BrokerBoot<'boot>,
+    id: Option<AcceptId>,
+}
+impl Drop for CancelHandoff<'_, '_> {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.take() {
+            let _ = self.boot.cancel_accept(id);
+        }
+    }
+}
+
 /// An elapsed or overlong deadline returns the running boot without retirement.
 /// A timed-out retirement returns the retiring boot with its resources still
 /// owned for a bounded retry. Its authenticated connections are already closed.
@@ -211,6 +239,44 @@ impl<'a> BrokerBoot<'a> {
         self.accept_ids.push(id);
         self.last_accept_id = sequence;
         Ok((id, name))
+    }
+
+    /// Start a private accept and hand its endpoint to the already pinned
+    /// peer through the caller's authenticated, deadline-bounded channel.
+    /// A failed, expired or panicking handoff cancels the pending accept;
+    /// its capacity remains occupied until an owner step reaps it. This API
+    /// neither discovers a peer nor authenticates the handoff channel.
+    pub fn handoff_private_accept<E>(
+        &mut self,
+        peer: PinnedProcess,
+        deadline: Instant,
+        deliver: impl FnOnce(&Nonce, &Nonce, Instant) -> Result<(), E>,
+    ) -> Result<AcceptId, HandoffError<E>> {
+        let (id, name) = self
+            .begin_private_accept(peer, deadline)
+            .map_err(HandoffError::Start)?;
+        let mut guard = CancelHandoff {
+            boot: self,
+            id: Some(id),
+        };
+        if Instant::now() >= deadline {
+            let cancel = guard.boot.cancel_accept(id);
+            guard.id = None;
+            return Err(HandoffError::Expired { id, cancel });
+        }
+        let result = deliver(&name, guard.boot.name(), deadline);
+        if let Err(error) = result {
+            let cancel = guard.boot.cancel_accept(id);
+            guard.id = None;
+            return Err(HandoffError::Delivery { id, error, cancel });
+        }
+        if Instant::now() >= deadline {
+            let cancel = guard.boot.cancel_accept(id);
+            guard.id = None;
+            return Err(HandoffError::Expired { id, cancel });
+        }
+        guard.id = None;
+        Ok(id)
     }
 
     /// Request cancellation of one pending accept. Its ID remains reserved

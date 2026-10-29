@@ -160,11 +160,12 @@ pub(crate) fn child() -> Result<(), Failure> {
     });
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut boot = BrokerBoot::start(&source, 2, deadline).map_err(|error| format!("{error:?}"))?;
-    let (_, name) = boot
-        .begin_private_accept(peer, deadline)
-        .map_err(|error| format!("{error:?}"))?;
-    println!("{} {}", name.bootstrap(), boot.name().bootstrap());
-    std::io::stdout().flush()?;
+    boot.handoff_private_accept(peer, deadline, |name, broker, _| {
+        let mut output = std::io::stdout().lock();
+        writeln!(output, "{} {}", name.bootstrap(), broker.bootstrap())?;
+        output.flush()
+    })
+    .map_err(|_| "fixture handoff failed")?;
     while !stop.is_cancelled()? && Instant::now() < deadline {
         match boot.advance(&stop, deadline, |_| |_: JobTicket| Ok("日本語".into())) {
             Ok(OwnerStep::Broker(PollStep::Idle)) => std::thread::sleep(Duration::from_millis(1)),

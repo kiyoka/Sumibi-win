@@ -2603,6 +2603,176 @@ mod tests {
     }
 
     #[test]
+    fn private_handoff_failure_cancels_only_its_accept_and_releases_capacity_after_reap() {
+        use crate::broker_boot::HandoffError;
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, _) = source();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 3, deadline).unwrap();
+        let (other, other_name) = boot
+            .begin_private_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let mut failed_client = None;
+        let failed = match boot.handoff_private_accept(
+            PinnedProcess::current().unwrap(),
+            deadline,
+            |name, _, _| {
+                failed_client =
+                    Some(Pipe::connect(name, PinnedProcess::current().unwrap()).unwrap());
+                Err("send failed")
+            },
+        ) {
+            Err(HandoffError::Delivery {
+                id,
+                error: "send failed",
+                cancel: Ok(true),
+            }) => id,
+            _ => panic!("failed handoff was not cancelled"),
+        };
+        assert_eq!(boot.pending_accept_count(), 2);
+        loop {
+            assert!(Instant::now() < deadline);
+            let step = boot
+                .advance_tracked(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap();
+            match step.step {
+                OwnerStep::AcceptFailed(IpcError::Cancelled) => {
+                    assert!(step.accept == Some(failed));
+                    break;
+                }
+                OwnerStep::Broker(PollStep::Idle) => std::thread::yield_now(),
+                _ => panic!("failed handoff was not reaped"),
+            }
+        }
+        assert_eq!(boot.pending_accept_count(), 1);
+        drop(failed_client);
+        assert!(!boot.cancel_accept(failed).unwrap());
+        let mut offered = None;
+        let expected_boot = boot.boot_id();
+        let fresh = match boot.handoff_private_accept(
+            PinnedProcess::current().unwrap(),
+            deadline,
+            |name, broker, _| {
+                assert!(broker.id() == expected_boot);
+                offered = Some(name.clone());
+                Ok::<_, ()>(())
+            },
+        ) {
+            Ok(id) => id,
+            Err(_) => panic!("fresh handoff failed"),
+        };
+        assert!(fresh != failed);
+        let _client =
+            Pipe::connect(offered.as_ref().unwrap(), PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            assert!(Instant::now() < deadline);
+            let step = boot
+                .advance_tracked(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap();
+            match step.step {
+                OwnerStep::Accepted { .. } => {
+                    assert!(step.accept == Some(fresh));
+                    break;
+                }
+                OwnerStep::Broker(PollStep::Idle) => std::thread::yield_now(),
+                _ => panic!("fresh handoff was not accepted"),
+            }
+        }
+        let _other = Pipe::connect(&other_name, PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            assert!(Instant::now() < deadline);
+            let step = boot
+                .advance_tracked(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap();
+            match step.step {
+                OwnerStep::Accepted { .. } => {
+                    assert!(step.accept == Some(other));
+                    break;
+                }
+                OwnerStep::Broker(PollStep::Idle) => std::thread::yield_now(),
+                _ => panic!("unrelated accept was affected"),
+            }
+        }
+        assert!(boot
+            .shutdown(Instant::now() + Duration::from_secs(1))
+            .is_ok());
+    }
+
+    #[test]
+    fn private_handoff_expiry_and_panic_retire_the_pending_accept() {
+        use crate::broker_boot::HandoffError;
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, _) = source();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+        let handoff_deadline = Instant::now() + Duration::from_millis(500);
+        let expired = match boot.handoff_private_accept(
+            PinnedProcess::current().unwrap(),
+            handoff_deadline,
+            |_, _, end| {
+                while Instant::now() < end {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok::<_, ()>(())
+            },
+        ) {
+            Err(HandoffError::Expired {
+                id,
+                cancel: Ok(true),
+            }) => id,
+            _ => panic!("late handoff was not cancelled"),
+        };
+        loop {
+            assert!(Instant::now() < deadline);
+            let step = boot
+                .advance_tracked(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap();
+            match step.step {
+                OwnerStep::AcceptFailed(IpcError::Cancelled | IpcError::Timeout) => {
+                    assert!(step.accept == Some(expired));
+                    break;
+                }
+                OwnerStep::Broker(PollStep::Idle) => std::thread::yield_now(),
+                _ => panic!("expired handoff was not reaped"),
+            }
+        }
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _: Result<_, HandoffError<()>> = boot.handoff_private_accept(
+                PinnedProcess::current().unwrap(),
+                deadline,
+                |_, _, _| panic!("fixture panic"),
+            );
+        }));
+        assert!(panic_result.is_err());
+        loop {
+            assert!(Instant::now() < deadline);
+            let step = boot
+                .advance_tracked(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap();
+            match step.step {
+                OwnerStep::AcceptFailed(IpcError::Cancelled) => {
+                    assert!(step.accept.is_some());
+                    break;
+                }
+                OwnerStep::Broker(PollStep::Idle) => std::thread::yield_now(),
+                _ => panic!("panicking handoff was not reaped"),
+            }
+        }
+        assert_eq!(boot.pending_accept_count(), 0);
+        assert!(boot
+            .shutdown(Instant::now() + Duration::from_secs(1))
+            .is_ok());
+    }
+
+    #[test]
     fn broker_boot_acknowledges_idle_policy_before_a_later_ready() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {
@@ -2894,15 +3064,18 @@ mod tests {
             .begin_private_accept(PinnedProcess::current().unwrap(), deadline)
             .unwrap();
         let child_peer = PinnedProcess::from_launch_handle(child.0.as_handle()).unwrap();
-        let (child_id, child_name) = boot.begin_private_accept(child_peer, deadline).unwrap();
-        assert_ne!(parent_name.bootstrap(), child_name.bootstrap());
-        child
-            .0
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(child_name.bootstrap().as_bytes())
-            .unwrap();
+        let child_id = match boot.handoff_private_accept(child_peer, deadline, |name, _, _| {
+            assert_ne!(parent_name.bootstrap(), name.bootstrap());
+            child
+                .0
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(name.bootstrap().as_bytes())
+        }) {
+            Ok(id) => id,
+            Err(_) => panic!("child handoff failed"),
+        };
         let mut client = Pipe::connect(&parent_name, PinnedProcess::current().unwrap()).unwrap();
         client
             .write_all(
