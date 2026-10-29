@@ -28,9 +28,18 @@ impl Requests {
         if id == 0 || id <= self.last.load(Ordering::Acquire) {
             return Err(Error::InvalidArgument);
         }
+        self.acquire_after_precheck(id)
+    }
+    fn acquire_after_precheck(&self, id: u64) -> Result<()> {
         self.active
             .compare_exchange(0, id, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| Error::Capacity)?;
+        // Another caller can reserve and release a newer ID between our
+        // initial check and acquisition. Recheck while holding the slot.
+        if id <= self.last.load(Ordering::Acquire) {
+            self.release(id);
+            return Err(Error::InvalidArgument);
+        }
         self.last.store(id, Ordering::Release);
         Ok(())
     }
@@ -634,6 +643,21 @@ mod tests {
         assert_eq!(requests.reserve(u64::MAX), Ok(()));
         requests.release(u64::MAX);
         assert_eq!(requests.reserve(2), Err(Error::InvalidArgument));
+    }
+    #[test]
+    fn stale_precheck_cannot_reserve_after_newer_id_was_released() {
+        let requests = Requests::default();
+        // Model caller 1 pausing after its precheck, while caller 2 completes
+        // a reservation and releases it before caller 1 acquires the slot.
+        assert!(1 > requests.last.load(Ordering::Acquire));
+        assert_eq!(requests.reserve(2), Ok(()));
+        requests.release(2);
+        assert_eq!(
+            requests.acquire_after_precheck(1),
+            Err(Error::InvalidArgument)
+        );
+        assert_eq!(requests.reserve(2), Err(Error::InvalidArgument));
+        assert_eq!(requests.reserve(3), Ok(()));
     }
     #[test]
     fn busy_reservation_and_late_release_do_not_consume_or_unlock_the_next_id() {
