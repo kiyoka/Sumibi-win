@@ -49,6 +49,14 @@ NULL DACL、不正なACE長は拒否する。検査はスナップショット�
 SDDLによる不正ACLの試験と、既存のDドライブ保護配置DLLの読取検査が成功した。
 当該DLLの自己署名は未信頼であり、署名付きの製品Hostの検査成功を意味しない。
 
+`open_development_directory`は最終ディレクトリを再解析点として開き、開発用の
+厳格な所有者・DACLと、3 ACEそれぞれのObject/Container継承設定を確認する。
+検査後は書込・削除を共有しないhandleを返す。不正な所有者・ACE・継承・権限は拒否する。
+このhandleだけではそれ以前の親ディレクトリや中身の安全性を証明しない。
+SDDL単体試験に加え、`D:\Program Files\Sumibi`、その開発版ディレクトリ、
+`registration-state`のACLを読み取り専用で確認した。ドライブrootと`Program Files`は
+異なるACL規則が必要で、この入口による一連の親検証は未実装である。
+
 `PinnedProcess::observed_image_path`は、既に固定した生存process handleからWindowsの
 `QueryFullProcessImageNameW`でWin32形式のパスを取得する。取得前後にprocess生存と
 tokenの一致を確認し、空・相対・不正な長さの結果を拒否する。これは同期照会なので
