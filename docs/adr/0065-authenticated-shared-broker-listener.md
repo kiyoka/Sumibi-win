@@ -23,6 +23,11 @@ logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer
 `retire_for_restart`がfalseなら旧資源を保持して再試行し、trueの後に旧Bootを
 破棄する。型自体はTIPの発見・署名・配置を行わない。
 
+`BrokerBoot::begin_accept`は新しいOS instanceを作る前に、待機受付を含む
+接続履歴の残数と、アンカーを除いた同時instance枠を確認する。残り1件を
+すでに待機受付が確保した場合は`Exhausted`、同時枠が埋まった場合は
+`Capacity`を返す。受付の失敗や接続終了後は同時枠を再利用できる。
+
 通常終了は値を消費する`BrokerBoot::shutdown`で行う。期限切れなら稼働中の
 Bootを`Expired`で返し、60秒を超える期限なら`InvalidDeadline`で返す。
 回収が未完了なら退役中のBootを`Pending`で返す。
@@ -104,6 +109,9 @@ Bootを`Expired`で返し、60秒を超える期限なら`InvalidDeadline`で返
 - 実pipeで64回の受付・Hello・Ready・切断を行い、履歴上限で新規受付を拒否。
   切替後は履歴予算と接続keyが新Bootで初期化される。旧起動IDのHelloを拒否して
   その接続keyを消費し、次の正しいHelloを新しいkeyで有効化することも確認。
+- 2 instanceのBootで待機受付と認証済み接続の各状態から余分な受付を
+  OS instance作成前に拒否し、接続終了後は同じBootで受付枠を再利用した。
+  履歴最後の1件を待機受付が確保している間、追加受付を`Exhausted`で拒否した。
 - 診断用子Brokerの親process向け2受付、政策通知、取消、結果。`tools/Test-Broker.ps1`と
   `tools/Test-Spike.ps1 -SkipDesktop`が成功し、既定HostとパッシブTIPへ復元。
 

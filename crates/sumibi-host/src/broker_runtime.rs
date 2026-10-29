@@ -349,6 +349,28 @@ impl<'a> BrokerPolicyRuntime<'a> {
         self.fanout.remaining_attachment_budget()
     }
 
+    /// Reserve room for an OS accept before creating its pipe instance. A
+    /// pending accept may still fail without consuming a history key, but it
+    /// must count against both the remaining history and live endpoint slots.
+    pub(crate) fn check_anchor_accept_capacity(
+        &self,
+        pending_accepts: usize,
+        max_instances: u32,
+    ) -> Result<(), RuntimeError> {
+        if self.failed {
+            return Err(RuntimeError::Retired);
+        }
+        if pending_accepts >= self.remaining_attachment_budget() {
+            return Err(RuntimeError::Exhausted);
+        }
+        if self.pending.len() + self.connections.len() + pending_accepts
+            >= max_instances.saturating_sub(1) as usize
+        {
+            return Err(RuntimeError::Transport(IpcError::Capacity));
+        }
+        Ok(())
+    }
+
     /// Start an anchored shared accept only while this Broker has room in its
     /// bounded replay history. The caller still supplies a trusted peer pin.
     pub fn begin_anchor_accept(
@@ -2323,6 +2345,63 @@ mod tests {
     }
 
     #[test]
+    fn broker_boot_checks_live_capacity_before_creating_an_accept() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, _) = source();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+        boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        assert!(matches!(
+            boot.begin_accept(PinnedProcess::current().unwrap(), deadline),
+            Err(RuntimeError::Transport(IpcError::Capacity))
+        ));
+        assert_eq!(boot.pending_accept_count(), 1);
+
+        let client = Pipe::connect(boot.name(), PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Accepted { key: 1, .. } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("first peer was not accepted"),
+            }
+        }
+        assert_eq!(boot.pending_accept_count(), 0);
+        assert!(matches!(
+            boot.begin_accept(PinnedProcess::current().unwrap(), deadline),
+            Err(RuntimeError::Transport(IpcError::Capacity))
+        ));
+        drop(client);
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Closed { key: 1, .. }) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                _ => panic!("departed peer was not retired"),
+            }
+        }
+        boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        assert_eq!(boot.pending_accept_count(), 1);
+        assert!(boot
+            .shutdown(Instant::now() + Duration::from_millis(500))
+            .is_ok());
+    }
+
+    #[test]
     fn broker_boot_acknowledges_idle_policy_before_a_later_ready() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {
@@ -2763,6 +2842,13 @@ mod tests {
         for client_id in 1..=initial_budget as u64 {
             boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
                 .unwrap();
+            if client_id == initial_budget as u64 {
+                assert!(matches!(
+                    boot.begin_accept(PinnedProcess::current().unwrap(), deadline),
+                    Err(RuntimeError::Exhausted)
+                ));
+                assert_eq!(boot.pending_accept_count(), 1);
+            }
             let mut client = Pipe::connect(boot.name(), PinnedProcess::current().unwrap()).unwrap();
             loop {
                 match boot

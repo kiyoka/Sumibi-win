@@ -132,6 +132,8 @@ impl<'a> BrokerBoot<'a> {
         peer: PinnedProcess,
         deadline: Instant,
     ) -> Result<(), RuntimeError> {
+        self.runtime
+            .check_anchor_accept_capacity(self.accepts.len(), self.max_instances)?;
         self.accepts.push(
             self.runtime
                 .begin_anchor_accept(&self.anchor, peer, deadline)?,
