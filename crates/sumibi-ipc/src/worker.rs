@@ -9,7 +9,7 @@ use crate::{Error, Nonce, PinnedProcess, Result, Stop};
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, TryLockError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use sumibi_protocol::message::{Policy, Revision};
@@ -112,6 +112,18 @@ struct Preparation {
     result: Mutex<Option<Result<Policy>>>,
 }
 impl Preparation {
+    /// The TSF owner never waits for the worker to release its state lock.
+    fn snapshot(&self) -> Result<Option<Policy>> {
+        match self.result.try_lock() {
+            Ok(slot) => match *slot {
+                None => Ok(None),
+                Some(result) => result.map(Some),
+            },
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Poisoned(_)) => Err(Error::WorkerFailed),
+        }
+    }
+
     fn finish(&self, result: Result<Policy>) {
         let mut slot = self
             .result
@@ -309,10 +321,8 @@ impl Worker {
             return Err(Error::Closed);
         }
         if let Some(preparation) = &self.preparation {
-            match *preparation.result.lock().map_err(|_| Error::WorkerFailed)? {
-                None => return Err(Error::Capacity),
-                Some(Err(error)) => return Err(error),
-                Some(Ok(_)) => {}
+            if preparation.snapshot()?.is_none() {
+                return Err(Error::Capacity);
             }
         }
         self.state.requests.reserve(id)?;
@@ -357,15 +367,14 @@ impl Worker {
             .map(|state| state.event.as_handle())
     }
 
-    /// None means preparation is still in progress; the returned Ready policy
-    /// is a snapshot and does not authorize a later request by itself. A
+    /// None means the state is not yet available or the worker is updating it;
+    /// the returned Ready policy does not authorize a later request by itself. A
     /// later idle policy notice retires the worker and wakes completion_handle.
     pub fn prepared_policy(&self) -> Result<Option<Policy>> {
         let preparation = self.preparation.as_ref().ok_or(Error::InvalidArgument)?;
-        match *preparation.result.lock().map_err(|_| Error::WorkerFailed)? {
-            None => Ok(None),
-            Some(Ok(_)) if self.is_closed() => Err(Error::Closed),
-            Some(result) => result.map(Some),
+        match preparation.snapshot()? {
+            _ if self.is_closed() => Err(Error::Closed),
+            result => Ok(result),
         }
     }
     /// Duplicate this exact thread handle to observe full thread exit after
@@ -483,6 +492,9 @@ fn run(
                 channel.check_idle_policy(Instant::now() + Duration::from_millis(500))
             });
             if let Err(error) = result {
+                // Close admission before publishing the invalidation so an
+                // owner racing this update cannot reserve on the old snapshot.
+                state.closed.store(true, Ordering::Release);
                 if let Some((_, preparation)) = preparation {
                     preparation.invalidate(error);
                 }
@@ -597,6 +609,21 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preparation_snapshot_never_waits_for_worker_state_lock() {
+        let preparation = Preparation {
+            event: unsafe { own(CreateEventW(None, true, false, None).unwrap()) },
+            result: Mutex::new(Some(Ok(Policy {
+                settings: 1,
+                authorization: 1,
+                allowed: true,
+            }))),
+        };
+        let locked = preparation.result.lock().unwrap();
+        assert!(matches!(preparation.snapshot(), Ok(None)));
+        drop(locked);
+        assert!(matches!(preparation.snapshot(), Ok(Some(policy)) if policy.allowed));
+    }
     #[test]
     fn request_ids_never_repeat_or_wrap_after_release() {
         let requests = Requests::default();
