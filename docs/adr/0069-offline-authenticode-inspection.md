@@ -24,6 +24,14 @@ DERをSHA-256で識別し、証明書を保持せず32バイトだけを返す�
 取得用のWinTrust helperはMicrosoftが将来変更・廃止の可能性を示しており、
 製品組込み前に対応OSと複数署名の扱いを確認する。証明書状態の取得に失敗すれば拒否する。
 
+`retain_expected_signer`は指紋が一致した場合に、署名検査時に開いた同じファイルの
+handleを返す。保持中はWindowsの共有モードで他の書込・削除openを拒否し、読取を許す。
+既に書込可能なhandleがある場合は検査用のopen自体が失敗する。署名済みツールの
+一時コピーで、誤指紋、既存の書込handle、保持中の書込・削除拒否、保持中の起動と
+解除後の書込を確認した。呼出し側は必要な期間handleを保持する。
+このhandleは親ディレクトリの安全性、パス置換、実行中processのイメージとの同一性、
+オンライン失効、製品の起動許可を単独では保証しない。製品起動への接続は未実装。
+
 `PinnedProcess::observed_image_path`は、既に固定した生存process handleからWindowsの
 `QueryFullProcessImageNameW`でWin32形式のパスを取得する。取得前後にprocess生存と
 tokenの一致を確認し、空・相対・不正な長さの結果を拒否する。これは同期照会なので
@@ -47,3 +55,4 @@ AppContainer等の非対応環境ではスキップするため、成功表示�
 署名者取得とfingerprintの根拠: [WTHelperGetProvSignerFromChain](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-wthelpergetprovsignerfromchain)、
 [CryptHashCertificate2](https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-crypthashcertificate2)。
 実行イメージ名の照会: [QueryFullProcessImageNameW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew)。
+ファイル共有: [CreateFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilea)。

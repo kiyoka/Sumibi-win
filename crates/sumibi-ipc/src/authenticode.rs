@@ -1,7 +1,7 @@
 //! Offline embedded-signature inspection, not process or publisher trust.
 //! This does not authorize launching a file: a product caller must separately
 //! authenticate the publisher, protected path and exact running image.
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
@@ -30,6 +30,19 @@ pub enum InspectionError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SignerFingerprint(pub [u8; 32]);
 
+/// Keeps the inspected file open without write or delete sharing. This is a
+/// file lease, not proof of protected ancestors or a running image's identity.
+#[must_use = "keep the verified file alive for the entire operation"]
+pub struct VerifiedFile {
+    _file: File,
+    signer: SignerFingerprint,
+}
+impl VerifiedFile {
+    pub fn signer(&self) -> SignerFingerprint {
+        self.signer
+    }
+}
+
 /// Inspect a local file's embedded Authenticode signature using cached trust
 /// data only. This does not check online revocation or a particular signer.
 /// Hold the file open without write/delete sharing through the complete call.
@@ -41,6 +54,11 @@ pub fn inspect_embedded(path: &Path) -> Result<(), InspectionError> {
 /// Inspect the validated embedded signer. An allowlist based on this value
 /// must come from an authenticated, protected installation policy.
 pub fn inspect_signer(path: &Path) -> Result<SignerFingerprint, InspectionError> {
+    let (_, signer) = inspect_open(path)?;
+    Ok(signer)
+}
+
+fn inspect_open(path: &Path) -> Result<(File, SignerFingerprint), InspectionError> {
     if !matches!(path.components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
         || !path.is_absolute()
     {
@@ -107,7 +125,7 @@ pub fn inspect_signer(path: &Path) -> Result<SignerFingerprint, InspectionError>
     if closed != 0 {
         return Err(InspectionError::CleanupFailed(closed));
     }
-    result
+    result.map(|signer| (file, signer))
 }
 
 /// Check one pinned certificate fingerprint after successful chain validation.
@@ -116,10 +134,25 @@ pub fn inspect_expected_signer(
     path: &Path,
     expected: SignerFingerprint,
 ) -> Result<(), InspectionError> {
-    if inspect_signer(path)? != expected {
+    let _verified = retain_expected_signer(path, expected)?;
+    Ok(())
+}
+
+/// Retain the exact file opened during signature and signer inspection.
+/// The caller must establish trusted ancestors and process-image binding;
+/// this lease by itself must never be used as permission to execute.
+pub fn retain_expected_signer(
+    path: &Path,
+    expected: SignerFingerprint,
+) -> Result<VerifiedFile, InspectionError> {
+    let (file, signer) = inspect_open(path)?;
+    if signer != expected {
         return Err(InspectionError::UnexpectedSigner);
     }
-    Ok(())
+    Ok(VerifiedFile {
+        _file: file,
+        signer,
+    })
 }
 
 unsafe fn signer_fingerprint(state: HANDLE) -> Result<SignerFingerprint, InspectionError> {
@@ -207,5 +240,76 @@ mod tests {
                 assert_eq!(actual, SignerFingerprint(bytes));
             }
         }
+    }
+
+    #[test]
+    fn retained_signed_file_blocks_write_and_delete_until_release() {
+        let source =
+            Path::new(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
+        if !source.is_file() {
+            return;
+        }
+        let expected = inspect_signer(source).unwrap();
+        let unique = format!(
+            "sumibi-signed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let directory = std::env::temp_dir().join(unique);
+        std::fs::create_dir(&directory).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(self.0.join("copy.exe"));
+                let _ = std::fs::remove_dir(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        let path = directory.join("copy.exe");
+        std::fs::copy(source, &path).unwrap();
+        let mut wrong = expected;
+        wrong.0[0] ^= 1;
+        assert!(matches!(
+            retain_expected_signer(&path, wrong),
+            Err(InspectionError::UnexpectedSigner)
+        ));
+        let writer = OpenOptions::new().write(true).open(&path).unwrap();
+        assert!(matches!(
+            retain_expected_signer(&path, expected),
+            Err(InspectionError::OpenFailed)
+        ));
+        drop(writer);
+        let lease = retain_expected_signer(&path, expected).unwrap();
+        assert_eq!(lease.signer(), expected);
+        assert!(OpenOptions::new().write(true).open(&path).is_err());
+        assert!(std::fs::remove_file(&path).is_err());
+        // The OS loader must still be able to open this disposable signed
+        // fixture while the read-only lease is alive.
+        let mut child = std::process::Command::new(&path)
+            .arg("-?")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("signed fixture did not exit");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        drop(lease);
+        assert!(OpenOptions::new().write(true).open(&path).is_ok());
+        std::fs::remove_file(&path).unwrap();
     }
 }
