@@ -27,6 +27,8 @@ logon SID限定ACL、ローカル限定、非同期I/O、固定processのOS peer
 接続履歴の残数と、アンカーを除いた同時instance枠を確認する。残り1件を
 すでに待機受付が確保した場合は`Exhausted`、同時枠が埋まった場合は
 `Capacity`を返す。受付の失敗や接続終了後は同時枠を再利用できる。
+OS認証済みでHello待ちの接続も履歴枠を確保する。Helloが失敗した場合は
+履歴を消費せず枠を返し、成功した場合に履歴を消費する。
 
 通常終了は値を消費する`BrokerBoot::shutdown`で行う。期限切れなら稼働中の
 Bootを`Expired`で返し、60秒を超える期限なら`InvalidDeadline`で返す。

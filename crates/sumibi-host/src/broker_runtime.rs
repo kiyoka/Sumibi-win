@@ -350,8 +350,8 @@ impl<'a> BrokerPolicyRuntime<'a> {
     }
 
     /// Reserve room for an OS accept before creating its pipe instance. A
-    /// pending accept may still fail without consuming a history key, but it
-    /// must count against both the remaining history and live endpoint slots.
+    /// pending accept or authenticated pipe awaiting Hello may fail without
+    /// consuming history, but each must reserve room for a possible attach.
     pub(crate) fn check_anchor_accept_capacity(
         &self,
         pending_accepts: usize,
@@ -360,7 +360,7 @@ impl<'a> BrokerPolicyRuntime<'a> {
         if self.failed {
             return Err(RuntimeError::Retired);
         }
-        if pending_accepts >= self.remaining_attachment_budget() {
+        if pending_accepts + self.pending.len() >= self.remaining_attachment_budget() {
             return Err(RuntimeError::Exhausted);
         }
         if self.pending.len() + self.connections.len() + pending_accepts
@@ -3023,7 +3023,7 @@ mod tests {
         let (source, _) = source();
         let stop = Stop::new().unwrap();
         let deadline = Instant::now() + Duration::from_secs(15);
-        let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+        let mut boot = BrokerBoot::start(&source, 3, deadline).unwrap();
         let old_name = boot.name().clone();
         let old_id = boot.boot_id();
         let initial_budget = boot.remaining_attachment_budget();
@@ -3051,6 +3051,13 @@ mod tests {
                     }
                     _ => panic!("history client was not accepted"),
                 }
+            }
+            if client_id == initial_budget as u64 {
+                assert!(matches!(
+                    boot.begin_accept(PinnedProcess::current().unwrap(), deadline),
+                    Err(RuntimeError::Exhausted)
+                ));
+                assert_eq!(boot.pending_accept_count(), 0);
             }
             client
                 .write_all(
@@ -3096,7 +3103,7 @@ mod tests {
             .rotate(Instant::now() + Duration::from_secs(1))
             .unwrap();
         assert_eq!(next.remaining_attachment_budget(), initial_budget);
-        assert!(Server::create_shared(&old_name, 2).is_ok());
+        assert!(Server::create_shared(&old_name, 3).is_ok());
         next.begin_accept(PinnedProcess::current().unwrap(), deadline)
             .unwrap();
         let mut stale = Pipe::connect(next.name(), PinnedProcess::current().unwrap()).unwrap();
