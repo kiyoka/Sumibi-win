@@ -4,6 +4,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 #[cfg(windows)]
+pub mod authenticode;
+#[cfg(windows)]
 pub mod bootstrap;
 #[cfg(windows)]
 pub mod broker;

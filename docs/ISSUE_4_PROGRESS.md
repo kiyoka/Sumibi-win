@@ -22,6 +22,12 @@
 合成入力から別process Hostの同意・送信順序、localhostの応答、TSF編集と1回Undoまで通った。
 この診断は合成入力とlocalhostのみを使い、製品HTTPSや実APIを実装しない。
 
+2026-10-30: Host署名確認の前段として、WindowsのオフラインAuthenticode署名検査を
+追加した。署名済み`vswhere.exe`と未署名テスト実行ファイル、相対パス・UNCの拒否を
+このPCで確認した。発行者の特定、親ACL、実行中イメージとの同一性、オンライン
+失効確認は実装していないため、この検査結果はHost起動や発見の許可に使わない。
+詳細は[ADR 0069](adr/0069-offline-authenticode-inspection.md)を参照。
+
 ## 2026-10-25 の追加確認
 
 - `U+FFFC`をCore、Protocol、Job/Worker、TSFの本文境界で拒否する。
