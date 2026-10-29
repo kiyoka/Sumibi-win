@@ -17,6 +17,7 @@ type Failure = Box<dyn std::error::Error>;
 pub(crate) fn exercise_broker_keys(
     manager: &ITfThreadMgr,
     client: u32,
+    http_only: bool,
 ) -> std::result::Result<(), Failure> {
     let messages: ITfMessagePump = manager.cast()?;
     unsafe {
@@ -24,6 +25,7 @@ pub(crate) fn exercise_broker_keys(
             "apply",
             "shared-ready",
             "process-ready",
+            "process-http",
             "process-preparing",
             "process-preparing-exit",
             "process-exit",
@@ -57,6 +59,9 @@ pub(crate) fn exercise_broker_keys(
             "disabled",
             "close",
         ] {
+            if (case == "process-http") != http_only {
+                continue;
+            }
             let window = crate::window_host::Window::new(manager)?;
             let store = ComObject::new(TextStore::new("prefix nihongo suffix"));
             let mut selected = store.get().selection.get();
@@ -102,6 +107,9 @@ pub(crate) fn exercise_broker_keys(
                     let (fixture, worker) =
                         crate::broker_process_fixture::Fixture::start_pending()?;
                     (None, Some(fixture), Bridge::new_preparing(worker)?)
+                } else if case == "process-http" {
+                    let (fixture, worker) = crate::broker_process_fixture::Fixture::start_http()?;
+                    (None, Some(fixture), Bridge::new_prepared(worker)?)
                 } else if matches!(case, "process-ready" | "process-exit") {
                     let (fixture, worker) = crate::broker_process_fixture::Fixture::start()?;
                     (None, Some(fixture), Bridge::new_prepared(worker)?)
@@ -468,6 +476,7 @@ pub(crate) fn exercise_broker_keys(
                 "apply"
                     | "shared-ready"
                     | "process-ready"
+                    | "process-http"
                     | "process-preparing"
                     | "double-key"
                     | "stale-reply"
@@ -482,7 +491,7 @@ pub(crate) fn exercise_broker_keys(
                 },
                 "{case}"
             );
-            if matches!(case, "process-ready" | "process-preparing") {
+            if matches!(case, "process-ready" | "process-preparing" | "process-http") {
                 let (pid, wire) = bridge
                     .get()
                     .last_exchange()

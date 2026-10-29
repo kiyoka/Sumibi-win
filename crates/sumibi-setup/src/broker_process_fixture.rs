@@ -2,10 +2,12 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use sumibi_host::broker_boot::BrokerBoot;
 use sumibi_host::broker_runtime::{JobTicket, PollStep};
 use sumibi_host::broker_workers::OwnerStep;
+use sumibi_host::diagnostic_http::DiagnosticLoopbackHttp;
 use sumibi_host::manual::{Credential, Destination, Scheme};
 use sumibi_host::policy::PolicyAuthority;
 use sumibi_ipc::{job::Reservation, worker::Worker, Nonce, PinnedProcess, Pipe, Stop};
@@ -25,10 +27,13 @@ impl Fixture {
         Ok(())
     }
     pub(crate) fn start() -> Result<(Self, Worker), Failure> {
-        Self::start_inner(false)
+        Self::start_inner(false, false)
     }
     pub(crate) fn start_pending() -> Result<(Self, Worker), Failure> {
-        Self::start_inner(true)
+        Self::start_inner(true, false)
+    }
+    pub(crate) fn start_http() -> Result<(Self, Worker), Failure> {
+        Self::start_inner(false, true)
     }
     pub(crate) fn release(&mut self) -> Result<(), Failure> {
         self.0
@@ -38,9 +43,11 @@ impl Fixture {
             .write_all(&[1])?;
         Ok(())
     }
-    fn start_inner(delayed: bool) -> Result<(Self, Worker), Failure> {
+    fn start_inner(delayed: bool, http: bool) -> Result<(Self, Worker), Failure> {
         let child = Command::new(std::env::current_exe()?)
-            .arg(if delayed {
+            .arg(if http {
+                "broker-process-fixture-http"
+            } else if delayed {
                 "broker-process-fixture-delayed"
             } else {
                 "broker-process-fixture"
@@ -140,7 +147,7 @@ impl Drop for Fixture {
     }
 }
 
-pub(crate) fn child(delayed: bool) -> Result<(), Failure> {
+pub(crate) fn child(delayed: bool, use_http: bool) -> Result<(), Failure> {
     let mut input = BufReader::new(std::io::stdin());
     let mut line = String::new();
     input.read_line(&mut line)?;
@@ -166,9 +173,18 @@ pub(crate) fn child(delayed: bool) -> Result<(), Failure> {
     // SAFETY: the validated handle belongs to this child and is not a pseudo handle.
     let parent = unsafe { OwnedHandle::from_raw_handle(handle.0) };
     let peer = PinnedProcess::from_launch_handle(parent.as_handle())?;
-    let destination =
-        Destination::new(Scheme::Https, "example.org", 443, "/").ok_or("destination")?;
-    let source = PolicyAuthority::new(destination.clone());
+    let http = if use_http {
+        Some(crate::broker_http_fixture::Fixture::start()?)
+    } else {
+        None
+    };
+    let destination = if let Some(http) = &http {
+        Destination::new(Scheme::HttpLoopback, "127.0.0.1", http.port(), "/convert")
+    } else {
+        Destination::new(Scheme::Https, "example.org", 443, "/")
+    }
+    .ok_or("destination")?;
+    let source = Arc::new(PolicyAuthority::new(destination.clone()));
     source
         .replace_credential(Credential::new("fixture".into()))
         .map_err(|_| "fixture credential")?;
@@ -194,8 +210,14 @@ pub(crate) fn child(delayed: bool) -> Result<(), Failure> {
     let mut boot = BrokerBoot::start(&source, 2, deadline).map_err(|error| format!("{error:?}"))?;
     boot.handoff_private_over_pipe(peer, pipe, &stop, deadline)
         .map_err(|_| "fixture handoff failed")?;
+    let transport = Arc::new(DiagnosticLoopbackHttp);
     while !stop.is_cancelled()? && Instant::now() < deadline {
-        match boot.advance(&stop, deadline, |_| |_: JobTicket| Ok("日本語".into())) {
+        let step = if use_http {
+            boot.advance_manual(source.clone(), transport.clone(), &stop, deadline)
+        } else {
+            boot.advance(&stop, deadline, |_| |_: JobTicket| Ok("日本語".into()))
+        };
+        match step {
             Ok(OwnerStep::Broker(PollStep::Idle)) => std::thread::sleep(Duration::from_millis(1)),
             Ok(_) => {}
             Err(_) if stop.is_cancelled()? => break,
@@ -207,5 +229,8 @@ pub(crate) fn child(delayed: bool) -> Result<(), Failure> {
     }
     boot.shutdown(Instant::now() + Duration::from_secs(2))
         .map_err(|error| format!("{error:?}"))?;
+    if let Some(http) = http {
+        http.finish()?;
+    }
     Ok(())
 }

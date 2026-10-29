@@ -129,6 +129,7 @@ enum Exercise {
     Ranges,
     NativeEdit,
     BrokerKeys,
+    BrokerHttpKeys,
     BrokerInput,
     Protection,
     Composition,
@@ -173,9 +174,14 @@ fn checkpoint(point: FailAfter, requested: FailAfter) -> Result<(), Failure> {
 pub(super) fn run() -> Result<(), Failure> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() == 1
-        && (args[0] == "broker-process-fixture" || args[0] == "broker-process-fixture-delayed")
+        && (args[0] == "broker-process-fixture"
+            || args[0] == "broker-process-fixture-delayed"
+            || args[0] == "broker-process-fixture-http")
     {
-        return crate::broker_process_fixture::child(args[0] == "broker-process-fixture-delayed");
+        return crate::broker_process_fixture::child(
+            args[0] == "broker-process-fixture-delayed",
+            args[0] == "broker-process-fixture-http",
+        );
     }
     if args
         .first()
@@ -258,6 +264,7 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "range-target-test"
             && args[0] != "native-edit-test"
             && args[0] != "broker-key-test"
+            && args[0] != "broker-http-key-test"
             && args[0] != "broker-input-test"
             && args[0] != "protection-test"
             && args[0] != "composition-test"
@@ -282,7 +289,7 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "demo")
     {
         return Err(
-            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|window-test-interactive|input-test|close-test|delayed-test|broker-test|range-target-test|native-edit-test|broker-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|composing-input-test|composing-demo|input-notify-test|transaction-input-test|backspace-input-test|grapheme-input-test|recovery-input-test|waiting-input-test|waiting-input-test-interactive|waiting-demo|waiting-demo-test|waiting-demo-test-interactive|recovery-demo|transaction-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
+            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|window-test-interactive|input-test|close-test|delayed-test|broker-test|range-target-test|native-edit-test|broker-key-test|broker-http-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|composing-input-test|composing-demo|input-notify-test|transaction-input-test|backspace-input-test|grapheme-input-test|recovery-input-test|waiting-input-test|waiting-input-test-interactive|waiting-demo|waiting-demo-test|waiting-demo-test-interactive|recovery-demo|transaction-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
                 .into(),
         );
     }
@@ -342,6 +349,7 @@ pub(super) fn run() -> Result<(), Failure> {
                 Some("range-target-test") => Exercise::Ranges,
                 Some("native-edit-test") => Exercise::NativeEdit,
                 Some("broker-key-test") => Exercise::BrokerKeys,
+                Some("broker-http-key-test") => Exercise::BrokerHttpKeys,
                 Some("broker-input-test") => Exercise::BrokerInput,
                 Some("protection-test") => Exercise::Protection,
                 Some("composition-test") => Exercise::Composition,
@@ -509,7 +517,12 @@ fn registered_probe(
             Exercise::Broker => crate::edit_host::exercise_broker(&manager.0, app_client)?,
             Exercise::Ranges => crate::edit_host::exercise_ranges(&manager.0, app_client)?,
             Exercise::NativeEdit => crate::edit_host::exercise_native_edit(&manager.0, app_client)?,
-            Exercise::BrokerKeys => crate::edit_host::exercise_broker_keys(&manager.0, app_client)?,
+            Exercise::BrokerKeys => {
+                crate::edit_host::exercise_broker_keys(&manager.0, app_client, false)?
+            }
+            Exercise::BrokerHttpKeys => {
+                crate::edit_host::exercise_broker_keys(&manager.0, app_client, true)?
+            }
             Exercise::BrokerInput => {
                 crate::edit_host::exercise_broker_input(&manager.0, app_client)?
             }

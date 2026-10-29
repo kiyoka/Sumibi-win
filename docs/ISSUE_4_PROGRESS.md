@@ -14,6 +14,14 @@
 | 待機容量の消費前確保、超過切替、救済期限、遅延キー再送禁止 | 専用adapterで共有4件・4096 UTF-16単位の救済枠を先に予約。待機は最大4件・8秒、救済は最大10分。失敗した操作を自動再送しない | 製品の全入力先にまたがる容量・期限・超過時政策の確定と接続 |
 | Notepad等で実打鍵、1回Undo、別欄・同長別内容・読取不能の非適用 | 専用TSF storeの実DLL検査で対象変更・本文変更・読取拒否・1回Undoを確認。標準RichEditは保護情報不足で拒否。標準EDITは今回の環境でfocused documentなし | Notepad等の実アプリで肯定的な保護条件と標準Undoを確認する。現在は未達 |
 
+2026-10-30: `broker-http-key-test`を追加し、別process Hostが明示同意と送信順序を
+確認したうえで、専用TSF入力をローカル模擬HTTPへ渡す経路を用意した。
+模擬HTTPの分割要求・不正資格情報・不正本文の単体検査とclippyは成功した。
+通常のWindows環境で利用者が`tools/Test-BrokerHttpKey.ps1`を実行し、
+`process-http: OK`、COM/TSFの登録解除とDLL解放、およびパッシブTIPへの復元を確認した。
+合成入力から別process Hostの同意・送信順序、localhostの応答、TSF編集と1回Undoまで通った。
+この診断は合成入力とlocalhostのみを使い、製品HTTPSや実APIを実装しない。
+
 ## 2026-10-25 の追加確認
 
 - `U+FFFC`をCore、Protocol、Job/Worker、TSFの本文境界で拒否する。
