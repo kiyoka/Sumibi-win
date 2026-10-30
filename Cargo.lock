@@ -83,11 +83,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sumibi-credentials"
+version = "0.1.0"
+dependencies = [
+ "windows",
+]
+
+[[package]]
 name = "sumibi-host"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "sumibi-credentials",
  "sumibi-ipc",
  "sumibi-protocol",
  "unicode-segmentation",

@@ -12,6 +12,8 @@ pub mod broker_runtime;
 pub mod broker_workers;
 #[cfg(all(test, windows))]
 pub(crate) static HOST_PIPE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(windows)]
+pub mod credential_store;
 pub mod diagnostic_http;
 pub mod first_conversion;
 pub mod manual;

@@ -15,6 +15,7 @@ unicode-segmentation = "=1.13.3"
 
 [target.'cfg(windows)'.dependencies]
 sumibi-ipc = { path = "../sumibi-ipc" }
+sumibi-credentials = { path = "../sumibi-credentials" }
 
 [target.'cfg(windows)'.dev-dependencies]
 windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_System_Threading"] }

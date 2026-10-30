@@ -49,6 +49,14 @@ localhost模擬Chatへ送信して、候補を子processへ返すことを確認
 これは一般アプリの製品TIPや製品HTTPSの確認ではない。
 全体テストの並列実行では既存IPC試験が一度失敗し、共有ロックのpoisonが連鎖した。
 最初の失敗原因は未特定だが、IPC単独と全体の直列再実行、および後日の並列再実行は成功した。
+Host専用のWindows Credential Managerアクセスを追加した。固定名のgeneric資格情報を
+現在ユーザー・このPC向けに保存、読取、削除し、不正な文字やサイズは拒否する。
+HostのCredentialへの変換入口も追加した。読取や保存だけでは同意を与えない。
+別名・セッション限定の偽キーで保存、更新、読取、削除を実機確認し、試験後削除した。
+製品UI・起動時読取・policy更新との接続は未実装で、実キーの登録は行っていない。
+根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
+[CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
+[CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。
 参照: [Mac版クライアント](https://github.com/kiyoka/Sumibi-mac/blob/553c69021eda7a8a5944d8748357f3790cc2f45c/Sources/SumibiCore/OpenAICompatibleClient.swift)、
 [プロンプト](https://github.com/kiyoka/Sumibi-mac/blob/553c69021eda7a8a5944d8748357f3790cc2f45c/Sources/SumibiCore/Conversion.swift)。
 
