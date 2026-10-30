@@ -2240,6 +2240,95 @@ mod tests {
     }
 
     #[test]
+    fn credential_failure_is_acknowledged_only_after_pipe_publication() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let (source, destination) = source();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let foreign = PolicyAuthority::new(destination);
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+        boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let mut client = Pipe::connect(boot.name(), PinnedProcess::current().unwrap()).unwrap();
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Accepted { key: 1, .. } => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now()
+                }
+                _ => panic!("pipe was not accepted"),
+            }
+        }
+        client
+            .write_all(
+                message::encode(&hello(1, boot.boot_id())).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        loop {
+            match boot
+                .advance(&stop, deadline, |_| |_: JobTicket| Ok("unused".into()))
+                .unwrap()
+            {
+                OwnerStep::Broker(PollStep::Activated(1)) => break,
+                OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
+                    std::thread::yield_now()
+                }
+                _ => panic!("pipe was not activated"),
+            }
+        }
+        assert!(
+            matches!(read_frame(&mut client, &stop, deadline).message, message::Message::Ready(ready) if ready.policy.allowed)
+        );
+        let wrong = crate::credential_store::synthetic_update(
+            &foreign,
+            Err(sumibi_credentials::StoreError::Unavailable),
+        )
+        .unwrap();
+        assert!(matches!(
+            boot.acknowledge_credential_update(&wrong, &stop, deadline),
+            Err(RuntimeError::InvalidTarget)
+        ));
+        let update = crate::credential_store::synthetic_update(
+            &source,
+            Err(sumibi_credentials::StoreError::Unavailable),
+        )
+        .unwrap();
+        assert_eq!(
+            update.outcome(),
+            Err(sumibi_credentials::StoreError::Unavailable)
+        );
+        assert!(matches!(
+            boot.acknowledge_credential_update(&update, &stop, Instant::now()),
+            Err(RuntimeError::Transport(IpcError::Timeout))
+        ));
+        let acknowledgment = boot
+            .acknowledge_credential_update(&update, &stop, deadline)
+            .unwrap();
+        assert_eq!(acknowledgment.requested, update.version());
+        assert_eq!(acknowledgment.completion, DeliveryCompletion::ExactOrClosed);
+        assert!(!acknowledgment.current.allowed);
+        assert!(
+            matches!(read_frame(&mut client, &stop, deadline).message, message::Message::PolicyChanged(policy) if policy == acknowledgment.current)
+        );
+        assert!(boot
+            .shutdown(Instant::now() + Duration::from_secs(1))
+            .is_ok());
+        println!("credential failure publication and authority binding completed");
+    }
+
+    #[test]
     fn broker_boot_serves_an_active_request_between_ready_accepts() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {

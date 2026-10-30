@@ -56,8 +56,10 @@ HostのCredentialへの変換入口も追加した。読取や保存だけでは
 Hostの保存・削除・再読取をpolicy更新と直列化する入口も追加した。保存失敗時も
 旧キーと同意を破棄し、Brokerへの通知が必要なpolicy版とエラーを返す。送信中の
 guardとの順序、失敗時の旧許可の無効化と再同意の必要性を試験した。この同期処理は
-設定workerで使い、TSF callbackでは呼ばない。製品UI・起動時読取・Brokerへの
-通知完了待ちへの接続は未実装で、実キーの登録は行っていない。
+設定workerで使い、TSF callbackでは呼ばない。資格情報変更の結果は更新元の
+policyに結び付け、同じBrokerだけが通知・取消workerの終了を確認できる。
+模擬保存失敗後の実pipeへの禁止通知、別policyの拒否、期限切れからの再試行を確認した。
+製品UI・起動時読取からこの完了待ちまでの接続は未実装で、実キーの登録は行っていない。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
 [CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。
