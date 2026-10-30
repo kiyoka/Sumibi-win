@@ -66,6 +66,11 @@ workerの完了を非ブロッキングで取得し、同一policyのBrokerで�
 模擬読取失敗をworkerから実pipeへの通知まで確認した。taskの破棄は進行中のOS読取を
 取消さないため、Broker側は引き続きpolicy変更を配信する必要がある。
 製品UI・起動時読取からこの完了待ちまでの接続は未実装で、実キーの登録は行っていない。
+接続先とモデルを保存する版付きJSONを追加した。完全なChat送信先を保存し、
+キー・入力本文・送信同意は含めない。読取時はサイズ、版、未知・重複項目と送信先を
+検証し、復元後のpolicyはキーなし・同意なしとする。同じディレクトリの新規一時
+ファイルを書き込み・flushしてから置換し、一時ファイルを後始末する。配置先の選定、
+同時保存の直列化、停電時の永続性保証、製品UIと起動処理への接続は残る。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
 [CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。
