@@ -128,10 +128,34 @@ fn send_request(
     body: &[u8],
     deadline: Instant,
 ) -> Result<(), TransportError> {
-    set_write_deadline(stream, deadline)?;
-    stream.write_all(headers).map_err(classify_io)?;
-    set_write_deadline(stream, deadline)?;
-    stream.write_all(body).map_err(classify_io)
+    write_bounded(headers, deadline, |bytes, timeout| {
+        stream.set_write_timeout(Some(timeout))?;
+        stream.write(bytes)
+    })?;
+    write_bounded(body, deadline, |bytes, timeout| {
+        stream.set_write_timeout(Some(timeout))?;
+        stream.write(bytes)
+    })
+}
+
+// write_all may perform multiple writes with the same per-operation timeout.
+// Recalculate the remaining request budget after every partial write instead.
+fn write_bounded(
+    mut bytes: &[u8],
+    deadline: Instant,
+    mut write: impl FnMut(&[u8], Duration) -> std::io::Result<usize>,
+) -> Result<(), TransportError> {
+    while !bytes.is_empty() {
+        let timeout = remaining(deadline)?;
+        match write(bytes, timeout) {
+            Ok(0) => return Err(TransportError::Connection),
+            Ok(count) if count <= bytes.len() => bytes = &bytes[count..],
+            Ok(_) => return Err(TransportError::Connection),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(classify_io(error)),
+        }
+    }
+    remaining(deadline).map(|_| ())
 }
 
 fn read_response(
@@ -199,11 +223,6 @@ fn remaining(deadline: Instant) -> Result<Duration, TransportError> {
     } else {
         Ok(remaining)
     }
-}
-fn set_write_deadline(stream: &TcpStream, deadline: Instant) -> Result<(), TransportError> {
-    stream
-        .set_write_timeout(Some(remaining(deadline)?))
-        .map_err(classify_io)
 }
 fn read_chunk(
     stream: &mut TcpStream,
@@ -311,6 +330,45 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
     use sumibi_protocol::message::Revision;
+
+    #[test]
+    fn partial_writes_share_one_deadline_and_stop_after_expiration() {
+        let mut output = Vec::new();
+        let mut calls = 0;
+        write_bounded(
+            b"abcdef",
+            Instant::now() + Duration::from_secs(1),
+            |bytes, _| {
+                calls += 1;
+                if calls == 1 {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let count = bytes.len().min(2);
+                output.extend_from_slice(&bytes[..count]);
+                Ok(count)
+            },
+        )
+        .unwrap();
+        assert_eq!(output, b"abcdef");
+        assert_eq!(calls, 4);
+
+        let mut calls = 0;
+        let result = write_bounded(
+            b"abcdef",
+            Instant::now() + Duration::from_millis(10),
+            |_, _| {
+                calls += 1;
+                thread::sleep(Duration::from_millis(30));
+                Ok(1)
+            },
+        );
+        assert_eq!(result, Err(TransportError::Timeout));
+        assert_eq!(calls, 1);
+        assert_eq!(
+            write_bounded(b"a", Instant::now() + Duration::from_secs(1), |_, _| Ok(0)),
+            Err(TransportError::Connection)
+        );
+    }
 
     struct Active;
     impl SendAdmission for Active {
