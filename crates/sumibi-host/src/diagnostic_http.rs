@@ -660,7 +660,14 @@ mod tests {
     #[test]
     fn chat_payload_crosses_consent_gate_and_round_trips_loopback() {
         let response_body = serde_json::json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":r#"{"candidates":["日本語"]}"#}}]}).to_string();
-        let (destination, server) = serve_once(response("200 OK", &response_body), Duration::ZERO);
+        let (base, server) = serve_once(response("200 OK", &response_body), Duration::ZERO);
+        let destination = Destination::for_chat_completions(
+            Scheme::HttpLoopback,
+            base.host(),
+            base.port(),
+            base.base_path(),
+        )
+        .unwrap();
         let authority = PolicyAuthority::new(destination.clone());
         authority
             .replace_credential(Credential::new("synthetic-key".into()))
@@ -684,7 +691,7 @@ mod tests {
         let captured = server.join().unwrap();
         let end = find_header_end(&captured).unwrap();
         let header = std::str::from_utf8(&captured[..end]).unwrap();
-        assert!(header.starts_with("POST /convert HTTP/1.1\r\n"));
+        assert!(header.starts_with("POST /convert/v1/chat/completions HTTP/1.1\r\n"));
         assert!(header.contains("Authorization: Bearer synthetic-key\r\n"));
         let body: Value = serde_json::from_slice(&captured[end..]).unwrap();
         assert_eq!(body["model"], "fixture-model");

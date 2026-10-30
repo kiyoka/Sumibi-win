@@ -48,6 +48,33 @@ impl Destination {
         })
     }
 
+    /// Resolve the configured base path before consent is granted. The
+    /// resulting full path is the identity used by both policy and transport.
+    /// Only the same restricted path syntax accepted by `new` is allowed.
+    pub fn for_chat_completions(
+        scheme: Scheme,
+        host: &str,
+        port: u16,
+        base_path: &str,
+    ) -> Option<Self> {
+        if base_path.len() > 2048 {
+            return None;
+        }
+        let base = Self::new(scheme, host, port, base_path)?;
+        let path = base.base_path.trim_end_matches('/');
+        let resolved = if path.ends_with("/chat/completions") {
+            path.to_owned()
+        } else if path.ends_with("/v1") {
+            format!("{path}/chat/completions")
+        } else {
+            format!("{path}/v1/chat/completions")
+        };
+        if resolved.len() > 2048 {
+            return None;
+        }
+        Self::new(base.scheme, &base.host, base.port, &resolved)
+    }
+
     pub fn scheme(&self) -> Scheme {
         self.scheme
     }
@@ -391,6 +418,59 @@ mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
     use std::time::Duration;
+
+    #[test]
+    fn chat_destination_resolves_exact_path_before_consent() {
+        for (base, expected) in [
+            ("/", "/v1/chat/completions"),
+            ("/v1", "/v1/chat/completions"),
+            ("/v1/", "/v1/chat/completions"),
+            ("/proxy", "/proxy/v1/chat/completions"),
+            ("/proxy/v1/chat/completions/", "/proxy/v1/chat/completions"),
+            ("/proxyv1", "/proxyv1/v1/chat/completions"),
+        ] {
+            let dest =
+                Destination::for_chat_completions(Scheme::Https, "API.Example.test", 443, base)
+                    .unwrap();
+            assert_eq!(dest.host(), "api.example.test");
+            assert_eq!(dest.base_path(), expected);
+        }
+        for bad in [
+            "relative",
+            "/v1/../other",
+            "/v1//x",
+            "/v1?key=x",
+            "/v1#fragment",
+        ] {
+            assert!(
+                Destination::for_chat_completions(Scheme::Https, "example.test", 443, bad)
+                    .is_none()
+            );
+        }
+        assert!(
+            Destination::for_chat_completions(Scheme::HttpLoopback, "example.test", 80, "/")
+                .is_none()
+        );
+        assert!(Destination::for_chat_completions(
+            Scheme::Https,
+            "example.test",
+            443,
+            &format!("/{}", "a".repeat(2048))
+        )
+        .is_none());
+        let base = Destination::new(Scheme::Https, "example.test", 443, "/v1").unwrap();
+        let complete =
+            Destination::for_chat_completions(Scheme::Https, "example.test", 443, "/v1").unwrap();
+        let authority = PolicyAuthority::new(complete.clone());
+        authority
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        assert_eq!(
+            authority.grant_manual_consent(&base),
+            Err(crate::policy::ChangeError::InvalidConsent)
+        );
+        assert!(authority.grant_manual_consent(&complete).is_ok());
+    }
 
     struct Active;
     impl SendAdmission for Active {
