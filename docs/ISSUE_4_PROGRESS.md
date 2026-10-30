@@ -30,6 +30,10 @@ Mac版の固定コミットを基準に、初回変換用のChat Completions互�
 IPC側のUTF-16上限も守る。応答は完全な1候補JSON、完了理由stop、拒否なしに限る。
 Mac版が許す通常文字列や部分JSONは現段階では受け入れない。これは通信を行わない
 純粋な処理であり、辞書・追加候補・製品HTTPS・同意UIとの接続は未実装。
+この初回変換JSONを診断用localhost HTTPへ接続し、既存の同意・期限・取消の
+送信境界を通して模擬応答から1候補を取得する試験を追加した。同意取消後の拒否、
+不完全応答と外部HTTPSの拒否も確認した。接続先パスは診断時に明示し、自動補完しない。
+製品Hostや実サービスとの接続、モデル変更を設定版へ結び付ける処理は残る。
 参照: [Mac版クライアント](https://github.com/kiyoka/Sumibi-mac/blob/553c69021eda7a8a5944d8748357f3790cc2f45c/Sources/SumibiCore/OpenAICompatibleClient.swift)、
 [プロンプト](https://github.com/kiyoka/Sumibi-mac/blob/553c69021eda7a8a5944d8748357f3790cc2f45c/Sources/SumibiCore/Conversion.swift)。
 

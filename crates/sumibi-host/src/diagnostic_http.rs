@@ -16,6 +16,55 @@ const MAX_RESPONSE_BYTES: usize = 8192;
 
 pub struct DiagnosticLoopbackHttp;
 
+/// A local fixture for exercising the first-conversion payload through the
+/// same consent and cancellation boundary. Never contacts a remote service.
+pub struct DiagnosticChatLoopback {
+    model: String,
+}
+impl DiagnosticChatLoopback {
+    pub fn new(model: &str) -> Option<Self> {
+        crate::first_conversion::request_body(model, "fixture").ok()?;
+        Some(Self {
+            model: model.to_owned(),
+        })
+    }
+}
+
+impl OrderedConversionTransport for DiagnosticChatLoopback {
+    fn convert_ordered(
+        &self,
+        destination: &Destination,
+        credential: &str,
+        source: &str,
+        deadline: Instant,
+        gate: &mut dyn SendGate,
+    ) -> Result<String, SendError> {
+        let body = crate::first_conversion::request_body(&self.model, source)
+            .map_err(|_| SendError::InvalidRequest)?;
+        let (address, headers, body) =
+            prepare_body(destination, credential, body).map_err(SendError::Transport)?;
+        if gate.is_cancelled() {
+            return Err(SendError::PolicyDenied);
+        }
+        let mut stream = TcpStream::connect_timeout(
+            &address,
+            remaining(deadline).map_err(SendError::Transport)?,
+        )
+        .map_err(classify_io)
+        .map_err(SendError::Transport)?;
+        if gate.is_cancelled() {
+            return Err(SendError::PolicyDenied);
+        }
+        gate.write_authorized(&mut || {
+            send_request(&mut stream, headers.as_bytes(), &body, deadline)
+        })?;
+        let response = read_response_bytes(&mut stream, deadline, &|| gate.is_cancelled())
+            .map_err(SendError::Transport)?;
+        crate::first_conversion::response_candidate(&response)
+            .map_err(|_| SendError::InvalidResponse)
+    }
+}
+
 #[cfg(test)]
 impl ConversionTransport for DiagnosticLoopbackHttp {
     fn convert(
@@ -86,10 +135,22 @@ fn prepare(
     credential: &str,
     source: &str,
 ) -> Result<(SocketAddr, String, Vec<u8>), TransportError> {
+    if !sumibi_protocol::message::valid_text(source) {
+        return Err(TransportError::InvalidRequest);
+    }
+    let body =
+        serde_json::to_vec(&json!({"text": source})).map_err(|_| TransportError::InvalidRequest)?;
+    prepare_body(destination, credential, body)
+}
+
+fn prepare_body(
+    destination: &Destination,
+    credential: &str,
+    body: Vec<u8>,
+) -> Result<(SocketAddr, String, Vec<u8>), TransportError> {
     if destination.scheme() != Scheme::HttpLoopback
         || !credential.bytes().all(|byte| byte.is_ascii_graphic())
         || credential.is_empty()
-        || !sumibi_protocol::message::valid_text(source)
     {
         return Err(TransportError::InvalidRequest);
     }
@@ -104,8 +165,6 @@ fn prepare(
     if !address.is_loopback() {
         return Err(TransportError::InvalidRequest);
     }
-    let body =
-        serde_json::to_vec(&json!({"text": source})).map_err(|_| TransportError::InvalidRequest)?;
     let host_header = if address.is_ipv6() {
         format!("[{}]", destination.host())
     } else {
@@ -163,6 +222,25 @@ fn read_response(
     deadline: Instant,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<String, TransportError> {
+    let response = read_response_bytes(stream, deadline, cancelled)?;
+    let value: Value =
+        serde_json::from_slice(&response).map_err(|_| TransportError::InvalidResponse)?;
+    let object = value.as_object().ok_or(TransportError::InvalidResponse)?;
+    if object.len() != 1 {
+        return Err(TransportError::InvalidResponse);
+    }
+    object
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or(TransportError::InvalidResponse)
+}
+
+fn read_response_bytes(
+    stream: &mut TcpStream,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, TransportError> {
     let mut response = Vec::new();
     let header_end = loop {
         if let Some(end) = find_header_end(&response) {
@@ -203,17 +281,7 @@ fn read_response(
         return Err(TransportError::Cancelled);
     }
     remaining(deadline)?;
-    let value: Value = serde_json::from_slice(&response[header_end..])
-        .map_err(|_| TransportError::InvalidResponse)?;
-    let object = value.as_object().ok_or(TransportError::InvalidResponse)?;
-    if object.len() != 1 {
-        return Err(TransportError::InvalidResponse);
-    }
-    object
-        .get("text")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or(TransportError::InvalidResponse)
+    Ok(response.split_off(header_end))
 }
 
 fn remaining(deadline: Instant) -> Result<Duration, TransportError> {
@@ -567,6 +635,111 @@ mod tests {
         assert!(text.contains("Authorization: Bearer synthetic-key\r\n"));
         assert!(text.contains("Content-Type: application/json\r\n"));
         assert!(text.ends_with("\r\n\r\n{\"text\":\"nihongo\"}"));
+    }
+
+    #[test]
+    fn chat_payload_crosses_consent_gate_and_round_trips_loopback() {
+        let response_body = serde_json::json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":r#"{"candidates":["日本語"]}"#}}]}).to_string();
+        let (destination, server) = serve_once(response("200 OK", &response_body), Duration::ZERO);
+        let authority = PolicyAuthority::new(destination.clone());
+        authority
+            .replace_credential(Credential::new("synthetic-key".into()))
+            .unwrap();
+        let version = authority.grant_manual_consent(&destination).unwrap();
+        let adapter = DiagnosticChatLoopback::new("fixture-model").unwrap();
+        let request = || ManualRequest {
+            revision: Revision {
+                input: 1,
+                settings: version.settings,
+                authorization: version.authorization,
+            },
+            destination: &destination,
+            source: "nihongo",
+            deadline: Instant::now() + Duration::from_secs(2),
+        };
+        assert_eq!(
+            manual::convert_ordered(request(), &authority, &Active, &adapter),
+            Ok("日本語".into())
+        );
+        let captured = server.join().unwrap();
+        let end = find_header_end(&captured).unwrap();
+        let header = std::str::from_utf8(&captured[..end]).unwrap();
+        assert!(header.starts_with("POST /convert HTTP/1.1\r\n"));
+        assert!(header.contains("Authorization: Bearer synthetic-key\r\n"));
+        let body: Value = serde_json::from_slice(&captured[end..]).unwrap();
+        assert_eq!(body["model"], "fixture-model");
+        assert!(body["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .ends_with("nihongo"));
+        authority.revoke_manual_consent().unwrap();
+        assert_eq!(
+            manual::convert_ordered(request(), &authority, &Active, &adapter),
+            Err(SendError::PolicyDenied)
+        );
+        assert!(DiagnosticChatLoopback::new("").is_none());
+    }
+
+    #[test]
+    fn chat_fixture_rejects_remote_and_incomplete_chat_response() {
+        let (destination, server) = serve_once(
+            response(
+                "200 OK",
+                r#"{"choices":[{"finish_reason":"length","message":{"role":"assistant","content":"日本語"}}]}"#,
+            ),
+            Duration::ZERO,
+        );
+        let authority = PolicyAuthority::new(destination.clone());
+        authority
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        let version = authority.grant_manual_consent(&destination).unwrap();
+        let adapter = DiagnosticChatLoopback::new("fixture").unwrap();
+        let revision = Revision {
+            input: 1,
+            settings: version.settings,
+            authorization: version.authorization,
+        };
+        assert_eq!(
+            manual::convert_ordered(
+                ManualRequest {
+                    revision,
+                    destination: &destination,
+                    source: "nihongo",
+                    deadline: Instant::now() + Duration::from_secs(2)
+                },
+                &authority,
+                &Active,
+                &adapter
+            ),
+            Err(SendError::InvalidResponse)
+        );
+        server.join().unwrap();
+        let remote =
+            Destination::new(Scheme::Https, "example.com", 443, "/v1/chat/completions").unwrap();
+        let remote_authority = PolicyAuthority::new(remote.clone());
+        remote_authority
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        let v = remote_authority.grant_manual_consent(&remote).unwrap();
+        assert_eq!(
+            manual::convert_ordered(
+                ManualRequest {
+                    revision: Revision {
+                        input: 1,
+                        settings: v.settings,
+                        authorization: v.authorization
+                    },
+                    destination: &remote,
+                    source: "nihongo",
+                    deadline: Instant::now() + Duration::from_secs(2)
+                },
+                &remote_authority,
+                &Active,
+                &adapter
+            ),
+            Err(SendError::Transport(TransportError::InvalidRequest))
+        );
     }
 
     struct RevokeBeforeWrite<'a> {
