@@ -53,7 +53,11 @@ Host専用のWindows Credential Managerアクセスを追加した。固定名�
 現在ユーザー・このPC向けに保存、読取、削除し、不正な文字やサイズは拒否する。
 HostのCredentialへの変換入口も追加した。読取や保存だけでは同意を与えない。
 別名・セッション限定の偽キーで保存、更新、読取、削除を実機確認し、試験後削除した。
-製品UI・起動時読取・policy更新との接続は未実装で、実キーの登録は行っていない。
+Hostの保存・削除・再読取をpolicy更新と直列化する入口も追加した。保存失敗時も
+旧キーと同意を破棄し、Brokerへの通知が必要なpolicy版とエラーを返す。送信中の
+guardとの順序、失敗時の旧許可の無効化と再同意の必要性を試験した。この同期処理は
+設定workerで使い、TSF callbackでは呼ばない。製品UI・起動時読取・Brokerへの
+通知完了待ちへの接続は未実装で、実キーの登録は行っていない。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
 [CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。

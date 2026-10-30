@@ -214,6 +214,37 @@ impl PolicyAuthority {
         Ok(published)
     }
 
+    /// Serialize a blocking credential-store operation with policy mutation.
+    /// Even when storage fails, retire the old key and consent and return the
+    /// new version so the owner can publish it and drain cancelled workers.
+    /// Call from a settings worker, never from a TSF callback.
+    #[cfg(windows)]
+    pub(crate) fn update_stored_credential(
+        &self,
+        operation: impl FnOnce() -> Result<Option<Credential>, sumibi_credentials::StoreError>,
+    ) -> Result<(PolicyVersion, Result<(), sumibi_credentials::StoreError>), ChangeError> {
+        let mut state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        let authorization = state
+            .authorization
+            .checked_add(1)
+            .ok_or(ChangeError::Exhausted)?;
+        state.authorization = authorization;
+        state.credential = None;
+        state.manual_consent = None;
+        state.allowed = false;
+        let outcome = match operation() {
+            Ok(credential) => {
+                state.credential = credential.map(Arc::new);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        };
+        let published = version(&state);
+        drop(state);
+        self.changed.notify_all();
+        Ok((published, outcome))
+    }
+
     /// Called only after an explicit user action by the future settings UI.
     pub fn grant_manual_consent(
         &self,
