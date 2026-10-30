@@ -2344,6 +2344,37 @@ mod tests {
         assert!(
             matches!(read_frame(&mut client, &stop, deadline).message, message::Message::PolicyChanged(policy) if policy == receipt.current)
         );
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!("sumibi-policy-settings-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        struct SettingsCleanup(std::path::PathBuf);
+        impl Drop for SettingsCleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(self.0.join("settings.json"));
+                let _ = std::fs::remove_dir(&self.0);
+            }
+        }
+        let _cleanup = SettingsCleanup(dir.clone());
+        let settings = crate::settings::Settings::new(
+            Scheme::Https,
+            "example.test",
+            443,
+            "/v1",
+            "fixture-model",
+        )
+        .unwrap();
+        let saved = settings
+            .save_and_apply(&dir.join("settings.json"), &source)
+            .unwrap();
+        let settings_receipt = boot
+            .acknowledge_settings_update(&saved, &stop, deadline)
+            .unwrap();
+        assert_eq!(settings_receipt.requested, saved.version());
+        assert!(!settings_receipt.current.allowed);
+        assert!(
+            matches!(read_frame(&mut client, &stop, deadline).message, message::Message::PolicyChanged(policy) if policy == settings_receipt.current)
+        );
         assert!(boot
             .shutdown(Instant::now() + Duration::from_secs(1))
             .is_ok());

@@ -1,7 +1,7 @@
 //! User settings without credentials, input text or consent. Call file I/O on
 //! a settings worker; the caller chooses the per-user location.
 use crate::manual::{Destination, Scheme};
-use crate::policy::{ChangeError, PolicyAuthority};
+use crate::policy::{ChangeError, PolicyAuthority, PolicyVersion};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
@@ -41,6 +41,23 @@ pub struct Settings {
     destination: Destination,
     model: String,
 }
+
+/// The version must be acknowledged by the matching Broker before the
+/// settings UI reports completion; keep it to retry an expired notification.
+#[must_use = "publish the version to the matching Broker"]
+pub struct SettingsUpdate<'a> {
+    authority: &'a PolicyAuthority,
+    version: PolicyVersion,
+}
+impl SettingsUpdate<'_> {
+    pub fn version(&self) -> PolicyVersion {
+        self.version
+    }
+    #[cfg(windows)]
+    pub(crate) fn belongs_to(&self, authority: &PolicyAuthority) -> bool {
+        std::ptr::eq(self.authority, authority)
+    }
+}
 impl Settings {
     pub fn new(
         scheme: Scheme,
@@ -74,6 +91,20 @@ impl Settings {
             .set_model(&self.model)
             .map_err(SettingsError::Policy)?;
         Ok(authority)
+    }
+
+    /// Save and atomically update the matching Host policy. Call off the UI
+    /// and TSF threads; Broker publication is a separate required step.
+    pub fn save_and_apply<'a>(
+        &self,
+        path: &Path,
+        authority: &'a PolicyAuthority,
+    ) -> Result<SettingsUpdate<'a>, SettingsError> {
+        let version =
+            authority.save_settings(self.destination.clone(), self.model.clone(), || {
+                self.save(path)
+            })?;
+        Ok(SettingsUpdate { authority, version })
     }
 
     fn record(&self) -> Record {
@@ -231,8 +262,30 @@ mod tests {
         first.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap().model(), "first");
         let second = Settings::new(Scheme::Https, "example.test", 443, "/v1", "second").unwrap();
-        second.save(&path).unwrap();
+        let authority = first.new_authority().unwrap();
+        authority
+            .replace_credential(crate::manual::Credential::new("fixture".into()))
+            .unwrap();
+        let granted = authority.grant_manual_consent(first.destination()).unwrap();
+        let update = second.save_and_apply(&path, &authority).unwrap();
+        assert_eq!(update.version().settings, granted.settings + 1);
+        assert_eq!(update.version().authorization, granted.authorization);
+        assert!(authority.snapshot().unwrap().allowed);
         assert_eq!(Settings::load(&path).unwrap().model(), "second");
+        let third = Settings::new(Scheme::Https, "other.test", 443, "/v1", "third").unwrap();
+        assert!(third
+            .save_and_apply(&directory.join("missing").join("settings.json"), &authority)
+            .is_err());
+        let unchanged = authority.snapshot().unwrap();
+        assert!(unchanged.allowed);
+        assert_eq!(unchanged.model.as_deref(), Some("second"));
+        let changed = third.save_and_apply(&path, &authority).unwrap();
+        assert_eq!(changed.version().authorization, granted.authorization + 1);
+        let updated = authority.snapshot().unwrap();
+        assert!(!updated.allowed && updated.manual_consent.is_none());
+        assert_eq!(updated.model.as_deref(), Some("third"));
+        assert_eq!(updated.destination.host(), "other.test");
+        assert_eq!(Settings::load(&path).unwrap().model(), "third");
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
         assert!(Settings::load(Path::new("relative.json")).is_err());
     }

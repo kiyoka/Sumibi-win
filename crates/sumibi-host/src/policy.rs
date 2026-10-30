@@ -215,6 +215,48 @@ impl PolicyAuthority {
         Ok(published)
     }
 
+    /// Persist and publish the validated destination and model under one
+    /// authority lock. An I/O error leaves the in-memory policy unchanged.
+    /// This blocking operation is for a settings worker, never a TSF callback.
+    pub(crate) fn save_settings(
+        &self,
+        destination: Destination,
+        model: String,
+        persist: impl FnOnce() -> Result<(), crate::settings::SettingsError>,
+    ) -> Result<PolicyVersion, crate::settings::SettingsError> {
+        use crate::settings::SettingsError;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| SettingsError::Policy(ChangeError::Unavailable))?;
+        let settings = state
+            .settings
+            .checked_add(1)
+            .ok_or(SettingsError::Policy(ChangeError::Exhausted))?;
+        let changed_destination = state.destination != destination;
+        let authorization = if changed_destination {
+            state
+                .authorization
+                .checked_add(1)
+                .ok_or(SettingsError::Policy(ChangeError::Exhausted))?
+        } else {
+            state.authorization
+        };
+        persist()?;
+        state.destination = destination;
+        state.model = Some(model);
+        state.settings = settings;
+        state.authorization = authorization;
+        if changed_destination {
+            state.manual_consent = None;
+            state.allowed = false;
+        }
+        let published = version(&state);
+        drop(state);
+        self.changed.notify_all();
+        Ok(published)
+    }
+
     /// Even replacing a key with the same bytes changes its authority epoch.
     /// The old key remains only in snapshots already held by a worker.
     pub fn replace_credential(

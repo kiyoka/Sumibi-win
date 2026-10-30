@@ -69,8 +69,11 @@ workerの完了を非ブロッキングで取得し、同一policyのBrokerで�
 接続先とモデルを保存する版付きJSONを追加した。完全なChat送信先を保存し、
 キー・入力本文・送信同意は含めない。読取時はサイズ、版、未知・重複項目と送信先を
 検証し、復元後のpolicyはキーなし・同意なしとする。同じディレクトリの新規一時
-ファイルを書き込み・flushしてから置換し、一時ファイルを後始末する。配置先の選定、
-同時保存の直列化、停電時の永続性保証、製品UIと起動処理への接続は残る。
+ファイルを書き込み・flushしてから置換し、一時ファイルを後始末する。保存と同じ
+policyの接続先・モデル更新を直列化し、保存失敗時は稼働中の設定を維持する。
+送信先変更時は旧同意を解除し、モデルのみの変更でも旧設定版の結果を無効化する。
+保存後の設定版を同一Brokerで通知完了する入口と実pipe試験を追加した。配置先の選定、
+別policyや別process間の保存調整、停電時の永続性保証、製品UIと起動処理への接続は残る。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
 [CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。
