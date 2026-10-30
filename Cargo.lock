@@ -98,6 +98,7 @@ dependencies = [
  "sumibi-credentials",
  "sumibi-ipc",
  "sumibi-protocol",
+ "sumibi-winhttp",
  "unicode-segmentation",
  "windows",
 ]
@@ -143,6 +144,13 @@ dependencies = [
  "sumibi-core",
  "windows",
  "windows-core",
+]
+
+[[package]]
+name = "sumibi-winhttp"
+version = "0.1.0"
+dependencies = [
+ "windows",
 ]
 
 [[package]]

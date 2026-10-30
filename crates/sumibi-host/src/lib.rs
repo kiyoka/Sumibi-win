@@ -17,6 +17,8 @@ pub mod credential_store;
 pub mod diagnostic_http;
 pub mod first_conversion;
 pub mod manual;
+#[cfg(windows)]
+pub mod native_https;
 pub mod policy;
 pub mod settings;
 #[cfg(windows)]

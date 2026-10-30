@@ -49,6 +49,10 @@ localhost模擬Chatへ送信して、候補を子processへ返すことを確認
 これは一般アプリの製品TIPや製品HTTPSの確認ではない。
 全体テストの並列実行では既存IPC試験が一度失敗し、共有ロックのpoisonが連鎖した。
 最初の失敗原因は未特定だが、IPC単独と全体の直列再実行、および後日の並列再実行は成功した。
+後続の並列回帰でhandoff準備のタイムアウト確認が再度失敗した。
+イベント直後でも結果mutexが解放前なら非ブロッキングsnapshotはNoneになり得るため、
+この試験を期限内にsnapshot公開を待つ形に修正した。製品の非ブロッキング処理は維持した。
+修正後は対象試験を5回連続で実行し、全体の並列回帰も成功した。
 Host専用のWindows Credential Managerアクセスを追加した。固定名のgeneric資格情報を
 現在ユーザー・このPC向けに保存、読取、削除し、不正な文字やサイズは拒否する。
 HostのCredentialへの変換入口も追加した。読取や保存だけでは同意を与えない。
@@ -104,6 +108,10 @@ UIからの再同意は残る。
 画面上は配置確認のみ行い、現在ユーザーの保存済みキーは削除していない。
 保存・削除の進行中は設定保存とキー操作を無効にし、終了操作も完了を待つ。
 送信同意・稼働中の製品Brokerへの接続と常駐起動は引き続き未接続。
+製品HTTPSへの前段として、native WinHTTPの非同期要求準備と最終callbackまでの
+context保持を追加した。TLS既定・転送等の抑止・失効確認を設定し、要求枠は8件。
+準備・超過拒否・明示closeとDrop後の解放を試験した。送信処理はまだ公開しておらず、
+外部への実通信は行っていない。詳細は[ADR 0070](adr/0070-native-https-request-lifetime.md)。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
 [CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。
