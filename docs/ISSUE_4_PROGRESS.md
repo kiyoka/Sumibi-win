@@ -114,7 +114,9 @@ context保持を追加した。TLS既定・転送等の抑止・失効確認を�
 外部サービスへの通信は行っていない。詳細は[ADR 0070](adr/0070-native-https-request-lifetime.md)。
 続いて初期本文のnative送信完了・固定エラー分類を追加し、Hostの送信guardから呼ぶ
 入口を用意した。localhostの合成本文送信と、TLS待機の取消・期限切れ・最終context
-解放を試験した。応答受信、実TLS成功と製品変換adapterへの接続は残る。
+解放を試験した。続いて応答受信を追加し、HTTP status・JSON media type・header重複を
+検査する。本文64 KiBの上限、長さ照合、chunked処理、受信中の取消・同一期限と最終
+context解放をlocalhostで試験した。実TLS成功と製品変換adapterへの接続は残る。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
 [CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。

@@ -1,5 +1,5 @@
-//! Native HTTPS preparation and ordered sending. Response reception and the
-//! complete conversion adapter remain separate work.
+//! Native HTTPS preparation, ordered sending and bounded response reception.
+//! The complete conversion adapter remains separate work.
 use crate::manual::{Destination, Scheme, SendError, SendGate, TransportError};
 use std::time::Instant;
 use sumibi_winhttp::{Error, PreparedRequest};
@@ -49,6 +49,24 @@ pub fn send_body(
     Ok(request)
 }
 
+/// Receive after releasing the outbound send guard, so policy changes are not
+/// blocked by a slow response. The caller must still validate its policy
+/// revision and credential identity before accepting a conversion result.
+pub fn receive_body(
+    request: PreparedRequest,
+    gate: &dyn SendGate,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, SendError> {
+    let result = request.receive(&|| gate.is_cancelled() || cancelled());
+    if gate.is_cancelled() || cancelled() {
+        return Err(SendError::PolicyDenied);
+    }
+    result.map_err(|error| match error {
+        Error::InvalidResponse => SendError::InvalidResponse,
+        _ => SendError::Transport(classify(error)),
+    })
+}
+
 fn classify(error: Error) -> TransportError {
     match error {
         Error::InvalidDestination
@@ -57,6 +75,7 @@ fn classify(error: Error) -> TransportError {
         | Error::InvalidState => TransportError::InvalidRequest,
         Error::Timeout => TransportError::Timeout,
         Error::Cancelled => TransportError::Cancelled,
+        Error::InvalidResponse => TransportError::InvalidResponse,
         _ => TransportError::Connection,
     }
 }
@@ -72,6 +91,31 @@ mod tests {
             prepare(&destination),
             Err(Error::InvalidDestination)
         ));
+    }
+
+    #[test]
+    fn receiving_requires_a_completed_send_and_denies_cancelled_results() {
+        struct Gate(bool);
+        impl SendGate for Gate {
+            fn is_cancelled(&self) -> bool {
+                self.0
+            }
+            fn write_authorized(
+                &mut self,
+                _: &mut dyn FnMut() -> Result<(), TransportError>,
+            ) -> Result<(), SendError> {
+                panic!("receive must not acquire the outbound send guard")
+            }
+        }
+        let destination = Destination::new(Scheme::Https, "127.0.0.1", 1, "/convert").unwrap();
+        assert_eq!(
+            receive_body(prepare(&destination).unwrap(), &Gate(false), &|| false),
+            Err(SendError::Transport(TransportError::InvalidRequest))
+        );
+        assert_eq!(
+            receive_body(prepare(&destination).unwrap(), &Gate(true), &|| false),
+            Err(SendError::PolicyDenied)
+        );
     }
 
     #[test]

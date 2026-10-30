@@ -1,6 +1,7 @@
-//! Native asynchronous HTTPS request lifetime and bounded request sending.
+//! Native asynchronous HTTPS request lifetime and bounded JSON exchange.
 #![cfg(windows)]
 #![deny(unsafe_op_in_unsafe_fn)]
+use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -11,6 +12,8 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Networking::WinHttp::*;
 
 const CAPACITY: usize = 8;
+const READ_BYTES: usize = 8192;
+const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,7 +27,22 @@ pub enum Error {
     InvalidPayload,
     InvalidState,
     Cancelled,
+    InvalidResponse,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Completion {
+    Sent,
+    Headers,
+    Read(usize),
+}
+
+struct ReadBuffer(UnsafeCell<[u8; READ_BYTES]>);
+// SAFETY: the unique request owner starts at most one native read at a time.
+// Rust reads only after READ_COMPLETE is published through the transfer mutex,
+// and before the next native call. Callbacks never access the buffer contents.
+// The final native callback retains its allocation even after cancellation.
+unsafe impl Sync for ReadBuffer {}
 
 struct Payload {
     headers: Vec<u16>,
@@ -33,7 +51,7 @@ struct Payload {
 #[derive(Default)]
 struct Transfer {
     payload: Option<Arc<Payload>>,
-    completion: Option<Result<(), Error>>,
+    completion: Option<Result<Completion, Error>>,
 }
 
 struct Permit;
@@ -97,6 +115,7 @@ struct Context {
     changed: Condvar,
     transfer: Mutex<Transfer>,
     transfer_changed: Condvar,
+    read: ReadBuffer,
     // Connection must close before session; both outlive the last callback.
     _connection: Handle,
     _session: Handle,
@@ -127,11 +146,23 @@ unsafe extern "system" fn callback(
                         && payload.body.as_ptr() == information.cast()
                 });
                 if transfer.completion.is_none() {
-                    transfer.completion = Some(if valid { Ok(()) } else { Err(Error::Native) });
+                    transfer.completion = Some(if valid {
+                        Ok(Completion::Sent)
+                    } else {
+                        Err(Error::Native)
+                    });
                 }
                 drop(transfer);
                 state.transfer_changed.notify_all();
                 return;
+            }
+            WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE => Some(Ok(Completion::Headers)),
+            WINHTTP_CALLBACK_STATUS_READ_COMPLETE => {
+                if information == state.read.0.get().cast() && length as usize <= READ_BYTES {
+                    Some(Ok(Completion::Read(length as usize)))
+                } else {
+                    Some(Err(Error::Native))
+                }
             }
             WINHTTP_CALLBACK_STATUS_REQUEST_ERROR => {
                 let error = if !information.is_null()
@@ -186,6 +217,7 @@ pub struct PreparedRequest {
     request: Option<Handle>,
     state: Arc<Context>,
     started: bool,
+    deadline: Option<Instant>,
 }
 impl PreparedRequest {
     pub fn new(host: &str, port: u16, path: &str) -> Result<Self, Error> {
@@ -243,6 +275,11 @@ impl PreparedRequest {
             WINHTTP_OPTION_DISABLE_FEATURE,
             &disabled.to_ne_bytes(),
         )?;
+        option(
+            &request,
+            WINHTTP_OPTION_MAX_RESPONSE_HEADER_SIZE,
+            &(16 * 1024u32).to_ne_bytes(),
+        )?;
         if flags == WINHTTP_FLAG_SECURE {
             option(
                 &request,
@@ -255,6 +292,7 @@ impl PreparedRequest {
             changed: Condvar::new(),
             transfer: Mutex::new(Transfer::default()),
             transfer_changed: Condvar::new(),
+            read: ReadBuffer(UnsafeCell::new([0; READ_BYTES])),
             _connection: connection,
             _session: session,
             _permit: permit,
@@ -280,6 +318,8 @@ impl PreparedRequest {
                 WINHTTP_CALLBACK_STATUS_HANDLE_CREATED
                     | WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING
                     | WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE
+                    | WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE
+                    | WINHTTP_CALLBACK_STATUS_READ_COMPLETE
                     | WINHTTP_CALLBACK_STATUS_REQUEST_ERROR,
                 0,
             )
@@ -295,6 +335,7 @@ impl PreparedRequest {
             request: Some(request),
             state,
             started: false,
+            deadline: None,
         })
     }
 
@@ -344,6 +385,7 @@ impl PreparedRequest {
             .unwrap_or_else(|poison| poison.into_inner())
             .payload = Some(payload.clone());
         self.started = true;
+        self.deadline = Some(deadline);
         // SAFETY: native I/O writes no payload bytes. Both vectors are retained
         // unchanged in context even if cancellation closes the native handle.
         let sent = unsafe {
@@ -356,9 +398,12 @@ impl PreparedRequest {
                 Arc::as_ptr(&self.state) as usize,
             )
         };
-        let result = sent
-            .map_err(|_| Error::Native)
-            .and_then(|()| self.wait_sent(deadline, cancelled));
+        let result = sent.map_err(|_| Error::Native).and_then(|()| {
+            match self.wait_completion(deadline, cancelled)? {
+                Completion::Sent => Ok(()),
+                _ => Err(Error::Native),
+            }
+        });
         if result.is_err() {
             if let Some(request) = self.request.take() {
                 let _ = request.close();
@@ -367,7 +412,11 @@ impl PreparedRequest {
         result
     }
 
-    fn wait_sent(&self, deadline: Instant, cancelled: &dyn Fn() -> bool) -> Result<(), Error> {
+    fn wait_completion(
+        &self,
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Completion, Error> {
         loop {
             if cancelled() {
                 return Err(Error::Cancelled);
@@ -391,6 +440,74 @@ impl PreparedRequest {
                     .unwrap_or_else(|poison| poison.into_inner()),
             );
         }
+    }
+
+    /// Receive one HTTP 200 JSON response, then close the request on return.
+    /// Uses the original send deadline, with no retry, redirect or decompression.
+    pub fn receive(self, cancelled: &dyn Fn() -> bool) -> Result<Vec<u8>, Error> {
+        let deadline = self.deadline.ok_or(Error::InvalidState)?;
+        let handle = self.request.as_ref().ok_or(Error::InvalidState)?.0;
+        if self.wait_completion(deadline, cancelled)? != Completion::Sent {
+            return Err(Error::InvalidState);
+        }
+        self.reset_completion();
+        // SAFETY: send has completed and no native call is in progress. The
+        // context remains alive, including if this call completes immediately.
+        unsafe { WinHttpReceiveResponse(handle, std::ptr::null_mut()) }
+            .map_err(|_| Error::Native)?;
+        if self.wait_completion(deadline, cancelled)? != Completion::Headers {
+            return Err(Error::Native);
+        }
+        let expected_length = validate_response_headers(handle)?;
+        let mut response = Vec::new();
+        loop {
+            if cancelled() {
+                return Err(Error::Cancelled);
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::Timeout);
+            }
+            self.reset_completion();
+            // SAFETY: only this owner can start a read. The fixed buffer lives
+            // in the callback context; no Rust reference exists during I/O.
+            // Async bytes-read MUST be null, even for immediate completion.
+            unsafe {
+                WinHttpReadData(
+                    handle,
+                    self.state.read.0.get().cast(),
+                    READ_BYTES as u32,
+                    std::ptr::null_mut(),
+                )
+            }
+            .map_err(|_| Error::Native)?;
+            let Completion::Read(count) = self.wait_completion(deadline, cancelled)? else {
+                return Err(Error::Native);
+            };
+            if count == 0 {
+                return if response.is_empty()
+                    || expected_length.is_some_and(|expected| expected != response.len())
+                {
+                    Err(Error::InvalidResponse)
+                } else {
+                    Ok(response)
+                };
+            }
+            if response.len() + count > MAX_RESPONSE_BYTES {
+                return Err(Error::InvalidResponse);
+            }
+            // SAFETY: READ_COMPLETE and the native call have both finished.
+            // The mutex publication orders native writes before this read;
+            // no subsequent read starts until the copy has completed.
+            response.extend_from_slice(unsafe { &(&*self.state.read.0.get())[..count] });
+        }
+    }
+
+    fn reset_completion(&self) {
+        self.state
+            .transfer
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .completion = None;
     }
 
     /// Wait at most 60 seconds for native handle destruction. Timeout does
@@ -434,6 +551,109 @@ impl Drop for PreparedRequest {
 }
 fn option(handle: &Handle, name: u32, bytes: &[u8]) -> Result<(), Error> {
     unsafe { WinHttpSetOption(Some(handle.0), name, Some(bytes)) }.map_err(|_| Error::Native)
+}
+
+fn validate_response_headers(handle: *mut c_void) -> Result<Option<usize>, Error> {
+    let mut status = 0u32;
+    let mut length = 4u32;
+    // SAFETY: header queries are synchronous and have fixed live output buffers.
+    unsafe {
+        WinHttpQueryHeaders(
+            handle,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            None,
+            Some((&mut status as *mut u32).cast()),
+            &mut length,
+            std::ptr::null_mut(),
+        )
+    }
+    .map_err(|_| Error::InvalidResponse)?;
+    if status != 200 || length != 4 {
+        return Err(Error::InvalidResponse);
+    }
+    let content_type =
+        single_header(handle, WINHTTP_QUERY_CONTENT_TYPE)?.ok_or(Error::InvalidResponse)?;
+    let mut parts = content_type.split(';');
+    if !parts
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .eq_ignore_ascii_case("application/json")
+    {
+        return Err(Error::InvalidResponse);
+    }
+    if let Some(charset) = parts.next() {
+        if !charset.trim().eq_ignore_ascii_case("charset=utf-8") || parts.next().is_some() {
+            return Err(Error::InvalidResponse);
+        }
+    }
+    if single_header(handle, WINHTTP_QUERY_CONTENT_ENCODING)?
+        .is_some_and(|value| !value.eq_ignore_ascii_case("identity"))
+    {
+        return Err(Error::InvalidResponse);
+    }
+    let mut expected_length = None;
+    if let Some(length) = single_header(handle, WINHTTP_QUERY_CONTENT_LENGTH)? {
+        if length.is_empty()
+            || !length.bytes().all(|byte| byte.is_ascii_digit())
+            || length
+                .parse::<usize>()
+                .ok()
+                .is_none_or(|size| size == 0 || size > MAX_RESPONSE_BYTES)
+        {
+            return Err(Error::InvalidResponse);
+        }
+        expected_length = length.parse().ok();
+    }
+    if let Some(encoding) = single_header(handle, WINHTTP_QUERY_TRANSFER_ENCODING)? {
+        if expected_length.is_some() || !encoding.eq_ignore_ascii_case("chunked") {
+            return Err(Error::InvalidResponse);
+        }
+    }
+    Ok(expected_length)
+}
+
+fn single_header(handle: *mut c_void, name: u32) -> Result<Option<String>, Error> {
+    let mut index = 0;
+    let mut value = None;
+    for _ in 0..2 {
+        let mut buffer = [0u16; 128];
+        let mut bytes = std::mem::size_of_val(&buffer) as u32;
+        // SAFETY: this synchronous query receives a fixed, sized UTF-16 buffer.
+        let result = unsafe {
+            WinHttpQueryHeaders(
+                handle,
+                name,
+                None,
+                Some(buffer.as_mut_ptr().cast()),
+                &mut bytes,
+                &mut index,
+            )
+        };
+        match result {
+            Err(error)
+                if error.code()
+                    == windows::core::HRESULT::from_win32(ERROR_WINHTTP_HEADER_NOT_FOUND) =>
+            {
+                return Ok(value)
+            }
+            Err(_) => return Err(Error::InvalidResponse),
+            Ok(())
+                if value.is_some()
+                    || bytes as usize >= std::mem::size_of_val(&buffer)
+                    || !bytes.is_multiple_of(2) =>
+            {
+                return Err(Error::InvalidResponse)
+            }
+            Ok(()) => {
+                value = Some(
+                    String::from_utf16(&buffer[..bytes as usize / 2])
+                        .map_err(|_| Error::InvalidResponse)?,
+                )
+            }
+        }
+    }
+    Err(Error::InvalidResponse)
 }
 fn validate(host: &str, port: u16, path: &str) -> Result<(), Error> {
     let ip = host.parse::<std::net::IpAddr>().is_ok();
@@ -654,5 +874,157 @@ mod tests {
             }
         }
         println!("native send completion and pending TLS cancellation checked on loopback");
+    }
+
+    // All payloads and credentials in these fixtures are synthetic. The only
+    // non-TLS constructor is private and used exclusively on numeric loopback.
+    fn receive_fixture(response: Vec<u8>, stall: bool, cancel: bool) -> Result<Vec<u8>, Error> {
+        use std::io::{Read, Write};
+        use std::sync::atomic::AtomicBool;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (release, wait_release) = std::sync::mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let signal = cancelled.clone();
+        let server = std::thread::spawn(move || {
+            let limit = Instant::now() + Duration::from_secs(3);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < limit);
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("fixture accept failed: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut input = Vec::new();
+            let mut chunk = [0; 1024];
+            loop {
+                let count = stream.read(&mut chunk).unwrap();
+                assert!(count > 0 && input.len() + count < 8192);
+                input.extend_from_slice(&chunk[..count]);
+                if input
+                    .windows(4)
+                    .position(|part| part == b"\r\n\r\n")
+                    .is_some_and(|end| input.len() > end + 4)
+                {
+                    break;
+                }
+            }
+            for part in response.chunks(511) {
+                if stream.write_all(part).is_err() {
+                    break;
+                }
+            }
+            if stall {
+                // Give the client time to enter the pending native receive.
+                // No socket close releases it before cancellation/deadline.
+                std::thread::sleep(Duration::from_millis(75));
+                signal.store(cancel, Ordering::Release);
+                let _ = wait_release.recv_timeout(Duration::from_secs(3));
+            }
+        });
+        let mut request =
+            PreparedRequest::build("127.0.0.1", port, "/convert", WINHTTP_OPEN_REQUEST_FLAGS(0))
+                .unwrap();
+        let lifetime = Arc::downgrade(&request.state);
+        let sent = request.send(
+            "synthetic-key",
+            vec![b'x'],
+            Instant::now()
+                + if stall && !cancel {
+                    Duration::from_millis(300)
+                } else {
+                    Duration::from_secs(2)
+                },
+            &|| cancelled.load(Ordering::Acquire),
+        );
+        let result = match sent {
+            Ok(()) => request.receive(&|| cancelled.load(Ordering::Acquire)),
+            Err(error) => {
+                drop(request);
+                Err(error)
+            }
+        };
+        let _ = release.send(());
+        server.join().unwrap();
+        let limit = Instant::now() + Duration::from_secs(2);
+        while lifetime.upgrade().is_some() {
+            assert!(
+                Instant::now() < limit,
+                "receive did not release native context"
+            );
+            std::thread::yield_now();
+        }
+        result
+    }
+
+    #[test]
+    fn native_receive_accepts_fragmented_and_chunked_json_with_exact_limit() {
+        let _guard = NATIVE_TEST_LOCK.lock().unwrap();
+        let body = vec![b'a'; MAX_RESPONSE_BYTES];
+        let mut response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+        response.extend_from_slice(&body);
+        assert_eq!(receive_fixture(response, false, false), Ok(body));
+        assert_eq!(receive_fixture(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\n{\"x\r\n4\r\n\":1}\r\n0\r\n\r\n".to_vec(), false, false), Ok(br#"{"x":1}"#.to_vec()));
+    }
+
+    #[test]
+    fn native_receive_rejects_status_format_duplicates_truncation_and_overflow() {
+        let _guard = NATIVE_TEST_LOCK.lock().unwrap();
+        for (index, response) in [
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/redirect\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+            "HTTP/1.1 429 Limited\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 2\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: 2\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 65537\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=shift_jis\r\nContent-Length: 2\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n3\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n",
+        ].into_iter().enumerate() {
+            assert!(receive_fixture(response.as_bytes().to_vec(), false, false).is_err(), "invalid response case {index} was accepted");
+        }
+        let mut response =
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n"
+                .to_vec();
+        response.extend(vec![b'a'; MAX_RESPONSE_BYTES + 1]);
+        assert_eq!(
+            receive_fixture(response, false, false),
+            Err(Error::InvalidResponse)
+        );
+        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Fill: {}\r\nContent-Length: 2\r\n\r\n{{}}", "x".repeat(17 * 1024));
+        assert!(receive_fixture(response.into_bytes(), false, false).is_err());
+    }
+
+    #[test]
+    fn pending_headers_or_body_observe_cancellation_and_original_deadline() {
+        let _guard = NATIVE_TEST_LOCK.lock().unwrap();
+        for response in [
+            Vec::new(),
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20000\r\n\r\nx"
+                .to_vec(),
+        ] {
+            assert_eq!(
+                receive_fixture(response.clone(), true, true),
+                Err(Error::Cancelled)
+            );
+            assert_eq!(receive_fixture(response, true, false), Err(Error::Timeout));
+        }
     }
 }
