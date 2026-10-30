@@ -79,6 +79,9 @@ policyの接続先・モデル更新を直列化し、保存失敗時は稼働�
 許可しない。`sumibi-host startup-check <absolute-settings-path>`から呼び出せる。
 このコマンドは起動準備の読取検査で、待受や変換要求を開始しない。製品常駐起動と
 UIからの再同意は残る。
+設定の既定配置を現在ユーザーのKnown Folder LocalAppData配下の
+`Sumibi\settings.json`とし、`startup-check`はパス省略時にこの場所を確認する。
+設定ファイルの初回作成や常駐起動は引き続き未接続。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
 [CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。

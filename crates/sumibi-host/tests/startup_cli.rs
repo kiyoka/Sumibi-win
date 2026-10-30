@@ -25,6 +25,6 @@ fn startup_check_rejects_extra_arguments_before_loading() {
     assert!(output.stdout.is_empty());
     assert_eq!(
         String::from_utf8(output.stderr).unwrap().trim(),
-        "usage: sumibi-host startup-check <absolute-settings-path>"
+        "usage: sumibi-host startup-check [absolute-settings-path]"
     );
 }

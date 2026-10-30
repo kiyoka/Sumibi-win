@@ -2,12 +2,15 @@
 
 ## Hostの起動準備検査
 
-`cargo run -p sumibi-host --locked --offline -- startup-check <設定JSONの絶対パス>`で、
+`cargo run -p sumibi-host --locked --offline -- startup-check [設定JSONの絶対パス]`で、
 保存済み設定と現在ユーザーのSumibi用資格情報を読み、送信未同意のHostを初期化する。
+パス省略時はWindowsのKnown Folder APIで現在ユーザーのLocalAppDataを取得し、
+その配下の`Sumibi\settings.json`を使う。検査コマンドはディレクトリや設定を作成しない。
 接続先やモデル、キーは出力せず、設定の読取結果とキーの存在・欠損・読取失敗だけを示す。
 終了コードは設定が有効なら0（キー欠損も含む）、設定不正や引数不正は1、
 資格情報の読取失敗は2。破損設定ではキーを読まない。通信・pipe待受・TSF登録は開始しない。
-設定ファイルの既定配置、設定UI、常駐運転への接続は今後の作業である。
+設定UI、設定の初回作成、常駐運転への接続は今後の作業である。
+配置先取得の根拠: [SHGetKnownFolderPath](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath)。
 
 ## マシン登録の事前確認
 

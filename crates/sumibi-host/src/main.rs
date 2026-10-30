@@ -1,15 +1,28 @@
 //! Explicitly launched broker entry. Default builds never enable a converter.
 #[cfg(windows)]
+mod host_paths;
+#[cfg(windows)]
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.first().is_some_and(|arg| arg == "startup-check") {
-        if args.len() != 2 {
-            eprintln!("usage: sumibi-host startup-check <absolute-settings-path>");
+        if args.len() > 2 {
+            eprintln!("usage: sumibi-host startup-check [absolute-settings-path]");
             std::process::exit(1);
         }
+        let path = if let Some(path) = args.get(1) {
+            std::path::PathBuf::from(path)
+        } else {
+            match host_paths::settings_path() {
+                Ok(path) => path,
+                Err(()) => {
+                    eprintln!("startup settings location unavailable");
+                    std::process::exit(1);
+                }
+            }
+        };
         // A standalone startup check has no UI or TSF callbacks. It reads
         // settings and credentials, creates no listener and sends no request.
-        let host = match sumibi_host::startup::PreparedHost::load(std::path::Path::new(&args[1])) {
+        let host = match sumibi_host::startup::PreparedHost::load(&path) {
             Ok(host) => host,
             Err(_) => {
                 eprintln!("startup settings unavailable or invalid");
