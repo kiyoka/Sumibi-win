@@ -41,8 +41,11 @@ localhost通信中のモデル変更による旧結果の破棄、古い版の�
 BrokerBootからも診断用Chat処理を呼べるようにし、同一processの認証済みpipeから
 設定済みモデルを含むlocalhost模擬HTTP要求と候補結果までを往復確認した。
 この検査は別processや一般アプリ、製品HTTPSへの対応を意味しない。
+さらに別processのfixtureを起動handleで固定・認証し、同じBroker経路から
+localhost模擬Chatへ送信して、候補を子processへ返すことを確認した。
+これは一般アプリの製品TIPや製品HTTPSの確認ではない。
 全体テストの並列実行では既存IPC試験が一度失敗し、共有ロックのpoisonが連鎖した。
-最初の失敗原因は未特定だが、IPC単独と全体の直列再実行は成功した。
+最初の失敗原因は未特定だが、IPC単独と全体の直列再実行、および後日の並列再実行は成功した。
 参照: [Mac版クライアント](https://github.com/kiyoka/Sumibi-mac/blob/553c69021eda7a8a5944d8748357f3790cc2f45c/Sources/SumibiCore/OpenAICompatibleClient.swift)、
 [プロンプト](https://github.com/kiyoka/Sumibi-mac/blob/553c69021eda7a8a5944d8748357f3790cc2f45c/Sources/SumibiCore/Conversion.swift)。
 

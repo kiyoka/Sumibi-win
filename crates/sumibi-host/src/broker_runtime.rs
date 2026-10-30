@@ -3046,6 +3046,106 @@ mod tests {
     }
 
     #[test]
+    fn broker_chat_dispatch_serves_an_authenticated_child_process() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let destination = Destination::new(
+            Scheme::HttpLoopback,
+            "127.0.0.1",
+            listener.local_addr().unwrap().port(),
+            "/convert",
+        )
+        .unwrap();
+        let source = Arc::new(PolicyAuthority::new(destination.clone()));
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        source.set_model("fixture-model").unwrap();
+        source.grant_manual_consent(&destination).unwrap();
+        let http = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut stream);
+            let body = r#"{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"{\"candidates\":[\"完了\"]}"}}]}"#;
+            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            stream.write_all(response.as_bytes()).unwrap();
+            request
+        });
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 3, deadline).unwrap();
+        let mut child = FixtureChild(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "broker_runtime::tests::cross_process_client_fixture",
+                ])
+                .env("SUMIBI_HOST_TEST_CHILD_NAME", boot.name().bootstrap())
+                .env("SUMIBI_HOST_TEST_BOOT_FROM_NAME", "1")
+                .env("SUMIBI_HOST_TEST_WAIT_FOR_START", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        boot.begin_accept(
+            PinnedProcess::from_launch_handle(child.0.as_handle()).unwrap(),
+            deadline,
+        )
+        .unwrap();
+        child.0.stdin.take().unwrap().write_all(&[1]).unwrap();
+        let mut accepted = false;
+        let mut activated = false;
+        let mut submitted = false;
+        loop {
+            assert!(Instant::now() < deadline);
+            match boot
+                .advance_diagnostic_chat(source.clone(), &stop, deadline)
+                .unwrap()
+                .step
+            {
+                OwnerStep::Accepted { key: 1, .. } if !accepted => accepted = true,
+                OwnerStep::Broker(PollStep::Activated(1)) if accepted && !activated => {
+                    activated = true
+                }
+                OwnerStep::Submitted { key: 1, request: 1 } if activated && !submitted => {
+                    submitted = true
+                }
+                OwnerStep::Completed {
+                    key: 1,
+                    request: 1,
+                    delivered: true,
+                    succeeded: true,
+                } if submitted => break,
+                OwnerStep::Broker(PollStep::Idle) => std::thread::yield_now(),
+                _ => panic!("child chat request did not complete"),
+            }
+        }
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let request = http.join().unwrap();
+        assert!(request
+            .windows(b"fixture-model".len())
+            .any(|part| part == b"fixture-model"));
+        assert!(request
+            .windows(b"second".len())
+            .any(|part| part == b"second"));
+        assert!(boot
+            .shutdown(Instant::now() + Duration::from_secs(1))
+            .is_ok());
+        println!("authenticated child and localhost chat fixture completed");
+    }
+
+    #[test]
     fn broker_boot_routes_two_pinned_processes_to_private_pipes() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {
