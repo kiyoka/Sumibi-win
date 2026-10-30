@@ -74,6 +74,11 @@ policyの接続先・モデル更新を直列化し、保存失敗時は稼働�
 送信先変更時は旧同意を解除し、モデルのみの変更でも旧設定版の結果を無効化する。
 保存後の設定版を同一Brokerで通知完了する入口と実pipe試験を追加した。配置先の選定、
 別policyや別process間の保存調整、停電時の永続性保証、製品UIと起動処理への接続は残る。
+保存済み設定を検証してから資格情報を読み、送信未同意のHostを生成する起動準備処理を
+追加した。破損設定ではキーを読まず、キーの存在・欠損・読取失敗の各状態でも送信を
+許可しない。`sumibi-host startup-check <absolute-settings-path>`から呼び出せる。
+このコマンドは起動準備の読取検査で、待受や変換要求を開始しない。製品常駐起動と
+UIからの再同意は残る。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
 [CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。

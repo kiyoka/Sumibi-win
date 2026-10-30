@@ -2,6 +2,33 @@
 #[cfg(windows)]
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "startup-check") {
+        if args.len() != 2 {
+            eprintln!("usage: sumibi-host startup-check <absolute-settings-path>");
+            std::process::exit(1);
+        }
+        // A standalone startup check has no UI or TSF callbacks. It reads
+        // settings and credentials, creates no listener and sends no request.
+        let host = match sumibi_host::startup::PreparedHost::load(std::path::Path::new(&args[1])) {
+            Ok(host) => host,
+            Err(_) => {
+                eprintln!("startup settings unavailable or invalid");
+                std::process::exit(1);
+            }
+        };
+        use sumibi_host::manual::PolicySource;
+        let state = host.authority().snapshot().expect("new startup authority");
+        if host.credential_outcome().is_err() {
+            eprintln!("settings loaded; credential unavailable; sending disabled");
+            std::process::exit(2);
+        }
+        if state.credential.is_some() {
+            println!("settings loaded; credential present; sending disabled");
+        } else {
+            println!("settings loaded; credential missing; sending disabled");
+        }
+        return;
+    }
     let result = sumibi_ipc::bootstrap::Bootstrap::parse(&args).and_then(|bootstrap| {
         if bootstrap.is_policy_runtime_diagnostic() {
             sumibi_host::broker_runtime::serve_diagnostic(&bootstrap, cfg!(feature = "spike"))

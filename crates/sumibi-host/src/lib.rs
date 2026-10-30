@@ -19,3 +19,5 @@ pub mod first_conversion;
 pub mod manual;
 pub mod policy;
 pub mod settings;
+#[cfg(windows)]
+pub mod startup;
