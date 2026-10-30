@@ -1,6 +1,7 @@
 //! Read-only development placement inspection. Not a product launch policy.
 use crate::authenticode::{
-    retain_expected_signer, InspectionError, SignerFingerprint, VerifiedFile,
+    observe_open_signer, retain_expected_signer, same_open_file, InspectionError,
+    SignerFingerprint, VerifiedFile,
 };
 use crate::protected_acl::{
     check_file, open_development_ancestor, open_development_directory, AclError, AncestorKind,
@@ -34,6 +35,7 @@ pub enum PlacementError {
     FileMismatch,
     UnsupportedArtifact,
     InvalidReceipt,
+    ReceiptSignerMismatch,
     HashFailed,
 }
 
@@ -132,6 +134,7 @@ impl DevelopmentPlacement {
         Ok(ReceiptDevelopmentPlacement {
             _placement: self,
             _receipt: receipt,
+            signer_thumbprint: record.signer_thumbprint,
         })
     }
 
@@ -166,8 +169,28 @@ pub struct SignedDevelopmentPlacement {
 pub struct ReceiptDevelopmentPlacement {
     _placement: DevelopmentPlacement,
     _receipt: File,
+    signer_thumbprint: String,
 }
 impl ReceiptDevelopmentPlacement {
+    /// Compare the legacy receipt thumbprint with the signer reported by
+    /// WinTrust. A match is diagnostic only, especially when trust failed;
+    /// SHA-1 and this receipt cannot authorize execution or registration.
+    pub fn observe_receipt_signer(self) -> Result<ObservedReceiptSigner, PlacementError> {
+        let (file, status, sha1) =
+            observe_open_signer(&self._placement.path).map_err(PlacementError::File)?;
+        if !same_open_file(&self._placement.file, &file).map_err(PlacementError::File)? {
+            return Err(PlacementError::FileMismatch);
+        }
+        if !thumbprint_matches(&self.signer_thumbprint, &sha1) {
+            return Err(PlacementError::ReceiptSignerMismatch);
+        }
+        Ok(ObservedReceiptSigner {
+            _placement: self,
+            _file: file,
+            status,
+        })
+    }
+
     /// Retain the receipt while additionally checking the configured signer.
     /// This does not attest process identity or provide a product trust policy.
     pub fn inspect_signer(
@@ -180,6 +203,23 @@ impl ReceiptDevelopmentPlacement {
             _receipt: self._receipt,
         })
     }
+}
+/// A diagnostic match only; no trust or permission follows from this value.
+#[must_use = "retain the inspected files while using the observation"]
+pub struct ObservedReceiptSigner {
+    _placement: ReceiptDevelopmentPlacement,
+    _file: File,
+    status: i32,
+}
+impl ObservedReceiptSigner {
+    pub fn windows_trust_status(&self) -> i32 {
+        self.status
+    }
+}
+
+fn thumbprint_matches(expected: &str, actual: &[u8; 20]) -> bool {
+    let hex: String = actual.iter().map(|byte| format!("{byte:02x}")).collect();
+    expected.eq_ignore_ascii_case(&hex)
 }
 #[must_use = "retain the checked placement, receipt and signed file together"]
 pub struct SignedReceiptDevelopmentPlacement {
@@ -355,6 +395,9 @@ mod tests {
             Err(PlacementError::InvalidReceipt)
         );
         assert!(serde_json::from_str::<Receipt>(r#"{"purpose":"x","purpose":"y"}"#).is_err());
+        assert!(thumbprint_matches(&"aB".repeat(20), &[0xab; 20]));
+        assert!(!thumbprint_matches(&"ab".repeat(19), &[0xab; 20]));
+        assert!(!thumbprint_matches(&"aa".repeat(20), &[0xab; 20]));
     }
     #[test]
     fn rejects_invalid_version_before_touching_disk() {
@@ -395,6 +438,35 @@ mod tests {
             return;
         };
         let version = std::env::var("SUMIBI_TEST_VERSION").expect("missing test version");
+        let checked = DevelopmentPlacement::open(Path::new(&root), &version, Artifact::Tip)
+            .expect("development placement")
+            .inspect_receipt()
+            .expect("development receipt and hash");
+        let observed = checked
+            .observe_receipt_signer()
+            .expect("receipt signer observation");
+        assert_ne!(
+            observed.windows_trust_status(),
+            0,
+            "self-signed fixture unexpectedly trusted"
+        );
+        drop(observed);
+        let mut mismatched = DevelopmentPlacement::open(Path::new(&root), &version, Artifact::Tip)
+            .expect("development placement")
+            .inspect_receipt()
+            .expect("development receipt and hash");
+        mismatched.signer_thumbprint = if mismatched
+            .signer_thumbprint
+            .eq_ignore_ascii_case(&"00".repeat(20))
+        {
+            "11".repeat(20)
+        } else {
+            "00".repeat(20)
+        };
+        assert!(matches!(
+            mismatched.observe_receipt_signer(),
+            Err(PlacementError::ReceiptSignerMismatch)
+        ));
         let checked = DevelopmentPlacement::open(Path::new(&root), &version, Artifact::Tip)
             .expect("development placement")
             .inspect_receipt()

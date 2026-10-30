@@ -75,6 +75,21 @@ pub fn inspect_signer(path: &Path) -> Result<SignerFingerprint, InspectionError>
 }
 
 fn inspect_open(path: &Path) -> Result<(File, SignerFingerprint), InspectionError> {
+    let (file, status, signer, _) = inspect_open_evidence(path, false)?;
+    debug_assert_eq!(status, 0);
+    Ok((file, signer))
+}
+
+/// Diagnostic evidence only: a failed trust result is never authorization.
+pub(crate) fn observe_open_signer(path: &Path) -> Result<(File, i32, [u8; 20]), InspectionError> {
+    let (file, status, _, sha1) = inspect_open_evidence(path, true)?;
+    Ok((file, status, sha1))
+}
+
+fn inspect_open_evidence(
+    path: &Path,
+    observe_untrusted: bool,
+) -> Result<(File, i32, SignerFingerprint, [u8; 20]), InspectionError> {
     let file = open_plain_local_file(path)?;
     let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
     wide.push(0);
@@ -106,10 +121,16 @@ fn inspect_open(path: &Path) -> Result<(File, SignerFingerprint), InspectionErro
             (&mut data as *mut WINTRUST_DATA).cast(),
         )
     };
-    let result = if status == 0 {
+    let result = if status == 0 || observe_untrusted {
         // SAFETY: the provider state and its signer certificate remain live
         // until the paired CLOSE below; copy only the resulting hash out.
-        unsafe { signer_fingerprint(data.hWVTStateData) }
+        unsafe { signer_fingerprints(data.hWVTStateData) }.map_err(|error| {
+            if status != 0 {
+                InspectionError::NotTrusted(status)
+            } else {
+                error
+            }
+        })
     } else {
         Err(InspectionError::NotTrusted(status))
     };
@@ -124,7 +145,7 @@ fn inspect_open(path: &Path) -> Result<(File, SignerFingerprint), InspectionErro
     if closed != 0 {
         return Err(InspectionError::CleanupFailed(closed));
     }
-    result.map(|signer| (file, signer))
+    result.map(|(signer, sha1)| (file, status, signer, sha1))
 }
 
 fn open_plain_local_file(path: &Path) -> Result<File, InspectionError> {
@@ -166,6 +187,10 @@ fn file_identity(file: &File) -> Result<(u64, [u8; 16]), InspectionError> {
     identity_from_info(info)
 }
 
+pub(crate) fn same_open_file(a: &File, b: &File) -> Result<bool, InspectionError> {
+    Ok(file_identity(a)? == file_identity(b)?)
+}
+
 fn identity_from_info(info: FILE_ID_INFO) -> Result<(u64, [u8; 16]), InspectionError> {
     if info.FileId.Identifier == [0; 16] {
         return Err(InspectionError::FileIdentityUnavailable);
@@ -200,8 +225,11 @@ pub fn retain_expected_signer(
     })
 }
 
-unsafe fn signer_fingerprint(state: HANDLE) -> Result<SignerFingerprint, InspectionError> {
-    // SAFETY: caller retains the successful WinVerifyTrust state until return.
+unsafe fn signer_fingerprints(
+    state: HANDLE,
+) -> Result<(SignerFingerprint, [u8; 20]), InspectionError> {
+    // SAFETY: caller retains the WinVerifyTrust state until return. On failed
+    // verification this is only a provider observation, not trusted evidence.
     let provider = unsafe { WTHelperProvDataFromStateData(state) };
     if provider.is_null() {
         return Err(InspectionError::SignerUnavailable);
@@ -240,7 +268,23 @@ unsafe fn signer_fingerprint(state: HANDLE) -> Result<SignerFingerprint, Inspect
     if size != fingerprint.len() as u32 {
         return Err(InspectionError::SignerUnavailable);
     }
-    Ok(SignerFingerprint(fingerprint))
+    let mut sha1 = [0u8; 20];
+    let mut size = sha1.len() as u32;
+    unsafe {
+        CryptHashCertificate2(
+            windows::core::w!("SHA1"),
+            0,
+            None,
+            Some(encoded),
+            Some(sha1.as_mut_ptr()),
+            &mut size,
+        )
+    }
+    .map_err(|_| InspectionError::SignerUnavailable)?;
+    if size != sha1.len() as u32 {
+        return Err(InspectionError::SignerUnavailable);
+    }
+    Ok((SignerFingerprint(fingerprint), sha1))
 }
 
 #[cfg(test)]

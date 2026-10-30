@@ -80,10 +80,17 @@ Dドライブの開発版DLLで階層検査が成功し、未信頼の自己署�
 DLLパス、版名、実DLLのSHA-256と照合する。ハッシュは保持中のDLL handleを
 最大64 MiBまで逐次読み、Windows CNGで計算する。UTF-8 BOMは受け入れ、未知・重複
 項目、不正ハッシュや不一致は拒否する。記録のsignerThumbprintは形式のみを検査し、
-証明書との一致や署名の信頼は別の`inspect_signer`で扱う。
+証明書との一致は別の診断入口`observe_receipt_signer`で確認できる。
+この入口はWinTrustが報告する署名者の証明書SHA-1と記録を照合し、
+検査したファイルが保持中のDLLと同一file IDであることを確認する。
+失敗したWinTrustの状態から署名者が得られない場合も拒否する。
+成功しても返すWindows信頼状態を確認できるだけで、SHA-1の一致は信頼や
+実行・登録の許可にならない。製品向けの署名検査`inspect_signer`は、
+従来どおりWinTrustの成功と指定SHA-256指紋の両方を要求する。
 receipt保持後の署名検査も可能である。配置ディレクトリの余分な項目、依存DLL、
 実行中process、製品の信頼設定はこの入口では検査しない。
 標準SHA-256試験値、不正な記録、Dドライブの実DLLとreceiptの照合を確認した。
+自己署名DLLでも記録の指紋との一致と不一致の拒否を確認し、信頼検査は拒否した。
 
 `PinnedProcess::observed_image_path`は、既に固定した生存process handleからWindowsの
 `QueryFullProcessImageNameW`でWin32形式のパスを取得する。取得前後にprocess生存と
