@@ -17,6 +17,7 @@ use windows::Win32::{
 struct Actions {
     save: Cell<bool>,
     key_save: Cell<bool>,
+    key_delete: Cell<bool>,
     close: Cell<bool>,
 }
 struct View {
@@ -27,6 +28,7 @@ struct View {
     save: HWND,
     secret: HWND,
     key_save: HWND,
+    key_delete: HWND,
     status: HWND,
     actions: Rc<Actions>,
 }
@@ -63,6 +65,10 @@ unsafe extern "system" fn procedure(
             }
             if message == WM_COMMAND && key.0 & 0xffff == 3 && key.0 >> 16 == 0 {
                 (*pointer).key_save.set(true);
+                return LRESULT(0);
+            }
+            if message == WM_COMMAND && key.0 & 0xffff == 4 && key.0 >> 16 == 0 {
+                (*pointer).key_delete.set(true);
                 return LRESULT(0);
             }
         }
@@ -146,6 +152,7 @@ impl View {
                 save: HWND::default(),
                 secret: HWND::default(),
                 key_save: HWND::default(),
+                key_delete: HWND::default(),
                 status: HWND::default(),
                 actions,
             };
@@ -242,6 +249,7 @@ impl View {
             )?; // ES_PASSWORD | ES_AUTOHSCROLL
             SendMessageW(view.secret, 0x00c5, Some(WPARAM(2560)), Some(LPARAM(0)));
             view.key_save = child(w!("BUTTON"), "キーを保存", WS_TABSTOP, 430, 270, 130, 30, 3)?;
+            view.key_delete = child(w!("BUTTON"), "キーを削除", WS_TABSTOP, 275, 270, 130, 30, 4)?;
             child(
                 w!("STATIC"),
                 "この PC の現在ユーザーのキーを置き換えます。",
@@ -273,6 +281,12 @@ impl View {
     }
 }
 
+#[derive(Clone, Copy)]
+enum KeyOperation {
+    Save,
+    Delete,
+}
+
 pub fn run(path: PathBuf) -> Result<(), &'static str> {
     let mut baseline =
         Settings::load(&path).map_err(|_| "settings unavailable; run settings-init first")?;
@@ -283,7 +297,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
     );
     let view = View::new(&baseline, true).map_err(|_| "settings window unavailable")?;
     let mut pending: Option<(SettingsSaveTask, Settings)> = None;
-    let mut key_pending: Option<CredentialTask> = None;
+    let mut key_pending: Option<(CredentialTask, KeyOperation)> = None;
     let mut settings_conflict = false;
     let mut message = MSG::default();
     loop {
@@ -338,7 +352,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
             match read_secret(view.secret) {
                 Ok(secret) => match CredentialTask::save(authority.clone(), secret) {
                     Ok(task) => {
-                        key_pending = Some(task);
+                        key_pending = Some((task, KeyOperation::Save));
                         set_text(view.secret, "");
                         set_text(view.status, "キーを保存中…");
                     }
@@ -348,6 +362,22 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                     view.status,
                     "キーは空白・改行なしの半角文字で入力してください。",
                 ),
+            }
+        }
+        if view.actions.key_delete.replace(false) && pending.is_none() && key_pending.is_none() {
+            // Default to No. Only this explicit confirmation can start deletion.
+            let confirmed = unsafe {
+                MessageBoxW(Some(view.hwnd), w!("この PC の現在ユーザーの Sumibi API キーを削除します。\n接続先とモデルの設定は残ります。削除しますか？"), w!("API キーの削除"), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2)
+            } == IDYES;
+            if confirmed {
+                match CredentialTask::delete(authority.clone()) {
+                    Ok(task) => {
+                        key_pending = Some((task, KeyOperation::Delete));
+                        set_text(view.secret, "");
+                        set_text(view.status, "キーを削除中…");
+                    }
+                    Err(_) => set_text(view.status, "キーの削除処理を開始できませんでした。"),
+                }
             }
         }
         if let Some((task, _)) = pending.as_mut() {
@@ -383,25 +413,34 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                 }
             }
         }
-        if let Some(task) = key_pending.as_mut() {
+        if let Some((task, operation)) = key_pending.as_mut() {
             if let Some(result) = task.try_take() {
+                let operation = *operation;
                 key_pending = None;
-                match result {
-                    Ok(update) if update.outcome().is_ok() => set_text(
+                match (operation, result) {
+                    (KeyOperation::Save, Ok(update)) if update.outcome().is_ok() => set_text(
                         view.status,
                         "キーを保存しました。送信への同意は別途必要です。",
                     ),
-                    Ok(_) => set_text(
+                    (KeyOperation::Delete, Ok(update)) if update.outcome().is_ok() => {
+                        set_text(view.status, "キーを削除しました。設定は残っています。")
+                    }
+                    (KeyOperation::Save, Ok(_)) => set_text(
                         view.status,
                         "キーを保存できませんでした。もう一度入力してください。",
                     ),
-                    Err(_) => set_text(view.status, "キーの保存結果を確認できませんでした。"),
+                    (KeyOperation::Delete, Ok(_)) => set_text(
+                        view.status,
+                        "キーを削除できませんでした。もう一度お試しください。",
+                    ),
+                    (_, Err(_)) => set_text(view.status, "キー操作の結果を確認できませんでした。"),
                 }
             }
         }
         unsafe {
             let idle = pending.is_none() && key_pending.is_none();
             let _ = EnableWindow(view.key_save, idle);
+            let _ = EnableWindow(view.key_delete, idle);
             let _ = EnableWindow(view.secret, idle);
             let _ = EnableWindow(
                 view.save,

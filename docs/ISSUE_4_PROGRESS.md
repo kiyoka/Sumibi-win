@@ -100,6 +100,9 @@ UIからの再同意は残る。
 空白・改行・非ASCII・長さ超過を保存前に拒否し、保存開始後は入力欄を空にする。
 保存済みキーは読み取って表示しない。画面の表示確認と入力検査の単体試験を行い、
 画面確認では保存を実行せず、既存の実キーを変更していない。
+キー削除ボタンと「いいえ」を既定とする確認を追加し、既存の削除workerへ接続した。
+画面上は配置確認のみ行い、現在ユーザーの保存済みキーは削除していない。
+保存・削除の進行中は設定保存とキー操作を無効にし、終了操作も完了を待つ。
 送信同意・稼働中の製品Brokerへの接続と常駐起動は引き続き未接続。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
