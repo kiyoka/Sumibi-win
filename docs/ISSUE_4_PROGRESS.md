@@ -25,6 +25,14 @@
 残りを送らない。これにより送信中のpolicy guardを期限内に解放できるようにした
 （OSの書込からの復帰遅延は別途あり得る）。製品HTTPSへの適用は今後必要。
 
+Mac版の固定コミットを基準に、初回変換用のChat Completions互換JSON生成と
+応答からの候補抽出を追加した。モデルは明示指定し、原文の書記素数を1000以下、
+IPC側のUTF-16上限も守る。応答は完全な1候補JSON、完了理由stop、拒否なしに限る。
+Mac版が許す通常文字列や部分JSONは現段階では受け入れない。これは通信を行わない
+純粋な処理であり、辞書・追加候補・製品HTTPS・同意UIとの接続は未実装。
+参照: [Mac版クライアント](https://github.com/kiyoka/Sumibi-mac/blob/553c69021eda7a8a5944d8748357f3790cc2f45c/Sources/SumibiCore/OpenAICompatibleClient.swift)、
+[プロンプト](https://github.com/kiyoka/Sumibi-mac/blob/553c69021eda7a8a5944d8748357f3790cc2f45c/Sources/SumibiCore/Conversion.swift)。
+
 2026-10-30: Host署名確認の前段として、WindowsのオフラインAuthenticode署名検査を
 追加した。署名済み`vswhere.exe`と未署名テスト実行ファイル、相対パス・UNCの拒否を
 このPCで確認した。発行者の特定、親ACL、実行中イメージとの同一性、オンライン

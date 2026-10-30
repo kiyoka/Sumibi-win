@@ -86,9 +86,11 @@ dependencies = [
 name = "sumibi-host"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "sumibi-ipc",
  "sumibi-protocol",
+ "unicode-segmentation",
  "windows",
 ]
 
