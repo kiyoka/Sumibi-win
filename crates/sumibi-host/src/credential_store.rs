@@ -1,7 +1,106 @@
 //! Host-only bridge to Windows Credential Manager. Consent remains separate.
 use crate::manual::Credential;
 use crate::policy::{ChangeError, PolicyAuthority, PolicyVersion};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
 use sumibi_credentials::StoreError;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReloadTaskError {
+    Busy,
+    Spawn,
+    WorkerFailed,
+    Policy(ChangeError),
+}
+
+/// Owned receipt returned to the Broker thread after the storage worker exits.
+#[must_use = "publish the policy version and check the storage outcome"]
+pub struct OwnedCredentialUpdate {
+    authority: Arc<PolicyAuthority>,
+    version: PolicyVersion,
+    outcome: Result<(), StoreError>,
+}
+impl OwnedCredentialUpdate {
+    pub fn version(&self) -> PolicyVersion {
+        self.version
+    }
+    pub fn outcome(&self) -> Result<(), StoreError> {
+        self.outcome
+    }
+    pub(crate) fn belongs_to(&self, authority: &PolicyAuthority) -> bool {
+        std::ptr::eq(Arc::as_ptr(&self.authority), authority)
+    }
+}
+
+/// One outstanding credential reload per authority. Dropping this task does
+/// not cancel an already-started store operation; the Broker must continue
+/// publishing policy changes even if the settings UI closes.
+#[must_use = "poll the task and publish its returned update"]
+pub struct CredentialReloadTask {
+    worker: Option<JoinHandle<Result<OwnedCredentialUpdate, ReloadTaskError>>>,
+}
+impl CredentialReloadTask {
+    pub fn start(authority: Arc<PolicyAuthority>) -> Result<Self, ReloadTaskError> {
+        Self::start_with(authority, load_credential)
+    }
+
+    fn start_with(
+        authority: Arc<PolicyAuthority>,
+        operation: impl FnOnce() -> Result<Option<Credential>, StoreError> + Send + 'static,
+    ) -> Result<Self, ReloadTaskError> {
+        if !authority.reserve_credential_reload() {
+            return Err(ReloadTaskError::Busy);
+        }
+        let worker_authority = authority.clone();
+        let result = thread::Builder::new()
+            .name("sumibi-credential-reload".into())
+            .spawn(move || {
+                struct Reservation(Arc<PolicyAuthority>);
+                impl Drop for Reservation {
+                    fn drop(&mut self) {
+                        self.0.release_credential_reload();
+                    }
+                }
+                let _reservation = Reservation(worker_authority.clone());
+                let (version, outcome) = worker_authority
+                    .update_stored_credential(operation)
+                    .map_err(ReloadTaskError::Policy)?;
+                Ok(OwnedCredentialUpdate {
+                    authority: worker_authority,
+                    version,
+                    outcome,
+                })
+            });
+        match result {
+            Ok(worker) => Ok(Self {
+                worker: Some(worker),
+            }),
+            Err(_) => {
+                authority.release_credential_reload();
+                Err(ReloadTaskError::Spawn)
+            }
+        }
+    }
+
+    /// Nonblocking poll. A completed worker is consumed exactly once.
+    pub fn try_take(&mut self) -> Option<Result<OwnedCredentialUpdate, ReloadTaskError>> {
+        if !self.worker.as_ref()?.is_finished() {
+            return None;
+        }
+        Some(
+            self.worker
+                .take()
+                .unwrap()
+                .join()
+                .unwrap_or(Err(ReloadTaskError::WorkerFailed)),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_fixture(authority: Arc<PolicyAuthority>) -> Result<Self, ReloadTaskError> {
+        Self::start_with(authority, || Err(StoreError::Unavailable))
+    }
+}
 
 /// Both success and store failure carry a policy version that must be
 /// published to Broker clients before a settings UI reports completion.
@@ -85,6 +184,55 @@ pub fn load_credential() -> Result<Option<Credential>, StoreError> {
 mod tests {
     use super::*;
     use crate::manual::{Destination, PolicySource, Scheme};
+
+    #[test]
+    fn reload_worker_is_bounded_and_returns_an_owned_failure_receipt() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        let destination = Destination::new(Scheme::Https, "example.test", 443, "/v1").unwrap();
+        let authority = Arc::new(PolicyAuthority::new(destination.clone()));
+        authority
+            .replace_credential(Credential::new("old-key".into()))
+            .unwrap();
+        let old = authority.grant_manual_consent(&destination).unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let mut task = CredentialReloadTask::start_with(authority.clone(), move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            Err(StoreError::Unavailable)
+        })
+        .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(task.try_take().is_none());
+        assert!(matches!(
+            CredentialReloadTask::start_with(authority.clone(), || Ok(None)),
+            Err(ReloadTaskError::Busy)
+        ));
+        release_tx.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let update = loop {
+            if let Some(result) = task.try_take() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert_eq!(update.outcome(), Err(StoreError::Unavailable));
+        assert_eq!(update.version().authorization, old.authorization + 1);
+        assert!(update.belongs_to(&authority));
+        assert!(!authority.snapshot().unwrap().allowed);
+        assert!(task.try_take().is_none());
+        let mut next = CredentialReloadTask::start_with(authority.clone(), || Ok(None)).unwrap();
+        loop {
+            if let Some(result) = next.try_take() {
+                assert!(result.unwrap().outcome().is_ok());
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
 
     #[test]
     fn storage_failure_invalidates_existing_consent_and_publishes_version() {

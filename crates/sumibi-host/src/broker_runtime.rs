@@ -2246,6 +2246,7 @@ mod tests {
             return;
         }
         let (source, destination) = source();
+        let source = Arc::new(source);
         source
             .replace_credential(Credential::new("fixture".into()))
             .unwrap();
@@ -2321,6 +2322,27 @@ mod tests {
         assert!(!acknowledgment.current.allowed);
         assert!(
             matches!(read_frame(&mut client, &stop, deadline).message, message::Message::PolicyChanged(policy) if policy == acknowledgment.current)
+        );
+        let mut reload =
+            crate::credential_store::CredentialReloadTask::start_fixture(source.clone()).unwrap();
+        let owned = loop {
+            if let Some(result) = reload.try_take() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            owned.outcome(),
+            Err(sumibi_credentials::StoreError::Unavailable)
+        );
+        let receipt = boot
+            .acknowledge_owned_credential_update(&owned, &stop, deadline)
+            .unwrap();
+        assert_eq!(receipt.requested, owned.version());
+        assert!(!receipt.current.allowed);
+        assert!(
+            matches!(read_frame(&mut client, &stop, deadline).message, message::Message::PolicyChanged(policy) if policy == receipt.current)
         );
         assert!(boot
             .shutdown(Instant::now() + Duration::from_secs(1))

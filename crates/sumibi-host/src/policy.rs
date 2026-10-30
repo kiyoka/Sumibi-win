@@ -46,6 +46,8 @@ pub struct SendStartGuard<'a> {
 pub struct PolicyAuthority {
     state: Mutex<PolicySnapshot>,
     changed: Condvar,
+    #[cfg(windows)]
+    credential_reload_active: std::sync::atomic::AtomicBool,
 }
 
 impl PolicyAuthority {
@@ -61,7 +63,27 @@ impl PolicyAuthority {
                 allowed: false,
             }),
             changed: Condvar::new(),
+            #[cfg(windows)]
+            credential_reload_active: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn reserve_credential_reload(&self) -> bool {
+        self.credential_reload_active
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::Acquire,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok()
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn release_credential_reload(&self) {
+        self.credential_reload_active
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 
     /// Public IPC metadata only. Neither the credential nor the destination is

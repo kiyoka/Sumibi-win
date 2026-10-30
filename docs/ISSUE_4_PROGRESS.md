@@ -59,6 +59,10 @@ guardとの順序、失敗時の旧許可の無効化と再同意の必要性を
 設定workerで使い、TSF callbackでは呼ばない。資格情報変更の結果は更新元の
 policyに結び付け、同じBrokerだけが通知・取消workerの終了を確認できる。
 模擬保存失敗後の実pipeへの禁止通知、別policyの拒否、期限切れからの再試行を確認した。
+再読取を設定workerへ移す入口を追加し、同じpolicyの同時再読取を1件に制限した。
+workerの完了を非ブロッキングで取得し、同一policyのBrokerで通知完了を待てる。
+模擬読取失敗をworkerから実pipeへの通知まで確認した。taskの破棄は進行中のOS読取を
+取消さないため、Broker側は引き続きpolicy変更を配信する必要がある。
 製品UI・起動時読取からこの完了待ちまでの接続は未実装で、実キーの登録は行っていない。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
