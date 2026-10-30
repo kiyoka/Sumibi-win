@@ -75,6 +75,16 @@ TrustedInstallerに限定し、それ以外への危険な許可を拒否する�
 Dドライブの開発版DLLで階層検査が成功し、未信頼の自己署名は署名検査で拒否された。
 信頼された製品署名・Hostを使った結合成功はまだ確認していない。
 
+`DevelopmentPlacement::inspect_receipt`は開発版TIPに限り、保護ACL付きの
+`staging.json`をサイズ上限16 KiBで開いて保持し、既知の項目・型・目的・登録未実施、
+DLLパス、版名、実DLLのSHA-256と照合する。ハッシュは保持中のDLL handleを
+最大64 MiBまで逐次読み、Windows CNGで計算する。UTF-8 BOMは受け入れ、未知・重複
+項目、不正ハッシュや不一致は拒否する。記録のsignerThumbprintは形式のみを検査し、
+証明書との一致や署名の信頼は別の`inspect_signer`で扱う。
+receipt保持後の署名検査も可能である。配置ディレクトリの余分な項目、依存DLL、
+実行中process、製品の信頼設定はこの入口では検査しない。
+標準SHA-256試験値、不正な記録、Dドライブの実DLLとreceiptの照合を確認した。
+
 `PinnedProcess::observed_image_path`は、既に固定した生存process handleからWindowsの
 `QueryFullProcessImageNameW`でWin32形式のパスを取得する。取得前後にprocess生存と
 tokenの一致を確認し、空・相対・不正な長さの結果を拒否する。これは同期照会なので
@@ -102,3 +112,4 @@ AppContainer等の非対応環境ではスキップするため、成功表示�
 開いているファイルのID: [FILE_ID_INFO](https://learn.microsoft.com/windows/win32/api/winbase/ns-winbase-file_id_info)。
 ACL取得と構造: [GetSecurityInfo](https://learn.microsoft.com/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo)、
 [ACCESS_ALLOWED_ACE](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-access_allowed_ace)。
+逐次ハッシュ: [BCryptCreateHash](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptcreatehash)。

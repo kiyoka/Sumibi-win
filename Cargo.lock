@@ -96,6 +96,8 @@ dependencies = [
 name = "sumibi-ipc"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "sumibi-protocol",
  "windows",
 ]
