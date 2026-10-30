@@ -1,9 +1,14 @@
-//! Bounded transport framing for the future TIP/Broker connection.
+//! Bounded framing, typed messages and client ordering for TIP/Broker IPC.
 //!
-//! This layer treats each body as opaque UTF-8. JSON syntax, protocol versions,
-//! request identity, peer authentication and authorization belong to later
-//! layers. Never dispatch a body directly as an authorized conversion request.
+//! The framing decoder treats bodies as opaque UTF-8. `message` validates JSON;
+//! `session` enforces ordering and request lifetimes. Neither verifies an OS
+//! peer: a transport must authenticate both processes before exchanging frames.
 #![forbid(unsafe_code)]
+
+pub mod broker_session;
+pub mod message;
+pub mod policy_fanout;
+pub mod session;
 
 /// Maximum body length in bytes, independent of input and candidate limits.
 pub const MAX_FRAME_BYTES: usize = 256 * 1024;

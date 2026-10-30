@@ -3,6 +3,7 @@
 use crate::com::{boundary, ObjectLease};
 use crate::spike::Controller;
 use std::rc::{Rc, Weak};
+use std::thread::{self, ThreadId};
 use windows::core::{implement, Interface, Ref, Result};
 use windows::Win32::UI::TextServices::*;
 
@@ -28,15 +29,17 @@ impl Drop for Subscription {
     }
 }
 
-#[implement(ITfTextEditSink, ITfThreadMgrEventSink)]
+#[implement(ITfTextEditSink, ITfThreadMgrEventSink, ITfCompartmentEventSink)]
 struct Observer {
     state: Weak<Controller>,
+    owner: ThreadId,
     _lease: ObjectLease,
 }
 
 pub(crate) fn manager_sink(state: &Rc<Controller>) -> ITfThreadMgrEventSink {
     Observer {
         state: Rc::downgrade(state),
+        owner: state.owner,
         _lease: ObjectLease::new(),
     }
     .into()
@@ -49,6 +52,7 @@ pub(crate) fn subscribe(
 ) -> Result<Vec<Subscription>> {
     let sink = windows::core::ComObject::new(Observer {
         state: Rc::downgrade(state),
+        owner: state.owner,
         _lease: ObjectLease::new(),
     });
     let mut subscriptions = Vec::new();
@@ -63,6 +67,21 @@ pub(crate) fn subscribe(
             source,
             cookie: Some(cookie),
         });
+        let compartments: ITfCompartmentMgr = context.cast()?;
+        for guid in [
+            GUID_COMPARTMENT_KEYBOARD_DISABLED,
+            GUID_COMPARTMENT_EMPTYCONTEXT,
+        ] {
+            let source: ITfSource = compartments.GetCompartment(&guid)?.cast()?;
+            let cookie = source.AdviseSink(
+                &ITfCompartmentEventSink::IID,
+                &sink.to_interface::<ITfCompartmentEventSink>(),
+            )?;
+            subscriptions.push(Subscription {
+                source,
+                cookie: Some(cookie),
+            });
+        }
         let source: ITfSource = manager.cast()?;
         let cookie = source.AdviseSink(
             &ITfThreadMgrEventSink::IID,
@@ -84,7 +103,7 @@ impl ITfTextEditSink_Impl for Observer_Impl {
         record: Ref<ITfEditRecord>,
     ) -> Result<()> {
         boundary(|| {
-            let Some(state) = self.state.upgrade() else {
+            let Some(state) = self.state()? else {
                 return Ok(());
             };
             if !state.observes(context.ok()?)? {
@@ -96,7 +115,10 @@ impl ITfTextEditSink_Impl for Observer_Impl {
                 if record.GetSelectionStatus()?.as_bool() {
                     true
                 } else {
-                    let ranges = record.GetTextAndPropertyUpdates(TF_GTP_INCL_TEXT, &[])?;
+                    let ranges = record.GetTextAndPropertyUpdates(
+                        TF_GTP_INCL_TEXT,
+                        &[&GUID_PROP_INPUTSCOPE, &GUID_PROP_COMPOSING],
+                    )?;
                     let mut slot = [None];
                     let mut fetched = 0;
                     ranges.Next(&mut slot, &mut fetched)?;
@@ -119,7 +141,7 @@ impl ITfThreadMgrEventSink_Impl for Observer_Impl {
     }
     fn OnSetFocus(&self, focus: Ref<ITfDocumentMgr>, _: Ref<ITfDocumentMgr>) -> Result<()> {
         boundary(|| {
-            if let Some(state) = self.state.upgrade() {
+            if let Some(state) = self.state()? {
                 state.check_thread()?;
                 // OnSetFocus may precede the manager's GetFocus update. Use
                 // the notification's new document, never the cached old focus.
@@ -139,10 +161,26 @@ impl ITfThreadMgrEventSink_Impl for Observer_Impl {
     }
 }
 impl Observer_Impl {
+    fn state(&self) -> Result<Option<Rc<Controller>>> {
+        if self.owner != thread::current().id() {
+            return Err(windows::Win32::Foundation::RPC_E_WRONG_THREAD.into());
+        }
+        Ok(self.state.upgrade())
+    }
     fn check_focus(&self) -> Result<()> {
         boundary(|| {
-            if let Some(state) = self.state.upgrade() {
+            if let Some(state) = self.state()? {
                 state.check_focus_notification()?;
+            }
+            Ok(())
+        })
+    }
+}
+impl ITfCompartmentEventSink_Impl for Observer_Impl {
+    fn OnChange(&self, _: *const windows::core::GUID) -> Result<()> {
+        boundary(|| {
+            if let Some(state) = self.state()? {
+                state.invalidate(true)?;
             }
             Ok(())
         })

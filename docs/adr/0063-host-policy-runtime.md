@@ -1,0 +1,149 @@
+# ADR 0063: Host の政策配送実行部
+
+2026-10-26 / Issue #4 / PR #10。状態: 部分実装。
+
+## 実装した境界
+
+`BrokerPolicyRuntime`は一つのBroker起動IDについて、Hostの`PolicyAuthority`、
+受付ゲート、`PolicyFanout`、`BrokerPolicyRelay`、認証済みpipeと単調増加する
+接続keyを同じworker側で扱う。OS peer認証とHelloの読取は呼出し側が済ませる。
+Readyを完全に書いてから接続を有効にし、HelloやReadyが失敗した試行のkeyも
+再利用しない。
+
+`reserve`はOS accept後、Helloを読む前に接続keyを確保する。未完了の
+Helloを持つpipeは要求を受け付けない。設定変更を公開した場合は、通知の
+宛先にならないこのpipeを実際に閉じてから配送完了を返す。keyは次の接続に
+再利用しない。製品のaccept loopは各accept直後に`reserve`を呼ぶ必要がある。
+OS accept後、Helloを処理する前にHost政策が変わった試行はReadyを出さずに
+閉じ、公開後の新しい接続だけが新版のReadyを受け取ることを実pipeで確認した。
+
+Hostの最新政策版を公開すると、退役先のpipeを閉じ、生存先の通知を有限な
+`WriteBatch`で並行開始する。各接続の書込完了だけをFanoutと配送receiptへ
+報告する。失敗先はFanoutから退役させ、OS pipeを実際に閉じてからreceiptを
+進める。失効で取り消した要求は接続keyと要求番号の組で呼出し側へ返す。
+政策公開の内部状態や待機処理が失敗した場合は全接続を閉じ、実行部を終端する。
+
+要求frameを受ける入口はHostの政策元を受付前とConvert受付直後に読み直す。
+Relayでまだ公開されていない変更があれば、そのpipeを閉じて旧本文を渡さない。
+古い要求を新版で自動再送しない。Host内の実pipe検査で2接続への許可・失効、
+片側切断、Ready失敗、誤ったHello、未公開変更、終端失敗を確認した。
+同じclient寿命IDで再接続した場合も、旧世代Helloと既に受け付けた要求番号を
+拒否し、新しい世代の単調増加した要求だけを受け付けた。未来IDの不正Cancelは
+その接続だけを退役させ、他方の保留要求と次要求を維持した。
+
+登録を要しない`policy-runtime`診断モードで、製品Host EXEから同じ実行部を
+呼ぶ。既定Hostはモードを拒否し、`spike`ビルドだけが起動する。親から
+認証済みの2 pipeを接続し、Readyの拒否版、許可版、Convert受付、失効と
+該当要求の取消を実子process越しに検査する。2通りのpipe割当順と親handleの
+回収も確認する。資格情報は診断専用の固定値であり、HTTP送信は行わない。
+
+Worker完了の公開入口はBroker起動ID・接続key・要求番号・政策版・完了時刻を
+`ReplyContext`として受け取る。別Brokerの遅延完了を拒否し、Hostの政策元と
+Broker受付ゲートのguardを結果frameの有限な書込が終わるまで保持する。
+書込の許容期限は開始から最大500ms。失効が先なら旧版の結果を出さず、
+書込が先なら失効側がguardの解放を待つ。固定エラーも同じ境界で公開し、
+長すぎる期限は要求を消費する前に拒否する。
+書込失敗はその接続だけを閉じる。実pipe検査で成功結果、固定エラー、
+失効後の旧結果拒否と別Brokerの完了拒否を確認した。診断子processでも
+一方の要求へ成功結果を返し、他方の保留要求だけを失効時に取り消す。
+結果書込に失敗した接続だけを閉じ、他方の結果を維持することも実pipeで確認。
+政策元そのものが読取不能になった場合は全接続を閉じて実行部を終端する。
+期限timerの入口は該当接続の要求番号を返し、呼出し側がworkerを取り消せる。
+期限後の完了は結果frameを出さず、同じ接続の次の単調増加した要求を維持する。
+切断入口は、その接続の保留要求番号を返す。呼出し側は対応workerを取消し、
+旧keyの遅延完了は送らない。他方の認証済みpipeは維持する。
+
+Convert受付後は`JobTicket`を台帳に登録し、同一Broker起動ID・接続key・
+要求番号・政策版をworkerへ渡せる。ticketの専用Stopイベントと取消状態は、
+明示Cancel、期限切れ、失効、切断、不正frame、実行部の終端で更新する。
+別接続のStopには触れない。正常に配送された結果は台帳から外す。
+実worker側がticketのStopをI/O待機に組み込む接続はまだない。
+送信許可にはticketごとのmutexも使用する。取消はStopイベントを先に通知して
+待機中のI/Oを起こし、送信書込と同じmutexを取得してから取消を確定する。
+このため、切断が先に確定した場合は旧ticketから本文を送れず、書込が先なら
+切断側がその有限な書込を待つ。実pipe上の競合検査で確認した。
+
+`FrameInbox`はPipeの1回のReadに複数frameが入った場合の未読suffixを保持する。
+Hello後の連結要求をHostのactive接続へ引き継ぎ、不正本文はそのpipeを退役させる。
+有限の`ReadBatch`は最大8本の非同期Readを先に開始し、完了可能な接続と
+開始失敗を個別に回収する。子processの2接続診断ではHelloとConvertをそれぞれ
+並行受信する。全接続から1frameずつ集める有限診断であり、製品の継続する
+I/O調停ループの代わりではない。
+`poll_active_message`はキュー済みbyteだけを1接続から読み、未完成frameを
+接続別に保持して別接続の処理へ進める。未完成frameが10秒残ればその接続を
+退役させ、アイドル接続は期限切れにしない。子process診断で失効・再許可後の
+追加要求を同じpipeで受け付け、結果を配送した。設定変更・新規accept・
+実worker完了を調停する製品の継続ループはまだない。
+`poll_reserved_hello`はHelloの未完成chunkを保持し、その間にHost政策公開を
+処理できる。2本のHelloが部分受信中に変更した場合、両pipeを閉じてから
+配送receiptを完了し、後の新接続だけが新版Readyを受けた。Convertのchunk間に
+失効した旧本文も要求として受理せず、そのpipeだけを退役させた。
+OS accept時にはFanoutにも接続keyを予約する。後のHelloが先に完成しても先の
+予約keyを有効化でき、閉じた予約keyは再利用しない。activeとHello待ちは
+合わせて最大8本。ReadyはHost政策元のguardを最大500msの書込まで保持し、
+書込前に変更が確定した旧版Readyを拒否する。
+`poll_once`はHost公開、期限切れ、Hello、active frameを順に1件進める。
+active接続は巡回し、同一pipeに連結された後続frameがあっても他の接続を
+先に読める。子process診断の再許可後要求もこの入口を通した。
+`BrokerWorkers`は最大8件のEXE workerを所有し、`JobTicket`のStopを渡す。
+完了はBroker起動ID・接続key・要求番号・政策版・完了時刻を伴って元の
+`BrokerPolicyRuntime`へ戻す。取消済み完了は配送前に破棄し、成功と固定エラーは
+同じ政策・期限・有界pipe書込の入口へ渡す。診断の実pipeからloopback HTTPを
+経た成功結果と、次要求の固定エラーを検査した。製品HTTPS workerは未接続。
+ticketの期限はConvert受理時点から計算し、workerが後から延長する要求は
+送信前に拒否する。期限後のworker投入も拒否する。診断HTTPは応答読取を
+最大50msの間隔で区切ってticketの取消を確認する。失効中にHTTP応答を待つ
+workerを回収し、旧結果をpipeへ戻さない実I/O検査を通した。TCP接続中と
+書込中は引き続き有限期限で抑え、製品HTTPS adapterでは明示的な取消待機を要する。
+`acknowledge_version`は設定操作が返した版を受け取り、Broker受付ゲートの公開と
+対象pipeへの通知・切断が完了した後に結果を返す。より新しい版へ集約した場合は
+`Superseded`で、古い版そのものを届けたとは報告しない。未来版やゼロ版は拒否し、
+政策元が読めなければ実行部を終端する。このreceiptだけでは取消済みworkerの
+OS I/O終了を証明しないため、製品設定UIの操作完了は有限期限のworker回収も待つ。
+設定UIからの呼出しは今後接続する。
+所有側の`BrokerWorkLoop::acknowledge_version`はこのreceipt後に取消済みworkerだけを
+有限期限で回収し、残存すればTimeoutを返す。通知が先に配送済みの場合も同じ条件を
+適用する。回収したworkerの遅延完了は次の所有側pollで破棄し、再許可後の別要求へ
+誤配送しない。設定UIはRuntime単独のreceiptではなくこの所有側入口を使う。
+workerの`completed_at`が要求期限内でも、Host回収後の実際の結果書込が期限後なら
+配送しない。書込期限も元の要求期限で切り、途中の失敗先は接続ごと閉じる。
+完了の政策版がticketと一致しなければ、その接続を退役させる。
+`BrokerWorkLoop`は所有スレッドで政策公開を先に行い、取消済み完了を回収してから
+次のpipe frameを一件進める。受け付け後にworker容量が足りなければ固定エラーを
+元のpipeへ返して要求を終了する。実pipeで結果配送、失効優先、取消済みworkerが
+全8枠を占めた時の拒否を確認した。子Broker診断の再許可経路もこの入口を使う。
+全8枠を回収した後は同じpipeの次要求を受けて結果を返し、容量拒否が接続を
+恒久的に壊さないことを確認した。
+認証pipe、所有側ループ、loopback HTTP worker、元のpipeへの結果配送と固定エラー、
+応答待機中の失効も同じ入口を通す結合検査にした。
+別接続の分割Helloが残っていても、既存接続のworker結果を先に返し、その後に
+Helloを完成させてReadyを届ける所有側ループの実pipe検査を通した。
+`BrokerWorkLoop::accept`はOS認証済みpipeのkey予約前に未公開政策を配送する。
+診断子Brokerの2接続受付もこの入口を使う。継続する製品acceptは別途接続する。
+`advance_manual`はRuntimeとworkerが同じ`PolicyAuthority`を参照することを
+ポインタ同一性で確認してから、現行宛先をworkerへ渡す。異なる政策元が偶然同じ版を
+持っていても送信できない。workerは`convert_ordered`で許可、資格情報の同一性、
+送信開始順序、取消と期限を再検査する。実HTTP結合検査をこの入口に通した。
+同じ接続の次要求を実HTTP 503へ送り、固定の`Unavailable`をそのpipeへ返す
+失敗経路も確認した。
+設定先の変更後はworkerが現行宛先を取り直す。最新版の政策通知後の要求が
+新しいloopback HTTP宛先へ届き、旧宛先に依存しない実I/O検査を通した。
+
+## 残る境界
+
+この実行部は製品Host EXEの診断分岐にだけ接続した。継続する製品用の
+accept/read/worker結果ループはまだない。診断では各OS acceptの直後に
+`reserve`を呼び、2本目の接続を待つ間も1本目のkeyを固定する。
+複数Helloと設定変更の順序は実pipeで確認した。異なるTIP processから共有Hostを
+発見・起動する経路、設定UIの完了待機、実worker完了の調停と結果公開、
+所有TSFへの適用前再検査も残る。
+製品の実workerは`JobTicket`台帳にまだ接続していない。各workerがticketの
+StopをI/O待機へ組み込み、取消後に回収されることを確認する必要がある。
+遅延完了はBroker起動IDと接続keyで照合し、別接続へ再配送しない。
+
+政策元の二度の読直しだけでは、外部の設定変更と送信開始を原子的にできない。
+診断loopback HTTPには[ADR 0064](0064-outbound-send-start-order.md)の
+送信開始guardを接続した。製品HTTPS adapterにも同じ順序を適用する必要がある。
+製品の要求受付時は、公開すべきHost変更を
+先に処理し、接続key・世代・政策版・Broker起動IDをworker完了に保持する。
+恒久的なTSF登録と実API送信は今回行っていない。

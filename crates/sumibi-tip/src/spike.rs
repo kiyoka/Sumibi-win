@@ -2,9 +2,21 @@
 //! Never enable this capability in an installed production IME.
 #![allow(non_snake_case)]
 
+pub use crate::broker_spike::{
+    ISpikeBroker, ISpikeBrokerTransport, ISpikeBrokerTransport_Impl, ISpikeBrokerTransport_Vtbl,
+    FUNCTION_TEST_BROKER,
+};
 use crate::com::{boundary, ObjectLease};
 use crate::edit::preview::Preview;
 use crate::edit::{capture_selection, replace_selection, EditPolicy};
+pub use crate::input_spike::ISpikeInputState;
+pub use crate::input_spike::{
+    ISpikeDocumentNavigator, ISpikeInput, ISpikeInputEraser, ISpikeInputMonitor,
+    ISpikeInputPreparer, ISpikeInputSignal, ISpikeInputSignal_Impl, ISpikeInputWriter,
+    ISpikeSelectionEraser, ISpikeTrackedEditor, ISpikeTrackedSelector, FUNCTION_TEST_INPUT,
+    INPUT_APPLIED, INPUT_APPLIED_UNTRACKED, INPUT_NOT_ATTEMPTED, INPUT_UNCERTAIN,
+};
+pub use crate::owned_composition::GUID_SPIKE_COMPOSITION_SINK;
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::rc::{Rc, Weak};
@@ -28,6 +40,12 @@ const CONVERT_KEY: TF_PRESERVEDKEY = TF_PRESERVEDKEY {
     uVKey: 0x4a,
     uModifiers: TF_MOD_CONTROL,
 };
+/// Diagnostic counter only, absent from non-spike builds. No text or reset API.
+/// The caller must retain the loaded module throughout this synchronous call.
+#[no_mangle]
+pub extern "system" fn SumibiSpikeBodyReadCount() -> u64 {
+    crate::edit::body_read_count()
+}
 
 #[implement(ITfFunctionProvider)]
 struct Provider {
@@ -50,6 +68,19 @@ impl ITfFunctionProvider_Impl for Provider_Impl {
             }
             if function.is_null() || iid.is_null() {
                 return Err(E_INVALIDARG.into());
+            }
+            if unsafe { *function } == FUNCTION_TEST_INPUT && unsafe { *iid } == ISpikeInput::IID {
+                result = Some(crate::input_spike::control(
+                    &self.state.upgrade().ok_or(E_ABORT)?,
+                ));
+                return Ok(());
+            }
+            if unsafe { *function } == FUNCTION_TEST_BROKER && unsafe { *iid } == ISpikeBroker::IID
+            {
+                result = Some(crate::broker_spike::control(
+                    &self.state.upgrade().ok_or(E_ABORT)?,
+                ));
+                return Ok(());
             }
             if unsafe { *function } == FUNCTION_TEST_DELAYED
                 && unsafe { *iid } == ISpikeDelayed::IID
@@ -242,9 +273,17 @@ pub(crate) struct Controller {
     last_request: Cell<u64>,
     pending_request: Cell<Option<u64>>,
     request_deadline: Cell<Option<Instant>>,
+    pub(crate) broker: RefCell<Option<Rc<crate::broker_spike::Broker>>>,
+    pub(crate) broker_request_floor: Rc<Cell<u64>>,
 }
 
 struct Busy<'a>(&'a Cell<bool>);
+struct RestoreBusy<'a>(&'a Cell<bool>, bool);
+impl Drop for RestoreBusy<'_> {
+    fn drop(&mut self) {
+        self.0.set(self.1);
+    }
+}
 impl Drop for Busy<'_> {
     fn drop(&mut self) {
         self.0.set(false);
@@ -252,6 +291,10 @@ impl Drop for Busy<'_> {
 }
 
 impl Controller {
+    pub(crate) fn input_owner(&self) -> Result<(ITfThreadMgr, u32)> {
+        self.check_thread()?;
+        Ok((self.manager.clone(), self.client))
+    }
     pub(crate) fn new(manager: &ITfThreadMgr, client: u32) -> Rc<Self> {
         Rc::new(Self {
             owner: thread::current().id(),
@@ -276,6 +319,8 @@ impl Controller {
             last_request: Cell::new(0),
             pending_request: Cell::new(None),
             request_deadline: Cell::new(None),
+            broker: RefCell::new(None),
+            broker_request_floor: Rc::new(Cell::new(0)),
         })
     }
     pub(crate) fn check_thread(&self) -> Result<()> {
@@ -285,7 +330,7 @@ impl Controller {
             Ok(())
         }
     }
-    fn grant(self: &Rc<Self>, context: &ITfContext) -> Result<()> {
+    pub(crate) fn grant(self: &Rc<Self>, context: &ITfContext) -> Result<()> {
         self.check_thread()?;
         if self.busy.replace(true) {
             return Err(E_UNEXPECTED.into());
@@ -324,9 +369,15 @@ impl Controller {
     }
     pub(crate) fn revoke(&self) -> Result<()> {
         self.check_thread()?;
+        let previous_busy = self.busy.replace(true);
+        let _busy = RestoreBusy(&self.busy, previous_busy);
         let mut policy = self.policy.get();
         policy.allowed = false;
         self.policy.set(policy);
+        let broker = self.broker.borrow_mut().take();
+        if let Some(broker) = broker {
+            broker.close();
+        }
         let old = self.granted.borrow_mut().take();
         drop(old);
         let cleanup = self.cancel_preview();
@@ -354,6 +405,10 @@ impl Controller {
     }
     fn cancel_preview(&self) -> Result<()> {
         self.check_thread()?;
+        let broker = self.broker.borrow().clone();
+        if let Some(broker) = broker {
+            broker.cancel(None)?;
+        }
         self.pending_request.set(None);
         self.request_deadline.set(None);
         let pending = self.preview.borrow_mut().take();
@@ -399,6 +454,15 @@ impl Controller {
         {
             return Err(E_ABORT.into());
         }
+        let broker = self.broker.borrow().clone();
+        if let Some(broker) = broker {
+            if broker.pending() {
+                return Err(E_ABORT.into());
+            }
+            self.cancel_preview()?;
+            self.invalidated.set(false);
+            return broker.begin(&self.manager, self.client);
+        }
         let pending = self.preview.borrow_mut().take();
         if let Some(mut pending) = pending {
             if self.invalidated.get() {
@@ -421,7 +485,7 @@ impl Controller {
 
     pub(crate) fn observes(&self, context: &ITfContext) -> Result<bool> {
         self.check_thread()?;
-        if self.busy.get() || self.preview.borrow().is_none() {
+        if self.busy.get() || (self.preview.borrow().is_none() && !self.broker_pending()) {
             return Ok(false);
         }
         let granted = self.granted.borrow().clone();
@@ -474,6 +538,8 @@ impl Controller {
 
     pub(crate) fn invalidate(self: &Rc<Self>, revoke: bool) -> Result<()> {
         self.check_thread()?;
+        let previous_busy = self.busy.replace(true);
+        let _busy = RestoreBusy(&self.busy, previous_busy);
         self.pending_request.set(None);
         self.request_deadline.set(None);
         self.invalidated.set(true);
@@ -481,6 +547,14 @@ impl Controller {
             let mut policy = self.policy.get();
             policy.allowed = false;
             self.policy.set(policy);
+        }
+        let broker = self.broker.borrow().clone();
+        if let Some(broker) = broker {
+            if revoke {
+                broker.close();
+            } else {
+                broker.cancel(None)?;
+            }
         }
         let context = self.preview.borrow().as_ref().map(Preview::context);
         let Some(context) = context else {
@@ -528,7 +602,7 @@ impl Controller {
             || self.busy.get()
             || self.invalidated.get()
             || !self.policy.get().allowed
-            || self.preview.borrow().is_none()
+            || (self.preview.borrow().is_none() && !self.broker_pending())
         {
             return Ok(false);
         }
@@ -557,6 +631,27 @@ impl Controller {
         // Enter confirms the original text, then goes to the host once.
         // Esc consumes the cancellation; neither key applies a conversion.
         Ok(key == 0x1b)
+    }
+    fn broker_pending(&self) -> bool {
+        self.broker
+            .borrow()
+            .as_ref()
+            .is_some_and(|broker| broker.pending())
+    }
+
+    pub(crate) fn complete_broker(
+        &self,
+        request: u64,
+        revision: Revision,
+        text: String,
+    ) -> Result<()> {
+        self.check_thread()?;
+        if self.busy.replace(true) {
+            return Err(E_UNEXPECTED.into());
+        }
+        let _busy = Busy(&self.busy);
+        let broker = self.broker.borrow().clone().ok_or(E_ABORT)?;
+        broker.complete(&self.manager, self.client, request, revision, text)
     }
 }
 

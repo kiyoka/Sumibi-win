@@ -2,6 +2,10 @@
 
 2026-10-21 / 状態: 初期採用案・最小検証済み、製品Broker未実装 / 関連: Issue #1。
 
+Issue #4で追加した固定process handle・トークンの相互検査、8 endpoint上限、
+overlapped I/Oと別プロセス診断は[ADR 0003](0003-pinned-desktop-peers.md)を参照。
+以下の同一プロセスprobeの記録は、追加実装の検証範囲と区別する。
+
 ## 判断
 
 通常デスクトップのTIP/Broker間はローカルnamed pipeを第一候補にする。

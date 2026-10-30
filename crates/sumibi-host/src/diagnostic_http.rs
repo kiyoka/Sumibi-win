@@ -1,0 +1,1009 @@
+//! Deliberately restricted HTTP/1.1 fixture. Only a numeric loopback address
+//! (or the literal localhost mapped to 127.0.0.1) is contacted. This is not the
+//! product's HTTPS/WinHTTP adapter or the external conversion API contract.
+#[cfg(test)]
+use crate::manual::ConversionTransport;
+use crate::manual::{
+    Destination, ManualRequest, OrderedConversionTransport, PolicySource, Scheme, SendAdmission,
+    SendError, SendGate, TransportError,
+};
+use serde_json::{json, Value};
+use std::io::{Read, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use std::time::{Duration, Instant};
+
+const MAX_HEADER_BYTES: usize = 8192;
+const MAX_RESPONSE_BYTES: usize = 8192;
+
+pub struct DiagnosticLoopbackHttp;
+
+/// A local fixture for exercising the first-conversion payload through the
+/// same consent and cancellation boundary. Never contacts a remote service.
+pub struct DiagnosticChatLoopback {
+    model: String,
+}
+impl DiagnosticChatLoopback {
+    pub fn new(model: &str) -> Option<Self> {
+        crate::first_conversion::request_body(model, "fixture").ok()?;
+        Some(Self {
+            model: model.to_owned(),
+        })
+    }
+}
+
+/// Build the diagnostic adapter from the same policy snapshot whose settings
+/// revision the request names. The send gate rechecks that revision under the
+/// authority lock, and the result path rechecks it again after I/O.
+pub fn convert_chat_with_policy(
+    request: ManualRequest<'_>,
+    authority: &crate::policy::PolicyAuthority,
+    admission: &impl SendAdmission,
+) -> Result<String, SendError> {
+    let snapshot = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    if snapshot.settings != request.revision.settings
+        || snapshot.authorization != request.revision.authorization
+    {
+        return Err(SendError::PolicyDenied);
+    }
+    let model = snapshot.model.as_deref().ok_or(SendError::PolicyDenied)?;
+    let adapter = DiagnosticChatLoopback::new(model).ok_or(SendError::InvalidRequest)?;
+    crate::manual::convert_ordered(request, authority, admission, &adapter)
+}
+
+impl OrderedConversionTransport for DiagnosticChatLoopback {
+    fn convert_ordered(
+        &self,
+        destination: &Destination,
+        credential: &str,
+        source: &str,
+        deadline: Instant,
+        gate: &mut dyn SendGate,
+    ) -> Result<String, SendError> {
+        let body = crate::first_conversion::request_body(&self.model, source)
+            .map_err(|_| SendError::InvalidRequest)?;
+        let (address, headers, body) =
+            prepare_body(destination, credential, body).map_err(SendError::Transport)?;
+        if gate.is_cancelled() {
+            return Err(SendError::PolicyDenied);
+        }
+        let mut stream = TcpStream::connect_timeout(
+            &address,
+            remaining(deadline).map_err(SendError::Transport)?,
+        )
+        .map_err(classify_io)
+        .map_err(SendError::Transport)?;
+        if gate.is_cancelled() {
+            return Err(SendError::PolicyDenied);
+        }
+        gate.write_authorized(&mut || {
+            send_request(&mut stream, headers.as_bytes(), &body, deadline)
+        })?;
+        let response = read_response_bytes(&mut stream, deadline, &|| gate.is_cancelled())
+            .map_err(SendError::Transport)?;
+        crate::first_conversion::response_candidate(&response)
+            .map_err(|_| SendError::InvalidResponse)
+    }
+}
+
+#[cfg(test)]
+impl ConversionTransport for DiagnosticLoopbackHttp {
+    fn convert(
+        &self,
+        destination: &Destination,
+        credential: &str,
+        source: &str,
+        deadline: Instant,
+    ) -> Result<String, TransportError> {
+        execute(
+            destination,
+            credential,
+            source,
+            deadline,
+            |stream, headers, body| send_request(stream, headers, body, deadline),
+        )
+    }
+}
+
+impl OrderedConversionTransport for DiagnosticLoopbackHttp {
+    fn convert_ordered(
+        &self,
+        destination: &Destination,
+        credential: &str,
+        source: &str,
+        deadline: Instant,
+        gate: &mut dyn SendGate,
+    ) -> Result<String, SendError> {
+        let (address, headers, body) =
+            prepare(destination, credential, source).map_err(SendError::Transport)?;
+        if gate.is_cancelled() {
+            return Err(SendError::PolicyDenied);
+        }
+        let mut stream = TcpStream::connect_timeout(
+            &address,
+            remaining(deadline).map_err(SendError::Transport)?,
+        )
+        .map_err(classify_io)
+        .map_err(SendError::Transport)?;
+        if gate.is_cancelled() {
+            return Err(SendError::PolicyDenied);
+        }
+        gate.write_authorized(&mut || {
+            send_request(&mut stream, headers.as_bytes(), &body, deadline)
+        })?;
+        read_response(&mut stream, deadline, &|| gate.is_cancelled()).map_err(SendError::Transport)
+    }
+}
+
+#[cfg(test)]
+fn execute<E: From<TransportError>>(
+    destination: &Destination,
+    credential: &str,
+    source: &str,
+    deadline: Instant,
+    send: impl FnOnce(&mut TcpStream, &[u8], &[u8]) -> Result<(), E>,
+) -> Result<String, E> {
+    let (address, headers, body) = prepare(destination, credential, source).map_err(E::from)?;
+    let mut stream = TcpStream::connect_timeout(&address, remaining(deadline).map_err(E::from)?)
+        .map_err(classify_io)
+        .map_err(E::from)?;
+    send(&mut stream, headers.as_bytes(), &body)?;
+    read_response(&mut stream, deadline, &|| false).map_err(E::from)
+}
+
+fn prepare(
+    destination: &Destination,
+    credential: &str,
+    source: &str,
+) -> Result<(SocketAddr, String, Vec<u8>), TransportError> {
+    if !sumibi_protocol::message::valid_text(source) {
+        return Err(TransportError::InvalidRequest);
+    }
+    let body =
+        serde_json::to_vec(&json!({"text": source})).map_err(|_| TransportError::InvalidRequest)?;
+    prepare_body(destination, credential, body)
+}
+
+fn prepare_body(
+    destination: &Destination,
+    credential: &str,
+    body: Vec<u8>,
+) -> Result<(SocketAddr, String, Vec<u8>), TransportError> {
+    if destination.scheme() != Scheme::HttpLoopback
+        || !credential.bytes().all(|byte| byte.is_ascii_graphic())
+        || credential.is_empty()
+    {
+        return Err(TransportError::InvalidRequest);
+    }
+    let address = if destination.host() == "localhost" {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    } else {
+        destination
+            .host()
+            .parse::<IpAddr>()
+            .map_err(|_| TransportError::InvalidRequest)?
+    };
+    if !address.is_loopback() {
+        return Err(TransportError::InvalidRequest);
+    }
+    let host_header = if address.is_ipv6() {
+        format!("[{}]", destination.host())
+    } else {
+        destination.host().to_owned()
+    };
+    let headers = format!(
+            "POST {} HTTP/1.1\r\nHost: {}:{}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            destination.base_path(),
+            host_header,
+            destination.port(),
+            credential,
+            body.len()
+        );
+    Ok((SocketAddr::new(address, destination.port()), headers, body))
+}
+
+fn send_request(
+    stream: &mut TcpStream,
+    headers: &[u8],
+    body: &[u8],
+    deadline: Instant,
+) -> Result<(), TransportError> {
+    write_bounded(headers, deadline, |bytes, timeout| {
+        stream.set_write_timeout(Some(timeout))?;
+        stream.write(bytes)
+    })?;
+    write_bounded(body, deadline, |bytes, timeout| {
+        stream.set_write_timeout(Some(timeout))?;
+        stream.write(bytes)
+    })
+}
+
+// write_all may perform multiple writes with the same per-operation timeout.
+// Recalculate the remaining request budget after every partial write instead.
+fn write_bounded(
+    mut bytes: &[u8],
+    deadline: Instant,
+    mut write: impl FnMut(&[u8], Duration) -> std::io::Result<usize>,
+) -> Result<(), TransportError> {
+    while !bytes.is_empty() {
+        let timeout = remaining(deadline)?;
+        match write(bytes, timeout) {
+            Ok(0) => return Err(TransportError::Connection),
+            Ok(count) if count <= bytes.len() => bytes = &bytes[count..],
+            Ok(_) => return Err(TransportError::Connection),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(classify_io(error)),
+        }
+    }
+    remaining(deadline).map(|_| ())
+}
+
+fn read_response(
+    stream: &mut TcpStream,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<String, TransportError> {
+    let response = read_response_bytes(stream, deadline, cancelled)?;
+    let value: Value =
+        serde_json::from_slice(&response).map_err(|_| TransportError::InvalidResponse)?;
+    let object = value.as_object().ok_or(TransportError::InvalidResponse)?;
+    if object.len() != 1 {
+        return Err(TransportError::InvalidResponse);
+    }
+    object
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or(TransportError::InvalidResponse)
+}
+
+fn read_response_bytes(
+    stream: &mut TcpStream,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, TransportError> {
+    let mut response = Vec::new();
+    let header_end = loop {
+        if let Some(end) = find_header_end(&response) {
+            break end;
+        }
+        if response.len() >= MAX_HEADER_BYTES {
+            return Err(TransportError::ResponseTooLarge);
+        }
+        let mut chunk = [0u8; 1024];
+        let count = read_chunk(stream, &mut chunk, deadline, cancelled)?;
+        if count == 0 {
+            return Err(TransportError::InvalidResponse);
+        }
+        response.extend_from_slice(&chunk[..count]);
+        if response.len() > MAX_HEADER_BYTES + MAX_RESPONSE_BYTES {
+            return Err(TransportError::ResponseTooLarge);
+        }
+    };
+    if header_end > MAX_HEADER_BYTES {
+        return Err(TransportError::ResponseTooLarge);
+    }
+    let length = parse_headers(&response[..header_end])?;
+    if response.len() - header_end > length {
+        return Err(TransportError::InvalidResponse);
+    }
+    while response.len() - header_end < length {
+        let mut chunk = [0u8; 1024];
+        let count = read_chunk(stream, &mut chunk, deadline, cancelled)?;
+        if count == 0 {
+            return Err(TransportError::InvalidResponse);
+        }
+        if response.len() - header_end + count > length {
+            return Err(TransportError::InvalidResponse);
+        }
+        response.extend_from_slice(&chunk[..count]);
+    }
+    if cancelled() {
+        return Err(TransportError::Cancelled);
+    }
+    remaining(deadline)?;
+    Ok(response.split_off(header_end))
+}
+
+fn remaining(deadline: Instant) -> Result<Duration, TransportError> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        Err(TransportError::Timeout)
+    } else {
+        Ok(remaining)
+    }
+}
+fn read_chunk(
+    stream: &mut TcpStream,
+    chunk: &mut [u8],
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<usize, TransportError> {
+    loop {
+        if cancelled() {
+            return Err(TransportError::Cancelled);
+        }
+        let timeout = remaining(deadline)?.min(Duration::from_millis(50));
+        stream
+            .set_read_timeout(Some(timeout))
+            .map_err(classify_io)?;
+        match stream.read(chunk) {
+            Ok(size) => return Ok(size),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) => {}
+            Err(error) => return Err(classify_io(error)),
+        }
+    }
+}
+fn classify_io(error: std::io::Error) -> TransportError {
+    match error.kind() {
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => TransportError::Timeout,
+        _ => TransportError::Connection,
+    }
+}
+fn find_header_end(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .map(|index| index + 4)
+}
+fn parse_headers(header: &[u8]) -> Result<usize, TransportError> {
+    let header = std::str::from_utf8(header).map_err(|_| TransportError::InvalidResponse)?;
+    let mut lines = header
+        .strip_suffix("\r\n\r\n")
+        .ok_or(TransportError::InvalidResponse)?
+        .split("\r\n");
+    let status = lines.next().ok_or(TransportError::InvalidResponse)?;
+    let mut parts = status.splitn(3, ' ');
+    if !matches!(parts.next(), Some("HTTP/1.1" | "HTTP/1.0")) {
+        return Err(TransportError::InvalidResponse);
+    }
+    let code = parts.next().ok_or(TransportError::InvalidResponse)?;
+    if code.len() != 3 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(TransportError::InvalidResponse);
+    }
+    let code: u16 = code.parse().map_err(|_| TransportError::InvalidResponse)?;
+    match code {
+        200 => {}
+        300..=399 => return Err(TransportError::Redirect),
+        401 | 403 => return Err(TransportError::Authentication),
+        429 => return Err(TransportError::RateLimited),
+        _ => return Err(TransportError::Http),
+    }
+    let mut length = None;
+    let mut content_type = false;
+    for line in lines {
+        if line.is_empty() || line.contains(['\r', '\n']) || line.starts_with([' ', '\t']) {
+            return Err(TransportError::InvalidResponse);
+        }
+        let (name, value) = line
+            .split_once(':')
+            .ok_or(TransportError::InvalidResponse)?;
+        let value = value.trim_ascii();
+        if name.eq_ignore_ascii_case("content-length") {
+            if length.is_some() || value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(TransportError::InvalidResponse);
+            }
+            let parsed: usize = value
+                .parse()
+                .map_err(|_| TransportError::ResponseTooLarge)?;
+            if parsed > MAX_RESPONSE_BYTES {
+                return Err(TransportError::ResponseTooLarge);
+            }
+            length = Some(parsed);
+        } else if name.eq_ignore_ascii_case("content-type") {
+            if content_type || !value.eq_ignore_ascii_case("application/json") {
+                return Err(TransportError::InvalidResponse);
+            }
+            content_type = true;
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err(TransportError::InvalidResponse);
+        }
+    }
+    if !content_type {
+        return Err(TransportError::InvalidResponse);
+    }
+    length.ok_or(TransportError::InvalidResponse)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manual::{self, Credential, ManualRequest, SendAdmission, SendError};
+    use crate::policy::PolicyAuthority;
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use sumibi_protocol::message::Revision;
+
+    #[test]
+    fn partial_writes_share_one_deadline_and_stop_after_expiration() {
+        let mut output = Vec::new();
+        let mut calls = 0;
+        write_bounded(
+            b"abcdef",
+            Instant::now() + Duration::from_secs(1),
+            |bytes, _| {
+                calls += 1;
+                if calls == 1 {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let count = bytes.len().min(2);
+                output.extend_from_slice(&bytes[..count]);
+                Ok(count)
+            },
+        )
+        .unwrap();
+        assert_eq!(output, b"abcdef");
+        assert_eq!(calls, 4);
+
+        let mut calls = 0;
+        let result = write_bounded(
+            b"abcdef",
+            Instant::now() + Duration::from_millis(10),
+            |_, _| {
+                calls += 1;
+                thread::sleep(Duration::from_millis(30));
+                Ok(1)
+            },
+        );
+        assert_eq!(result, Err(TransportError::Timeout));
+        assert_eq!(calls, 1);
+        assert_eq!(
+            write_bounded(b"a", Instant::now() + Duration::from_secs(1), |_, _| Ok(0)),
+            Err(TransportError::Connection)
+        );
+    }
+
+    struct Active;
+    impl SendAdmission for Active {
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+        fn write_if_active(
+            &self,
+            write: &mut dyn FnMut() -> Result<(), TransportError>,
+        ) -> Result<(), SendError> {
+            write().map_err(SendError::Transport)
+        }
+    }
+
+    struct Cancellable(Arc<AtomicBool>);
+    impl SendAdmission for Cancellable {
+        fn is_cancelled(&self) -> bool {
+            self.0.load(Ordering::Acquire)
+        }
+        fn write_if_active(
+            &self,
+            write: &mut dyn FnMut() -> Result<(), TransportError>,
+        ) -> Result<(), SendError> {
+            if self.is_cancelled() {
+                Err(SendError::PolicyDenied)
+            } else {
+                write().map_err(SendError::Transport)
+            }
+        }
+    }
+
+    #[test]
+    fn cancellation_releases_a_worker_waiting_for_http_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (received_send, received_receive) = std::sync::mpsc::channel();
+        let (release_send, release_receive) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            let header_end = loop {
+                let size = stream.read(&mut chunk).unwrap();
+                assert!(size > 0);
+                request.extend_from_slice(&chunk[..size]);
+                if let Some(index) = find_header_end(&request) {
+                    break index;
+                }
+            };
+            let headers = std::str::from_utf8(&request[..header_end]).unwrap();
+            let length: usize = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            while request.len() - header_end < length {
+                let size = stream.read(&mut chunk).unwrap();
+                assert!(size > 0);
+                request.extend_from_slice(&chunk[..size]);
+            }
+            received_send.send(()).unwrap();
+            release_receive.recv().unwrap();
+        });
+        let destination =
+            Destination::new(Scheme::HttpLoopback, "127.0.0.1", port, "/convert").unwrap();
+        let authority = Arc::new(PolicyAuthority::new(destination.clone()));
+        authority
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        let version = authority.grant_manual_consent(&destination).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (result_send, result_receive) = std::sync::mpsc::channel();
+        let worker_cancelled = cancelled.clone();
+        let worker = thread::spawn(move || {
+            let result = manual::convert_ordered(
+                ManualRequest {
+                    revision: Revision {
+                        input: 1,
+                        settings: version.settings,
+                        authorization: version.authorization,
+                    },
+                    destination: &destination,
+                    source: "nihongo",
+                    deadline: Instant::now() + Duration::from_secs(2),
+                },
+                &authority,
+                &Cancellable(worker_cancelled),
+                &DiagnosticLoopbackHttp,
+            );
+            result_send.send(result).unwrap();
+        });
+        received_receive
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        cancelled.store(true, Ordering::Release);
+        assert_eq!(
+            result_receive.recv_timeout(Duration::from_millis(500)),
+            Ok(Err(SendError::Transport(TransportError::Cancelled)))
+        );
+        release_send.send(()).unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+
+    fn serve_once(
+        response: Vec<u8>,
+        delay: Duration,
+    ) -> (Destination, thread::JoinHandle<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            let header_end = loop {
+                let count = stream.read(&mut chunk).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&chunk[..count]);
+                if let Some(end) = find_header_end(&request) {
+                    break end;
+                }
+            };
+            let headers = std::str::from_utf8(&request[..header_end]).unwrap();
+            let length: usize = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            while request.len() - header_end < length {
+                let count = stream.read(&mut chunk).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&chunk[..count]);
+            }
+            thread::sleep(delay);
+            let _ = stream.write_all(&response);
+            request
+        });
+        (
+            Destination::new(Scheme::HttpLoopback, "127.0.0.1", port, "/convert").unwrap(),
+            handle,
+        )
+    }
+
+    fn send(destination: &Destination, deadline: Duration) -> Result<String, SendError> {
+        let authority = PolicyAuthority::new(destination.clone());
+        authority
+            .replace_credential(Some(Credential::new("synthetic-key".into()).unwrap()))
+            .unwrap();
+        let version = authority.grant_manual_consent(destination).unwrap();
+        manual::convert_ordered(
+            ManualRequest {
+                revision: Revision {
+                    input: 1,
+                    settings: version.settings,
+                    authorization: version.authorization,
+                },
+                destination,
+                source: "nihongo",
+                deadline: Instant::now() + deadline,
+            },
+            &authority,
+            &Active,
+            &DiagnosticLoopbackHttp,
+        )
+    }
+
+    fn response(status: &str, body: &str) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ).into_bytes()
+    }
+
+    #[test]
+    fn sends_only_consented_loopback_request_and_parses_json() {
+        let (destination, server) =
+            serve_once(response("200 OK", r#"{"text":"日本語"}"#), Duration::ZERO);
+        assert_eq!(
+            send(&destination, Duration::from_secs(2)),
+            Ok("日本語".into())
+        );
+        let request = server.join().unwrap();
+        let text = std::str::from_utf8(&request).unwrap();
+        assert!(text.starts_with("POST /convert HTTP/1.1\r\n"));
+        assert!(text.contains(&format!("Host: 127.0.0.1:{}\r\n", destination.port())));
+        assert!(text.contains("Authorization: Bearer synthetic-key\r\n"));
+        assert!(text.contains("Content-Type: application/json\r\n"));
+        assert!(text.ends_with("\r\n\r\n{\"text\":\"nihongo\"}"));
+    }
+
+    #[test]
+    fn chat_payload_crosses_consent_gate_and_round_trips_loopback() {
+        let response_body = serde_json::json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":r#"{"candidates":["日本語"]}"#}}]}).to_string();
+        let (base, server) = serve_once(response("200 OK", &response_body), Duration::ZERO);
+        let destination = Destination::for_chat_completions(
+            Scheme::HttpLoopback,
+            base.host(),
+            base.port(),
+            base.base_path(),
+        )
+        .unwrap();
+        let authority = PolicyAuthority::new(destination.clone());
+        authority
+            .replace_credential(Credential::new("synthetic-key".into()))
+            .unwrap();
+        authority.set_model("fixture-model").unwrap();
+        let version = authority.grant_manual_consent(&destination).unwrap();
+        let request = || ManualRequest {
+            revision: Revision {
+                input: 1,
+                settings: version.settings,
+                authorization: version.authorization,
+            },
+            destination: &destination,
+            source: "nihongo",
+            deadline: Instant::now() + Duration::from_secs(2),
+        };
+        assert_eq!(
+            convert_chat_with_policy(request(), &authority, &Active),
+            Ok("日本語".into())
+        );
+        let captured = server.join().unwrap();
+        let end = find_header_end(&captured).unwrap();
+        let header = std::str::from_utf8(&captured[..end]).unwrap();
+        assert!(header.starts_with("POST /convert/v1/chat/completions HTTP/1.1\r\n"));
+        assert!(header.contains("Authorization: Bearer synthetic-key\r\n"));
+        let body: Value = serde_json::from_slice(&captured[end..]).unwrap();
+        assert_eq!(body["model"], "fixture-model");
+        assert!(body["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .ends_with("nihongo"));
+        authority.revoke_manual_consent().unwrap();
+        assert_eq!(
+            convert_chat_with_policy(request(), &authority, &Active),
+            Err(SendError::PolicyDenied)
+        );
+        assert!(DiagnosticChatLoopback::new("").is_none());
+    }
+
+    #[test]
+    fn model_change_discards_inflight_chat_result_and_old_revision() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let destination = Destination::new(
+            Scheme::HttpLoopback,
+            "127.0.0.1",
+            listener.local_addr().unwrap().port(),
+            "/convert",
+        )
+        .unwrap();
+        let authority = Arc::new(PolicyAuthority::new(destination.clone()));
+        authority
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        authority.set_model("old-model").unwrap();
+        let version = authority.grant_manual_consent(&destination).unwrap();
+        let (received_tx, received_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut bytes = [0u8; 4096];
+            let mut request = Vec::new();
+            let header_end = loop {
+                let count = stream.read(&mut bytes).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&bytes[..count]);
+                if let Some(end) = find_header_end(&request) {
+                    break end;
+                }
+            };
+            let headers = std::str::from_utf8(&request[..header_end]).unwrap();
+            let length: usize = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            while request.len() - header_end < length {
+                let count = stream.read(&mut bytes).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&bytes[..count]);
+            }
+            received_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            let body = serde_json::json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":r#"{"candidates":["日本語"]}"#}}]}).to_string();
+            stream.write_all(&response("200 OK", &body)).unwrap();
+        });
+        let worker_authority = authority.clone();
+        let worker_destination = destination.clone();
+        let worker = thread::spawn(move || {
+            convert_chat_with_policy(
+                ManualRequest {
+                    revision: Revision {
+                        input: 1,
+                        settings: version.settings,
+                        authorization: version.authorization,
+                    },
+                    destination: &worker_destination,
+                    source: "nihongo",
+                    deadline: Instant::now() + Duration::from_secs(2),
+                },
+                &worker_authority,
+                &Active,
+            )
+        });
+        received_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let changed = authority.set_model("new-model").unwrap();
+        assert_eq!(changed.settings, version.settings + 1);
+        assert_eq!(changed.authorization, version.authorization);
+        release_tx.send(()).unwrap();
+        assert_eq!(worker.join().unwrap(), Err(SendError::PolicyDenied));
+        server.join().unwrap();
+        assert_eq!(
+            convert_chat_with_policy(
+                ManualRequest {
+                    revision: Revision {
+                        input: 2,
+                        settings: version.settings,
+                        authorization: version.authorization
+                    },
+                    destination: &destination,
+                    source: "nihongo",
+                    deadline: Instant::now() + Duration::from_secs(1),
+                },
+                &authority,
+                &Active
+            ),
+            Err(SendError::PolicyDenied)
+        );
+    }
+
+    #[test]
+    fn chat_fixture_rejects_remote_and_incomplete_chat_response() {
+        let (destination, server) = serve_once(
+            response(
+                "200 OK",
+                r#"{"choices":[{"finish_reason":"length","message":{"role":"assistant","content":"日本語"}}]}"#,
+            ),
+            Duration::ZERO,
+        );
+        let authority = PolicyAuthority::new(destination.clone());
+        authority
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        let version = authority.grant_manual_consent(&destination).unwrap();
+        let adapter = DiagnosticChatLoopback::new("fixture").unwrap();
+        let revision = Revision {
+            input: 1,
+            settings: version.settings,
+            authorization: version.authorization,
+        };
+        assert_eq!(
+            manual::convert_ordered(
+                ManualRequest {
+                    revision,
+                    destination: &destination,
+                    source: "nihongo",
+                    deadline: Instant::now() + Duration::from_secs(2)
+                },
+                &authority,
+                &Active,
+                &adapter
+            ),
+            Err(SendError::InvalidResponse)
+        );
+        server.join().unwrap();
+        let remote =
+            Destination::new(Scheme::Https, "example.com", 443, "/v1/chat/completions").unwrap();
+        let remote_authority = PolicyAuthority::new(remote.clone());
+        remote_authority
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        let v = remote_authority.grant_manual_consent(&remote).unwrap();
+        assert_eq!(
+            manual::convert_ordered(
+                ManualRequest {
+                    revision: Revision {
+                        input: 1,
+                        settings: v.settings,
+                        authorization: v.authorization
+                    },
+                    destination: &remote,
+                    source: "nihongo",
+                    deadline: Instant::now() + Duration::from_secs(2)
+                },
+                &remote_authority,
+                &Active,
+                &adapter
+            ),
+            Err(SendError::Transport(TransportError::InvalidRequest))
+        );
+    }
+
+    struct RevokeBeforeWrite<'a> {
+        authority: &'a PolicyAuthority,
+    }
+    struct RevokingGate<'a> {
+        authority: &'a PolicyAuthority,
+        inner: &'a mut dyn SendGate,
+    }
+    impl SendGate for RevokingGate<'_> {
+        fn write_authorized(
+            &mut self,
+            write: &mut dyn FnMut() -> Result<(), TransportError>,
+        ) -> Result<(), SendError> {
+            self.authority.revoke_manual_consent().unwrap();
+            self.inner.write_authorized(write)
+        }
+    }
+    impl OrderedConversionTransport for RevokeBeforeWrite<'_> {
+        fn convert_ordered(
+            &self,
+            destination: &Destination,
+            credential: &str,
+            source: &str,
+            deadline: Instant,
+            gate: &mut dyn SendGate,
+        ) -> Result<String, SendError> {
+            DiagnosticLoopbackHttp.convert_ordered(
+                destination,
+                credential,
+                source,
+                deadline,
+                &mut RevokingGate {
+                    authority: self.authority,
+                    inner: gate,
+                },
+            )
+        }
+    }
+
+    #[test]
+    fn revoke_after_connect_prevents_even_the_credential_header() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut bytes = [0; 1024];
+            stream.read(&mut bytes).unwrap()
+        });
+        let destination =
+            Destination::new(Scheme::HttpLoopback, "127.0.0.1", port, "/convert").unwrap();
+        let authority = PolicyAuthority::new(destination.clone());
+        authority
+            .replace_credential(Some(Credential::new("synthetic-key".into()).unwrap()))
+            .unwrap();
+        let version = authority.grant_manual_consent(&destination).unwrap();
+        assert_eq!(
+            manual::convert_ordered(
+                ManualRequest {
+                    revision: Revision {
+                        input: 1,
+                        settings: version.settings,
+                        authorization: version.authorization,
+                    },
+                    destination: &destination,
+                    source: "nihongo",
+                    deadline: Instant::now() + Duration::from_secs(2),
+                },
+                &authority,
+                &Active,
+                &RevokeBeforeWrite {
+                    authority: &authority,
+                }
+            ),
+            Err(SendError::PolicyDenied)
+        );
+        assert_eq!(server.join().unwrap(), 0);
+    }
+
+    #[test]
+    fn refuses_redirect_and_classifies_remote_failures() {
+        for (status, expected) in [
+            ("302 Found", TransportError::Redirect),
+            ("401 Unauthorized", TransportError::Authentication),
+            ("403 Forbidden", TransportError::Authentication),
+            ("429 Too Many Requests", TransportError::RateLimited),
+            ("500 Internal Server Error", TransportError::Http),
+        ] {
+            let (destination, server) = serve_once(response(status, ""), Duration::ZERO);
+            assert_eq!(
+                send(&destination, Duration::from_secs(2)),
+                Err(SendError::Transport(expected))
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_oversized_or_ambiguous_response() {
+        let oversized =
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 8193\r\n\r\n"
+                .to_vec();
+        let (destination, server) = serve_once(oversized, Duration::ZERO);
+        assert_eq!(
+            send(&destination, Duration::from_secs(2)),
+            Err(SendError::Transport(TransportError::ResponseTooLarge))
+        );
+        server.join().unwrap();
+
+        let duplicate = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nContent-Length: 11\r\n\r\n".to_vec();
+        let (destination, server) = serve_once(duplicate, Duration::ZERO);
+        assert_eq!(
+            send(&destination, Duration::from_secs(2)),
+            Err(SendError::Transport(TransportError::InvalidResponse))
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn deadline_and_https_are_enforced() {
+        let (destination, server) = serve_once(
+            response("200 OK", r#"{"text":"日本語"}"#),
+            Duration::from_millis(300),
+        );
+        assert_eq!(
+            send(&destination, Duration::from_millis(100)),
+            Err(SendError::Transport(TransportError::Timeout))
+        );
+        server.join().unwrap();
+
+        let https = Destination::new(Scheme::Https, "127.0.0.1", 443, "/convert").unwrap();
+        assert_eq!(
+            DiagnosticLoopbackHttp.convert(
+                &https,
+                "synthetic-key",
+                "nihongo",
+                Instant::now() + Duration::from_secs(1)
+            ),
+            Err(TransportError::InvalidRequest)
+        );
+    }
+}

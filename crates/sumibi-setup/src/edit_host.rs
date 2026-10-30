@@ -6,6 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use sumibi_core::Revision;
 use sumibi_tip::edit::{capture_selection, replace_selection, EditPolicy, MAX_SELECTION_UNITS};
+use sumibi_tip::spike::ISpikeBroker;
 use windows::core::{
     implement, ComObject, IUnknown, Interface, Ref, Result, BOOL, GUID, HRESULT, PCWSTR, PWSTR,
 };
@@ -15,33 +16,129 @@ use windows::Win32::UI::TextServices::*;
 
 #[path = "input_host.rs"]
 mod input_host;
-pub(super) use input_host::{exercise_close, exercise_input, run_demo};
+pub(super) use input_host::{
+    exercise_backspace, exercise_broker_input, exercise_close, exercise_composing,
+    exercise_graphemes, exercise_input, exercise_notifications, exercise_recovery,
+    exercise_tracking, exercise_transactions, exercise_waiting, exercise_waiting_demo,
+    exercise_waiting_demo_interactive, exercise_waiting_interactive, run_broker_demo,
+    run_composing_demo, run_demo, run_recovery_demo, run_tracking_demo, run_transaction_demo,
+    run_waiting_demo,
+};
 #[path = "delayed_host.rs"]
 mod delayed_host;
 pub(super) use delayed_host::exercise_delayed;
+#[path = "broker_host.rs"]
+mod broker_host;
+pub(super) use broker_host::exercise_broker;
+#[path = "range_host.rs"]
+mod range_host;
+pub(super) use range_host::exercise_ranges;
+#[path = "native_edit_host.rs"]
+mod native_edit_host;
+pub(super) use native_edit_host::exercise_native_edit;
+#[path = "broker_keys.rs"]
+mod broker_keys;
+pub(super) use broker_keys::exercise_broker_keys;
+#[path = "scope_fixture.rs"]
+mod scope_fixture;
+use scope_fixture::{scope_value, ScopeSpec};
+#[path = "protection_host.rs"]
+mod protection_host;
+pub(super) use protection_host::exercise_protection;
+#[path = "composition_host.rs"]
+mod composition_host;
+pub(super) use composition_host::exercise_composition;
+#[path = "owned_composition_host.rs"]
+mod owned_composition_host;
+pub(super) use owned_composition_host::exercise_owned_composition;
 
 type EditHistory = RefCell<Vec<(Vec<u16>, TS_SELECTION_ACP)>>;
+type WriteHook = Box<dyn FnOnce() -> Result<()>>;
 
-#[implement(ITextStoreACP)]
+#[implement(ITextStoreACP, ITfContextOwnerCompositionSink)]
 struct TextStore {
     text: RefCell<Vec<u16>>,
     selection: Cell<TS_SELECTION_ACP>,
     sink: RefCell<Option<ITextStoreACPSink>>,
     lock: Cell<u32>,
+    lock_requests: Cell<u64>,
     readonly: Cell<bool>,
     deny_lock: Cell<bool>,
     skip_callback: Cell<bool>,
     read_limit: Cell<usize>,
     reads: Cell<usize>,
+    body_reads: Cell<usize>,
     undo: EditHistory,
     redo: EditHistory,
     window: Cell<HWND>,
+    scopes: Rc<RefCell<ScopeSpec>>,
+    scope_queries: Rc<Cell<usize>>,
+    scope_requested: Cell<bool>,
+    static_status: Cell<u32>,
+    dynamic_status: Cell<u32>,
+    status_failure: Cell<bool>,
+    protect_on_read: Cell<bool>,
+    composition_broker: RefCell<Option<ISpikeBroker>>,
+    composition_events: Cell<u32>,
+    input_signal: RefCell<Option<ComObject<crate::input_signal::Signal>>>,
+    reject_composition: Cell<bool>,
+    input_problem: Cell<bool>,
+    set_text_calls: Cell<usize>,
+    write_hook: RefCell<Option<WriteHook>>,
+    fail_text_before: Cell<bool>,
+    fail_text_after: Cell<bool>,
+    fail_selection: Cell<bool>,
+    set_selection_calls: Cell<usize>,
+    host_selection_calls: Cell<usize>,
+    fail_selection_after: Cell<bool>,
+    status_cycle_on_write: Cell<bool>,
+    scope_cycle_on_write: Cell<bool>,
+    compartment_cycle_on_write: RefCell<Option<(ITfCompartment, u32)>>,
+    write_locks: Cell<usize>,
+    last_text_lock: Cell<usize>,
+    last_composition_lock: Cell<usize>,
 }
 
 struct Lock<'a>(&'a Cell<u32>);
 impl Drop for Lock<'_> {
     fn drop(&mut self) {
         self.0.set(0);
+    }
+}
+
+impl TextStore_Impl {
+    fn composition_changed(&self) {
+        self.last_composition_lock.set(self.write_locks.get());
+        self.composition_events
+            .set(self.composition_events.get().saturating_add(1));
+        let signal = self.input_signal.borrow().clone();
+        if let Some(signal) = signal {
+            let _ = signal.get().notify();
+        }
+        let broker = self.composition_broker.borrow().clone();
+        if let Some(broker) = broker {
+            // The owning host forwards metadata-only invalidation, including
+            // empty compositions that do not emit OnEndEdit. Cancel retires the
+            // DLL ticket before signaling EXE work; it never waits or edits.
+            // Never reject/terminate another composition if cancellation fails.
+            unsafe {
+                let _ = broker.Cancel(0);
+            }
+        }
+    }
+}
+impl ITfContextOwnerCompositionSink_Impl for TextStore_Impl {
+    fn OnStartComposition(&self, _: Ref<ITfCompositionView>) -> Result<BOOL> {
+        self.composition_changed();
+        Ok((!self.reject_composition.get()).into())
+    }
+    fn OnUpdateComposition(&self, _: Ref<ITfCompositionView>, _: Ref<ITfRange>) -> Result<()> {
+        self.composition_changed();
+        Ok(())
+    }
+    fn OnEndComposition(&self, _: Ref<ITfCompositionView>) -> Result<()> {
+        self.composition_changed();
+        Ok(())
     }
 }
 
@@ -61,14 +158,42 @@ impl TextStore {
             selection: Cell::new(selection),
             sink: RefCell::new(None),
             lock: Cell::new(0),
+            lock_requests: Cell::new(0),
             readonly: Cell::new(false),
             deny_lock: Cell::new(false),
             skip_callback: Cell::new(false),
             read_limit: Cell::new(usize::MAX),
             reads: Cell::new(0),
+            body_reads: Cell::new(0),
             undo: RefCell::new(Vec::new()),
             redo: RefCell::new(Vec::new()),
             window: Cell::new(HWND::default()),
+            scopes: Rc::new(RefCell::new(ScopeSpec::List(vec![IS_TEXT]))),
+            scope_queries: Rc::new(Cell::new(0)),
+            scope_requested: Cell::new(false),
+            static_status: Cell::new(TS_SS_NOHIDDENTEXT),
+            dynamic_status: Cell::new(0),
+            status_failure: Cell::new(false),
+            protect_on_read: Cell::new(false),
+            composition_broker: RefCell::new(None),
+            composition_events: Cell::new(0),
+            input_signal: RefCell::new(None),
+            reject_composition: Cell::new(false),
+            input_problem: Cell::new(false),
+            set_text_calls: Cell::new(0),
+            write_hook: RefCell::new(None),
+            fail_text_before: Cell::new(false),
+            fail_text_after: Cell::new(false),
+            fail_selection: Cell::new(false),
+            set_selection_calls: Cell::new(0),
+            host_selection_calls: Cell::new(0),
+            fail_selection_after: Cell::new(false),
+            status_cycle_on_write: Cell::new(false),
+            scope_cycle_on_write: Cell::new(false),
+            compartment_cycle_on_write: RefCell::new(None),
+            write_locks: Cell::new(0),
+            last_text_lock: Cell::new(0),
+            last_composition_lock: Cell::new(0),
         }
     }
     fn readable(&self) -> Result<()> {
@@ -188,6 +313,8 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         Ok(())
     }
     fn RequestLock(&self, flags: u32) -> Result<HRESULT> {
+        self.lock_requests
+            .set(self.lock_requests.get().saturating_add(1));
         if self.skip_callback.get() {
             return Ok(windows::Win32::Foundation::S_OK);
         }
@@ -199,19 +326,26 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         }
         let sink = self.sink.borrow().clone().ok_or(E_FAIL)?;
         self.lock.set(flags);
+        if flags & TS_LF_READWRITE.0 == TS_LF_READWRITE.0 {
+            self.write_locks.set(self.write_locks.get() + 1);
+        }
         let _lock = Lock(&self.lock);
         // SAFETY: live sink reference on the owning thread. Keep no RefCell
         // borrow across OnLockGranted, which calls back into this text store.
         Ok(unsafe { (sink.vtable().OnLockGranted)(sink.as_raw(), TEXT_STORE_LOCK_FLAGS(flags)) })
     }
     fn GetStatus(&self) -> Result<TS_STATUS> {
+        if self.status_failure.get() {
+            return Err(E_FAIL.into());
+        }
         Ok(TS_STATUS {
-            dwDynamicFlags: if self.readonly.get() {
-                TS_SD_READONLY
-            } else {
-                0
-            },
-            dwStaticFlags: TS_SS_NOHIDDENTEXT,
+            dwDynamicFlags: self.dynamic_status.get()
+                | if self.readonly.get() {
+                    TS_SD_READONLY
+                } else {
+                    0
+                },
+            dwStaticFlags: self.static_status.get(),
         })
     }
     fn QueryInsert(
@@ -257,6 +391,11 @@ impl ITextStoreACP_Impl for TextStore_Impl {
     }
     fn SetSelection(&self, count: u32, input: *const TS_SELECTION_ACP) -> Result<()> {
         self.writable()?;
+        self.set_selection_calls
+            .set(self.set_selection_calls.get() + 1);
+        if self.fail_selection.replace(false) {
+            return Err(E_FAIL.into());
+        }
         if count != 1 || input.is_null() {
             return Err(E_INVALIDARG.into());
         }
@@ -264,6 +403,9 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         let input = unsafe { *input };
         self.bounds(input.acpStart, input.acpEnd)?;
         self.selection.set(input);
+        if self.fail_selection_after.replace(false) {
+            return Err(E_FAIL.into());
+        }
         Ok(())
     }
     fn GetText(
@@ -297,6 +439,14 @@ impl ITextStoreACP_Impl for TextStore_Impl {
             0
         };
         let count = (end - start).min(requested).min(self.read_limit.get());
+        // TSF can call GetText only for run metadata (capacity == 0). Count
+        // actual UTF-16 body copies separately for the privacy boundary tests.
+        if capacity > 0 && count > 0 {
+            self.body_reads.set(self.body_reads.get() + 1);
+            if self.protect_on_read.replace(false) {
+                *self.scopes.borrow_mut() = ScopeSpec::List(vec![IS_PRIVATE]);
+            }
+        }
         let text = self.text.borrow();
         // SAFETY: bounded caller-owned buffers; text is borrowed only for copy.
         unsafe {
@@ -324,6 +474,15 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         count: u32,
     ) -> Result<TS_TEXTCHANGE> {
         self.writable()?;
+        self.set_text_calls.set(self.set_text_calls.get() + 1);
+        self.last_text_lock.set(self.write_locks.get());
+        let hook = self.write_hook.borrow_mut().take();
+        if let Some(hook) = hook {
+            hook()?;
+        }
+        if self.fail_text_before.replace(false) {
+            return Err(E_FAIL.into());
+        }
         let (start, end) = self.bounds(start, end)?;
         if count > 0 && input.is_null() {
             return Err(E_INVALIDARG.into());
@@ -346,6 +505,43 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         selection.acpStart = start as i32;
         selection.acpEnd = (start + input.len()) as i32;
         self.selection.set(selection);
+        if self.scope_cycle_on_write.replace(false) {
+            let sink = self.sink.borrow().clone().ok_or(E_FAIL)?;
+            let length = self.text.borrow().len() as i32;
+            *self.scopes.borrow_mut() = ScopeSpec::List(vec![IS_PRIVATE]);
+            unsafe {
+                sink.OnAttrsChange(0, length, &[GUID_PROP_INPUTSCOPE])?;
+            }
+            *self.scopes.borrow_mut() = ScopeSpec::List(vec![IS_TEXT]);
+            unsafe {
+                sink.OnAttrsChange(0, length, &[GUID_PROP_INPUTSCOPE])?;
+            }
+        }
+        let compartment_cycle = self.compartment_cycle_on_write.borrow_mut().take();
+        if let Some((compartment, client)) = compartment_cycle {
+            unsafe {
+                compartment.SetValue(
+                    client,
+                    &windows::Win32::System::Variant::VARIANT::from(1i32),
+                )?;
+                compartment.SetValue(
+                    client,
+                    &windows::Win32::System::Variant::VARIANT::from(0i32),
+                )?;
+            }
+        }
+        if self.status_cycle_on_write.replace(false) {
+            let sink = self.sink.borrow().clone();
+            if let Some(sink) = sink {
+                unsafe {
+                    sink.OnStatusChange(TS_SD_READONLY)?;
+                    sink.OnStatusChange(0)?;
+                }
+            }
+        }
+        if self.fail_text_after.replace(false) {
+            return Err(E_FAIL.into());
+        }
         Ok(TS_TEXTCHANGE {
             acpStart: start as i32,
             acpOldEnd: end as i32,
@@ -385,11 +581,11 @@ impl ITextStoreACP_Impl for TextStore_Impl {
     ) -> Result<()> {
         Err(E_NOTIMPL.into())
     }
-    fn RequestSupportedAttrs(&self, _: u32, _: u32, _: *const GUID) -> Result<()> {
-        Ok(())
+    fn RequestSupportedAttrs(&self, _: u32, count: u32, attrs: *const GUID) -> Result<()> {
+        self.request_scope(count, attrs)
     }
-    fn RequestAttrsAtPosition(&self, _: i32, _: u32, _: *const GUID, _: u32) -> Result<()> {
-        Ok(())
+    fn RequestAttrsAtPosition(&self, _: i32, count: u32, attrs: *const GUID, _: u32) -> Result<()> {
+        self.request_scope(count, attrs)
     }
     fn RequestAttrsTransitioningAtPosition(
         &self,
@@ -422,13 +618,31 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         }
         Ok(())
     }
-    fn RetrieveRequestedAttrs(&self, _: u32, _: *mut TS_ATTRVAL, fetched: *mut u32) -> Result<()> {
+    fn RetrieveRequestedAttrs(
+        &self,
+        count: u32,
+        output: *mut TS_ATTRVAL,
+        fetched: *mut u32,
+    ) -> Result<()> {
         if fetched.is_null() {
             return Err(E_INVALIDARG.into());
         }
-        // SAFETY: writable output slot, no attributes were requested.
+        // SAFETY: TSF owns the returned variant and releases its interface.
         unsafe {
             fetched.write(0);
+            if self.scope_requested.replace(false) && count > 0 {
+                if output.is_null() {
+                    return Err(E_INVALIDARG.into());
+                }
+                if let Some(value) = scope_value(&self.scopes, &self.scope_queries)? {
+                    output.write(TS_ATTRVAL {
+                        idAttr: GUID_PROP_INPUTSCOPE,
+                        dwOverlapId: 0,
+                        varValue: value,
+                    });
+                    fetched.write(1);
+                }
+            }
         }
         Ok(())
     }
@@ -488,6 +702,8 @@ pub(super) fn exercise(
             "missing-write-callback",
             "no-progress",
             "invalid-utf16",
+            "object-marker",
+            "replacement-object-marker",
             "over-limit",
             "limit",
             "unicode",
@@ -501,6 +717,7 @@ pub(super) fn exercise(
                 "subrange" => "prefix nihongo suffix".to_owned(),
                 "over-limit" => "a".repeat(MAX_SELECTION_UNITS + 1),
                 "unicode" | "unicode-partial" | "split-surrogate" => "a😀e\u{301}".to_owned(),
+                "object-marker" => "a\u{fffc}b".to_owned(),
                 "empty" => String::new(),
                 _ => "nihongo".to_owned(),
             };
@@ -544,6 +761,7 @@ pub(super) fn exercise(
             )?;
             let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
             document.0.Push(&context)?;
+            scope_fixture::initialise_context(&context, client)?;
             manager.SetFocus(&document.0)?;
             let policy = Rc::new(Cell::new(EditPolicy {
                 revision: Revision {
@@ -560,6 +778,7 @@ pub(super) fn exercise(
                     | "read-lock-denied"
                     | "no-progress"
                     | "invalid-utf16"
+                    | "object-marker"
                     | "over-limit"
                     | "empty"
                     | "split-surrogate"
@@ -573,6 +792,9 @@ pub(super) fn exercise(
                     "{case}"
                 );
                 assert_eq!(*store.get().text.borrow(), before, "{case}");
+                if case == "object-marker" {
+                    assert!(store.get().undo.borrow().is_empty());
+                }
                 if case == "protected" {
                     assert_eq!(store.get().reads.get(), 0);
                 }
@@ -628,7 +850,12 @@ pub(super) fn exercise(
                 _ => {}
             }
             let before = store.get().text.borrow().clone();
-            let result = replace_selection(manager, client, snapshot, "日本語");
+            let replacement = if case == "replacement-object-marker" {
+                "日本\u{fffc}語"
+            } else {
+                "日本語"
+            };
+            let result = replace_selection(manager, client, snapshot, replacement);
             if matches!(case, "replace" | "subrange" | "limit" | "unicode") {
                 result?;
                 let expected = if case == "subrange" {
@@ -643,6 +870,9 @@ pub(super) fn exercise(
             } else {
                 assert!(result.is_err(), "{case}");
                 assert_eq!(*store.get().text.borrow(), before, "{case}");
+                if case == "replacement-object-marker" {
+                    assert!(store.get().undo.borrow().is_empty());
+                }
             }
             if let Some(other_store) = other_store.as_ref() {
                 assert_eq!(
@@ -657,7 +887,7 @@ pub(super) fn exercise(
     }
     exercise_attributes(manager, client)?;
     exercise_previews(manager, client)?;
-    println!("Real TSF edit-session scenarios: 23 passed, plus 3 attribute scenarios");
+    println!("Real TSF edit-session scenarios: 25 passed, plus 3 attribute scenarios");
     Ok(())
 }
 
@@ -695,6 +925,7 @@ fn exercise_previews(
             )?;
             let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
             document.0.Push(&context)?;
+            scope_fixture::initialise_context(&context, client)?;
             manager.SetFocus(&document.0)?;
             let policy = Rc::new(Cell::new(EditPolicy {
                 revision: Revision {
@@ -828,6 +1059,7 @@ fn exercise_attributes(
             )?;
             let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
             document.0.Push(&context)?;
+            scope_fixture::initialise_context(&context, client)?;
             manager.SetFocus(&document.0)?;
             let policy = Rc::new(Cell::new(EditPolicy {
                 revision: Revision {
@@ -866,14 +1098,22 @@ pub(super) fn exercise_keys(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    exercise_key_host(manager, client, false)
+    exercise_key_host(manager, client, false, false)
 }
 
 pub(super) fn exercise_window_keys(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    exercise_key_host(manager, client, true)?;
+    exercise_key_host(manager, client, true, false)?;
+    exercise_rendering(manager, client)
+}
+
+pub(super) fn exercise_window_keys_interactive(
+    manager: &ITfThreadMgr,
+    client: u32,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    exercise_key_host(manager, client, true, true)?;
     exercise_rendering(manager, client)
 }
 
@@ -881,12 +1121,13 @@ fn exercise_rendering(
     manager: &ITfThreadMgr,
     client: u32,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let messages: ITfMessagePump = manager.cast()?;
     use sumibi_tip::spike::{ISpikeControl, COMMAND_CONVERT, FUNCTION_TEST_CONTROL};
     let directory = std::env::current_dir()?.join("target/window-test");
     std::fs::create_dir_all(&directory)?;
     // SAFETY: dedicated owned text store and native view in the active STA.
     unsafe {
-        let window = crate::window_host::Window::new()?;
+        let window = crate::window_host::Window::new(manager)?;
         let store = ComObject::new(TextStore::new("prefix nihongo suffix"));
         store.get().window.set(window.hwnd());
         let mut selected = store.get().selection.get();
@@ -905,9 +1146,10 @@ fn exercise_rendering(
         )?;
         let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
         document.0.Push(&context)?;
+        scope_fixture::initialise_context(&context, client)?;
         let mut association = crate::window_host::Association::new(manager, &window, &document.0)?;
         window.focus()?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         manager.SetFocus(&document.0)?;
         let control: ISpikeControl = manager
             .GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)?
@@ -921,7 +1163,7 @@ fn exercise_rendering(
                        expected: &str,
                        underline: bool|
          -> std::result::Result<(), Box<dyn std::error::Error>> {
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             assert!(
                 live.updates() > last_update.get(),
                 "notification must update the cache"
@@ -974,9 +1216,9 @@ fn exercise_rendering(
         live.request()?;
         live.request()?;
         live.request()?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert_eq!(live.updates(), before + 1);
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert_eq!(
             live.updates(),
             before + 1,
@@ -986,7 +1228,7 @@ fn exercise_rendering(
         control.BeginPreview().ok()?;
         store.get().deny_lock.set(true);
         let before_failed_paint = window.painted();
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert!(live.scene().is_err());
         assert!(
             window.frame().is_err(),
@@ -1002,7 +1244,7 @@ fn exercise_rendering(
         let retired_updates = live.updates();
         live.close()?;
         let mut replacement = crate::live_render::Binding::attach(&window, &context, client)?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert_eq!(live.updates(), retired_updates);
         assert_eq!(
             replacement.updates(),
@@ -1012,17 +1254,17 @@ fn exercise_rendering(
         assert!(replacement.scene()?.underlines.is_empty());
         assert_eq!(window.frame()?.ink(0..crate::render::WIDTH), 0);
         replacement.close()?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert!(window.frame().is_err());
         assert!(window.is_blank());
         println!("Rebinding and detach discard stale queued render requests: OK");
-        let doomed = crate::window_host::Window::new()?;
+        let doomed = crate::window_host::Window::new(manager)?;
         let mut doomed_binding = crate::live_render::Binding::attach(&doomed, &context, client)?;
         drop(doomed);
-        let successor = crate::window_host::Window::new()?;
+        let successor = crate::window_host::Window::new(manager)?;
         let mut successor_binding =
             crate::live_render::Binding::attach(&successor, &context, client)?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert_eq!(doomed_binding.updates(), 0);
         assert_eq!(successor_binding.updates(), 1);
         assert!(doomed_binding.request().is_err());
@@ -1041,7 +1283,9 @@ fn exercise_key_host(
     manager: &ITfThreadMgr,
     client: u32,
     windowed: bool,
+    interactive: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let messages: ITfMessagePump = manager.cast()?;
     use sumibi_tip::spike::{
         ISpikeControl, COMMAND_CONVERT, FUNCTION_TEST_CONTROL, FUNCTION_TEST_KEY_SINK,
         FUNCTION_TEST_MANAGER_SINK,
@@ -1051,7 +1295,7 @@ fn exercise_key_host(
     // dispatches a TSF command, without injecting physical desktop key events.
     unsafe {
         let window = if windowed {
-            Some(crate::window_host::Window::new()?)
+            Some(crate::window_host::Window::new(manager)?)
         } else {
             None
         };
@@ -1071,10 +1315,11 @@ fn exercise_key_host(
         )?;
         let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
         document.0.Push(&context)?;
+        scope_fixture::initialise_context(&context, client)?;
         let mut association = if let Some(window) = &window {
             let association = crate::window_host::Association::new(manager, window, &document.0)?;
             window.focus()?;
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             Some(association)
         } else {
             None
@@ -1164,6 +1409,34 @@ fn exercise_key_host(
         assert!(store.get().undo.borrow().is_empty());
         println!("Dedicated host one-step undo: OK");
         for key in [0x1b, 0x0d] {
+            if let Some(window) = &window {
+                // Native key routing requires foreground focus, which may have
+                // changed while the preceding edit/Undo checks were running.
+                window.focus()?;
+                if interactive && window.require_foreground().is_err() {
+                    use std::time::{Duration, Instant};
+                    window
+                        .set_title("Sumibi TSF test: click this window to activate (30 seconds)")?;
+                    println!("Click the diagnostic window to activate it within 30 seconds; no typing is needed.");
+                    let deadline = Instant::now() + Duration::from_secs(30);
+                    while window.require_foreground().is_err() && Instant::now() < deadline {
+                        if !window.is_open() {
+                            return Err(
+                                "diagnostic window closed while waiting for activation".into()
+                            );
+                        }
+                        pump_tsf_messages(&messages)?;
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    window.set_title("Sumibi TSF diagnostic (automatic test)")?;
+                    if window.require_foreground().is_err() {
+                        return Err("window-test-interactive: diagnostic window did not become foreground within 30 seconds".into());
+                    }
+                }
+                window.require_foreground().map_err(|error| format!("window-test requires foreground activation; Windows did not activate the owned diagnostic window: {error}"))?;
+                pump_tsf_messages(&messages)?;
+                control.GrantContext(context.as_raw()).ok()?;
+            }
             control.BeginPreview().ok()?;
             assert!(!callback
                 .OnTestKeyDown(&context, WPARAM(key), LPARAM(1 << 29))?
@@ -1188,7 +1461,9 @@ fn exercise_key_host(
                 let active = window.as_ref().is_some_and(|window| {
                     windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() == window.hwnd()
                 });
-                return Err(format!("preview key routing failed: direct={direct}, modifiers={modified:?}, service={service}, context={focused}, active={active}").into());
+                let foreground_present =
+                    !windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().is_invalid();
+                return Err(format!("preview key routing failed: direct={direct}, modifiers={modified:?}, service={service}, context={focused}, active={active}, foreground_present={foreground_present}").into());
             }
             control.VerifyPreview().ok()?;
             let handled = if windowed {
@@ -1219,14 +1494,14 @@ fn exercise_key_host(
         store
             .get()
             .external_text("NIHONGO".encode_utf16().collect())?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert!(control.VerifyPreview().is_err());
         control.BeginPreview().ok()?;
         control.CancelPreview().ok()?;
         store
             .get()
             .external_text("nihongo".encode_utf16().collect())?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         println!("DLL external text notification cancels preview: OK");
         control.BeginPreview().ok()?;
         let original_selection = store.get().selection.get();
@@ -1240,7 +1515,7 @@ fn exercise_key_host(
             .clone()
             .unwrap()
             .OnSelectionChange()?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert!(control.VerifyPreview().is_err());
         // A successful new preview also proves old underline cleanup completed.
         control.BeginPreview().ok()?;
@@ -1253,7 +1528,7 @@ fn exercise_key_host(
             .clone()
             .unwrap()
             .OnSelectionChange()?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         println!("DLL external selection notification cancels preview: OK");
         // Schedule cleanup, then start a new preview before pumping messages.
         // A callback for the old generation must never erase the new underline.
@@ -1267,7 +1542,7 @@ fn exercise_key_host(
             .unwrap()
             .OnSelectionChange()?;
         control.BeginPreview().ok()?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         control.VerifyPreview().ok()?;
         control.CancelPreview().ok()?;
         store.get().selection.set(original_selection);
@@ -1278,7 +1553,7 @@ fn exercise_key_host(
             .clone()
             .unwrap()
             .OnSelectionChange()?;
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         println!("Old cleanup does not remove a new preview: OK");
         control.BeginPreview().ok()?;
         store.get().deny_lock.set(true);
@@ -1293,7 +1568,7 @@ fn exercise_key_host(
             .OnTestKeyDown(&context, WPARAM(0x1b), LPARAM(0))?
             .as_bool());
         store.get().deny_lock.set(false);
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         control.CancelPreview().ok()?;
         assert!(store.get().undo.borrow().is_empty());
         println!("Esc cancels immediately even when cleanup lock is denied: OK");
@@ -1312,7 +1587,7 @@ fn exercise_key_host(
         drop(sink);
         println!("Read-only input is not converted or consumed: OK");
         let other_window = if windowed {
-            Some(crate::window_host::Window::new()?)
+            Some(crate::window_host::Window::new(manager)?)
         } else {
             None
         };
@@ -1345,7 +1620,7 @@ fn exercise_key_host(
             // Creating the second native window can temporarily move focus
             // and revoke the first grant. Restore the first view explicitly.
             window.focus()?;
-            pump_tsf_messages()?;
+            pump_tsf_messages(&messages)?;
             control.GrantContext(context.as_raw()).ok()?;
         }
         control.BeginPreview().ok()?;
@@ -1364,7 +1639,7 @@ fn exercise_key_host(
             manager.SetFocus(&other_document.0)?;
             focus_callback.OnSetFocus(&other_document.0, &document.0)?;
         }
-        pump_tsf_messages()?;
+        pump_tsf_messages(&messages)?;
         assert!(control.VerifyPreview().is_err());
         assert!(control.BeginPreview().is_err());
         assert_eq!(
@@ -1417,16 +1692,26 @@ fn exercise_key_host(
     Ok(())
 }
 
-fn pump_tsf_messages() -> Result<()> {
-    use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, PeekMessageW, MSG, PM_REMOVE};
+fn pump_tsf_messages(pump: &ITfMessagePump) -> Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
+    };
     // SAFETY: dedicated disposable STA process; deliver its own TSF messages.
     // Bound processing to expose a notification loop instead of hanging a test.
     unsafe {
         let mut message = MSG::default();
         for _ in 0..256 {
-            if !PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+            let mut found = BOOL(0);
+            // TSF must run its pre/post processing even when no ordinary
+            // message is returned, including during worker completion waits.
+            pump.PeekMessageW(&mut message, HWND::default(), 0, 0, PM_REMOVE.0, &mut found)?;
+            if !found.as_bool() {
                 return Ok(());
             }
+            if message.message == WM_QUIT {
+                return Err(windows::Win32::Foundation::E_ABORT.into());
+            }
+            let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }
     }

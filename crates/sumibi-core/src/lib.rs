@@ -5,6 +5,14 @@
 //! that session. Context/range identifiers must never be reused within a session.
 #![forbid(unsafe_code)]
 
+pub mod grapheme;
+pub mod input;
+pub mod recovery;
+pub mod waiting_input;
+
+/// Current single-result manual IPC and owned TSF edit ceiling.
+pub const MAX_MANUAL_UNITS: usize = 1024;
+
 /// Opaque, globally unique request identity supplied by the future adapter.
 /// Never reuse an identity, including after cancellation or reconnection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,13 +25,23 @@ pub struct Revision {
     pub authorization: u64,
 }
 
-/// Fresh observations of the target; no COM objects or edit cookies cross here.
-/// `allowed` must be false for protected, unreadable, disabled or unknown input.
+/// Explicit coordinate model for a manual-conversion target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Selection {
+    /// Absolute coordinates supplied by a cooperating ACP adapter.
+    Acp(i32, i32),
+    /// The adapter revalidated both endpoints and direction against its
+    /// retained native range. This is a length stamp, not document coordinates.
+    RetainedRange { utf16_units: usize },
+}
+
+/// Fresh observations; no COM objects or edit cookies cross here. `allowed`
+/// must be false for protected, unreadable, disabled or unknown input.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Target {
     pub context: u128,
     pub range: u128,
-    pub selection: (i32, i32),
+    pub selection: Selection,
     pub text: Vec<u16>,
     pub revision: Revision,
     pub allowed: bool,
@@ -55,10 +73,20 @@ impl ManualConversion {
         if self.pending.is_some() {
             return Err(Reject::Busy);
         }
-        if !target.allowed
+        if id.0 == 0
+            || !target.allowed
+            || target.context == 0
+            || target.range == 0
+            || target.revision.input == 0
+            || target.revision.settings == 0
+            || target.revision.authorization == 0
             || target.text.is_empty()
-            || target.selection.0 < 0
-            || target.selection.1 < target.selection.0
+            || target.text.len() > MAX_MANUAL_UNITS
+            || target.text.contains(&0xfffc)
+            || !match target.selection {
+                Selection::Acp(start, end) => start >= 0 && end >= start,
+                Selection::RetainedRange { utf16_units } => utf16_units == target.text.len(),
+            }
             || String::from_utf16(&target.text).is_err()
         {
             return Err(Reject::InvalidTarget);
@@ -93,7 +121,10 @@ impl ManualConversion {
         if !current.allowed || current != &pending.target {
             return Err(Reject::TargetChanged);
         }
-        if result.is_empty() {
+        if result.is_empty()
+            || result.contains('\u{fffc}')
+            || result.encode_utf16().take(MAX_MANUAL_UNITS + 1).count() > MAX_MANUAL_UNITS
+        {
             return Err(Reject::InvalidResult);
         }
         Ok(result.encode_utf16().collect())
@@ -108,7 +139,7 @@ mod tests {
         Target {
             context: 1,
             range: 2,
-            selection: (3, 3),
+            selection: Selection::Acp(3, 3),
             text: "nihongo".encode_utf16().collect(),
             revision: Revision {
                 input: 1,
@@ -171,7 +202,7 @@ mod tests {
         changed.range += 1;
         changes.push(changed);
         let mut changed = original.clone();
-        changed.selection = (4, 4);
+        changed.selection = Selection::Acp(4, 4);
         changes.push(changed);
         let mut changed = original.clone();
         changed.text = "NIHONGO".encode_utf16().collect();
@@ -200,8 +231,13 @@ mod tests {
     }
 
     #[test]
-    fn protected_empty_and_invalid_utf16_targets_are_rejected() {
-        for text in [Vec::new(), vec![0xd800]] {
+    fn protected_empty_object_and_invalid_utf16_targets_are_rejected() {
+        for text in [
+            Vec::new(),
+            vec![0xd800],
+            vec![0xfffc],
+            vec![b'a' as u16; MAX_MANUAL_UNITS + 1],
+        ] {
             let mut target = target();
             target.text = text;
             assert_eq!(
@@ -215,6 +251,27 @@ mod tests {
             ManualConversion::default().begin(RequestId(1), target),
             Err(Reject::InvalidTarget)
         );
+    }
+
+    #[test]
+    fn zero_request_target_ids_and_policy_revisions_are_rejected_before_capture() {
+        assert_eq!(
+            ManualConversion::default().begin(RequestId(0), target()),
+            Err(Reject::InvalidTarget)
+        );
+        for change in 0..5 {
+            let mut target = target();
+            match change {
+                0 => target.context = 0,
+                1 => target.range = 0,
+                2 => target.revision.input = 0,
+                3 => target.revision.settings = 0,
+                _ => target.revision.authorization = 0,
+            }
+            let mut core = ManualConversion::default();
+            assert_eq!(core.begin(RequestId(1), target), Err(Reject::InvalidTarget));
+            assert!(!core.is_pending());
+        }
     }
 
     #[test]
@@ -236,5 +293,70 @@ mod tests {
             Err(Reject::InvalidResult)
         );
         assert!(!state.is_pending());
+        state.begin(RequestId(2), target.clone()).unwrap();
+        assert_eq!(
+            state.finish(RequestId(2), &target, "日本\u{fffc}語"),
+            Err(Reject::InvalidResult)
+        );
+        assert!(!state.is_pending());
+        state.begin(RequestId(3), target.clone()).unwrap();
+        assert_eq!(
+            state.finish(
+                RequestId(3),
+                &target,
+                &"😀".repeat(MAX_MANUAL_UNITS / 2 + 1)
+            ),
+            Err(Reject::InvalidResult)
+        );
+        assert!(!state.is_pending());
+    }
+    #[test]
+    fn retained_ranges_use_explicit_lengths_and_cannot_change_coordinate_model() {
+        let mut target = target();
+        target.text = "a😀b".encode_utf16().collect();
+        target.selection = Selection::RetainedRange { utf16_units: 4 };
+        let mut core = ManualConversion::default();
+        core.begin(RequestId(1), target.clone()).unwrap();
+        assert_eq!(
+            core.finish(RequestId(1), &target, "日本語"),
+            Ok("日本語".encode_utf16().collect())
+        );
+        assert_eq!(
+            core.finish(RequestId(1), &target, "日本語"),
+            Err(Reject::NoPendingRequest)
+        );
+        core.begin(RequestId(2), target.clone()).unwrap();
+        let mut changed = target;
+        changed.selection = Selection::Acp(0, 4);
+        assert_eq!(
+            core.finish(RequestId(2), &changed, "日本語"),
+            Err(Reject::TargetChanged)
+        );
+    }
+    #[test]
+    fn retained_range_stamps_require_matching_text_length_and_nonzero_identities() {
+        for change in 0..5 {
+            let mut target = target();
+            target.selection = Selection::RetainedRange {
+                utf16_units: target.text.len(),
+            };
+            match change {
+                0 => target.selection = Selection::RetainedRange { utf16_units: 0 },
+                1 => {
+                    target.selection = Selection::RetainedRange {
+                        utf16_units: target.text.len() + 1,
+                    }
+                }
+                2 => target.context = 0,
+                3 => target.range = 0,
+                _ => {
+                    target.text = vec![0xd800];
+                    target.selection = Selection::RetainedRange { utf16_units: 1 };
+                }
+            }
+            let mut core = ManualConversion::default();
+            assert_eq!(core.begin(RequestId(1), target), Err(Reject::InvalidTarget));
+            assert!(!core.is_pending());
+        }
     }
 }
