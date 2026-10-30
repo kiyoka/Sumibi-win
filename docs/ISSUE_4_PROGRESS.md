@@ -93,7 +93,10 @@ UIからの再同意は残る。
 `settings-init`でHTTPS接続先・モデルを新規作成する入口を追加した。既定配置先または
 明示した絶対パスへ作成し、正常・破損のどちらの既存ファイルも上書きしない。
 試験用ファイルの新規作成と二重実行時の保持を実行ファイルで検証した。
-製品設定UIと常駐起動は引き続き未接続。
+`settings-window`で作成済み設定のホスト名・モデル・パスを編集する単独画面を追加した。
+保存はworkerと競合検査を使い、次回起動用の設定として保存する。試験用ファイルで
+画面表示、モデル変更の保存、空モデルの拒否、×での終了をWindows画面上で確認した。
+キー登録・送信同意・稼働中の製品Brokerへの接続と常駐起動は引き続き未接続。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
 [CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。

@@ -40,6 +40,7 @@ enum StoredScheme {
 }
 
 /// Fully resolved destination; key and send consent are deliberately absent.
+#[derive(Clone)]
 pub struct Settings {
     destination: Destination,
     model: String,

@@ -4,8 +4,25 @@ mod host_paths;
 #[cfg(windows)]
 mod settings_init;
 #[cfg(windows)]
+mod settings_window;
+#[cfg(windows)]
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "settings-window") {
+        let path = match args.len() {
+            1 => host_paths::settings_path().ok(),
+            2 => Some(std::path::PathBuf::from(&args[1])),
+            _ => None,
+        };
+        let result = path
+            .ok_or("settings location unavailable")
+            .and_then(settings_window::run);
+        if let Err(message) = result {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.first().is_some_and(|arg| arg == "settings-init") {
         if let Err(message) = settings_init::run(&args[1..]) {
             eprintln!("{message}");
