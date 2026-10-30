@@ -2,8 +2,18 @@
 #[cfg(windows)]
 mod host_paths;
 #[cfg(windows)]
+mod settings_init;
+#[cfg(windows)]
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "settings-init") {
+        if let Err(message) = settings_init::run(&args[1..]) {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+        println!("settings created; sending requires explicit consent");
+        return;
+    }
     if args.first().is_some_and(|arg| arg == "startup-check") {
         if args.len() > 2 {
             eprintln!("usage: sumibi-host startup-check [absolute-settings-path]");

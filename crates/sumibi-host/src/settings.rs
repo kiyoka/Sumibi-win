@@ -15,6 +15,7 @@ static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 pub enum SettingsError {
     Invalid,
     Io,
+    AlreadyExists,
     Policy(ChangeError),
 }
 
@@ -158,6 +159,38 @@ impl Settings {
             .read_to_end(&mut bytes)
             .map_err(|_| SettingsError::Io)?;
         Self::parse(&bytes)
+    }
+
+    /// Initial creation only: never replace an existing file, including an
+    /// invalid one. An interrupted initial write may leave an invalid record;
+    /// load rejects it and the caller must explicitly repair that file.
+    pub fn create(&self, path: &Path) -> Result<(), SettingsError> {
+        if !path.is_absolute() {
+            return Err(SettingsError::Invalid);
+        }
+        let bytes = serde_json::to_vec(&self.record()).map_err(|_| SettingsError::Invalid)?;
+        if bytes.len() as u64 > MAX_SETTINGS_BYTES {
+            return Err(SettingsError::Invalid);
+        }
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Allow readers but prevent concurrent writers and deletion while
+            // the new file is being initialized.
+            options.share_mode(1);
+        }
+        let mut file = options.open(path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                SettingsError::AlreadyExists
+            } else {
+                SettingsError::Io
+            }
+        })?;
+        file.write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|_| SettingsError::Io)
     }
 
     /// Replace from a newly created sibling file after flushing its contents.

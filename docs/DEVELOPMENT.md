@@ -9,7 +9,14 @@
 接続先やモデル、キーは出力せず、設定の読取結果とキーの存在・欠損・読取失敗だけを示す。
 終了コードは設定が有効なら0（キー欠損も含む）、設定不正や引数不正は1、
 資格情報の読取失敗は2。破損設定ではキーを読まない。通信・pipe待受・TSF登録は開始しない。
-設定UI、設定の初回作成、常駐運転への接続は今後の作業である。
+初回作成は`sumibi-host settings-init <https-host> <model> [base-path]`で行う。
+hostはURL全体ではなくホスト名、HTTPSのポートは443、base-pathの既定値は`/`。
+Chat Completionsの完全なパスへ補完して保存する。既定配置先は上記と同じ。
+`--settings <絶対パス>`をhostより前に指定すると、既存ディレクトリ内の別ファイルへ
+作成できる。既存ファイルは内容にかかわらず上書きしない。キー登録や送信同意は行わない。
+初回書込中の終了やI/O失敗で不完全なファイルが残る場合は、起動検査が拒否する。
+そのファイルの修復・削除は利用者の明示操作とし、再実行で自動上書きしない。
+設定UIと常駐運転への接続は今後の作業である。
 配置先取得の根拠: [SHGetKnownFolderPath](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath)。
 
 ## マシン登録の事前確認
