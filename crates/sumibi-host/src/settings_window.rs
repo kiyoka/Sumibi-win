@@ -1,6 +1,7 @@
-//! Standalone editor for next-start settings. No credential or network access.
+//! Standalone editor for next-start settings and explicit credential writes.
 use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc};
 use sumibi_host::{
+    credential_store::CredentialTask,
     settings::Settings,
     settings_task::{SaveTaskError, SettingsSaveTask},
 };
@@ -15,6 +16,7 @@ use windows::Win32::{
 #[derive(Default)]
 struct Actions {
     save: Cell<bool>,
+    key_save: Cell<bool>,
     close: Cell<bool>,
 }
 struct View {
@@ -23,6 +25,8 @@ struct View {
     model: HWND,
     path: HWND,
     save: HWND,
+    secret: HWND,
+    key_save: HWND,
     status: HWND,
     actions: Rc<Actions>,
 }
@@ -57,10 +61,33 @@ unsafe extern "system" fn procedure(
                 (*pointer).close.set(true);
                 return LRESULT(0);
             }
+            if message == WM_COMMAND && key.0 & 0xffff == 3 && key.0 >> 16 == 0 {
+                (*pointer).key_save.set(true);
+                return LRESULT(0);
+            }
         }
         DefWindowProcW(hwnd, message, key, data)
     })
     .unwrap_or(LRESULT(0))
+}
+
+fn secret_value(units: &[u16]) -> Result<String, ()> {
+    if units.is_empty() || units.len() > 2560 || !units.iter().all(|unit| (33..=126).contains(unit))
+    {
+        return Err(());
+    }
+    String::from_utf16(units).map_err(|_| ())
+}
+fn read_secret(hwnd: HWND) -> Result<String, ()> {
+    let mut buffer = [0u16; 2562];
+    let count = unsafe { GetWindowTextW(hwnd, &mut buffer) };
+    let result = if count < 0 || count as usize >= buffer.len() - 1 {
+        Err(())
+    } else {
+        secret_value(&buffer[..count as usize])
+    };
+    buffer.fill(0);
+    result
 }
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
@@ -104,7 +131,7 @@ impl View {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 600,
-                325,
+                445,
                 None,
                 None,
                 Some(instance.into()),
@@ -117,6 +144,8 @@ impl View {
                 model: HWND::default(),
                 path: HWND::default(),
                 save: HWND::default(),
+                secret: HWND::default(),
+                key_save: HWND::default(),
                 status: HWND::default(),
                 actions,
             };
@@ -190,13 +219,45 @@ impl View {
             view.host = fields[0];
             view.model = fields[1];
             view.path = fields[2];
-            view.save = child(w!("BUTTON"), "保存", WS_TABSTOP, 460, 180, 100, 30, 1)?;
-            view.status = child(
+            view.save = child(w!("BUTTON"), "設定を保存", WS_TABSTOP, 430, 180, 130, 30, 1)?;
+            child(
                 w!("STATIC"),
-                "送信への同意と API キーの登録は別の操作です。",
+                "API キー",
                 WINDOW_STYLE(0),
                 18,
+                235,
+                90,
+                24,
+                0,
+            )?;
+            view.secret = child(
+                w!("EDIT"),
+                "",
+                WS_BORDER | WS_TABSTOP | WINDOW_STYLE(0xa0),
+                115,
                 230,
+                445,
+                28,
+                13,
+            )?; // ES_PASSWORD | ES_AUTOHSCROLL
+            SendMessageW(view.secret, 0x00c5, Some(WPARAM(2560)), Some(LPARAM(0)));
+            view.key_save = child(w!("BUTTON"), "キーを保存", WS_TABSTOP, 430, 270, 130, 30, 3)?;
+            child(
+                w!("STATIC"),
+                "この PC の現在ユーザーのキーを置き換えます。",
+                WINDOW_STYLE(0),
+                18,
+                310,
+                545,
+                24,
+                0,
+            )?;
+            view.status = child(
+                w!("STATIC"),
+                "キーの保存だけでは送信は許可されません。",
+                WINDOW_STYLE(0),
+                18,
+                350,
                 545,
                 40,
                 0,
@@ -222,6 +283,8 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
     );
     let view = View::new(&baseline, true).map_err(|_| "settings window unavailable")?;
     let mut pending: Option<(SettingsSaveTask, Settings)> = None;
+    let mut key_pending: Option<CredentialTask> = None;
+    let mut settings_conflict = false;
     let mut message = MSG::default();
     loop {
         let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
@@ -237,7 +300,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                 DispatchMessageW(&message);
             }
         }
-        if view.actions.save.replace(false) && pending.is_none() {
+        if view.actions.save.replace(false) && pending.is_none() && key_pending.is_none() {
             let settings = text(view.host).and_then(|host| {
                 text(view.model).and_then(|model| {
                     text(view.path).and_then(|base| {
@@ -271,6 +334,22 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                 Err(_) => set_text(view.status, "ホスト名・モデル・パスを確認してください。"),
             }
         }
+        if view.actions.key_save.replace(false) && pending.is_none() && key_pending.is_none() {
+            match read_secret(view.secret) {
+                Ok(secret) => match CredentialTask::save(authority.clone(), secret) {
+                    Ok(task) => {
+                        key_pending = Some(task);
+                        set_text(view.secret, "");
+                        set_text(view.status, "キーを保存中…");
+                    }
+                    Err(_) => set_text(view.status, "キーの保存処理を開始できませんでした。"),
+                },
+                Err(()) => set_text(
+                    view.status,
+                    "キーは空白・改行なしの半角文字で入力してください。",
+                ),
+            }
+        }
         if let Some((task, _)) = pending.as_mut() {
             if let Some(result) = task.try_take() {
                 let (_, replacement) = pending.take().unwrap();
@@ -280,6 +359,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                         sumibi_host::settings::SettingsError::Conflict
                     ))
                 );
+                settings_conflict |= conflict;
                 match result {
                     Ok(saved) => {
                         // This editor owns a fresh, never-advertised authority
@@ -301,12 +381,34 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                         "保存できませんでした。設定は変更していません。",
                     ),
                 }
-                unsafe {
-                    let _ = EnableWindow(view.save, !conflict);
+            }
+        }
+        if let Some(task) = key_pending.as_mut() {
+            if let Some(result) = task.try_take() {
+                key_pending = None;
+                match result {
+                    Ok(update) if update.outcome().is_ok() => set_text(
+                        view.status,
+                        "キーを保存しました。送信への同意は別途必要です。",
+                    ),
+                    Ok(_) => set_text(
+                        view.status,
+                        "キーを保存できませんでした。もう一度入力してください。",
+                    ),
+                    Err(_) => set_text(view.status, "キーの保存結果を確認できませんでした。"),
                 }
             }
         }
-        if view.actions.close.get() && pending.is_none() {
+        unsafe {
+            let idle = pending.is_none() && key_pending.is_none();
+            let _ = EnableWindow(view.key_save, idle);
+            let _ = EnableWindow(view.secret, idle);
+            let _ = EnableWindow(
+                view.save,
+                idle && !settings_conflict && !view.actions.close.get(),
+            );
+        }
+        if view.actions.close.get() && pending.is_none() && key_pending.is_none() {
             break;
         }
         if view.actions.close.get() {
@@ -314,4 +416,19 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn secret_input_rejects_invalid_text_without_accessing_the_store() {
+        assert!(secret_value(&[]).is_err());
+        for value in ["has space", "line\nbreak", "日本語", "\0"] {
+            assert!(secret_value(&value.encode_utf16().collect::<Vec<_>>()).is_err());
+        }
+        assert!(secret_value(&vec![b'a' as u16; 2561]).is_err());
+        assert!(secret_value(&vec![b'a' as u16; 2560]).is_ok());
+        assert!(secret_value(&"synthetic-key".encode_utf16().collect::<Vec<_>>()).is_ok());
+    }
 }

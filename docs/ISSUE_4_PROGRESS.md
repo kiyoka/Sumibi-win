@@ -96,7 +96,11 @@ UIからの再同意は残る。
 `settings-window`で作成済み設定のホスト名・モデル・パスを編集する単独画面を追加した。
 保存はworkerと競合検査を使い、次回起動用の設定として保存する。試験用ファイルで
 画面表示、モデル変更の保存、空モデルの拒否、×での終了をWindows画面上で確認した。
-キー登録・送信同意・稼働中の製品Brokerへの接続と常駐起動は引き続き未接続。
+さらにAPIキーの伏せ字入力と明示保存を追加し、既存の資格情報workerへ接続した。
+空白・改行・非ASCII・長さ超過を保存前に拒否し、保存開始後は入力欄を空にする。
+保存済みキーは読み取って表示しない。画面の表示確認と入力検査の単体試験を行い、
+画面確認では保存を実行せず、既存の実キーを変更していない。
+送信同意・稼働中の製品Brokerへの接続と常駐起動は引き続き未接続。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
 [CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。
