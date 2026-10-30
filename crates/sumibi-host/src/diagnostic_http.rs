@@ -4,7 +4,8 @@
 #[cfg(test)]
 use crate::manual::ConversionTransport;
 use crate::manual::{
-    Destination, OrderedConversionTransport, Scheme, SendError, SendGate, TransportError,
+    Destination, ManualRequest, OrderedConversionTransport, PolicySource, Scheme, SendAdmission,
+    SendError, SendGate, TransportError,
 };
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -28,6 +29,25 @@ impl DiagnosticChatLoopback {
             model: model.to_owned(),
         })
     }
+}
+
+/// Build the diagnostic adapter from the same policy snapshot whose settings
+/// revision the request names. The send gate rechecks that revision under the
+/// authority lock, and the result path rechecks it again after I/O.
+pub fn convert_chat_with_policy(
+    request: ManualRequest<'_>,
+    authority: &crate::policy::PolicyAuthority,
+    admission: &impl SendAdmission,
+) -> Result<String, SendError> {
+    let snapshot = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    if snapshot.settings != request.revision.settings
+        || snapshot.authorization != request.revision.authorization
+    {
+        return Err(SendError::PolicyDenied);
+    }
+    let model = snapshot.model.as_deref().ok_or(SendError::PolicyDenied)?;
+    let adapter = DiagnosticChatLoopback::new(model).ok_or(SendError::InvalidRequest)?;
+    crate::manual::convert_ordered(request, authority, admission, &adapter)
 }
 
 impl OrderedConversionTransport for DiagnosticChatLoopback {
@@ -645,8 +665,8 @@ mod tests {
         authority
             .replace_credential(Credential::new("synthetic-key".into()))
             .unwrap();
+        authority.set_model("fixture-model").unwrap();
         let version = authority.grant_manual_consent(&destination).unwrap();
-        let adapter = DiagnosticChatLoopback::new("fixture-model").unwrap();
         let request = || ManualRequest {
             revision: Revision {
                 input: 1,
@@ -658,7 +678,7 @@ mod tests {
             deadline: Instant::now() + Duration::from_secs(2),
         };
         assert_eq!(
-            manual::convert_ordered(request(), &authority, &Active, &adapter),
+            convert_chat_with_policy(request(), &authority, &Active),
             Ok("日本語".into())
         );
         let captured = server.join().unwrap();
@@ -674,10 +694,105 @@ mod tests {
             .ends_with("nihongo"));
         authority.revoke_manual_consent().unwrap();
         assert_eq!(
-            manual::convert_ordered(request(), &authority, &Active, &adapter),
+            convert_chat_with_policy(request(), &authority, &Active),
             Err(SendError::PolicyDenied)
         );
         assert!(DiagnosticChatLoopback::new("").is_none());
+    }
+
+    #[test]
+    fn model_change_discards_inflight_chat_result_and_old_revision() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let destination = Destination::new(
+            Scheme::HttpLoopback,
+            "127.0.0.1",
+            listener.local_addr().unwrap().port(),
+            "/convert",
+        )
+        .unwrap();
+        let authority = Arc::new(PolicyAuthority::new(destination.clone()));
+        authority
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
+        authority.set_model("old-model").unwrap();
+        let version = authority.grant_manual_consent(&destination).unwrap();
+        let (received_tx, received_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut bytes = [0u8; 4096];
+            let mut request = Vec::new();
+            let header_end = loop {
+                let count = stream.read(&mut bytes).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&bytes[..count]);
+                if let Some(end) = find_header_end(&request) {
+                    break end;
+                }
+            };
+            let headers = std::str::from_utf8(&request[..header_end]).unwrap();
+            let length: usize = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            while request.len() - header_end < length {
+                let count = stream.read(&mut bytes).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&bytes[..count]);
+            }
+            received_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            let body = serde_json::json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":r#"{"candidates":["日本語"]}"#}}]}).to_string();
+            stream.write_all(&response("200 OK", &body)).unwrap();
+        });
+        let worker_authority = authority.clone();
+        let worker_destination = destination.clone();
+        let worker = thread::spawn(move || {
+            convert_chat_with_policy(
+                ManualRequest {
+                    revision: Revision {
+                        input: 1,
+                        settings: version.settings,
+                        authorization: version.authorization,
+                    },
+                    destination: &worker_destination,
+                    source: "nihongo",
+                    deadline: Instant::now() + Duration::from_secs(2),
+                },
+                &worker_authority,
+                &Active,
+            )
+        });
+        received_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let changed = authority.set_model("new-model").unwrap();
+        assert_eq!(changed.settings, version.settings + 1);
+        assert_eq!(changed.authorization, version.authorization);
+        release_tx.send(()).unwrap();
+        assert_eq!(worker.join().unwrap(), Err(SendError::PolicyDenied));
+        server.join().unwrap();
+        assert_eq!(
+            convert_chat_with_policy(
+                ManualRequest {
+                    revision: Revision {
+                        input: 2,
+                        settings: version.settings,
+                        authorization: version.authorization
+                    },
+                    destination: &destination,
+                    source: "nihongo",
+                    deadline: Instant::now() + Duration::from_secs(1),
+                },
+                &authority,
+                &Active
+            ),
+            Err(SendError::PolicyDenied)
+        );
     }
 
     #[test]

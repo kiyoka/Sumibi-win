@@ -112,6 +112,7 @@ impl Credential {
 pub struct PolicySnapshot {
     pub settings: u64,
     pub authorization: u64,
+    pub model: Option<String>,
     pub destination: Destination,
     pub manual_consent: Option<Destination>,
     pub credential: Option<Arc<Credential>>,
@@ -442,6 +443,7 @@ mod tests {
         Source(RefCell::new(PolicySnapshot {
             settings: 1,
             authorization: 1,
+            model: None,
             destination: destination.clone(),
             manual_consent: Some(destination),
             credential: Some(Arc::new(Credential::new("synthetic-key".into()).unwrap())),

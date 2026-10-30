@@ -15,6 +15,10 @@ pub enum PayloadError {
     InvalidResponse,
 }
 
+pub(crate) fn valid_model(model: &str) -> bool {
+    !model.is_empty() && model.len() <= 256 && !model.chars().any(char::is_control)
+}
+
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<Choice>,
@@ -39,7 +43,7 @@ struct Candidates {
 /// Create only the initial-conversion body. Model is explicit; no preset
 /// options, credential, endpoint or destination is inferred here.
 pub fn request_body(model: &str, source: &str) -> Result<Vec<u8>, PayloadError> {
-    if model.is_empty() || model.len() > 256 || model.chars().any(char::is_control) {
+    if !valid_model(model) {
         return Err(PayloadError::InvalidModel);
     }
     if !sumibi_protocol::message::valid_text(source)

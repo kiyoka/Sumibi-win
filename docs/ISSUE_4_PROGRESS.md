@@ -33,7 +33,11 @@ Mac版が許す通常文字列や部分JSONは現段階では受け入れない�
 この初回変換JSONを診断用localhost HTTPへ接続し、既存の同意・期限・取消の
 送信境界を通して模擬応答から1候補を取得する試験を追加した。同意取消後の拒否、
 不完全応答と外部HTTPSの拒否も確認した。接続先パスは診断時に明示し、自動補完しない。
-製品Hostや実サービスとの接続、モデル変更を設定版へ結び付ける処理は残る。
+診断用のHost policyへモデル名を追加し、モデル変更と設定版更新を同じロック下で行う。
+診断用の初回変換入口は要求版と同じsnapshotからモデルを取得し、送信前後も版を再検査する。
+localhost通信中のモデル変更による旧結果の破棄、古い版の拒否、不正なモデル名や
+版の枯渇時に設定を変更しないことを確認した。モデル設定の永続化・製品Hostや
+実サービスとの接続は残る。
 参照: [Mac版クライアント](https://github.com/kiyoka/Sumibi-mac/blob/553c69021eda7a8a5944d8748357f3790cc2f45c/Sources/SumibiCore/OpenAICompatibleClient.swift)、
 [プロンプト](https://github.com/kiyoka/Sumibi-mac/blob/553c69021eda7a8a5944d8748357f3790cc2f45c/Sources/SumibiCore/Conversion.swift)。
 

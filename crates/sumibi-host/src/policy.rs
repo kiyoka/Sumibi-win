@@ -14,6 +14,7 @@ pub struct PolicyVersion {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeError {
     InvalidConsent,
+    InvalidModel,
     StalePolicy,
     InvalidCursor,
     Exhausted,
@@ -53,6 +54,7 @@ impl PolicyAuthority {
             state: Mutex::new(PolicySnapshot {
                 settings: 1,
                 authorization: 1,
+                model: None,
                 destination,
                 manual_consent: None,
                 credential: None,
@@ -166,6 +168,25 @@ impl PolicyAuthority {
         state.authorization = authorization;
         state.manual_consent = None;
         state.allowed = false;
+        let published = version(&state);
+        drop(state);
+        self.changed.notify_all();
+        Ok(published)
+    }
+
+    /// Publish the model and its settings revision atomically. Existing
+    /// consent is destination-specific; in-flight requests still become stale.
+    pub fn set_model(&self, model: &str) -> Result<PolicyVersion, ChangeError> {
+        if !crate::first_conversion::valid_model(model) {
+            return Err(ChangeError::InvalidModel);
+        }
+        let mut state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        let settings = state
+            .settings
+            .checked_add(1)
+            .ok_or(ChangeError::Exhausted)?;
+        state.model = Some(model.to_owned());
+        state.settings = settings;
         let published = version(&state);
         drop(state);
         self.changed.notify_all();
@@ -749,6 +770,37 @@ mod tests {
             }),
             Err(ChangeError::InvalidCursor)
         ));
+    }
+
+    #[test]
+    fn model_updates_are_versioned_and_invalid_or_exhausted_updates_are_atomic() {
+        let authority = PolicyAuthority::new(destination("api.example.test"));
+        assert_eq!(
+            authority.set_model("bad\nmodel"),
+            Err(ChangeError::InvalidModel)
+        );
+        assert_eq!(authority.snapshot().unwrap().model, None);
+        let updated = authority.set_model("model-a").unwrap();
+        assert_eq!(
+            updated,
+            PolicyVersion {
+                settings: 2,
+                authorization: 1
+            }
+        );
+        assert_eq!(
+            authority.snapshot().unwrap().model.as_deref(),
+            Some("model-a")
+        );
+        {
+            let mut state = authority.state.lock().unwrap();
+            state.settings = u64::MAX;
+        }
+        assert_eq!(authority.set_model("model-b"), Err(ChangeError::Exhausted));
+        assert_eq!(
+            authority.snapshot().unwrap().model.as_deref(),
+            Some("model-a")
+        );
     }
 
     #[test]
