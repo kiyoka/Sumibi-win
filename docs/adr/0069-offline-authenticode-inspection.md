@@ -66,6 +66,15 @@ TrustedInstallerに限定し、それ以外への危険な許可を拒否する�
 同時に開いた読取試験が成功した。これは各部品の診断であり、一連の階層を製品の
 起動経路として認証するAPIではない。署名の信頼と実行中イメージの同一性も残る。
 
+`DevelopmentPlacement::open`は開発用の固定構造について、指定driveのroot、
+`Program Files`、`Sumibi`、`dev-`と16桁小文字hexの版、固定名のTIPまたはHostを
+順に検査し、各handleを一緒に保持する。`inspect_signer`は追加で指定証明書指紋を
+検証し、署名検査側とACL検査側が同じfile IDを指す場合だけ両handleを保持する。
+これは開発用の読取検査であり、実行許可、信頼された設定の選定、receiptや依存DLL、
+実行中processの同一性、オンライン失効を検証しない。
+Dドライブの開発版DLLで階層検査が成功し、未信頼の自己署名は署名検査で拒否された。
+信頼された製品署名・Hostを使った結合成功はまだ確認していない。
+
 `PinnedProcess::observed_image_path`は、既に固定した生存process handleからWindowsの
 `QueryFullProcessImageNameW`でWin32形式のパスを取得する。取得前後にprocess生存と
 tokenの一致を確認し、空・相対・不正な長さの結果を拒否する。これは同期照会なので

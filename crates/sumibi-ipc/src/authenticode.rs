@@ -52,7 +52,10 @@ impl VerifiedFile {
     /// it does not prove a running process mapped this file or secure parents.
     pub fn matches_path(&self, path: &Path) -> Result<bool, InspectionError> {
         let candidate = open_plain_local_file(path)?;
-        Ok(file_identity(&self._file)? == file_identity(&candidate)?)
+        self.matches_open_file(&candidate)
+    }
+    pub(crate) fn matches_open_file(&self, candidate: &File) -> Result<bool, InspectionError> {
+        Ok(file_identity(&self._file)? == file_identity(candidate)?)
     }
 }
 
