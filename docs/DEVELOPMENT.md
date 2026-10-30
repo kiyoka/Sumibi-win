@@ -17,6 +17,11 @@ Chat Completionsの完全なパスへ補完して保存する。既定配置先�
 初回書込中の終了やI/O失敗で不完全なファイルが残る場合は、起動検査が拒否する。
 そのファイルの修復・削除は利用者の明示操作とし、再実行で自動上書きしない。
 設定UIと常駐運転への接続は今後の作業である。
+設定の作成・保存は同じディレクトリの`.settings.json.lock`を使う。
+この空ファイルは通常は残し、保存中の競合は再読取してから再試行する。
+設定編集では`save_and_apply_if_unchanged`を使い、既に別の保存が行われていれば
+`Conflict`として扱う。`save`はロックするが内容の比較を省略する無条件保存である。
+OSロックの根拠: [File::try_lock](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock)。
 配置先取得の根拠: [SHGetKnownFolderPath](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath)。
 
 ## マシン登録の事前確認

@@ -16,6 +16,8 @@ pub enum SettingsError {
     Invalid,
     Io,
     AlreadyExists,
+    Busy,
+    Conflict,
     Policy(ChangeError),
 }
 
@@ -108,6 +110,21 @@ impl Settings {
         Ok(SettingsUpdate { authority, version })
     }
 
+    /// Settings-editor save with a loaded baseline. Conflicts leave the live
+    /// authority unchanged and require the caller to reload before retrying.
+    pub fn save_and_apply_if_unchanged<'a>(
+        &self,
+        path: &Path,
+        expected: &Settings,
+        authority: &'a PolicyAuthority,
+    ) -> Result<SettingsUpdate<'a>, SettingsError> {
+        let version =
+            authority.save_settings(self.destination.clone(), self.model.clone(), || {
+                self.save_if_unchanged(path, expected)
+            })?;
+        Ok(SettingsUpdate { authority, version })
+    }
+
     fn record(&self) -> Record {
         Record {
             version: 1,
@@ -165,6 +182,7 @@ impl Settings {
     /// invalid one. An interrupted initial write may leave an invalid record;
     /// load rejects it and the caller must explicitly repair that file.
     pub fn create(&self, path: &Path) -> Result<(), SettingsError> {
+        let _lock = write_lock(path)?;
         if !path.is_absolute() {
             return Err(SettingsError::Invalid);
         }
@@ -193,10 +211,28 @@ impl Settings {
             .map_err(|_| SettingsError::Io)
     }
 
-    /// Replace from a newly created sibling file after flushing its contents.
-    /// The caller serializes writes and supplies a trusted user-settings path.
+    /// Unconditionally replace from a newly created sibling file after
+    /// flushing its contents. All library writers acquire the fixed sidecar;
+    /// editors should use `save_if_unchanged` to reject stale baselines.
+    /// The caller supplies a trusted user-settings path.
     /// Atomic replacement does not by itself guarantee power-loss durability.
     pub fn save(&self, path: &Path) -> Result<(), SettingsError> {
+        let _lock = write_lock(path)?;
+        self.save_locked(path)
+    }
+
+    /// Refuse a stale editor's replacement while another writer is active or
+    /// the saved settings have changed since the editor loaded them.
+    pub fn save_if_unchanged(&self, path: &Path, expected: &Settings) -> Result<(), SettingsError> {
+        let _lock = write_lock(path)?;
+        let current = Self::load(path)?;
+        if current.destination != expected.destination || current.model != expected.model {
+            return Err(SettingsError::Conflict);
+        }
+        self.save_locked(path)
+    }
+
+    fn save_locked(&self, path: &Path) -> Result<(), SettingsError> {
         if !path.is_absolute() {
             return Err(SettingsError::Invalid);
         }
@@ -231,10 +267,127 @@ impl Settings {
     }
 }
 
+// Retain this empty sidecar across file replacements. Never unlink it on
+// release: another process may already have it open waiting to acquire it.
+fn write_lock(path: &Path) -> Result<fs::File, SettingsError> {
+    if !path.is_absolute() {
+        return Err(SettingsError::Invalid);
+    }
+    let parent = path.parent().ok_or(SettingsError::Invalid)?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(SettingsError::Invalid)?;
+    let lock_path = parent.join(format!(".{name}.lock"));
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(3).custom_flags(0x0020_0000); // no delete sharing; open reparse point itself
+    }
+    let file = options.open(lock_path).map_err(|_| SettingsError::Io)?;
+    let metadata = file.metadata().map_err(|_| SettingsError::Io)?;
+    if !metadata.is_file() || metadata.len() != 0 {
+        return Err(SettingsError::Invalid);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(SettingsError::Invalid);
+        }
+    }
+    file.try_lock().map_err(|error| match error {
+        std::fs::TryLockError::WouldBlock => SettingsError::Busy,
+        std::fs::TryLockError::Error(_) => SettingsError::Io,
+    })?;
+    Ok(file)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::manual::PolicySource;
+
+    #[test]
+    fn settings_writer_child_fixture() {
+        let Some(path) = std::env::var_os("SUMIBI_SETTINGS_LOCK_TEST_PATH") else {
+            return;
+        };
+        let next = Settings::new(Scheme::Https, "example.test", 443, "/v1", "child-model").unwrap();
+        let result = next.save(Path::new(&path));
+        if std::env::var_os("SUMIBI_SETTINGS_LOCK_TEST_BUSY").is_some() {
+            assert_eq!(result, Err(SettingsError::Busy));
+        } else {
+            assert_eq!(result, Ok(()));
+        }
+    }
+
+    #[test]
+    fn other_process_is_busy_and_stale_save_preserves_disk_and_policy() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!(
+                "sumibi-settings-lock-{}-{}",
+                std::process::id(),
+                TEMP_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+        fs::create_dir(&directory).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = fs::remove_file(self.0.join("settings.json"));
+                let _ = fs::remove_file(self.0.join(".settings.json.lock"));
+                let _ = fs::remove_dir(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        let path = directory.join("settings.json");
+        let original =
+            Settings::new(Scheme::Https, "example.test", 443, "/v1", "original-model").unwrap();
+        original.save(&path).unwrap();
+        let child = |busy: bool| {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", "settings::tests::settings_writer_child_fixture"])
+                .env("SUMIBI_SETTINGS_LOCK_TEST_PATH", &path);
+            if busy {
+                command.env("SUMIBI_SETTINGS_LOCK_TEST_BUSY", "1");
+            } else {
+                command.env_remove("SUMIBI_SETTINGS_LOCK_TEST_BUSY");
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "settings child fixture failed");
+        };
+        let lock = write_lock(&path).unwrap();
+        child(true);
+        assert_eq!(Settings::load(&path).unwrap().model(), "original-model");
+        drop(lock);
+        child(false);
+        assert_eq!(Settings::load(&path).unwrap().model(), "child-model");
+        let authority = original.new_authority().unwrap();
+        let before = authority.wire_policy().unwrap();
+        let stale =
+            Settings::new(Scheme::Https, "example.test", 443, "/v1", "stale-model").unwrap();
+        assert!(matches!(
+            stale.save_and_apply_if_unchanged(&path, &original, &authority),
+            Err(SettingsError::Conflict)
+        ));
+        assert!(authority.wire_policy().unwrap() == before);
+        assert_eq!(Settings::load(&path).unwrap().model(), "child-model");
+        let baseline = Settings::load(&path).unwrap();
+        let _update = stale
+            .save_and_apply_if_unchanged(&path, &baseline, &authority)
+            .unwrap();
+        assert_eq!(Settings::load(&path).unwrap().model(), "stale-model");
+        let lock_path = directory.join(".settings.json.lock");
+        fs::write(&lock_path, b"unexpected").unwrap();
+        assert_eq!(original.save(&path), Err(SettingsError::Invalid));
+        assert_eq!(fs::read(&lock_path).unwrap(), b"unexpected");
+        assert_eq!(Settings::load(&path).unwrap().model(), "stale-model");
+        println!("cross-process settings lock and stale editor rejection completed");
+    }
 
     #[test]
     fn round_trip_restores_no_key_or_consent() {
@@ -286,6 +439,7 @@ mod tests {
         impl Drop for Cleanup {
             fn drop(&mut self) {
                 let _ = fs::remove_file(self.0.join("settings.json"));
+                let _ = fs::remove_file(self.0.join(".settings.json.lock"));
                 let _ = fs::remove_dir(&self.0);
             }
         }
@@ -319,7 +473,7 @@ mod tests {
         assert_eq!(updated.model.as_deref(), Some("third"));
         assert_eq!(updated.destination.host(), "other.test");
         assert_eq!(Settings::load(&path).unwrap().model(), "third");
-        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
         assert!(Settings::load(Path::new("relative.json")).is_err());
     }
 }

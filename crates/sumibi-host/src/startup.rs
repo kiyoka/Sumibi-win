@@ -75,6 +75,7 @@ mod tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(self.path());
+            let _ = std::fs::remove_file(self.0.join(".settings.json.lock"));
             let _ = std::fs::remove_dir(&self.0);
         }
     }

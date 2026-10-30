@@ -2352,6 +2352,7 @@ mod tests {
         impl Drop for SettingsCleanup {
             fn drop(&mut self) {
                 let _ = std::fs::remove_file(self.0.join("settings.json"));
+                let _ = std::fs::remove_file(self.0.join(".settings.json.lock"));
                 let _ = std::fs::remove_dir(&self.0);
             }
         }
