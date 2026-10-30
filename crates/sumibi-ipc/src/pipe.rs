@@ -1324,6 +1324,20 @@ mod tests {
         }
         let _guard = PIPE_TEST_LOCK.lock().unwrap();
         let _admission = ADMISSION_TEST.lock().unwrap();
+        // The event can wake its observer before finish() releases the result
+        // mutex. prepared_policy deliberately returns None instead of blocking
+        // the TSF owner in that interval; wait for the published test snapshot.
+        let prepared = |worker: &Worker| {
+            let limit = Instant::now() + Duration::from_secs(3);
+            loop {
+                let result = worker.prepared_policy();
+                if !matches!(result, Ok(None)) {
+                    break result;
+                }
+                assert!(Instant::now() < limit, "preparation snapshot not published");
+                std::thread::yield_now();
+            }
+        };
         let stop = Stop::new().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         let (_sender, receiver) = connected_one(&stop, deadline);
@@ -1341,7 +1355,7 @@ mod tests {
             unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 3000) },
             WAIT_OBJECT_0
         );
-        assert!(matches!(worker.prepared_policy(), Err(Error::WrongPeer)));
+        assert!(matches!(prepared(&worker), Err(Error::WrongPeer)));
         assert!(worker.reserve(1).is_err());
         worker.shutdown(Duration::from_secs(1)).unwrap();
         drop(worker);
@@ -1362,7 +1376,7 @@ mod tests {
             unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 3000) },
             WAIT_OBJECT_0
         );
-        assert!(matches!(worker.prepared_policy(), Err(Error::Timeout)));
+        assert!(matches!(prepared(&worker), Err(Error::Timeout)));
         assert!(worker.reserve(1).is_err());
         worker.shutdown(Duration::from_secs(1)).unwrap();
     }
