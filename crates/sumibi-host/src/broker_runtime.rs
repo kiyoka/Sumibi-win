@@ -2365,11 +2365,21 @@ mod tests {
             "fixture-model",
         )
         .unwrap();
-        let saved = settings
-            .save_and_apply(&dir.join("settings.json"), &source)
-            .unwrap();
+        let path = dir.join("settings.json");
+        settings.save(&path).unwrap();
+        let baseline = crate::settings::Settings::load(&path).unwrap();
+        let mut save_task =
+            crate::settings_task::SettingsSaveTask::start(source.clone(), path, baseline, settings)
+                .unwrap();
+        let saved = loop {
+            if let Some(result) = save_task.try_take() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
         let settings_receipt = boot
-            .acknowledge_settings_update(&saved, &stop, deadline)
+            .acknowledge_saved_settings(&saved, &stop, deadline)
             .unwrap();
         assert_eq!(settings_receipt.requested, saved.version());
         assert!(!settings_receipt.current.allowed);

@@ -61,7 +61,7 @@ impl CredentialTask {
         authority: Arc<PolicyAuthority>,
         operation: impl FnOnce() -> Result<Option<Credential>, StoreError> + Send + 'static,
     ) -> Result<Self, CredentialTaskError> {
-        if !authority.reserve_credential_task() {
+        if !authority.reserve_configuration_task() {
             return Err(CredentialTaskError::Busy);
         }
         let worker_authority = authority.clone();
@@ -71,7 +71,7 @@ impl CredentialTask {
                 struct Reservation(Arc<PolicyAuthority>);
                 impl Drop for Reservation {
                     fn drop(&mut self) {
-                        self.0.release_credential_task();
+                        self.0.release_configuration_task();
                     }
                 }
                 let _reservation = Reservation(worker_authority.clone());
@@ -89,7 +89,7 @@ impl CredentialTask {
                 worker: Some(worker),
             }),
             Err(_) => {
-                authority.release_credential_task();
+                authority.release_configuration_task();
                 Err(CredentialTaskError::Spawn)
             }
         }

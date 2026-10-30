@@ -468,6 +468,18 @@ impl<'a> BrokerBoot<'a> {
         self.acknowledge_version(update.version(), stop, deadline)
     }
 
+    pub fn acknowledge_saved_settings(
+        &mut self,
+        update: &crate::settings_task::SavedSettings,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<PolicyAcknowledgment, RuntimeError> {
+        if !update.belongs_to(self.source) {
+            return Err(RuntimeError::InvalidTarget);
+        }
+        self.acknowledge_version(update.version(), stop, deadline)
+    }
+
     /// Low-level retirement step for callers already holding this boot. Prefer
     /// `shutdown` or `rotate`, which validate the deadline and retain ownership
     /// on failure. False means a worker or OS accept still owns resources.

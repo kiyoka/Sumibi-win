@@ -20,4 +20,6 @@ pub mod manual;
 pub mod policy;
 pub mod settings;
 #[cfg(windows)]
+pub mod settings_task;
+#[cfg(windows)]
 pub mod startup;
