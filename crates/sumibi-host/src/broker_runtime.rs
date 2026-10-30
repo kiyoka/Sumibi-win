@@ -2324,7 +2324,7 @@ mod tests {
             matches!(read_frame(&mut client, &stop, deadline).message, message::Message::PolicyChanged(policy) if policy == acknowledgment.current)
         );
         let mut reload =
-            crate::credential_store::CredentialReloadTask::start_fixture(source.clone()).unwrap();
+            crate::credential_store::CredentialTask::start_fixture(source.clone()).unwrap();
         let owned = loop {
             if let Some(result) = reload.try_take() {
                 break result.unwrap();

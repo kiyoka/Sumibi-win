@@ -6,7 +6,7 @@ use std::thread::{self, JoinHandle};
 use sumibi_credentials::StoreError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReloadTaskError {
+pub enum CredentialTaskError {
     Busy,
     Spawn,
     WorkerFailed,
@@ -32,39 +32,52 @@ impl OwnedCredentialUpdate {
     }
 }
 
-/// One outstanding credential reload per authority. Dropping this task does
+/// One outstanding credential operation per authority. Dropping this task does
 /// not cancel an already-started store operation; the Broker must continue
 /// publishing policy changes even if the settings UI closes.
 #[must_use = "poll the task and publish its returned update"]
-pub struct CredentialReloadTask {
-    worker: Option<JoinHandle<Result<OwnedCredentialUpdate, ReloadTaskError>>>,
+pub struct CredentialTask {
+    worker: Option<JoinHandle<Result<OwnedCredentialUpdate, CredentialTaskError>>>,
 }
-impl CredentialReloadTask {
-    pub fn start(authority: Arc<PolicyAuthority>) -> Result<Self, ReloadTaskError> {
+impl CredentialTask {
+    pub fn reload(authority: Arc<PolicyAuthority>) -> Result<Self, CredentialTaskError> {
         Self::start_with(authority, load_credential)
+    }
+
+    /// Explicitly save a user-provided key on the settings worker.
+    pub fn save(
+        authority: Arc<PolicyAuthority>,
+        secret: String,
+    ) -> Result<Self, CredentialTaskError> {
+        Self::start_with(authority, move || save_credential(secret))
+    }
+
+    /// Explicitly remove the fixed key on the settings worker.
+    pub fn delete(authority: Arc<PolicyAuthority>) -> Result<Self, CredentialTaskError> {
+        Self::start_with(authority, delete_credential)
     }
 
     fn start_with(
         authority: Arc<PolicyAuthority>,
         operation: impl FnOnce() -> Result<Option<Credential>, StoreError> + Send + 'static,
-    ) -> Result<Self, ReloadTaskError> {
-        if !authority.reserve_credential_reload() {
-            return Err(ReloadTaskError::Busy);
+    ) -> Result<Self, CredentialTaskError> {
+        if !authority.reserve_credential_task() {
+            return Err(CredentialTaskError::Busy);
         }
         let worker_authority = authority.clone();
         let result = thread::Builder::new()
-            .name("sumibi-credential-reload".into())
+            .name("sumibi-credential-store".into())
             .spawn(move || {
                 struct Reservation(Arc<PolicyAuthority>);
                 impl Drop for Reservation {
                     fn drop(&mut self) {
-                        self.0.release_credential_reload();
+                        self.0.release_credential_task();
                     }
                 }
                 let _reservation = Reservation(worker_authority.clone());
                 let (version, outcome) = worker_authority
                     .update_stored_credential(operation)
-                    .map_err(ReloadTaskError::Policy)?;
+                    .map_err(CredentialTaskError::Policy)?;
                 Ok(OwnedCredentialUpdate {
                     authority: worker_authority,
                     version,
@@ -76,14 +89,14 @@ impl CredentialReloadTask {
                 worker: Some(worker),
             }),
             Err(_) => {
-                authority.release_credential_reload();
-                Err(ReloadTaskError::Spawn)
+                authority.release_credential_task();
+                Err(CredentialTaskError::Spawn)
             }
         }
     }
 
     /// Nonblocking poll. A completed worker is consumed exactly once.
-    pub fn try_take(&mut self) -> Option<Result<OwnedCredentialUpdate, ReloadTaskError>> {
+    pub fn try_take(&mut self) -> Option<Result<OwnedCredentialUpdate, CredentialTaskError>> {
         if !self.worker.as_ref()?.is_finished() {
             return None;
         }
@@ -92,12 +105,14 @@ impl CredentialReloadTask {
                 .take()
                 .unwrap()
                 .join()
-                .unwrap_or(Err(ReloadTaskError::WorkerFailed)),
+                .unwrap_or(Err(CredentialTaskError::WorkerFailed)),
         )
     }
 
     #[cfg(test)]
-    pub(crate) fn start_fixture(authority: Arc<PolicyAuthority>) -> Result<Self, ReloadTaskError> {
+    pub(crate) fn start_fixture(
+        authority: Arc<PolicyAuthority>,
+    ) -> Result<Self, CredentialTaskError> {
         Self::start_with(authority, || Err(StoreError::Unavailable))
     }
 }
@@ -132,20 +147,24 @@ pub fn save(
     authority: &PolicyAuthority,
     secret: String,
 ) -> Result<CredentialUpdate<'_>, ChangeError> {
-    apply(authority, || {
-        sumibi_credentials::save(&secret)?;
-        Credential::new(secret)
-            .map(Some)
-            .ok_or(StoreError::InvalidSecret)
-    })
+    apply(authority, || save_credential(secret))
 }
 
 /// Remove the stored key and revoke old consent even when deletion fails.
 pub fn delete(authority: &PolicyAuthority) -> Result<CredentialUpdate<'_>, ChangeError> {
-    apply(authority, || {
-        sumibi_credentials::delete()?;
-        Ok(None)
-    })
+    apply(authority, delete_credential)
+}
+
+fn save_credential(secret: String) -> Result<Option<Credential>, StoreError> {
+    sumibi_credentials::save(&secret)?;
+    Credential::new(secret)
+        .map(Some)
+        .ok_or(StoreError::InvalidSecret)
+}
+
+fn delete_credential() -> Result<Option<Credential>, StoreError> {
+    sumibi_credentials::delete()?;
+    Ok(None)
 }
 
 fn apply(
@@ -197,7 +216,7 @@ mod tests {
         let old = authority.grant_manual_consent(&destination).unwrap();
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
-        let mut task = CredentialReloadTask::start_with(authority.clone(), move || {
+        let mut task = CredentialTask::start_with(authority.clone(), move || {
             entered_tx.send(()).unwrap();
             release_rx.recv().unwrap();
             Err(StoreError::Unavailable)
@@ -206,8 +225,12 @@ mod tests {
         entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(task.try_take().is_none());
         assert!(matches!(
-            CredentialReloadTask::start_with(authority.clone(), || Ok(None)),
-            Err(ReloadTaskError::Busy)
+            CredentialTask::save(authority.clone(), "synthetic".into()),
+            Err(CredentialTaskError::Busy)
+        ));
+        assert!(matches!(
+            CredentialTask::delete(authority.clone()),
+            Err(CredentialTaskError::Busy)
         ));
         release_tx.send(()).unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -223,7 +246,7 @@ mod tests {
         assert!(update.belongs_to(&authority));
         assert!(!authority.snapshot().unwrap().allowed);
         assert!(task.try_take().is_none());
-        let mut next = CredentialReloadTask::start_with(authority.clone(), || Ok(None)).unwrap();
+        let mut next = CredentialTask::start_with(authority.clone(), || Ok(None)).unwrap();
         loop {
             if let Some(result) = next.try_take() {
                 assert!(result.unwrap().outcome().is_ok());
@@ -232,6 +255,30 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::yield_now();
         }
+    }
+
+    #[test]
+    fn invalid_save_on_worker_revokes_previous_key_without_storing() {
+        use std::time::{Duration, Instant};
+        let destination = Destination::new(Scheme::Https, "example.test", 443, "/v1").unwrap();
+        let authority = Arc::new(PolicyAuthority::new(destination.clone()));
+        authority
+            .replace_credential(Credential::new("old-key".into()))
+            .unwrap();
+        let before = authority.grant_manual_consent(&destination).unwrap();
+        let mut task = CredentialTask::save(authority.clone(), "invalid key".into()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let update = loop {
+            if let Some(result) = task.try_take() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert_eq!(update.outcome(), Err(StoreError::InvalidSecret));
+        assert_eq!(update.version().authorization, before.authorization + 1);
+        let state = authority.snapshot().unwrap();
+        assert!(!state.allowed && state.credential.is_none());
     }
 
     #[test]

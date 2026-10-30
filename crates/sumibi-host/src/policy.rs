@@ -47,7 +47,7 @@ pub struct PolicyAuthority {
     state: Mutex<PolicySnapshot>,
     changed: Condvar,
     #[cfg(windows)]
-    credential_reload_active: std::sync::atomic::AtomicBool,
+    credential_task_active: std::sync::atomic::AtomicBool,
 }
 
 impl PolicyAuthority {
@@ -64,13 +64,13 @@ impl PolicyAuthority {
             }),
             changed: Condvar::new(),
             #[cfg(windows)]
-            credential_reload_active: std::sync::atomic::AtomicBool::new(false),
+            credential_task_active: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     #[cfg(windows)]
-    pub(crate) fn reserve_credential_reload(&self) -> bool {
-        self.credential_reload_active
+    pub(crate) fn reserve_credential_task(&self) -> bool {
+        self.credential_task_active
             .compare_exchange(
                 false,
                 true,
@@ -81,8 +81,8 @@ impl PolicyAuthority {
     }
 
     #[cfg(windows)]
-    pub(crate) fn release_credential_reload(&self) {
-        self.credential_reload_active
+    pub(crate) fn release_credential_task(&self) {
+        self.credential_task_active
             .store(false, std::sync::atomic::Ordering::Release);
     }
 
