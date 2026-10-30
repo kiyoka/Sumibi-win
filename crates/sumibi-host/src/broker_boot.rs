@@ -395,6 +395,27 @@ impl<'a> BrokerBoot<'a> {
         result.map(|step| BootStep { accept, step })
     }
 
+    /// Diagnostic-only localhost chat dispatch, with normal accept tracking.
+    pub fn advance_diagnostic_chat(
+        &mut self,
+        authority: Arc<PolicyAuthority>,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<BootStep, RuntimeError> {
+        let result = self.owner.advance_diagnostic_chat_with_accept(
+            &mut self.runtime,
+            &mut self.accepts,
+            authority,
+            stop,
+            deadline,
+        );
+        let accept = self
+            .owner
+            .take_completed_accept_index()
+            .map(|index| self.accept_ids.remove(index));
+        result.map(|step| BootStep { accept, step })
+    }
+
     /// Complete a settings receipt only after cancelled workers have exited.
     pub fn acknowledge_version(
         &mut self,

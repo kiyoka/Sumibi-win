@@ -2843,6 +2843,11 @@ mod tests {
         if !supported() {
             return;
         }
+        check_boot_manual_dispatch(false);
+        check_boot_manual_dispatch(true);
+    }
+
+    fn check_boot_manual_dispatch(chat: bool) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let destination =
@@ -2851,11 +2856,18 @@ mod tests {
         source
             .replace_credential(Credential::new("fixture".into()))
             .unwrap();
+        if chat {
+            source.set_model("fixture-model").unwrap();
+        }
         source.grant_manual_consent(&destination).unwrap();
         let http = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let request = read_http_request(&mut stream);
-            let body = r#"{"text":"日本語"}"#;
+            let body = if chat {
+                r#"{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"{\"candidates\":[\"日本語\"]}"}}]}"#
+            } else {
+                r#"{"text":"日本語"}"#
+            };
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -2870,11 +2882,16 @@ mod tests {
             .unwrap();
         let mut client = Pipe::connect(boot.name(), PinnedProcess::current().unwrap()).unwrap();
         let transport = Arc::new(DiagnosticLoopbackHttp);
+        let advance = |boot: &mut BrokerBoot<'_>| {
+            if chat {
+                boot.advance_diagnostic_chat(source.clone(), &stop, deadline)
+                    .map(|step| step.step)
+            } else {
+                boot.advance_manual(source.clone(), transport.clone(), &stop, deadline)
+            }
+        };
         loop {
-            match boot
-                .advance_manual(source.clone(), transport.clone(), &stop, deadline)
-                .unwrap()
-            {
+            match advance(&mut boot).unwrap() {
                 OwnerStep::Accepted { key: 1, .. } => break,
                 OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
                     std::thread::yield_now();
@@ -2890,10 +2907,7 @@ mod tests {
             )
             .unwrap();
         loop {
-            match boot
-                .advance_manual(source.clone(), transport.clone(), &stop, deadline)
-                .unwrap()
-            {
+            match advance(&mut boot).unwrap() {
                 OwnerStep::Broker(PollStep::Activated(1)) => break,
                 OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
                     std::thread::yield_now();
@@ -2911,10 +2925,7 @@ mod tests {
             )
             .unwrap();
         loop {
-            match boot
-                .advance_manual(source.clone(), transport.clone(), &stop, deadline)
-                .unwrap()
-            {
+            match advance(&mut boot).unwrap() {
                 OwnerStep::Submitted { key: 1, request: 1 } => break,
                 OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
                     std::thread::yield_now();
@@ -2923,10 +2934,7 @@ mod tests {
             }
         }
         loop {
-            match boot
-                .advance_manual(source.clone(), transport.clone(), &stop, deadline)
-                .unwrap()
-            {
+            match advance(&mut boot).unwrap() {
                 OwnerStep::Completed {
                     key: 1,
                     request: 1,
@@ -2947,6 +2955,12 @@ mod tests {
         assert!(request
             .windows(b"POST /convert".len())
             .any(|bytes| bytes == b"POST /convert"));
+        if chat {
+            assert!(request
+                .windows(b"fixture-model".len())
+                .any(|bytes| bytes == b"fixture-model"));
+            println!("authenticated pipe and localhost chat fixture completed");
+        }
         assert!(boot.retire_for_restart(Instant::now() + Duration::from_millis(500)));
     }
 

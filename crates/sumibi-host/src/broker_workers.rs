@@ -331,6 +331,55 @@ impl BrokerWorkLoop {
         })
     }
 
+    /// Diagnostic-only chat dispatch. Resolve the model inside the worker
+    /// from the same versioned authority used by the runtime and send gate.
+    pub fn advance_diagnostic_chat(
+        &mut self,
+        runtime: &mut BrokerPolicyRuntime<'_>,
+        authority: Arc<PolicyAuthority>,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<OwnerStep, RuntimeError> {
+        if !runtime.uses_source(&authority) {
+            return Err(RuntimeError::InvalidTarget);
+        }
+        self.advance(runtime, stop, deadline, move |request| {
+            move |ticket: JobTicket| {
+                let destination = authority
+                    .snapshot()
+                    .ok_or(ErrorCode::Unavailable)?
+                    .destination;
+                crate::diagnostic_http::convert_chat_with_policy(
+                    ManualRequest {
+                        revision: request.revision,
+                        destination: &destination,
+                        source: &request.text,
+                        deadline: ticket.deadline(),
+                    },
+                    &authority,
+                    &ticket,
+                )
+                .map_err(classify_send_error)
+            }
+        })
+    }
+
+    pub fn advance_diagnostic_chat_with_accept(
+        &mut self,
+        runtime: &mut BrokerPolicyRuntime<'_>,
+        accepts: &mut Vec<AcceptTask>,
+        authority: Arc<PolicyAuthority>,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<OwnerStep, RuntimeError> {
+        if !runtime.uses_source(&authority) {
+            return Err(RuntimeError::InvalidTarget);
+        }
+        self.advance_around_accept(runtime, accepts, stop, deadline, |owner, runtime| {
+            owner.advance_diagnostic_chat(runtime, authority, stop, deadline)
+        })
+    }
+
     /// Product-facing manual dispatch while bounded OS accepts remain live.
     /// The source identity check precedes both admission of a new pipe and
     /// submission of text to a worker.

@@ -38,6 +38,11 @@ Mac版が許す通常文字列や部分JSONは現段階では受け入れない�
 localhost通信中のモデル変更による旧結果の破棄、古い版の拒否、不正なモデル名や
 版の枯渇時に設定を変更しないことを確認した。モデル設定の永続化・製品Hostや
 実サービスとの接続は残る。
+BrokerBootからも診断用Chat処理を呼べるようにし、同一processの認証済みpipeから
+設定済みモデルを含むlocalhost模擬HTTP要求と候補結果までを往復確認した。
+この検査は別processや一般アプリ、製品HTTPSへの対応を意味しない。
+全体テストの並列実行では既存IPC試験が一度失敗し、共有ロックのpoisonが連鎖した。
+最初の失敗原因は未特定だが、IPC単独と全体の直列再実行は成功した。
 参照: [Mac版クライアント](https://github.com/kiyoka/Sumibi-mac/blob/553c69021eda7a8a5944d8748357f3790cc2f45c/Sources/SumibiCore/OpenAICompatibleClient.swift)、
 [プロンプト](https://github.com/kiyoka/Sumibi-mac/blob/553c69021eda7a8a5944d8748357f3790cc2f45c/Sources/SumibiCore/Conversion.swift)。
 
