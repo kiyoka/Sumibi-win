@@ -22,6 +22,22 @@ use windows::Win32::System::Threading::{GetCurrentProcess, WaitForSingleObject};
 
 static PIPE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+fn wait_prepared_policy(worker: &Worker, deadline: Instant) -> sumibi_protocol::message::Policy {
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "preparation snapshot stayed unavailable"
+        );
+        match worker.prepared_policy() {
+            Ok(Some(policy)) => return policy,
+            Ok(None) => {
+                std::thread::yield_now();
+            }
+            Err(error) => panic!("unexpected preparation failure: {error:?}"),
+        }
+    }
+}
+
 struct FixtureChild(Child);
 impl Drop for FixtureChild {
     fn drop(&mut self) {
@@ -143,12 +159,15 @@ fn preparing_worker_reports_a_missing_endpoint_without_input() {
         unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), 3000) },
         WAIT_OBJECT_0
     );
+    // Notification does not guarantee a nonblocking state snapshot can take
+    // the lock immediately. First check denial, then await producer teardown
+    // before asserting the preserved terminal error.
+    assert!(worker.reserve(1).is_err());
+    worker.shutdown(Duration::from_secs(1)).unwrap();
     assert!(matches!(
         worker.prepared_policy(),
         Err(sumibi_ipc::Error::Os(_))
     ));
-    assert!(worker.reserve(1).is_err());
-    worker.shutdown(Duration::from_secs(1)).unwrap();
 }
 
 #[test]
@@ -194,12 +213,12 @@ fn preparing_worker_reports_ready_denial_without_accepting_input() {
         unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), 3000) },
         WAIT_OBJECT_0
     );
+    assert!(worker.reserve(1).is_err());
+    worker.shutdown(Duration::from_secs(1)).unwrap();
     assert!(matches!(
         worker.prepared_policy(),
         Err(sumibi_ipc::Error::PolicyDenied)
     ));
-    assert!(worker.reserve(1).is_err());
-    worker.shutdown(Duration::from_secs(1)).unwrap();
     assert!(boot
         .shutdown(Instant::now() + Duration::from_secs(1))
         .is_ok());
@@ -258,7 +277,7 @@ fn preparation_preserves_the_request_id_until_ready_then_converts() {
         unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), 3000) },
         WAIT_OBJECT_0
     );
-    let policy = worker.prepared_policy().unwrap().unwrap();
+    let policy = wait_prepared_policy(&worker, deadline);
     let permit = worker.reserve(1).unwrap();
     worker
         .submit(
@@ -333,12 +352,12 @@ fn preparing_worker_reports_a_ready_timeout() {
         unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), 3000) },
         WAIT_OBJECT_0
     );
+    assert!(worker.reserve(1).is_err());
+    worker.shutdown(Duration::from_secs(1)).unwrap();
     assert!(matches!(
         worker.prepared_policy(),
         Err(sumibi_ipc::Error::Timeout)
     ));
-    assert!(worker.reserve(1).is_err());
-    worker.shutdown(Duration::from_secs(1)).unwrap();
 }
 
 #[test]
@@ -413,7 +432,7 @@ fn client_fixture() {
                 unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), 7000) },
                 WAIT_OBJECT_0
             );
-            let ready = worker.prepared_policy().unwrap().unwrap();
+            let ready = wait_prepared_policy(&worker, deadline);
             assert!(ready.allowed);
             assert_eq!(ready.settings, revision.settings);
             assert_eq!(ready.authorization, revision.authorization);
@@ -431,12 +450,12 @@ fn client_fixture() {
                 unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), 3000) },
                 WAIT_OBJECT_0
             );
+            assert!(worker.reserve(1).is_err());
+            worker.shutdown(Duration::from_secs(1)).unwrap();
             assert!(matches!(
                 worker.prepared_policy(),
                 Err(sumibi_ipc::Error::PolicyDenied)
             ));
-            assert!(worker.reserve(1).is_err());
-            worker.shutdown(Duration::from_secs(1)).unwrap();
             return;
         }
         let permit = worker.reserve(1).unwrap();

@@ -839,6 +839,16 @@ mod tests {
             }))),
         };
         let locked = preparation.result.lock().unwrap();
+        // A completion event can already be signalled while its producer
+        // still holds the lock. The owner's snapshot must remain nonblocking.
+        // SAFETY: Preparation retains its event throughout these calls.
+        unsafe {
+            SetEvent(raw(&preparation.event)).unwrap();
+            assert_eq!(
+                WaitForSingleObject(raw(&preparation.event), 0),
+                WAIT_OBJECT_0
+            );
+        }
         assert!(matches!(preparation.snapshot(), Ok(None)));
         drop(locked);
         assert!(matches!(preparation.snapshot(), Ok(Some(policy)) if policy.allowed));
