@@ -1,5 +1,5 @@
 //! Explicit Host lifetime for a responsive consent window. Peer discovery and
-//! singleton/autostart integration remain separate: the boot is unadvertised.
+//! autostart integration remain separate: the boot is unadvertised.
 use crate::broker_boot::BrokerBoot;
 use crate::broker_runtime::RuntimeError;
 use crate::consent_task::{ConsentOffer, ConsentTask, ConsentTaskError, ConsentUpdate};
@@ -36,6 +36,7 @@ pub enum ControlError {
     Consent,
     WorkerFailed,
     Unavailable,
+    AlreadyRunning,
 }
 
 #[derive(Clone)]
@@ -63,14 +64,31 @@ pub struct HostControl {
 }
 impl HostControl {
     pub fn start(path: PathBuf) -> Result<Self, ControlError> {
-        Self::start_with(move || {
-            let host =
-                crate::startup::PreparedHost::load(&path).map_err(|_| ControlError::Startup)?;
-            Ok((host.authority().clone(), host.credential_outcome().is_err()))
-        })
+        Self::start_scoped(
+            move || {
+                let host =
+                    crate::startup::PreparedHost::load(&path).map_err(|_| ControlError::Startup)?;
+                Ok((host.authority().clone(), host.credential_outcome().is_err()))
+            },
+            || {
+                sumibi_ipc::host_instance::HostInstance::try_acquire()
+                    .map_err(|_| ControlError::Unavailable)?
+                    .ok_or(ControlError::AlreadyRunning)
+            },
+        )
     }
+    #[cfg(test)]
     fn start_with(
         load: impl FnOnce() -> Result<(Arc<PolicyAuthority>, bool), ControlError> + Send + 'static,
+    ) -> Result<Self, ControlError> {
+        // Lifecycle tests use an isolated lease. The native fixed-name lease
+        // is tested with private random names in sumibi-ipc, so test runs never
+        // contend with a user's actual running Host.
+        Self::start_scoped(load, || Ok(()))
+    }
+    fn start_scoped<L: 'static>(
+        load: impl FnOnce() -> Result<(Arc<PolicyAuthority>, bool), ControlError> + Send + 'static,
+        acquire: impl FnOnce() -> Result<L, ControlError> + Send + 'static,
     ) -> Result<Self, ControlError> {
         let (send, receive) = mpsc::sync_channel(1);
         let closing = Arc::new(AtomicBool::new(false));
@@ -87,13 +105,16 @@ impl HostControl {
         let worker = thread::Builder::new()
             .name("sumibi-host-owner".into())
             .spawn(move || {
-                let result = run(
-                    load,
-                    receive,
-                    &worker_closing,
-                    &worker_active,
-                    &worker_status,
-                );
+                let result = match acquire() {
+                    Ok(_lease) => run(
+                        load,
+                        receive,
+                        &worker_closing,
+                        &worker_active,
+                        &worker_status,
+                    ),
+                    Err(error) => Err(error),
+                };
                 publish(
                     &worker_status,
                     HostStatus {
@@ -514,5 +535,85 @@ mod tests {
         let status = failed.try_status().unwrap().unwrap();
         assert_eq!(status.phase, Phase::Failed);
         assert!(status.offer.is_none());
+    }
+
+    #[test]
+    fn instance_lease_precedes_loading_and_outlives_pending_shutdown() {
+        use std::sync::atomic::AtomicUsize;
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        struct Lease(Arc<AtomicBool>);
+        impl Drop for Lease {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        let held = Arc::new(AtomicBool::new(false));
+        let loads = Arc::new(AtomicUsize::new(0));
+        let launch = |authority: Arc<PolicyAuthority>, fail: bool| {
+            let held = held.clone();
+            let loads = loads.clone();
+            HostControl::start_scoped(
+                move || {
+                    loads.fetch_add(1, Ordering::AcqRel);
+                    if fail {
+                        Err(ControlError::Startup)
+                    } else {
+                        Ok((authority, false))
+                    }
+                },
+                move || {
+                    held.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .map_err(|_| ControlError::AlreadyRunning)?;
+                    Ok(Lease(held))
+                },
+            )
+            .unwrap()
+        };
+        let authority = configured();
+        let destination = authority.snapshot().unwrap().destination;
+        let version = authority.grant_manual_consent(&destination).unwrap();
+        let mut first = launch(authority.clone(), false);
+        until(&first, |status| status.phase == Phase::Ready);
+        assert!(held.load(Ordering::Acquire));
+        let state = authority.snapshot().unwrap();
+        let guard = authority
+            .authorize_send_start(
+                Revision {
+                    input: 1,
+                    settings: version.settings,
+                    authorization: version.authorization,
+                },
+                &destination,
+                state.credential.as_ref().unwrap(),
+            )
+            .unwrap();
+        first.try_revoke().unwrap();
+        until(&first, |status| status.phase == Phase::Updating);
+        first.request_close();
+        until(&first, |status| status.phase == Phase::Stopping);
+        let mut second = launch(configured(), false);
+        assert_eq!(finish(&mut second), Err(ControlError::AlreadyRunning));
+        assert_eq!(
+            loads.load(Ordering::Acquire),
+            1,
+            "duplicate startup touched the loader"
+        );
+        assert!(held.load(Ordering::Acquire));
+        drop(guard);
+        assert_eq!(finish(&mut first), Ok(()));
+        assert!(!held.load(Ordering::Acquire));
+        assert!(!authority.snapshot().unwrap().allowed);
+        let mut failed = launch(configured(), true);
+        assert_eq!(finish(&mut failed), Err(ControlError::Startup));
+        assert!(!held.load(Ordering::Acquire));
+        let mut restarted = launch(configured(), false);
+        let ready = until(&restarted, |status| status.phase == Phase::Ready);
+        assert!(!ready.offer.unwrap().allowed(), "restart inherited consent");
+        restarted.request_close();
+        assert_eq!(finish(&mut restarted), Ok(()));
+        assert!(!held.load(Ordering::Acquire));
     }
 }

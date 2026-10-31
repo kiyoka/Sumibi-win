@@ -109,6 +109,9 @@ fn status_text(status: &HostStatus) -> &'static str {
         Phase::Updating => "同意の変更と通知を待っています…",
         Phase::Stopping => "送信を停止し、処理の終了を待っています…",
         Phase::Stopped => "Host を終了しました。",
+        Phase::Failed if status.error == Some(ControlError::AlreadyRunning) => {
+            "Host の起動枠が使用中です。既存の送信管理画面を確認してください。"
+        }
         Phase::Failed => "Host を起動・継続できませんでした。設定を確認してください。",
         Phase::Ready => match status.error {
             Some(ControlError::StaleOffer) => {
@@ -311,6 +314,12 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
         match control.try_status() {
             Ok(Some(status)) => {
                 set_text(view.status, status_text(&status));
+                if status.phase == Phase::Failed {
+                    set_text(
+                        view.details,
+                        "Host を利用できません。下の案内を確認してください。",
+                    );
+                }
                 let ready = status.phase == Phase::Ready
                     && !control.is_updating()
                     && !view.actions.close.get()

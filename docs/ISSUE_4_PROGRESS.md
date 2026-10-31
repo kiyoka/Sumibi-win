@@ -139,8 +139,17 @@ localhost TLS接続失敗の固定エラー配送を確認した。正常TLS経�
 offer拒否を試験した。試験用設定の実画面でキー欠損時の許可無効化と×での正常終了を
 確認した。画面上での許可・キー変更や外部送信は行っていない。
 この入口はpeerを公開・受付せず、変換dispatchも行わない。安全なTIP発見・接続、
-単一起動管理、自動常駐と、正常TLS経由の実変換成功は残る。
+自動常駐と、正常TLS経由の実変換成功は残る。
 詳細は[ADR 0073](adr/0073-host-consent-window-lifetime.md)を参照。
+Hostのowner threadが同じログオン内の単一起動mutexを保持するようにした。
+枠取得は設定・キー読取より前で、別設定パスでも2つ目は起動枠使用中として拒否する。
+終了操作と取消・Broker資源の終了を待って枠を解放し、再起動は未同意から始める。
+別processの拒否、正常解放、異常終了後の回収、名前の型衝突と取得失敗時の枠回復を
+ランダムな試験用名で検査した。Host寿命試験は注入した独立枠を使い、利用者が
+起動中のHostと競合しない。同一起動枠はHostの認証・発見には使わない。
+別途、試験用設定の実画面で2つ目の起動枠使用中表示と許可の無効化、最初のHostが
+継続すること、×で正常終了後に同じ設定で再起動できることを確認した。
+詳細は[ADR 0074](adr/0074-logon-scoped-host-instance.md)を参照。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
 [CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。

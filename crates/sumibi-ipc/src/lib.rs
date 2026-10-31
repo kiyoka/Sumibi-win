@@ -18,6 +18,8 @@ pub mod framed;
 #[cfg(windows)]
 pub mod handoff;
 #[cfg(windows)]
+pub mod host_instance;
+#[cfg(windows)]
 mod identity;
 #[cfg(windows)]
 pub mod job;
