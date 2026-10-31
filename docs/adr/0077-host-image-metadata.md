@@ -33,6 +33,7 @@ PE構造とimport descriptorの意味はMicrosoftの
 ## 検証
 
 `tools/Test-HostImage.ps1`はparser 13件と、生成した`sumibi-host.exe`を読む1件を実行する。
+DLLの公開表検査8件とKernel32照合1件も[ADR 0080](0080-dll-export-metadata.md)で追加した。
 合成PEでConsole/GUI、名前の正規化、DLL・別architecture・delay/CLRの拒否、全prefixの
 切詰め、overflow、重複section、実体のないRVA、パス名、終端欠落と件数超過を検査する。
 2048件の決定的な変異入力でもpanicしないことを確認する。保持handleは読取位置を

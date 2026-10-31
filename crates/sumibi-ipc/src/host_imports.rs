@@ -143,7 +143,7 @@ fn thunk(bytes: &[u8], sections: &[Section], base: u32, index: usize) -> Result<
     Ok(u64::from_le_bytes(value.try_into().unwrap()))
 }
 
-fn ascii_string(
+pub(super) fn ascii_string(
     bytes: &[u8],
     sections: &[Section],
     base: u32,

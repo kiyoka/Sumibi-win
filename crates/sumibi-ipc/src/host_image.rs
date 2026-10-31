@@ -22,6 +22,9 @@ pub enum ImageError {
     InvalidImport,
     TooManyImports,
     TooManySymbols,
+    NotDll,
+    InvalidExport,
+    TooManyExports,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostSubsystem {
@@ -53,15 +56,19 @@ impl HostImage {
         &self.libraries
     }
 }
-struct Section {
-    address: u32,
-    virtual_size: u32,
-    raw: u32,
-    raw_size: u32,
-    executable: bool,
+pub(crate) struct Section {
+    pub(crate) address: u32,
+    pub(crate) virtual_size: u32,
+    pub(crate) raw: u32,
+    pub(crate) raw_size: u32,
+    pub(crate) executable: bool,
 }
 
 pub(crate) fn inspect_file(file: &mut File) -> Result<HostImage, ImageError> {
+    inspect_bytes(&read_image_file(file)?)
+}
+
+pub(crate) fn read_image_file(file: &mut File) -> Result<Vec<u8>, ImageError> {
     let size = file
         .metadata()
         .map_err(|_| ImageError::FileUnavailable)?
@@ -79,12 +86,16 @@ pub(crate) fn inspect_file(file: &mut File) -> Result<HostImage, ImageError> {
     if bytes.len() as u64 != size {
         return Err(ImageError::InvalidImage);
     }
-    inspect_bytes(&bytes)
+    Ok(bytes)
 }
 
-/// Inspect a complete bounded buffer. This deliberately supports one narrow
-/// Host profile, not every Windows-loadable PE image, and never loads code.
-pub fn inspect_bytes(bytes: &[u8]) -> Result<HostImage, ImageError> {
+pub(crate) struct ImageLayout<'a> {
+    pub(crate) optional: &'a [u8],
+    pub(crate) flags: u16,
+    pub(crate) sections: Vec<Section>,
+}
+
+pub(crate) fn image_layout(bytes: &[u8]) -> Result<ImageLayout<'_>, ImageError> {
     if bytes.len() > MAX_FILE {
         return Err(ImageError::TooLarge);
     }
@@ -103,7 +114,7 @@ pub fn inspect_bytes(bytes: &[u8]) -> Result<HostImage, ImageError> {
     let sections_count = u16_at(coff, 2)? as usize;
     let optional_size = u16_at(coff, 16)? as usize;
     let flags = u16_at(coff, 18)?;
-    if flags & 0x0002 == 0 || flags & 0x2000 != 0 {
+    if flags & 0x0002 == 0 {
         return Err(ImageError::NotExecutable);
     }
     if !(1..=MAX_SECTIONS).contains(&sections_count) || !(240..=4096).contains(&optional_size) {
@@ -116,17 +127,11 @@ pub fn inspect_bytes(bytes: &[u8]) -> Result<HostImage, ImageError> {
     if u32_at(optional, 108)? != 16 {
         return Err(ImageError::InvalidImage);
     }
-    let entry_point = u32_at(optional, 16)?;
     let image_size = u32_at(optional, 56)?;
     let header_size = u32_at(optional, 60)?;
     if image_size == 0 || image_size > 1024 * 1024 * 1024 || header_size as usize > bytes.len() {
         return Err(ImageError::InvalidImage);
     }
-    let subsystem = match u16_at(optional, 68)? {
-        2 => HostSubsystem::Gui,
-        3 => HostSubsystem::Console,
-        _ => return Err(ImageError::UnsupportedSubsystem),
-    };
     let table_start = pe + 24 + optional_size;
     let table = region(bytes, table_start, sections_count * 40)?;
     if table_start + table.len() > header_size as usize {
@@ -161,6 +166,30 @@ pub fn inspect_bytes(bytes: &[u8]) -> Result<HostImage, ImageError> {
         }
         sections.push(section);
     }
+    Ok(ImageLayout {
+        optional,
+        flags,
+        sections,
+    })
+}
+
+/// Inspect a complete bounded buffer. This deliberately supports one narrow
+/// Host profile, not every Windows-loadable PE image, and never loads code.
+pub fn inspect_bytes(bytes: &[u8]) -> Result<HostImage, ImageError> {
+    let ImageLayout {
+        optional,
+        flags,
+        sections,
+    } = image_layout(bytes)?;
+    if flags & 0x2000 != 0 {
+        return Err(ImageError::NotExecutable);
+    }
+    let entry_point = u32_at(optional, 16)?;
+    let subsystem = match u16_at(optional, 68)? {
+        2 => HostSubsystem::Gui,
+        3 => HostSubsystem::Console,
+        _ => return Err(ImageError::UnsupportedSubsystem),
+    };
     if entry_point == 0
         || !sections
             .iter()
@@ -194,17 +223,17 @@ pub fn inspect_bytes(bytes: &[u8]) -> Result<HostImage, ImageError> {
     })
 }
 
-fn region(bytes: &[u8], start: usize, length: usize) -> Result<&[u8], ImageError> {
+pub(crate) fn region(bytes: &[u8], start: usize, length: usize) -> Result<&[u8], ImageError> {
     bytes
         .get(start..start.checked_add(length).ok_or(ImageError::InvalidImage)?)
         .ok_or(ImageError::InvalidImage)
 }
-fn u16_at(bytes: &[u8], offset: usize) -> Result<u16, ImageError> {
+pub(crate) fn u16_at(bytes: &[u8], offset: usize) -> Result<u16, ImageError> {
     Ok(u16::from_le_bytes(
         region(bytes, offset, 2)?.try_into().unwrap(),
     ))
 }
-fn u32_at(bytes: &[u8], offset: usize) -> Result<u32, ImageError> {
+pub(crate) fn u32_at(bytes: &[u8], offset: usize) -> Result<u32, ImageError> {
     Ok(u32::from_le_bytes(
         region(bytes, offset, 4)?.try_into().unwrap(),
     ))
@@ -229,11 +258,20 @@ fn rva_in(section: &Section, address: u32, size: u32) -> Option<usize> {
         .checked_add(offset)
         .map(|offset| offset as usize)
 }
-fn rva(sections: &[Section], address: u32, size: u32) -> Result<usize, ImageError> {
+pub(crate) fn rva(sections: &[Section], address: u32, size: u32) -> Result<usize, ImageError> {
     sections
         .iter()
         .find_map(|section| rva_in(section, address, size))
         .ok_or(ImageError::InvalidImport)
+}
+
+pub(crate) fn image_ascii(
+    bytes: &[u8],
+    sections: &[Section],
+    base: u32,
+    max: usize,
+) -> Result<String, ImageError> {
+    import_table::ascii_string(bytes, sections, base, max)
 }
 #[cfg(test)]
 mod tests {

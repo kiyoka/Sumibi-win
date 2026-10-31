@@ -237,6 +237,16 @@ parser 13件と実Hostビルド1件が成功し、17種類のDLLに対する165�
 関連3crateの全target Clippyとfmt検査も成功した。
 詳細は[ADR 0079](adr/0079-static-import-symbols.md)を参照。
 
+DLL公開表の読取と、関数名・序数の照合を追加した。未公開、画像内RVAと未解決forwarderを
+区別し、alias・欠番・dataを扱う。名前表の整列、各表の範囲、slot/名前65536件と
+全文字列4MiBの上限を検査する。保持中の署名検査済みfileから読む入口も用意した。
+DLL parser 8件と、実HostのKernel32参照89件の照合が成功した。85件は画像内RVA、
+4件は未解決forwarderで、未公開は0件。コードのload・実行、forwarderの解決は行っていない。
+全依存の配置・署名・実際のbind先の信頼、API set/forwarderや動的依存は引き続き残る。
+追加後のworkspace testは498件成功、明示実行用の公開HTTPS試験3件はignored。
+関連3crateの全target Clippyとfmt検査も成功した。
+詳細は[ADR 0080](adr/0080-dll-export-metadata.md)を参照。
+
 ## 2026-10-25 の追加確認
 
 - `U+FFFC`をCore、Protocol、Job/Worker、TSFの本文境界で拒否する。

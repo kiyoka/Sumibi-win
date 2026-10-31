@@ -50,6 +50,13 @@ impl VerifiedFile {
     ) -> Result<crate::host_image::HostImage, crate::host_image::ImageError> {
         crate::host_image::inspect_file(&mut self._file)
     }
+    /// Read x64 DLL exports from the retained file. This is metadata only;
+    /// it does not resolve forwarders or prove dependency / launch trust.
+    pub fn dll_exports(
+        &mut self,
+    ) -> Result<crate::dll_exports::DllExports, crate::host_image::ImageError> {
+        crate::dll_exports::inspect_file(&mut self._file)
+    }
     /// Inspect this same handle against the strict development file ACL.
     /// Protected ancestors and launch identity remain separate requirements.
     pub fn require_development_file_acl(&self) -> Result<(), crate::protected_acl::AclError> {

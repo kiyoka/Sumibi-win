@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param()
 
-# Read PE metadata and bounded unbound import symbols from fixtures / built Host.
+# Read PE imports/exports from fixtures, built Host and a held OS Kernel32 file.
 $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $repository
@@ -11,9 +11,11 @@ try {
     }
     & cargo test -p sumibi-ipc --lib --locked --offline host_image -- --nocapture
     if ($LASTEXITCODE -ne 0) { throw 'Host image parser checks failed.' }
-    & cargo test -p sumibi-host --test host_image --locked --offline -- --nocapture
-    if ($LASTEXITCODE -ne 0) { throw 'Built Host image check failed.' }
-    Write-Output 'Host image metadata checks passed; no Host launched or dependency trust asserted.'
+    & cargo test -p sumibi-ipc --lib --locked --offline dll_exports -- --nocapture
+    if ($LASTEXITCODE -ne 0) { throw 'DLL export parser checks failed.' }
+    & cargo test -p sumibi-host --test host_image --test dependency_exports --locked --offline -- --nocapture
+    if ($LASTEXITCODE -ne 0) { throw 'Built Host / Kernel32 metadata check failed.' }
+    Write-Output 'Host / DLL metadata checks passed; no Host launched or dependency trust asserted.'
 }
 finally {
     Pop-Location
