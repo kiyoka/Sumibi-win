@@ -435,6 +435,73 @@ mod tests {
             assert_eq!(exchange.writes.borrow().len(), 1);
         }
     }
+
+    #[test]
+    #[ignore = "opt-in Internet test: posts a fixed initial-conversion fixture and dummy key to Postman Echo"]
+    fn public_https_chat_path_rejects_echo_json_after_successful_native_io() {
+        struct ObservedNative<'a> {
+            native: NativeExchange<'a>,
+            received: Cell<bool>,
+        }
+        impl Exchange for ObservedNative<'_> {
+            fn exchange(
+                &self,
+                destination: &Destination,
+                credential: &str,
+                body: Vec<u8>,
+                deadline: Instant,
+                gate: &mut dyn SendGate,
+            ) -> Result<Vec<u8>, SendError> {
+                let bytes = self
+                    .native
+                    .exchange(destination, credential, body, deadline, gate)?;
+                let echoed: serde_json::Value =
+                    serde_json::from_slice(&bytes).expect("echo response was not JSON");
+                assert_eq!(echoed["json"]["model"], "fixture-model");
+                assert!(echoed["json"]["messages"][1]["content"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("nihongo"));
+                self.received.set(true);
+                Ok(bytes)
+            }
+        }
+        // Fixed synthetic data only. This test does not read settings or the
+        // credential store, and is not a real conversion-service request.
+        let destination =
+            Destination::new(Scheme::Https, "postman-echo.com", 443, "/post").unwrap();
+        let authority = PolicyAuthority::new(destination.clone());
+        authority.set_model("fixture-model").unwrap();
+        authority
+            .replace_credential(Credential::new("sumibi-synthetic-test-key".into()))
+            .unwrap();
+        authority.grant_manual_consent(&destination).unwrap();
+        let admission = Admission::default();
+        let exchange = ObservedNative {
+            native: NativeExchange {
+                admission: &admission,
+            },
+            received: Cell::new(false),
+        };
+        let result = convert_with_exchange(
+            ManualRequest {
+                revision: revision(&authority),
+                destination: &destination,
+                source: "nihongo",
+                deadline: Instant::now() + Duration::from_secs(20),
+            },
+            &authority,
+            &admission,
+            &exchange,
+        );
+        assert!(
+            exchange.received.get(),
+            "native HTTPS exchange did not complete"
+        );
+        assert_eq!(result, Err(SendError::InvalidResponse));
+        println!("Host ordered send and native HTTPS passed; non-conversion echo JSON rejected");
+    }
+
     #[test]
     fn native_preparation_refuses_diagnostic_http() {
         let destination =

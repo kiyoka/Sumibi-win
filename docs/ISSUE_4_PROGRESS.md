@@ -150,6 +150,14 @@ Hostのowner threadが同じログオン内の単一起動mutexを保持する�
 別途、試験用設定の実画面で2つ目の起動枠使用中表示と許可の無効化、最初のHostが
 継続すること、×で正常終了後に同じ設定で再起動できることを確認した。
 詳細は[ADR 0074](adr/0074-logon-scoped-host-instance.md)を参照。
+公開HTTPSの明示検査を追加し、Postman EchoでnativeのTLS POST・JSON受信と最終context
+解放を確認した。Hostの実native交換も通し、echo JSONは変換候補にせず拒否した。
+期限切れ・自己署名のbadssl test証明書は、タイムアウト等ではなく証明書検証失敗として
+拒否できた。即時エラーとcallbackエラーの分類も合わせた。通信は固定の合成入力・
+ダミーキーだけで、実キーや証明書storeは変更していない。
+`tools/Test-NativeHttps.ps1`に3件の再実行手順をまとめ、通常テストではignoredとした。
+これは正常TLSの通信検証で、実変換APIからの候補取得や一般アプリ対応の完了ではない。
+詳細は[ADR 0075](adr/0075-public-https-validation.md)を参照。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
 [CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。

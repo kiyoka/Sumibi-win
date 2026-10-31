@@ -48,4 +48,6 @@ peerでTLS ClientHelloを観測し、handshake完了前の切断をUnavailable�
 
 成功経路のpolicy・JSON検査は模擬交換で、nativeの送受信検査は別のlocalhost
 fixtureで行っている。正常なTLS経由での候補取得や外部APIの成功を証明するものではない。
-正常TLSの検証、proxy方針、設定UIからの同意と長寿命製品Hostへの接続は残る。
+正常TLS通信と非変換echo応答の拒否は[ADR 0075](0075-public-https-validation.md)で確認した。
+同意UIと明示起動Hostの寿命管理は[ADR 0073](0073-host-consent-window-lifetime.md)へ続く。
+実変換APIからの候補取得、proxy方針と一般アプリへの接続は残る。

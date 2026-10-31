@@ -28,6 +28,8 @@ pub enum Error {
     InvalidState,
     Cancelled,
     InvalidResponse,
+    Tls,
+    Certificate,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,15 +172,12 @@ unsafe extern "system" fn callback(
                 {
                     // SAFETY: this status supplies WINHTTP_ASYNC_RESULT for
                     // this callback only; copy the fixed error classification.
-                    match unsafe {
-                        std::ptr::read_unaligned(information.cast::<WINHTTP_ASYNC_RESULT>())
-                    }
-                    .dwError
-                    {
-                        ERROR_WINHTTP_TIMEOUT => Error::Timeout,
-                        ERROR_WINHTTP_OPERATION_CANCELLED => Error::Cancelled,
-                        _ => Error::Native,
-                    }
+                    classify_native_code(
+                        unsafe {
+                            std::ptr::read_unaligned(information.cast::<WINHTTP_ASYNC_RESULT>())
+                        }
+                        .dwError,
+                    )
                 } else {
                     Error::Native
                 };
@@ -398,7 +397,7 @@ impl PreparedRequest {
                 Arc::as_ptr(&self.state) as usize,
             )
         };
-        let result = sent.map_err(|_| Error::Native).and_then(|()| {
+        let result = sent.map_err(classify_native_failure).and_then(|()| {
             match self.wait_completion(deadline, cancelled)? {
                 Completion::Sent => Ok(()),
                 _ => Err(Error::Native),
@@ -454,7 +453,7 @@ impl PreparedRequest {
         // SAFETY: send has completed and no native call is in progress. The
         // context remains alive, including if this call completes immediately.
         unsafe { WinHttpReceiveResponse(handle, std::ptr::null_mut()) }
-            .map_err(|_| Error::Native)?;
+            .map_err(classify_native_failure)?;
         if self.wait_completion(deadline, cancelled)? != Completion::Headers {
             return Err(Error::Native);
         }
@@ -479,7 +478,7 @@ impl PreparedRequest {
                     std::ptr::null_mut(),
                 )
             }
-            .map_err(|_| Error::Native)?;
+            .map_err(classify_native_failure)?;
             let Completion::Read(count) = self.wait_completion(deadline, cancelled)? else {
                 return Err(Error::Native);
             };
@@ -551,6 +550,34 @@ impl Drop for PreparedRequest {
 }
 fn option(handle: &Handle, name: u32, bytes: &[u8]) -> Result<(), Error> {
     unsafe { WinHttpSetOption(Some(handle.0), name, Some(bytes)) }.map_err(|_| Error::Native)
+}
+
+fn classify_native_code(code: u32) -> Error {
+    match code {
+        ERROR_WINHTTP_TIMEOUT => Error::Timeout,
+        ERROR_WINHTTP_OPERATION_CANCELLED => Error::Cancelled,
+        ERROR_WINHTTP_SECURE_FAILURE
+        | ERROR_WINHTTP_SECURE_CERT_DATE_INVALID
+        | ERROR_WINHTTP_SECURE_CERT_CN_INVALID
+        | ERROR_WINHTTP_SECURE_INVALID_CA
+        | ERROR_WINHTTP_SECURE_CERT_REV_FAILED
+        | ERROR_WINHTTP_SECURE_CERT_REVOKED
+        | ERROR_WINHTTP_SECURE_CERT_WRONG_USAGE
+        | ERROR_WINHTTP_SECURE_INVALID_CERT => Error::Certificate,
+        ERROR_WINHTTP_SECURE_CHANNEL_ERROR => Error::Tls,
+        _ => Error::Native,
+    }
+}
+
+fn classify_native_failure(error: windows::core::Error) -> Error {
+    // Generated WinHTTP BOOL wrappers convert GetLastError to HRESULT_FROM_WIN32.
+    // Preserve the same fixed classification for immediate and callback errors.
+    let code = error.code().0 as u32;
+    if code & 0xffff0000 == 0x80070000 {
+        classify_native_code(code & 0xffff)
+    } else {
+        Error::Native
+    }
 }
 
 fn validate_response_headers(handle: *mut c_void) -> Result<Option<usize>, Error> {
@@ -1025,6 +1052,94 @@ mod tests {
                 Err(Error::Cancelled)
             );
             assert_eq!(receive_fixture(response, true, false), Err(Error::Timeout));
+        }
+    }
+
+    #[test]
+    fn immediate_and_callback_errors_use_the_same_fixed_classification() {
+        for (code, expected) in [
+            (ERROR_WINHTTP_TIMEOUT, Error::Timeout),
+            (ERROR_WINHTTP_OPERATION_CANCELLED, Error::Cancelled),
+            (ERROR_WINHTTP_SECURE_FAILURE, Error::Certificate),
+            (ERROR_WINHTTP_SECURE_CERT_DATE_INVALID, Error::Certificate),
+            (ERROR_WINHTTP_SECURE_INVALID_CA, Error::Certificate),
+            (ERROR_WINHTTP_SECURE_CERT_CN_INVALID, Error::Certificate),
+            (ERROR_WINHTTP_SECURE_CERT_REV_FAILED, Error::Certificate),
+            (ERROR_WINHTTP_SECURE_CERT_REVOKED, Error::Certificate),
+            (ERROR_WINHTTP_SECURE_CERT_WRONG_USAGE, Error::Certificate),
+            (ERROR_WINHTTP_SECURE_INVALID_CERT, Error::Certificate),
+            (ERROR_WINHTTP_SECURE_CHANNEL_ERROR, Error::Tls),
+            (ERROR_WINHTTP_CANNOT_CONNECT, Error::Native),
+        ] {
+            assert_eq!(classify_native_code(code), expected);
+            assert_eq!(
+                classify_native_failure(windows::core::Error::from_hresult(
+                    windows::core::HRESULT::from_win32(code)
+                )),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "opt-in Internet test: sends only a fixed synthetic JSON body and dummy key to Postman Echo"]
+    fn public_https_echo_preserves_tls_validation_and_receives_json() {
+        let _guard = NATIVE_TEST_LOCK.lock().unwrap();
+        let mut request = PreparedRequest::new("postman-echo.com", 443, "/post").unwrap();
+        let lifetime = Arc::downgrade(&request.state);
+        request
+            .send(
+                "sumibi-synthetic-test-key",
+                br#"{"sumibi_tls_fixture":"native-https"}"#.to_vec(),
+                Instant::now() + Duration::from_secs(20),
+                &|| false,
+            )
+            .expect("native HTTPS send failed");
+        let bytes = request
+            .receive(&|| false)
+            .expect("native HTTPS JSON response failed");
+        assert!(bytes
+            .windows(b"sumibi_tls_fixture".len())
+            .any(|part| part == b"sumibi_tls_fixture"));
+        assert!(bytes
+            .windows(b"native-https".len())
+            .any(|part| part == b"native-https"));
+        wait_for_context(lifetime);
+        println!("native HTTPS POST and bounded JSON receive passed; synthetic payload only");
+    }
+
+    #[test]
+    #[ignore = "opt-in Internet test: checks expired and self-signed badssl test certificates; no bypass or certificate-store changes"]
+    fn public_https_invalid_certificates_fail_with_certificate_classification() {
+        let _guard = NATIVE_TEST_LOCK.lock().unwrap();
+        for host in ["expired.badssl.com", "self-signed.badssl.com"] {
+            let mut request = PreparedRequest::new(host, 443, "/").unwrap();
+            let lifetime = Arc::downgrade(&request.state);
+            let result = request.send(
+                "sumibi-synthetic-test-key",
+                br#"{"sumibi_tls_fixture":"native-https"}"#.to_vec(),
+                Instant::now() + Duration::from_secs(20),
+                &|| false,
+            );
+            drop(request);
+            wait_for_context(lifetime);
+            assert_eq!(
+                result,
+                Err(Error::Certificate),
+                "invalid certificate did not produce a certificate-validation failure"
+            );
+        }
+        println!("expired and self-signed test certificates rejected without bypass");
+    }
+
+    fn wait_for_context(lifetime: std::sync::Weak<Context>) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while lifetime.upgrade().is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "final native callback did not release context"
+            );
+            std::thread::yield_now();
         }
     }
 }

@@ -40,6 +40,17 @@ Chat Completionsの完全なパスへ補完して保存する。既定配置先�
 OSロックの根拠: [File::try_lock](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock)。
 配置先取得の根拠: [SHGetKnownFolderPath](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath)。
 
+## 公開HTTPS試験（明示実行）
+
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-NativeHttps.ps1`で、
+WinHTTPの正常TLS送受信、Hostの変換形式ではない応答の拒否、期限切れ・自己署名
+証明書の拒否を確認できる。Postman Echoとbadsslへ固定の合成本文・ダミーキーを使う。
+保存済み設定・実キー・入力本文は読み取らず、証明書storeや機械登録は変更しない。
+通信を伴う3テストは通常のworkspace testではignoredとし、このスクリプトが明示実行する。
+`--offline`はCargo依存の取得を抑止する指定で、これらの試験の通信を抑止しない。
+接続不能やタイムアウトを証明書拒否として扱わず、失敗時はスクリプトも失敗する。
+詳細は[ADR 0075](adr/0075-public-https-validation.md)を参照。
+
 ## マシン登録の事前確認
 
 `plan-system-dev`はレジストリを変更せず、64-bitのパッシブTIP DLL、既存CLSIDとの衝突、
