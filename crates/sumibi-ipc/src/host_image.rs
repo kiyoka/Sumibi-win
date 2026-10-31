@@ -1,0 +1,492 @@
+//! Bounded PE32+ x64 Host metadata, not signature, dependency or launch trust.
+use std::collections::BTreeSet;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+
+const MAX_FILE: usize = 64 * 1024 * 1024;
+const MAX_SECTIONS: usize = 96;
+const MAX_IMPORTS: usize = 128;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageError {
+    FileUnavailable,
+    TooLarge,
+    InvalidImage,
+    UnsupportedArchitecture,
+    NotExecutable,
+    UnsupportedSubsystem,
+    UnsupportedDelayImports,
+    UnsupportedManagedImage,
+    InvalidImport,
+    TooManyImports,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostSubsystem {
+    Gui,
+    Console,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostImage {
+    entry_point: u32,
+    subsystem: HostSubsystem,
+    imports: Vec<String>,
+}
+impl HostImage {
+    pub fn entry_point_rva(&self) -> u32 {
+        self.entry_point
+    }
+    pub fn subsystem(&self) -> HostSubsystem {
+        self.subsystem
+    }
+    /// Canonical lowercase DLL names only. This does not resolve API sets,
+    /// forwarded exports, dynamically loaded modules or the files to load.
+    pub fn imports(&self) -> &[String] {
+        &self.imports
+    }
+}
+struct Section {
+    address: u32,
+    virtual_size: u32,
+    raw: u32,
+    raw_size: u32,
+    executable: bool,
+}
+
+pub(crate) fn inspect_file(file: &mut File) -> Result<HostImage, ImageError> {
+    let size = file
+        .metadata()
+        .map_err(|_| ImageError::FileUnavailable)?
+        .len();
+    if size > MAX_FILE as u64 {
+        return Err(ImageError::TooLarge);
+    }
+    // Exclusive access to the retained handle avoids cloned-handle cursor races.
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| ImageError::FileUnavailable)?;
+    let mut bytes = Vec::new();
+    file.take(size + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ImageError::FileUnavailable)?;
+    if bytes.len() as u64 != size {
+        return Err(ImageError::InvalidImage);
+    }
+    inspect_bytes(&bytes)
+}
+
+/// Inspect a complete bounded buffer. This deliberately supports one narrow
+/// Host profile, not every Windows-loadable PE image, and never loads code.
+pub fn inspect_bytes(bytes: &[u8]) -> Result<HostImage, ImageError> {
+    if bytes.len() > MAX_FILE {
+        return Err(ImageError::TooLarge);
+    }
+    let dos = region(bytes, 0, 64)?;
+    if &dos[..2] != b"MZ" {
+        return Err(ImageError::InvalidImage);
+    }
+    let pe = u32_at(dos, 0x3c)? as usize;
+    if !(64..=1024 * 1024).contains(&pe) || region(bytes, pe, 4)? != b"PE\0\0" {
+        return Err(ImageError::InvalidImage);
+    }
+    let coff = region(bytes, pe + 4, 20)?;
+    if u16_at(coff, 0)? != 0x8664 {
+        return Err(ImageError::UnsupportedArchitecture);
+    }
+    let sections_count = u16_at(coff, 2)? as usize;
+    let optional_size = u16_at(coff, 16)? as usize;
+    let flags = u16_at(coff, 18)?;
+    if flags & 0x0002 == 0 || flags & 0x2000 != 0 {
+        return Err(ImageError::NotExecutable);
+    }
+    if !(1..=MAX_SECTIONS).contains(&sections_count) || !(240..=4096).contains(&optional_size) {
+        return Err(ImageError::InvalidImage);
+    }
+    let optional = region(bytes, pe + 24, optional_size)?;
+    if u16_at(optional, 0)? != 0x20b {
+        return Err(ImageError::UnsupportedArchitecture);
+    }
+    if u32_at(optional, 108)? != 16 {
+        return Err(ImageError::InvalidImage);
+    }
+    let entry_point = u32_at(optional, 16)?;
+    let image_size = u32_at(optional, 56)?;
+    let header_size = u32_at(optional, 60)?;
+    if image_size == 0 || image_size > 1024 * 1024 * 1024 || header_size as usize > bytes.len() {
+        return Err(ImageError::InvalidImage);
+    }
+    let subsystem = match u16_at(optional, 68)? {
+        2 => HostSubsystem::Gui,
+        3 => HostSubsystem::Console,
+        _ => return Err(ImageError::UnsupportedSubsystem),
+    };
+    let table_start = pe + 24 + optional_size;
+    let table = region(bytes, table_start, sections_count * 40)?;
+    if table_start + table.len() > header_size as usize {
+        return Err(ImageError::InvalidImage);
+    }
+    let mut sections = Vec::with_capacity(sections_count);
+    for chunk in table.as_chunks::<40>().0 {
+        let section = Section {
+            virtual_size: u32_at(chunk, 8)?,
+            address: u32_at(chunk, 12)?,
+            raw_size: u32_at(chunk, 16)?,
+            raw: u32_at(chunk, 20)?,
+            executable: u32_at(chunk, 36)? & 0x20000000 != 0,
+        };
+        let virtual_end = section
+            .address
+            .checked_add(section.virtual_size.max(section.raw_size))
+            .ok_or(ImageError::InvalidImage)?;
+        if section.address < header_size || virtual_end > image_size {
+            return Err(ImageError::InvalidImage);
+        }
+        if section.raw_size != 0 {
+            if section.raw < header_size {
+                return Err(ImageError::InvalidImage);
+            }
+            region(bytes, section.raw as usize, section.raw_size as usize)?;
+        }
+        for previous in &sections {
+            if overlaps(previous, &section) {
+                return Err(ImageError::InvalidImage);
+            }
+        }
+        sections.push(section);
+    }
+    if entry_point == 0
+        || !sections
+            .iter()
+            .any(|section| section.executable && rva_in(section, entry_point, 1).is_some())
+    {
+        return Err(ImageError::NotExecutable);
+    }
+    let delay_rva = u32_at(optional, 112 + 13 * 8)?;
+    let delay_size = u32_at(optional, 116 + 13 * 8)?;
+    if delay_rva != 0 || delay_size != 0 {
+        return Err(ImageError::UnsupportedDelayImports);
+    }
+    if u32_at(optional, 112 + 14 * 8)? != 0 || u32_at(optional, 116 + 14 * 8)? != 0 {
+        return Err(ImageError::UnsupportedManagedImage);
+    }
+    let import_rva = u32_at(optional, 112 + 8)?;
+    let import_size = u32_at(optional, 116 + 8)?;
+    let imports = imports(bytes, &sections, import_rva, import_size)?;
+    Ok(HostImage {
+        entry_point,
+        subsystem,
+        imports,
+    })
+}
+
+fn region(bytes: &[u8], start: usize, length: usize) -> Result<&[u8], ImageError> {
+    bytes
+        .get(start..start.checked_add(length).ok_or(ImageError::InvalidImage)?)
+        .ok_or(ImageError::InvalidImage)
+}
+fn u16_at(bytes: &[u8], offset: usize) -> Result<u16, ImageError> {
+    Ok(u16::from_le_bytes(
+        region(bytes, offset, 2)?.try_into().unwrap(),
+    ))
+}
+fn u32_at(bytes: &[u8], offset: usize) -> Result<u32, ImageError> {
+    Ok(u32::from_le_bytes(
+        region(bytes, offset, 4)?.try_into().unwrap(),
+    ))
+}
+fn overlaps(a: &Section, b: &Section) -> bool {
+    let virtual_overlap = a.address < b.address + b.virtual_size.max(b.raw_size)
+        && b.address < a.address + a.virtual_size.max(a.raw_size);
+    let raw_overlap = a.raw_size != 0
+        && b.raw_size != 0
+        && (a.raw as u64) < b.raw as u64 + b.raw_size as u64
+        && (b.raw as u64) < a.raw as u64 + a.raw_size as u64;
+    virtual_overlap || raw_overlap
+}
+fn rva_in(section: &Section, address: u32, size: u32) -> Option<usize> {
+    let offset = address.checked_sub(section.address)?;
+    let end = offset.checked_add(size)?;
+    if end > section.virtual_size.max(section.raw_size) || end > section.raw_size {
+        return None;
+    }
+    section
+        .raw
+        .checked_add(offset)
+        .map(|offset| offset as usize)
+}
+fn rva(sections: &[Section], address: u32, size: u32) -> Result<usize, ImageError> {
+    sections
+        .iter()
+        .find_map(|section| rva_in(section, address, size))
+        .ok_or(ImageError::InvalidImport)
+}
+fn imports(
+    bytes: &[u8],
+    sections: &[Section],
+    address: u32,
+    size: u32,
+) -> Result<Vec<String>, ImageError> {
+    if address == 0 && size == 0 {
+        return Ok(Vec::new());
+    }
+    if address == 0 || size < 20 {
+        return Err(ImageError::InvalidImport);
+    }
+    if size as usize > (MAX_IMPORTS + 1) * 20 {
+        return Err(ImageError::TooManyImports);
+    }
+    let start = rva(sections, address, size)?;
+    let table = region(bytes, start, size as usize).map_err(|_| ImageError::InvalidImport)?;
+    let mut names = BTreeSet::new();
+    for (index, descriptor) in table.as_chunks::<20>().0.iter().enumerate() {
+        if descriptor.iter().all(|byte| *byte == 0) {
+            return Ok(names.into_iter().collect());
+        }
+        if index == MAX_IMPORTS {
+            return Err(ImageError::TooManyImports);
+        }
+        let name = u32_at(descriptor, 12)?;
+        let thunk = u32_at(descriptor, 16)?;
+        if thunk == 0 {
+            return Err(ImageError::InvalidImport);
+        }
+        rva(sections, thunk, 8)?;
+        let mut value = Vec::new();
+        for offset in 0..=128u32 {
+            let position = rva(
+                sections,
+                name.checked_add(offset).ok_or(ImageError::InvalidImport)?,
+                1,
+            )?;
+            let byte = *bytes.get(position).ok_or(ImageError::InvalidImport)?;
+            if byte == 0 {
+                break;
+            }
+            if offset == 128
+                || !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+            {
+                return Err(ImageError::InvalidImport);
+            }
+            value.push(byte.to_ascii_lowercase());
+        }
+        let name = String::from_utf8(value).map_err(|_| ImageError::InvalidImport)?;
+        if name.len() <= 4
+            || !name.ends_with(".dll")
+            || name.starts_with('.')
+            || name.contains("..")
+        {
+            return Err(ImageError::InvalidImport);
+        }
+        // Linkers may emit several descriptors for the same DLL, including
+        // different case spellings. Bound descriptors, not unique names.
+        names.insert(name);
+    }
+    Err(ImageError::InvalidImport)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OPTIONAL: usize = 0x98;
+    const SECTION: usize = OPTIONAL + 240;
+
+    fn put16(bytes: &mut [u8], offset: usize, value: u16) {
+        bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+    fn put32(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    fn fixture() -> Vec<u8> {
+        let mut bytes = vec![0; 0x800];
+        bytes[..2].copy_from_slice(b"MZ");
+        put32(&mut bytes, 0x3c, 0x80);
+        bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
+        put16(&mut bytes, 0x84, 0x8664);
+        put16(&mut bytes, 0x86, 1);
+        put16(&mut bytes, 0x94, 240);
+        put16(&mut bytes, 0x96, 2);
+        put16(&mut bytes, OPTIONAL, 0x20b);
+        put32(&mut bytes, OPTIONAL + 16, 0x1000);
+        put32(&mut bytes, OPTIONAL + 56, 0x2000);
+        put32(&mut bytes, OPTIONAL + 60, 0x200);
+        put16(&mut bytes, OPTIONAL + 68, 3);
+        put32(&mut bytes, OPTIONAL + 108, 16);
+        put32(&mut bytes, OPTIONAL + 120, 0x1100);
+        put32(&mut bytes, OPTIONAL + 124, 40);
+        put32(&mut bytes, SECTION + 8, 0x600);
+        put32(&mut bytes, SECTION + 12, 0x1000);
+        put32(&mut bytes, SECTION + 16, 0x600);
+        put32(&mut bytes, SECTION + 20, 0x200);
+        put32(&mut bytes, SECTION + 36, 0x60000020);
+        put32(&mut bytes, 0x300 + 12, 0x1180);
+        put32(&mut bytes, 0x300 + 16, 0x11c0);
+        bytes[0x380..0x38d].copy_from_slice(b"KERNEL32.dll\0");
+        bytes
+    }
+
+    #[test]
+    fn host_image_reads_console_gui_and_sorted_static_imports() {
+        let mut bytes = fixture();
+        let image = inspect_bytes(&bytes).unwrap();
+        assert_eq!(image.entry_point_rva(), 0x1000);
+        assert_eq!(image.subsystem(), HostSubsystem::Console);
+        assert_eq!(image.imports(), &["kernel32.dll"]);
+        put16(&mut bytes, OPTIONAL + 68, 2);
+        put32(&mut bytes, OPTIONAL + 124, 60);
+        put32(&mut bytes, 0x314 + 12, 0x11a0);
+        put32(&mut bytes, 0x314 + 16, 0x11d0);
+        bytes[0x3a0..0x3ad].copy_from_slice(b"ADVAPI32.DLL\0");
+        let image = inspect_bytes(&bytes).unwrap();
+        assert_eq!(image.subsystem(), HostSubsystem::Gui);
+        assert_eq!(image.imports(), &["advapi32.dll", "kernel32.dll"]);
+        put32(&mut bytes, OPTIONAL + 120, 0);
+        put32(&mut bytes, OPTIONAL + 124, 0);
+        assert!(inspect_bytes(&bytes).unwrap().imports().is_empty());
+    }
+
+    #[test]
+    fn host_image_rejects_dll_other_architecture_and_hidden_dependency_forms() {
+        for (offset, value, error) in [
+            (0x84, 0x14c, ImageError::UnsupportedArchitecture),
+            (OPTIONAL, 0x10b, ImageError::UnsupportedArchitecture),
+            (0x96, 0x2002, ImageError::NotExecutable),
+            (0x96, 0, ImageError::NotExecutable),
+            (OPTIONAL + 68, 1, ImageError::UnsupportedSubsystem),
+        ] {
+            let mut bytes = fixture();
+            put16(&mut bytes, offset, value);
+            assert_eq!(inspect_bytes(&bytes), Err(error));
+        }
+        for (directory, error) in [
+            (13, ImageError::UnsupportedDelayImports),
+            (14, ImageError::UnsupportedManagedImage),
+        ] {
+            for field in [112, 116] {
+                let mut bytes = fixture();
+                put32(&mut bytes, OPTIONAL + field + directory * 8, 1);
+                assert_eq!(inspect_bytes(&bytes), Err(error));
+            }
+        }
+    }
+
+    #[test]
+    fn host_image_rejects_truncation_overflow_and_overlapping_sections() {
+        let bytes = fixture();
+        for length in 0..bytes.len() {
+            assert!(inspect_bytes(&bytes[..length]).is_err(), "length {length}");
+        }
+        for (offset, value) in [
+            (0x3c, u32::MAX),
+            (OPTIONAL + 60, 0x180),
+            (SECTION + 12, u32::MAX),
+            (SECTION + 20, u32::MAX),
+            (SECTION + 16, u32::MAX),
+        ] {
+            let mut bytes = fixture();
+            put32(&mut bytes, offset, value);
+            assert!(inspect_bytes(&bytes).is_err());
+        }
+        for raw_overlap in [false, true] {
+            let mut bytes = fixture();
+            put16(&mut bytes, 0x86, 2);
+            let first = bytes[SECTION..SECTION + 40].to_vec();
+            bytes[SECTION + 40..SECTION + 80].copy_from_slice(&first);
+            if raw_overlap {
+                put32(&mut bytes, OPTIONAL + 56, 0x3000);
+                put32(&mut bytes, SECTION + 40 + 12, 0x2000);
+            }
+            assert_eq!(inspect_bytes(&bytes), Err(ImageError::InvalidImage));
+        }
+    }
+
+    #[test]
+    fn host_image_requires_entry_and_imports_in_file_backed_sections() {
+        let mut bytes = fixture();
+        put32(&mut bytes, SECTION + 8, 0x800);
+        put32(&mut bytes, OPTIONAL + 16, 0x1700);
+        assert_eq!(inspect_bytes(&bytes), Err(ImageError::NotExecutable));
+        put32(&mut bytes, OPTIONAL + 16, 0x1000);
+        put32(&mut bytes, OPTIONAL + 120, 0x1700);
+        assert_eq!(inspect_bytes(&bytes), Err(ImageError::InvalidImport));
+        let mut bytes = fixture();
+        put32(&mut bytes, SECTION + 36, 0x40000040);
+        assert_eq!(inspect_bytes(&bytes), Err(ImageError::NotExecutable));
+        for address in [0, 0x100, u32::MAX] {
+            let mut bytes = fixture();
+            put32(&mut bytes, 0x300 + 12, address);
+            assert_eq!(inspect_bytes(&bytes), Err(ImageError::InvalidImport));
+        }
+    }
+
+    #[test]
+    fn host_image_rejects_path_names_and_unterminated_imports() {
+        for name in [
+            b"../bad.dll\0".as_slice(),
+            b"bad/path.dll\0",
+            b"bad:ads.dll\0",
+            b"no_extension\0",
+        ] {
+            let mut bytes = fixture();
+            bytes[0x380..0x400].fill(0);
+            bytes[0x380..0x380 + name.len()].copy_from_slice(name);
+            assert_eq!(inspect_bytes(&bytes), Err(ImageError::InvalidImport));
+        }
+        let mut bytes = fixture();
+        put32(&mut bytes, OPTIONAL + 124, 20);
+        assert_eq!(inspect_bytes(&bytes), Err(ImageError::InvalidImport));
+        let mut bytes = fixture();
+        bytes[0x380..0x401].fill(b'a');
+        assert_eq!(inspect_bytes(&bytes), Err(ImageError::InvalidImport));
+        let mut bytes = fixture();
+        put32(&mut bytes, OPTIONAL + 124, 2600);
+        assert_eq!(inspect_bytes(&bytes), Err(ImageError::TooManyImports));
+    }
+
+    #[test]
+    fn host_image_normalizes_repeated_dlls_but_bounds_all_descriptors() {
+        let mut bytes = fixture();
+        put32(&mut bytes, OPTIONAL + 124, 60);
+        let descriptor = bytes[0x300..0x314].to_vec();
+        bytes[0x314..0x328].copy_from_slice(&descriptor);
+        put32(&mut bytes, 0x314 + 12, 0x11a0);
+        bytes[0x3a0..0x3ad].copy_from_slice(b"kernel32.DLL\0");
+        assert_eq!(inspect_bytes(&bytes).unwrap().imports(), &["kernel32.dll"]);
+
+        bytes.resize(0x1200, 0);
+        put32(&mut bytes, SECTION + 8, 0x1000);
+        put32(&mut bytes, SECTION + 16, 0x1000);
+        put32(&mut bytes, OPTIONAL + 124, 129 * 20);
+        for index in 0..129 {
+            let row = 0x300 + index * 20;
+            bytes[row..row + 20].fill(0);
+            put32(&mut bytes, row + 12, 0x1f00);
+            put32(&mut bytes, row + 16, 0x1f40);
+        }
+        bytes[0x1100..0x110d].copy_from_slice(b"kernel32.dll\0");
+        assert_eq!(inspect_bytes(&bytes), Err(ImageError::TooManyImports));
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn host_image_reads_retained_file_from_start_on_every_inspection() {
+        let path = std::env::current_exe().unwrap();
+        let expected = inspect_bytes(&std::fs::read(&path).unwrap()).unwrap();
+        let mut file = File::open(path).unwrap();
+        file.seek(SeekFrom::End(0)).unwrap();
+        assert_eq!(inspect_file(&mut file).unwrap(), expected);
+        assert_eq!(inspect_file(&mut file).unwrap(), expected);
+    }
+
+    #[test]
+    fn host_image_bounded_malformed_inputs_never_panic() {
+        let mut seed = 0x9e3779b9u32;
+        for index in 0..2048 {
+            let mut bytes = fixture();
+            for _ in 0..1 + index % 8 {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let position = seed as usize % bytes.len();
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                bytes[position] = (seed >> 24) as u8;
+            }
+            let _ = inspect_bytes(&bytes);
+        }
+    }
+}

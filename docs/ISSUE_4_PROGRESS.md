@@ -207,6 +207,17 @@ job終了を確認した。`tools/Test-SuspendedImageProbe.ps1`で4件を明示�
 一時コピーによるもの。実行中の画像section、依存DLLや製品署名方針の証明にはしない。
 詳細は[ADR 0076](adr/0076-suspended-signed-image-probe.md)を参照。
 
+保持中のHostファイルをx64 PE32+として読む限定profileと、静的import名の一覧取得を追加した。
+DLL・別architecture・delay import/CLR、範囲外や重複sectionを子作成前に拒否する。
+保護配置Hostの停止診断へ接続し、parser 8件と実Hostビルドの1件を確認した。
+実ビルドには大文字・小文字が異なる同じDLLのdescriptorがあり、重複をまとめて
+17件の名前を取得した。重複分もdescriptor上限へ数える。
+この一覧は依存物の信頼を証明せず、loader全体や動的依存の検証は残る。
+追加後のworkspace testは482件成功、公開HTTPS試験3件は明示実行用としてignored。
+関連3crateの全target Clippyとfmt検査も成功した。OneDrive上のincremental cacheの
+hard link警告は継続しているが、コードのClippy指摘は残っていない。
+詳細と再現手順は[ADR 0077](adr/0077-host-image-metadata.md)を参照。
+
 ## 2026-10-25 の追加確認
 
 - `U+FFFC`をCore、Protocol、Job/Worker、TSFの本文境界で拒否する。

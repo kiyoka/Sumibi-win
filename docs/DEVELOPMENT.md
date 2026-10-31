@@ -50,6 +50,16 @@ OSロックの根拠: [File::try_lock](https://doc.rust-lang.org/std/fs/struct.F
 これは起動診断であり、製品Hostの起動許可や実行中の画像sectionの認証ではない。
 詳細は[ADR 0076](adr/0076-suspended-signed-image-probe.md)を参照。
 
+## Host画像の読取検査
+
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-HostImage.ps1`で、
+合成PEの異常系と、生成したHost実行ファイルのx64形式・静的import名を検査する。
+ファイルをコードとしてロードせず、Hostを起動しない。DLL・別architecture・
+delay import/CLR、範囲外や重複sectionを拒否する限定profileである。
+保護配置を使う停止起動診断にも、子を作る前の条件として接続した。
+依存DLLの実体・検索順の信頼や製品Hostの起動許可は別途必要である。
+詳細は[ADR 0077](adr/0077-host-image-metadata.md)を参照。
+
 ## 公開HTTPS試験（明示実行）
 
 `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-NativeHttps.ps1`で、

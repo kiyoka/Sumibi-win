@@ -39,6 +39,7 @@ pub enum ProbeError {
     CleanupFailed,
     Timeout,
     InvalidDeadline,
+    Image(crate::host_image::ImageError),
 }
 struct Permit;
 impl Permit {

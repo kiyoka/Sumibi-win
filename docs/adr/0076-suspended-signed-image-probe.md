@@ -6,6 +6,7 @@
 要求パスの現在のfile IDが一致することを調べてから停止状態の子を作る。
 `SignedDevelopmentPlacement::probe_suspended_host`では、Host artifactに限定して
 検査済みの階層・署名ファイルをまとめて保持する。
+Host向け入口では[ADR 0077](0077-host-image-metadata.md)の限定PE profileも子作成前に検査する。
 署名の失敗を許す別入口や、自己署名証明書を信頼する変更は追加しない。
 
 CreateProcessの戻り値から得たprocess handleをPinnedProcessで固定し、生存とtokenを

@@ -43,6 +43,13 @@ impl VerifiedFile {
     pub fn signer(&self) -> SignerFingerprint {
         self.signer
     }
+    /// Parse the retained file as a narrow x64 Host image without loading it.
+    /// Static import names are metadata, not trusted dependency resolution.
+    pub fn host_image(
+        &mut self,
+    ) -> Result<crate::host_image::HostImage, crate::host_image::ImageError> {
+        crate::host_image::inspect_file(&mut self._file)
+    }
     /// Inspect this same handle against the strict development file ACL.
     /// Protected ancestors and launch identity remain separate requirements.
     pub fn require_development_file_acl(&self) -> Result<(), crate::protected_acl::AclError> {

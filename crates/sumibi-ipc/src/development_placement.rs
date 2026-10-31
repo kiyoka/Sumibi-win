@@ -37,6 +37,7 @@ pub enum PlacementError {
     InvalidReceipt,
     ReceiptSignerMismatch,
     HashFailed,
+    Image(crate::host_image::ImageError),
 }
 
 /// Keeps each checked component alive. It does not establish product trust,
@@ -54,6 +55,14 @@ pub struct DevelopmentPlacement {
 }
 
 impl DevelopmentPlacement {
+    /// Inspect the held Host file only. The DLL artifact cannot be treated as
+    /// a Host by renaming its extension or reusing its staging evidence.
+    pub fn host_image(&mut self) -> Result<crate::host_image::HostImage, PlacementError> {
+        if self.artifact != Artifact::Host {
+            return Err(PlacementError::UnsupportedArtifact);
+        }
+        crate::host_image::inspect_file(&mut self.file).map_err(PlacementError::Image)
+    }
     /// Inspect one fixed-layout development artifact. A checked child blocks
     /// inherited ACEs, as required when the parent allows inherit-only rules.
     /// Caller must select the drive and version from a trusted configuration.
@@ -168,12 +177,14 @@ impl SignedDevelopmentPlacement {
     /// Retain the complete checked development hierarchy during a suspended
     /// Host diagnostic. This is not a permission to resume or trust a peer.
     pub fn probe_suspended_host(
-        self,
+        mut self,
     ) -> Result<crate::launch_probe::SuspendedImageProbe<Self>, crate::launch_probe::ProbeError>
     {
         if self._placement.artifact != Artifact::Host {
             return Err(crate::launch_probe::ProbeError::UnsupportedArtifact);
         }
+        crate::host_image::inspect_file(&mut self._placement.file)
+            .map_err(crate::launch_probe::ProbeError::Image)?;
         let path = self._placement.path.clone();
         let expected = self
             ._signed
