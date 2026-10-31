@@ -93,6 +93,17 @@ impl PolicyAuthority {
         Ok(wire_policy(&state))
     }
 
+    /// UI observation must not wait behind an active outbound send or store
+    /// operation. None means busy; it never authorizes reuse of an old view.
+    #[cfg(windows)]
+    pub(crate) fn try_snapshot(&self) -> Result<Option<PolicySnapshot>, ChangeError> {
+        match self.state.try_lock() {
+            Ok(state) => Ok(Some(state.clone())),
+            Err(std::sync::TryLockError::WouldBlock) => Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => Err(ChangeError::Unavailable),
+        }
+    }
+
     pub fn authorize_ready(
         &self,
         expected: Policy,
@@ -309,12 +320,36 @@ impl PolicyAuthority {
         Ok((published, outcome))
     }
 
-    /// Called only after an explicit user action by the future settings UI.
+    /// Low-level diagnostic consent. UI callers must use a version-bound offer
+    /// through ConsentTask, so a changed setting/key cannot reuse an old view.
     pub fn grant_manual_consent(
         &self,
         destination: &Destination,
     ) -> Result<PolicyVersion, ChangeError> {
+        self.grant_consent(destination, None)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn grant_manual_consent_at_version(
+        &self,
+        destination: &Destination,
+        model: &str,
+        expected: PolicyVersion,
+    ) -> Result<PolicyVersion, ChangeError> {
+        self.grant_consent(destination, Some((expected, model)))
+    }
+
+    fn grant_consent(
+        &self,
+        destination: &Destination,
+        expected: Option<(PolicyVersion, &str)>,
+    ) -> Result<PolicyVersion, ChangeError> {
         let mut state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        if expected.is_some_and(|(expected, model)| {
+            expected != version(&state) || state.model.as_deref() != Some(model)
+        }) {
+            return Err(ChangeError::StalePolicy);
+        }
         if state.destination != *destination || state.credential.is_none() {
             return Err(ChangeError::InvalidConsent);
         }

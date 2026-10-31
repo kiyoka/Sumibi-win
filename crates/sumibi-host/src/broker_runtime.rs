@@ -2244,6 +2244,128 @@ mod tests {
     }
 
     #[test]
+    fn consent_receipts_publish_to_the_matching_broker_and_reap_revoked_workers() {
+        use crate::consent_task::{ConsentOffer, ConsentTask};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let destination =
+            Destination::for_chat_completions(Scheme::Https, "example.test", 443, "/").unwrap();
+        let source = Arc::new(PolicyAuthority::new(destination.clone()));
+        source.set_model("fixture-model").unwrap();
+        source
+            .replace_credential(Credential::new("synthetic-key".into()))
+            .unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+        boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+            .unwrap();
+        let mut client = Pipe::connect(boot.name(), PinnedProcess::current().unwrap()).unwrap();
+        let exited = Arc::new(AtomicBool::new(false));
+        let next = |boot: &mut BrokerBoot<'_>| loop {
+            let exited = exited.clone();
+            let step = boot
+                .advance(&stop, deadline, move |_| {
+                    move |ticket: JobTicket| {
+                        while !ticket.is_cancelled() {
+                            assert!(Instant::now() < deadline);
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        exited.store(true, Ordering::Release);
+                        Err(ErrorCode::Cancelled)
+                    }
+                })
+                .unwrap();
+            if !matches!(step, OwnerStep::Broker(PollStep::Idle)) {
+                break step;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        let take = |task: &mut ConsentTask| loop {
+            if let Some(result) = task.try_take() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert!(matches!(
+            next(&mut boot),
+            OwnerStep::Accepted { key: 1, .. }
+        ));
+        client
+            .write_all(
+                message::encode(&hello(1, boot.boot_id())).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        assert!(matches!(
+            next(&mut boot),
+            OwnerStep::Broker(PollStep::Activated(1))
+        ));
+        assert!(
+            matches!(read_frame(&mut client, &stop, deadline).message, message::Message::Ready(ready) if !ready.policy.allowed)
+        );
+
+        let foreign = Arc::new(PolicyAuthority::new(destination));
+        let wrong = take(&mut ConsentTask::revoke(foreign).unwrap());
+        assert!(matches!(
+            boot.acknowledge_consent_update(&wrong, &stop, deadline),
+            Err(RuntimeError::InvalidTarget)
+        ));
+        let preview = ConsentOffer::try_capture(source.clone()).unwrap().unwrap();
+        let granted = take(&mut ConsentTask::grant(preview).unwrap());
+        assert!(matches!(
+            boot.acknowledge_consent_update(&granted, &stop, Instant::now()),
+            Err(RuntimeError::Transport(IpcError::Timeout))
+        ));
+        let ack = boot
+            .acknowledge_consent_update(&granted, &stop, deadline)
+            .unwrap();
+        assert_eq!(ack.requested, granted.version());
+        assert!(ack.current.allowed);
+        assert!(
+            matches!(read_frame(&mut client, &stop, deadline).message, message::Message::PolicyChanged(policy) if policy == ack.current)
+        );
+
+        client
+            .write_all(
+                message::encode(&convert(1, 1, 1, boot.policy())).unwrap(),
+                &stop,
+                deadline,
+            )
+            .unwrap();
+        assert!(matches!(
+            next(&mut boot),
+            OwnerStep::Submitted { key: 1, request: 1 }
+        ));
+        let revoked = take(&mut ConsentTask::revoke(source.clone()).unwrap());
+        let ack = boot
+            .acknowledge_consent_update(&revoked, &stop, deadline)
+            .unwrap();
+        assert_eq!(ack.requested, revoked.version());
+        assert!(!ack.current.allowed);
+        assert!(exited.load(Ordering::Acquire));
+        assert!(
+            matches!(read_frame(&mut client, &stop, deadline).message, message::Message::PolicyChanged(policy) if policy == ack.current)
+        );
+        // A stale UI completion cannot turn the new denied policy into an
+        // approval, even though its older grant was valid when performed.
+        let old = boot
+            .acknowledge_consent_update(&granted, &stop, deadline)
+            .unwrap();
+        assert!(!old.current.allowed);
+        assert!(old.current == ack.current);
+        assert!(boot
+            .shutdown(Instant::now() + Duration::from_secs(1))
+            .is_ok());
+    }
+
+    #[test]
     fn credential_failure_is_acknowledged_only_after_pipe_publication() {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         if !supported() {

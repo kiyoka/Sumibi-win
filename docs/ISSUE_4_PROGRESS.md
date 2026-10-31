@@ -124,6 +124,13 @@ JSON本文を生成し、既存parserで候補を抽出する。送信前後の�
 localhost TLS接続失敗の固定エラー配送を確認した。正常TLS経由の候補取得、外部API、
 常駐製品Hostからの起動は未確認・未接続である。
 詳細は[ADR 0071](adr/0071-native-chat-policy-transport.md)を参照。
+同意UI向けに非ブロッキングの版付き表示情報と許可・取消workerを追加した。
+表示後の接続先・モデル・同一文字列を含むキー置換・認可変更は古い許可を拒否する。
+設定保存・資格情報操作と同じ1件枠を使い、結果のreceiptは同じauthorityのBrokerだけが
+配信完了を確認できる。実pipeで許可・取消の通知、取消workerの終了、異なるauthorityの
+拒否と期限切れ後の再試行を検査した。実キーや送信同意をこのPCに設定していない。
+これは同意画面のbackendで、画面への接続と常駐Hostの起動は引き続き未実装。
+詳細は[ADR 0072](adr/0072-version-bound-consent-actions.md)を参照。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
 [CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。

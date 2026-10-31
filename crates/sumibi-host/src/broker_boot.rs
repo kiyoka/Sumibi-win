@@ -449,6 +449,20 @@ impl<'a> BrokerBoot<'a> {
             .acknowledge_version(&mut self.runtime, requested, stop, deadline)
     }
 
+    /// Publish a consent action only for this boot's authority and reap the
+    /// workers it invalidated. Keep the receipt to retry after a timeout.
+    pub fn acknowledge_consent_update(
+        &mut self,
+        update: &crate::consent_task::ConsentUpdate,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<PolicyAcknowledgment, RuntimeError> {
+        if !update.belongs_to(self.source) {
+            return Err(RuntimeError::InvalidTarget);
+        }
+        self.acknowledge_version(update.version(), stop, deadline)
+    }
+
     /// Complete a credential-store update only for this boot's authority.
     /// Keep the update to retry on timeout; storage errors still require the
     /// same publication and cancelled-worker retirement before reporting.
