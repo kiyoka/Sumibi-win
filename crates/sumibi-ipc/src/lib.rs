@@ -24,6 +24,8 @@ mod identity;
 #[cfg(windows)]
 pub mod job;
 #[cfg(windows)]
+pub mod launch_probe;
+#[cfg(windows)]
 mod pipe;
 #[cfg(windows)]
 pub mod protected_acl;

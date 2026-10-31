@@ -40,6 +40,16 @@ Chat Completionsの完全なパスへ補完して保存する。既定配置先�
 OSロックの根拠: [File::try_lock](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock)。
 配置先取得の根拠: [SHGetKnownFolderPath](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath)。
 
+## 署名済みファイルの停止起動診断
+
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-SuspendedImageProbe.ps1`で、
+署名済みvswhereの一時コピーから停止中の子を作り、画像パスと保持中ファイルのID照合、
+書込拒否、終了待ちと4件の容量制限を検査する。Unicode・空白を含むパスも使う。
+子は作成時から終了連動jobに所属させ、実行再開しない。既存Host、キーや機械登録は操作しない。
+スクリプトは署名済みfixtureがない環境や非対応tokenでのスキップを成功と扱わない。
+これは起動診断であり、製品Hostの起動許可や実行中の画像sectionの認証ではない。
+詳細は[ADR 0076](adr/0076-suspended-signed-image-probe.md)を参照。
+
 ## 公開HTTPS試験（明示実行）
 
 `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-NativeHttps.ps1`で、

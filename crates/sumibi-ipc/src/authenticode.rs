@@ -57,6 +57,22 @@ impl VerifiedFile {
     pub(crate) fn matches_open_file(&self, candidate: &File) -> Result<bool, InspectionError> {
         Ok(file_identity(&self._file)? == file_identity(candidate)?)
     }
+    /// Diagnostic only: create a suspended child, compare its observed image
+    /// path to this retained file, and terminate it without resuming. This does
+    /// not establish protected ancestors or mapped-section identity/launch trust.
+    pub fn probe_suspended(
+        self,
+        path: &Path,
+    ) -> Result<crate::launch_probe::SuspendedImageProbe<Self>, crate::launch_probe::ProbeError>
+    {
+        let expected = self
+            .identity()
+            .map_err(crate::launch_probe::ProbeError::File)?;
+        crate::launch_probe::start(self, path, expected)
+    }
+    pub(crate) fn identity(&self) -> Result<(u64, [u8; 16]), InspectionError> {
+        file_identity(&self._file)
+    }
 }
 
 /// Inspect a local file's embedded Authenticode signature using cached trust
@@ -185,6 +201,10 @@ fn file_identity(file: &File) -> Result<(u64, [u8; 16]), InspectionError> {
     }
     .map_err(|_| InspectionError::FileIdentityUnavailable)?;
     identity_from_info(info)
+}
+
+pub(crate) fn path_identity(path: &Path) -> Result<(u64, [u8; 16]), InspectionError> {
+    file_identity(&open_plain_local_file(path)?)
 }
 
 pub(crate) fn same_open_file(a: &File, b: &File) -> Result<bool, InspectionError> {

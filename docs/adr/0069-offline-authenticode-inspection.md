@@ -109,6 +109,9 @@ AppContainer等の非対応環境ではスキップするため、成功表示�
 異なる指紋を拒否した。
 自己署名の開発DLLを製品用に信頼する変更、証明書ストアへの追加や機械登録は行わない。
 
+停止状態で作成する子と保持ファイルの観測は[ADR 0076](0076-suspended-signed-image-probe.md)へ続く。
+画像パスの現在のfile ID照合だけでは、実行中の画像sectionの認証として扱わない。
+
 根拠: [WinVerifyTrust](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-winverifytrust)、
 [WINTRUST_FILE_INFO](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/ns-wintrust-wintrust_file_info)、
 [WINTRUST_DATA](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/ns-wintrust-wintrust_data)。

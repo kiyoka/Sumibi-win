@@ -164,6 +164,24 @@ pub struct SignedDevelopmentPlacement {
     _placement: DevelopmentPlacement,
     _signed: VerifiedFile,
 }
+impl SignedDevelopmentPlacement {
+    /// Retain the complete checked development hierarchy during a suspended
+    /// Host diagnostic. This is not a permission to resume or trust a peer.
+    pub fn probe_suspended_host(
+        self,
+    ) -> Result<crate::launch_probe::SuspendedImageProbe<Self>, crate::launch_probe::ProbeError>
+    {
+        if self._placement.artifact != Artifact::Host {
+            return Err(crate::launch_probe::ProbeError::UnsupportedArtifact);
+        }
+        let path = self._placement.path.clone();
+        let expected = self
+            ._signed
+            .identity()
+            .map_err(crate::launch_probe::ProbeError::File)?;
+        crate::launch_probe::start(self, &path, expected)
+    }
+}
 
 #[must_use = "retain the checked placement and receipt together"]
 pub struct ReceiptDevelopmentPlacement {
