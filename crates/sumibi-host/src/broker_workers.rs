@@ -109,6 +109,12 @@ pub struct BrokerWorkLoop {
     completed_accept_index: Option<usize>,
 }
 
+#[derive(Clone, Copy)]
+enum ChatRoute {
+    DiagnosticLoopback,
+    NativeHttps,
+}
+
 impl Default for BrokerWorkLoop {
     fn default() -> Self {
         Self::new()
@@ -340,6 +346,35 @@ impl BrokerWorkLoop {
         stop: &Stop,
         deadline: Instant,
     ) -> Result<OwnerStep, RuntimeError> {
+        self.advance_chat(
+            runtime,
+            authority,
+            stop,
+            deadline,
+            ChatRoute::DiagnosticLoopback,
+        )
+    }
+
+    /// Initial Chat conversion via native HTTPS. This does not enable consent
+    /// or install/start a product Broker; the authority must already allow it.
+    pub fn advance_native_chat(
+        &mut self,
+        runtime: &mut BrokerPolicyRuntime<'_>,
+        authority: Arc<PolicyAuthority>,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<OwnerStep, RuntimeError> {
+        self.advance_chat(runtime, authority, stop, deadline, ChatRoute::NativeHttps)
+    }
+
+    fn advance_chat(
+        &mut self,
+        runtime: &mut BrokerPolicyRuntime<'_>,
+        authority: Arc<PolicyAuthority>,
+        stop: &Stop,
+        deadline: Instant,
+        route: ChatRoute,
+    ) -> Result<OwnerStep, RuntimeError> {
         if !runtime.uses_source(&authority) {
             return Err(RuntimeError::InvalidTarget);
         }
@@ -349,16 +384,22 @@ impl BrokerWorkLoop {
                     .snapshot()
                     .ok_or(ErrorCode::Unavailable)?
                     .destination;
-                crate::diagnostic_http::convert_chat_with_policy(
-                    ManualRequest {
-                        revision: request.revision,
-                        destination: &destination,
-                        source: &request.text,
-                        deadline: ticket.deadline(),
-                    },
-                    &authority,
-                    &ticket,
-                )
+                let request = ManualRequest {
+                    revision: request.revision,
+                    destination: &destination,
+                    source: &request.text,
+                    deadline: ticket.deadline(),
+                };
+                match route {
+                    ChatRoute::DiagnosticLoopback => {
+                        crate::diagnostic_http::convert_chat_with_policy(
+                            request, &authority, &ticket,
+                        )
+                    }
+                    ChatRoute::NativeHttps => {
+                        crate::native_https::convert_chat_with_policy(request, &authority, &ticket)
+                    }
+                }
                 .map_err(classify_send_error)
             }
         })
@@ -377,6 +418,22 @@ impl BrokerWorkLoop {
         }
         self.advance_around_accept(runtime, accepts, stop, deadline, |owner, runtime| {
             owner.advance_diagnostic_chat(runtime, authority, stop, deadline)
+        })
+    }
+
+    pub fn advance_native_chat_with_accept(
+        &mut self,
+        runtime: &mut BrokerPolicyRuntime<'_>,
+        accepts: &mut Vec<AcceptTask>,
+        authority: Arc<PolicyAuthority>,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<OwnerStep, RuntimeError> {
+        if !runtime.uses_source(&authority) {
+            return Err(RuntimeError::InvalidTarget);
+        }
+        self.advance_around_accept(runtime, accepts, stop, deadline, |owner, runtime| {
+            owner.advance_native_chat(runtime, authority, stop, deadline)
         })
     }
 

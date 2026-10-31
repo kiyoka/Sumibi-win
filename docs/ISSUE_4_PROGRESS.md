@@ -116,7 +116,14 @@ context保持を追加した。TLS既定・転送等の抑止・失効確認を�
 入口を用意した。localhostの合成本文送信と、TLS待機の取消・期限切れ・最終context
 解放を試験した。続いて応答受信を追加し、HTTP status・JSON media type・header重複を
 検査する。本文64 KiBの上限、長さ照合、chunked処理、受信中の取消・同一期限と最終
-context解放をlocalhostで試験した。実TLS成功と製品変換adapterへの接続は残る。
+context解放をlocalhostで試験した。
+初回変換adapterをnative送受信につなぎ、要求の設定版からモデルを取得して既存の
+JSON本文を生成し、既存parserで候補を抽出する。送信前後の同意・設定版・キー同一性と
+取消は既存のordered変換境界で検査する。BrokerBootの専用入口は同一authorityを要求し、
+有限worker内で呼ぶ。模擬交換による成功・途中変更の拒否と、実pipeから平文HTTP拒否・
+localhost TLS接続失敗の固定エラー配送を確認した。正常TLS経由の候補取得、外部API、
+常駐製品Hostからの起動は未確認・未接続である。
+詳細は[ADR 0071](adr/0071-native-chat-policy-transport.md)を参照。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
 [CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。

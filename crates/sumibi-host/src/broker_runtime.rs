@@ -2208,6 +2208,10 @@ mod tests {
             .unwrap();
         let _client = Pipe::connect(boot.name(), PinnedProcess::current().unwrap()).unwrap();
         assert!(matches!(
+            boot.advance_native_chat(foreign.clone(), &stop, deadline),
+            Err(RuntimeError::InvalidTarget)
+        ));
+        assert!(matches!(
             boot.advance_manual(foreign, Arc::new(DiagnosticLoopbackHttp), &stop, deadline,),
             Err(RuntimeError::InvalidTarget)
         ));
@@ -2998,6 +3002,137 @@ mod tests {
         }
         check_boot_manual_dispatch(false);
         check_boot_manual_dispatch(true);
+    }
+
+    #[test]
+    fn broker_native_chat_uses_tls_and_refuses_plaintext_destinations() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        for tls in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let destination = Destination::for_chat_completions(
+                if tls {
+                    Scheme::Https
+                } else {
+                    Scheme::HttpLoopback
+                },
+                "127.0.0.1",
+                port,
+                "/",
+            )
+            .unwrap();
+            let source = Arc::new(PolicyAuthority::new(destination.clone()));
+            source.set_model("fixture-model").unwrap();
+            source
+                .replace_credential(Credential::new("synthetic-key".into()))
+                .unwrap();
+            source.grant_manual_consent(&destination).unwrap();
+            let server = if tls {
+                let listener = listener.try_clone().unwrap();
+                Some(std::thread::spawn(move || {
+                    let deadline = Instant::now() + Duration::from_secs(4);
+                    let mut stream = loop {
+                        match listener.accept() {
+                            Ok((stream, _)) => break stream,
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                assert!(Instant::now() < deadline);
+                                std::thread::sleep(Duration::from_millis(1));
+                            }
+                            Err(error) => panic!("TLS fixture accept failed: {error}"),
+                        }
+                    };
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut prefix = [0u8; 5];
+                    stream.read_exact(&mut prefix).unwrap();
+                    assert_eq!(
+                        prefix[0], 0x16,
+                        "native route did not start with TLS handshake"
+                    );
+                    // Close without completing TLS. No HTTP, API key or input
+                    // text reaches the peer, and no certificate is trusted.
+                }))
+            } else {
+                None
+            };
+            let stop = Stop::new().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut boot = BrokerBoot::start(&source, 2, deadline).unwrap();
+            boot.begin_accept(PinnedProcess::current().unwrap(), deadline)
+                .unwrap();
+            let mut client = Pipe::connect(boot.name(), PinnedProcess::current().unwrap()).unwrap();
+            let next = |boot: &mut BrokerBoot<'_>| loop {
+                let step = boot
+                    .advance_native_chat(source.clone(), &stop, deadline)
+                    .unwrap();
+                if !matches!(step.step, OwnerStep::Broker(PollStep::Idle)) {
+                    break step;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            };
+            let accepted = next(&mut boot);
+            assert!(accepted.accept.is_some());
+            assert!(matches!(accepted.step, OwnerStep::Accepted { key: 1, .. }));
+            client
+                .write_all(
+                    message::encode(&hello(1, boot.boot_id())).unwrap(),
+                    &stop,
+                    deadline,
+                )
+                .unwrap();
+            assert!(matches!(
+                next(&mut boot).step,
+                OwnerStep::Broker(PollStep::Activated(1))
+            ));
+            assert!(matches!(
+                read_frame(&mut client, &stop, deadline).message,
+                message::Message::Ready(_)
+            ));
+            client
+                .write_all(
+                    message::encode(&convert(1, 1, 1, boot.policy())).unwrap(),
+                    &stop,
+                    deadline,
+                )
+                .unwrap();
+            assert!(matches!(
+                next(&mut boot).step,
+                OwnerStep::Submitted { key: 1, request: 1 }
+            ));
+            assert!(matches!(
+                next(&mut boot).step,
+                OwnerStep::Completed {
+                    key: 1,
+                    request: 1,
+                    delivered: true,
+                    succeeded: false
+                }
+            ));
+            let expected = if tls {
+                ErrorCode::Unavailable
+            } else {
+                ErrorCode::Rejected
+            };
+            assert!(
+                matches!(read_frame(&mut client, &stop, deadline).message, message::Message::Error(error) if error.code == expected)
+            );
+            if let Some(server) = server {
+                server.join().unwrap();
+            } else {
+                assert_eq!(
+                    listener.accept().unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock
+                );
+            }
+            assert!(boot.retire_for_restart(Instant::now() + Duration::from_secs(1)));
+        }
     }
 
     fn check_boot_manual_dispatch(chat: bool) {

@@ -1,8 +1,96 @@
-//! Native HTTPS preparation, ordered sending and bounded response reception.
-//! The complete conversion adapter remains separate work.
-use crate::manual::{Destination, Scheme, SendError, SendGate, TransportError};
+//! Initial Chat conversion through ordered native HTTPS I/O.
+use crate::manual::{
+    Destination, ManualRequest, OrderedConversionTransport, PolicySource, Scheme, SendAdmission,
+    SendError, SendGate, TransportError,
+};
+use crate::policy::PolicyAuthority;
 use std::time::Instant;
 use sumibi_winhttp::{Error, PreparedRequest};
+
+/// Resolve the model from the requested policy revision. The same authority
+/// rechecks destination, credential and consent before send and after receive.
+/// This worker-only entry neither grants consent nor changes stored settings.
+pub fn convert_chat_with_policy(
+    request: ManualRequest<'_>,
+    authority: &PolicyAuthority,
+    admission: &impl SendAdmission,
+) -> Result<String, SendError> {
+    convert_with_exchange(request, authority, admission, &NativeExchange { admission })
+}
+
+// Injection is private: product callers cannot substitute plaintext or skip
+// certificate validation. Unit tests exercise policy/JSON with an in-memory
+// exchange; native socket and callback behavior is tested in sumibi-winhttp.
+trait Exchange {
+    fn exchange(
+        &self,
+        destination: &Destination,
+        credential: &str,
+        body: Vec<u8>,
+        deadline: Instant,
+        gate: &mut dyn SendGate,
+    ) -> Result<Vec<u8>, SendError>;
+}
+
+struct NativeExchange<'a> {
+    admission: &'a dyn SendAdmission,
+}
+impl Exchange for NativeExchange<'_> {
+    fn exchange(
+        &self,
+        destination: &Destination,
+        credential: &str,
+        body: Vec<u8>,
+        deadline: Instant,
+        gate: &mut dyn SendGate,
+    ) -> Result<Vec<u8>, SendError> {
+        let cancelled = || self.admission.is_cancelled();
+        let request = send_body(destination, credential, body, deadline, gate, &cancelled)?;
+        receive_body(request, gate, &cancelled)
+    }
+}
+
+fn convert_with_exchange(
+    request: ManualRequest<'_>,
+    authority: &PolicyAuthority,
+    admission: &impl SendAdmission,
+    exchange: &dyn Exchange,
+) -> Result<String, SendError> {
+    if request.destination.scheme() != Scheme::Https {
+        return Err(SendError::InvalidRequest);
+    }
+    let snapshot = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    if snapshot.settings != request.revision.settings
+        || snapshot.authorization != request.revision.authorization
+    {
+        return Err(SendError::PolicyDenied);
+    }
+    let model = snapshot.model.as_deref().ok_or(SendError::PolicyDenied)?;
+    let transport = ChatTransport { model, exchange };
+    crate::manual::convert_ordered(request, authority, admission, &transport)
+}
+
+struct ChatTransport<'a> {
+    model: &'a str,
+    exchange: &'a dyn Exchange,
+}
+impl OrderedConversionTransport for ChatTransport<'_> {
+    fn convert_ordered(
+        &self,
+        destination: &Destination,
+        credential: &str,
+        source: &str,
+        deadline: Instant,
+        gate: &mut dyn SendGate,
+    ) -> Result<String, SendError> {
+        let body = crate::first_conversion::request_body(self.model, source)
+            .map_err(|_| SendError::InvalidRequest)?;
+        let bytes = self
+            .exchange
+            .exchange(destination, credential, body, deadline, gate)?;
+        crate::first_conversion::response_candidate(&bytes).map_err(|_| SendError::InvalidResponse)
+    }
+}
 
 pub fn prepare(destination: &Destination) -> Result<PreparedRequest, Error> {
     if destination.scheme() != Scheme::Https {
@@ -83,6 +171,270 @@ fn classify(error: Error) -> TransportError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manual::Credential;
+    use std::cell::{Cell, RefCell};
+    use std::time::Duration;
+    use sumibi_protocol::message::Revision;
+
+    #[derive(Default)]
+    struct Admission(Cell<bool>);
+    impl SendAdmission for Admission {
+        fn is_cancelled(&self) -> bool {
+            self.0.get()
+        }
+        fn write_if_active(
+            &self,
+            write: &mut dyn FnMut() -> Result<(), TransportError>,
+        ) -> Result<(), SendError> {
+            if self.is_cancelled() {
+                return Err(SendError::PolicyDenied);
+            }
+            write().map_err(SendError::Transport)
+        }
+    }
+
+    struct ScriptedExchange<'a> {
+        writes: RefCell<Vec<Vec<u8>>>,
+        before: Option<&'a dyn Fn()>,
+        after: Option<&'a dyn Fn()>,
+        response: Result<Vec<u8>, SendError>,
+    }
+    impl Default for ScriptedExchange<'_> {
+        fn default() -> Self {
+            Self { writes: RefCell::new(Vec::new()), before: None, after: None,
+                response: Ok(serde_json::to_vec(&serde_json::json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":r#"{"candidates":["日本語"]}"#}}]})).unwrap()) }
+        }
+    }
+    impl Exchange for ScriptedExchange<'_> {
+        fn exchange(
+            &self,
+            destination: &Destination,
+            credential: &str,
+            body: Vec<u8>,
+            _: Instant,
+            gate: &mut dyn SendGate,
+        ) -> Result<Vec<u8>, SendError> {
+            assert_eq!(destination.host(), "example.test");
+            assert_eq!(destination.base_path(), "/proxy/v1/chat/completions");
+            assert_eq!(credential, "synthetic-key");
+            if let Some(before) = self.before {
+                before();
+            }
+            let mut body = Some(body);
+            gate.write_authorized(&mut || {
+                self.writes.borrow_mut().push(body.take().unwrap());
+                Ok(())
+            })?;
+            // Mutation must happen after the real authority send guard drops.
+            // It must not deadlock, and its older result must not be accepted.
+            if let Some(after) = self.after {
+                after();
+            }
+            self.response.clone()
+        }
+    }
+
+    fn ready() -> (PolicyAuthority, Destination) {
+        let destination =
+            Destination::for_chat_completions(Scheme::Https, "example.test", 443, "/proxy")
+                .unwrap();
+        let authority = PolicyAuthority::new(destination.clone());
+        authority.set_model("fixture-model").unwrap();
+        authority
+            .replace_credential(Credential::new("synthetic-key".into()))
+            .unwrap();
+        authority.grant_manual_consent(&destination).unwrap();
+        (authority, destination)
+    }
+
+    fn revision(authority: &PolicyAuthority) -> Revision {
+        let snapshot = authority.snapshot().unwrap();
+        Revision {
+            input: 1,
+            settings: snapshot.settings,
+            authorization: snapshot.authorization,
+        }
+    }
+
+    fn convert_fixture(
+        authority: &PolicyAuthority,
+        destination: &Destination,
+        revision: Revision,
+        admission: &Admission,
+        exchange: &ScriptedExchange<'_>,
+    ) -> Result<String, SendError> {
+        convert_with_exchange(
+            ManualRequest {
+                revision,
+                destination,
+                source: "nihongo",
+                deadline: Instant::now() + Duration::from_secs(2),
+            },
+            authority,
+            admission,
+            exchange,
+        )
+    }
+
+    #[test]
+    fn native_chat_policy_selects_model_and_extracts_one_complete_candidate() {
+        let (authority, destination) = ready();
+        let exchange = ScriptedExchange::default();
+        assert_eq!(
+            convert_fixture(
+                &authority,
+                &destination,
+                revision(&authority),
+                &Admission::default(),
+                &exchange
+            ),
+            Ok("日本語".into())
+        );
+        let writes = exchange.writes.borrow();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0],
+            crate::first_conversion::request_body("fixture-model", "nihongo").unwrap()
+        );
+    }
+
+    #[test]
+    fn native_chat_rejects_stale_missing_and_unconsented_policy_before_writing() {
+        for change in 0..5 {
+            let (authority, destination) = ready();
+            let revision = revision(&authority);
+            let admission = Admission::default();
+            match change {
+                0 => {
+                    authority.set_model("new-model").unwrap();
+                }
+                1 => {
+                    authority.revoke_manual_consent().unwrap();
+                }
+                2 => {
+                    authority.replace_credential(None).unwrap();
+                }
+                3 => admission.0.set(true),
+                _ => {
+                    authority
+                        .set_destination(
+                            Destination::new(Scheme::Https, "other.test", 443, "/").unwrap(),
+                        )
+                        .unwrap();
+                }
+            }
+            let exchange = ScriptedExchange::default();
+            assert_eq!(
+                convert_fixture(&authority, &destination, revision, &admission, &exchange),
+                Err(SendError::PolicyDenied)
+            );
+            assert!(exchange.writes.borrow().is_empty());
+        }
+        let (authority, destination) = ready();
+        let http = Destination::new(Scheme::HttpLoopback, "127.0.0.1", 1, "/").unwrap();
+        let exchange = ScriptedExchange::default();
+        assert_eq!(
+            convert_fixture(
+                &authority,
+                &http,
+                revision(&authority),
+                &Admission::default(),
+                &exchange
+            ),
+            Err(SendError::InvalidRequest)
+        );
+        let no_model = PolicyAuthority::new(destination.clone());
+        no_model
+            .replace_credential(Credential::new("synthetic-key".into()))
+            .unwrap();
+        no_model.grant_manual_consent(&destination).unwrap();
+        assert_eq!(
+            convert_fixture(
+                &no_model,
+                &destination,
+                revision(&no_model),
+                &Admission::default(),
+                &exchange
+            ),
+            Err(SendError::PolicyDenied)
+        );
+        assert!(exchange.writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn native_chat_rechecks_the_actual_send_and_discards_changed_or_cancelled_results() {
+        for after_send in [false, true] {
+            for change in 0..4 {
+                let (authority, destination) = ready();
+                let admission = Admission::default();
+                let mutate = || match change {
+                    0 => {
+                        authority.set_model("new-model").unwrap();
+                    }
+                    1 => {
+                        authority.revoke_manual_consent().unwrap();
+                    }
+                    2 => {
+                        authority
+                            .replace_credential(Credential::new("replacement-key".into()))
+                            .unwrap();
+                    }
+                    _ => admission.0.set(true),
+                };
+                let exchange = ScriptedExchange {
+                    before: (!after_send).then_some(&mutate as &dyn Fn()),
+                    after: after_send.then_some(&mutate as &dyn Fn()),
+                    ..Default::default()
+                };
+                assert_eq!(
+                    convert_fixture(
+                        &authority,
+                        &destination,
+                        revision(&authority),
+                        &admission,
+                        &exchange
+                    ),
+                    Err(SendError::PolicyDenied)
+                );
+                assert_eq!(exchange.writes.borrow().len(), usize::from(after_send));
+            }
+        }
+    }
+
+    #[test]
+    fn native_chat_rejects_invalid_candidates_and_preserves_fixed_transport_errors() {
+        let (authority, destination) = ready();
+        for (response, expected) in [
+            (
+                Ok(br#"{"choices":[]}"#.to_vec()),
+                SendError::InvalidResponse,
+            ),
+            (
+                Err(SendError::Transport(TransportError::Timeout)),
+                SendError::Transport(TransportError::Timeout),
+            ),
+            (
+                Err(SendError::Transport(TransportError::Connection)),
+                SendError::Transport(TransportError::Connection),
+            ),
+        ] {
+            let exchange = ScriptedExchange {
+                response,
+                ..Default::default()
+            };
+            assert_eq!(
+                convert_fixture(
+                    &authority,
+                    &destination,
+                    revision(&authority),
+                    &Admission::default(),
+                    &exchange
+                ),
+                Err(expected)
+            );
+            assert_eq!(exchange.writes.borrow().len(), 1);
+        }
+    }
     #[test]
     fn native_preparation_refuses_diagnostic_http() {
         let destination =

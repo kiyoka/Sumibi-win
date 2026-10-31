@@ -7,7 +7,8 @@ Hostの`native_https::prepare`は検証済みDestinationから呼び、診断用
 `send_body`はHostの送信guardを通し、SENDREQUEST_COMPLETEまで保持する。
 `receive_body`は送信guardを解放した後で呼ぶ。受信には送信時の期限を引き継ぎ、
 取消済みの結果を拒否する。結果採用前のpolicy revision・credential再照合は呼出側の責務。
-変換adapterは未実装で、外部APIや正常なTLS接続の通信試験はまだ行っていない。
+初回変換adapterとの接続は[ADR 0071](0071-native-chat-policy-transport.md)を参照。
+外部APIや正常なTLS接続の通信試験はまだ行っていない。
 
 WinHTTPのSECURE_DEFAULTSで非同期とTLS 1.2以上を選び、HTTPS要求にする。
 リダイレクト、Cookie、自動認証を無効化し、証明書失効確認を有効にする。
@@ -64,7 +65,7 @@ TLS応答を返さないlocalhostのsocketで、接続待ちの取消と期限�
 このWindows環境ではheaderが来ない場合、送信完了通知も待機する挙動を観測したため、
 試験では送受信両段階を同じ取消と期限で扱う。
 
-正常な実TLS通信を検証し、製品の変換transportへ接続する作業は残る。
+初回変換transportへの接続を追加したが、正常な実TLS通信の検証は残る。
 既存の診断用TcpStream通信は独立したままである。
 
 根拠:

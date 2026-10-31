@@ -1,5 +1,5 @@
-//! Host-owned manual conversion boundary. No COM, network implementation,
-//! persistent settings or credential-store access is contained here.
+//! Host-owned policy, settings and bounded manual conversion workers.
+//! Unsafe Windows I/O remains in dedicated boundary crates.
 #![forbid(unsafe_code)]
 
 #[cfg(windows)]
