@@ -247,6 +247,19 @@ DLL parser 8件と、実HostのKernel32参照89件の照合が成功した。85�
 関連3crateの全target Clippyとfmt検査も成功した。
 詳細は[ADR 0080](adr/0080-dll-export-metadata.md)を参照。
 
+明示したDLL公開表内だけで、名前・序数のforwarderを最大16段追跡する処理を追加した。
+module名は正規化し、slot単位でalias・名前/序数切替の循環も検出する。moduleやsymbolの
+欠落・不正形式・上限超過を拒否し、API setは未解決として同名DLLへの置換を拒否する。
+合成DLLの7件と、固定した3つのsystem DLLを保持する実ファイル検査が成功した。
+今回のKernel32参照89件は最終RVAまで到達し、前回未解決の4件はいずれも1段の転送だった。
+これはmetadataの照合であり、署名・配置や実loaderのbind先を認証するものではない。
+API set、全依存DLLの信頼、動的依存、製品起動・発見は残る。
+全体回帰では既存テストの通知直後のsnapshot取得に競合が見つかり、非ブロッキングの
+契約に合わせて検査側の待機・終了確認を修正した。製品workerの動作は変更していない。
+再検査のworkspace testは506件成功、明示実行用の公開HTTPS試験3件はignored。
+関連3crateの全target Clippyとfmt検査も成功した。
+詳細は[ADR 0081](adr/0081-bounded-export-forwarders.md)を参照。
+
 ## 2026-10-25 の追加確認
 
 - `U+FFFC`をCore、Protocol、Job/Worker、TSFの本文境界で拒否する。

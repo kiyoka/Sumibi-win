@@ -38,8 +38,9 @@ slotと名前はそれぞれ65536件まで、module名128byte、公開名・forw
 
 ## 検証
 
-`tools/Test-HostImage.ps1`はHost parser 13件、DLL parser 8件と、実Host・Kernel32の
-2件を実行する。合成DLLではalias、序数の全u16範囲、名前の大小文字、公開slotの欠番、
+`tools/Test-HostImage.ps1`はHost parser 13件、DLL parser 8件に加え、
+[ADR 0081](0081-bounded-export-forwarders.md)の転送検査7件と実ファイル検査3件を実行する。
+合成DLLではalias、序数の全u16範囲、名前の大小文字、公開slotの欠番、
 data、名前なしDLL、転送名・転送序数と転送範囲の境界を確認した。
 全prefixの切詰め、表の範囲外・overflow・件数超過、名前の不正順序・重複、
 反復forwarderによる文字列容量超過、2048件の変異入力も検査する。
@@ -53,6 +54,7 @@ LoadLibraryやGetProcAddress、DLL初期化は使わない。
 ## 残る条件
 
 このKernel32試験は配置の信頼や署名を認証せず、実際のloaderが同じfileへbindすることも
-証明しない。全依存DLLの信頼された取得・保持と署名方針、API setとforwarderの解決、
+証明しない。明示した公開表間のforwarder追跡は[ADR 0081](0081-bounded-export-forwarders.md)で追加した。
+全依存DLLの信頼された取得・保持と署名方針、API setの解決、
 動的依存、更新とmapされた画像の同一性は残る。製品launcherやHost発見の許可には使わず、
 Issue #4の製品受入完了にも数えない。

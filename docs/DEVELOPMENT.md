@@ -59,7 +59,8 @@ OSロックの根拠: [File::try_lock](https://doc.rust-lang.org/std/fs/struct.F
 合成PEの異常系と、生成したHost実行ファイルのx64形式・静的import名を検査する。
 関数名と序数も取得し、lookup/IATの一致、終端・予約bit・件数と名前長を検査する。
 DLL公開表の異常系と、OS APIで得たKernel32実ファイルへのHostの静的参照も照合する。
-画像内RVA、未解決forwarder、未公開を区別し、forwarderを解決済みにはしない。
+画像内RVA、未解決forwarder、未公開を区別する。明示して保持したKernel32・KernelBase・
+Ntdllの公開表間で転送も追跡し、循環・欠落・上限超過を拒否する。API setは未解決とする。
 ファイルをコードとしてロードせず、Hostを起動しない。DLL・別architecture・
 delay import/CLR、範囲外や重複sectionを拒否する限定profileである。
 保護配置を使う停止起動診断にも、子を作る前の条件として接続した。
@@ -67,6 +68,7 @@ delay import/CLR、範囲外や重複sectionを拒否する限定profileであ�
 詳細は[ADR 0077](adr/0077-host-image-metadata.md)を参照。
 静的参照表の限定と上限は[ADR 0079](adr/0079-static-import-symbols.md)を参照。
 公開表の読取・Kernel32照合の範囲は[ADR 0080](adr/0080-dll-export-metadata.md)を参照。
+転送追跡の限定profileと保持条件は[ADR 0081](adr/0081-bounded-export-forwarders.md)を参照。
 
 ## 公開HTTPS試験（明示実行）
 

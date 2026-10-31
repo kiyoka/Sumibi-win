@@ -42,13 +42,16 @@ impl DllExports {
     /// Exact case-sensitive lookup. Zero-RVA holes are absent. The caller
     /// must separately bind this metadata to the intended retained DLL file.
     pub fn lookup(&self, symbol: &ImportSymbol) -> Option<&ExportTarget> {
+        self.lookup_slot(symbol).map(|(_, target)| target)
+    }
+    pub(crate) fn lookup_slot(&self, symbol: &ImportSymbol) -> Option<(usize, &ExportTarget)> {
         let index = match symbol {
             ImportSymbol::Name(name) => *self.names.get(name)?,
             ImportSymbol::Ordinal(ordinal) => {
                 u32::from(*ordinal).checked_sub(self.ordinal_base)? as usize
             }
         };
-        self.slots.get(index)?.as_ref()
+        Some((index, self.slots.get(index)?.as_ref()?))
     }
 }
 

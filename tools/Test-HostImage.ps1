@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param()
 
-# Read PE imports/exports from fixtures, built Host and a held OS Kernel32 file.
+# Read PE metadata and bounded forwarders using only explicit held OS fixtures.
 $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $repository

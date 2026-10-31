@@ -1,4 +1,6 @@
 use super::*;
+#[path = "export_resolver_tests.rs"]
+mod resolver;
 const OPTIONAL: usize = 0x98;
 const SECTION: usize = OPTIONAL + 240;
 fn put16(bytes: &mut [u8], offset: usize, value: u16) {
