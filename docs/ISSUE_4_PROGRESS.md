@@ -129,8 +129,18 @@ localhost TLS接続失敗の固定エラー配送を確認した。正常TLS経�
 設定保存・資格情報操作と同じ1件枠を使い、結果のreceiptは同じauthorityのBrokerだけが
 配信完了を確認できる。実pipeで許可・取消の通知、取消workerの終了、異なるauthorityの
 拒否と期限切れ後の再試行を検査した。実キーや送信同意をこのPCに設定していない。
-これは同意画面のbackendで、画面への接続と常駐Hostの起動は引き続き未実装。
+この段階では同意backendまでを実装した。
 詳細は[ADR 0072](adr/0072-version-bound-consent-actions.md)を参照。
+続いて`sumibi-host host-window [absolute-settings-path]`へ送信管理画面を追加した。
+起動workerで設定とキーを読み、同意offerの接続先・モデル・キー有無を表示する。
+明示確認後の許可と取消を専用ownerへ渡し、Broker配信確認後に操作完了とする。
+終了要求は操作queueと独立し、未処理の許可を捨て、進行中操作を待った後に取消し、
+非公開Brokerの終了を確認する。合成キーで起動中・許可待機中の終了、古い/別authorityの
+offer拒否を試験した。試験用設定の実画面でキー欠損時の許可無効化と×での正常終了を
+確認した。画面上での許可・キー変更や外部送信は行っていない。
+この入口はpeerを公開・受付せず、変換dispatchも行わない。安全なTIP発見・接続、
+単一起動管理、自動常駐と、正常TLS経由の実変換成功は残る。
+詳細は[ADR 0073](adr/0073-host-consent-window-lifetime.md)を参照。
 根拠: [CredWriteW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)、
 [CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、
 [CredReadW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw)。

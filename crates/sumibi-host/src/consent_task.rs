@@ -66,6 +66,9 @@ impl ConsentOffer {
                 .as_deref()
                 .is_some_and(crate::first_conversion::valid_model)
     }
+    pub(crate) fn belongs_to(&self, authority: &PolicyAuthority) -> bool {
+        std::ptr::eq(Arc::as_ptr(&self.authority), authority)
+    }
 }
 
 /// Local mutation is not delivery completion. Keep this receipt and have the

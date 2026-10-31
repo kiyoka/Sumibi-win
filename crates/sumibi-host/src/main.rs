@@ -1,5 +1,7 @@
 //! Explicitly launched broker entry. Default builds never enable a converter.
 #[cfg(windows)]
+mod consent_window;
+#[cfg(windows)]
 mod host_paths;
 #[cfg(windows)]
 mod settings_init;
@@ -8,6 +10,21 @@ mod settings_window;
 #[cfg(windows)]
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "host-window") {
+        let path = match args.len() {
+            1 => host_paths::settings_path().ok(),
+            2 => Some(std::path::PathBuf::from(&args[1])),
+            _ => None,
+        };
+        if let Err(message) = path
+            .ok_or("usage: sumibi-host host-window [absolute-settings-path]")
+            .and_then(consent_window::run)
+        {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.first().is_some_and(|arg| arg == "settings-window") {
         let path = match args.len() {
             1 => host_paths::settings_path().ok(),

@@ -18,6 +18,8 @@ pub mod consent_task;
 pub mod credential_store;
 pub mod diagnostic_http;
 pub mod first_conversion;
+#[cfg(windows)]
+pub mod host_control;
 pub mod manual;
 #[cfg(windows)]
 pub mod native_https;
