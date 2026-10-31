@@ -1,6 +1,6 @@
 #![cfg(windows)]
 
-use sumibi_ipc::host_image::{inspect_bytes, HostSubsystem};
+use sumibi_ipc::host_image::{inspect_bytes, HostSubsystem, ImportSymbol};
 
 #[test]
 fn built_host_has_supported_native_image_and_static_import_inventory() {
@@ -10,9 +10,26 @@ fn built_host_has_supported_native_image_and_static_import_inventory() {
     assert_ne!(image.entry_point_rva(), 0);
     assert!(image.imports().iter().any(|name| name == "kernel32.dll"));
     assert!(image.imports().windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(image.imports().len(), image.import_libraries().len());
+    let kernel = image
+        .import_libraries()
+        .iter()
+        .find(|library| library.name() == "kernel32.dll")
+        .unwrap();
+    assert!(kernel
+        .symbols()
+        .iter()
+        .any(|symbol| matches!(symbol, ImportSymbol::Name(name) if name == "GetCurrentProcessId")));
+    let symbol_count: usize = image
+        .import_libraries()
+        .iter()
+        .map(|library| library.symbols().len())
+        .sum();
+    assert!(symbol_count > 0);
     println!(
         "Built Host static import names: {}",
         image.imports().join(", ")
     );
+    println!("Built Host static import symbols: {symbol_count}");
     println!("PE metadata only; no code loaded and no dependency trust asserted.");
 }

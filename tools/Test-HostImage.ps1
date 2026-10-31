@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param()
 
-# Read PE metadata from synthetic fixtures and the freshly built Host only.
+# Read PE metadata and bounded unbound import symbols from fixtures / built Host.
 $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $repository

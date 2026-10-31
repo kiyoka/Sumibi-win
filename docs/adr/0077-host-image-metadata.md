@@ -24,7 +24,7 @@ image size 1GiB、data directory 16件という限定profileを使う。
 import descriptorは終端を除き128件、DLL名はASCII 128byteまでとする。
 終端descriptorと名前のNULが必要で、パス区切りやcolon、親移動を含む名前を拒否する。
 名前は小文字へ正規化し、重複をまとめてソートする。descriptorの上限は重複分も数える。
-delay importとCLR directoryは、いずれかのRVA/sizeが非ゼロなら未対応として拒否する。
+delay import、CLR、bound import directoryは、いずれかのRVA/sizeが非ゼロなら未対応として拒否する。
 
 PE構造とimport descriptorの意味はMicrosoftの
 [PE Format](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format)に従う。
@@ -32,7 +32,7 @@ PE構造とimport descriptorの意味はMicrosoftの
 
 ## 検証
 
-`tools/Test-HostImage.ps1`はparser 8件と、生成した`sumibi-host.exe`を読む1件を実行する。
+`tools/Test-HostImage.ps1`はparser 13件と、生成した`sumibi-host.exe`を読む1件を実行する。
 合成PEでConsole/GUI、名前の正規化、DLL・別architecture・delay/CLRの拒否、全prefixの
 切詰め、overflow、重複section、実体のないRVA、パス名、終端欠落と件数超過を検査する。
 2048件の決定的な変異入力でもpanicしないことを確認する。保持handleは読取位置を
@@ -45,7 +45,8 @@ PE構造とimport descriptorの意味はMicrosoftの
 ## 残る条件
 
 このparserはWindows loader全体の妥当性検証ではなく、署名・起動許可を与えない。
-import thunk全体やexportを解決せず、API set、forwarder、動的LoadLibrary、TLS callback、
+import thunkの名前・序数・容量・終端検査は[ADR 0079](0079-static-import-symbols.md)で追加した。
+exportを解決せず、API set、forwarder、動的LoadLibrary、TLS callback、
 manifest、依存DLLの検索順と実ファイルの信頼も判定しない。
 製品launcherには依存物・環境・更新の方針、保護配置の成功fixture、製品署名者方針、
 実際にmapされた画像の同一性、信頼できるHost発見が引き続き必要である。

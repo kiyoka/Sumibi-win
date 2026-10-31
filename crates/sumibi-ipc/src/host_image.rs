@@ -1,5 +1,7 @@
 //! Bounded PE32+ x64 Host metadata, not signature, dependency or launch trust.
-use std::collections::BTreeSet;
+#[path = "host_imports.rs"]
+mod import_table;
+pub use import_table::{ImportLibrary, ImportSymbol};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
@@ -16,8 +18,10 @@ pub enum ImageError {
     UnsupportedSubsystem,
     UnsupportedDelayImports,
     UnsupportedManagedImage,
+    UnsupportedBoundImports,
     InvalidImport,
     TooManyImports,
+    TooManySymbols,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostSubsystem {
@@ -29,6 +33,7 @@ pub struct HostImage {
     entry_point: u32,
     subsystem: HostSubsystem,
     imports: Vec<String>,
+    libraries: Vec<ImportLibrary>,
 }
 impl HostImage {
     pub fn entry_point_rva(&self) -> u32 {
@@ -41,6 +46,11 @@ impl HostImage {
     /// forwarded exports, dynamically loaded modules or the files to load.
     pub fn imports(&self) -> &[String] {
         &self.imports
+    }
+    /// Exact case-sensitive symbol names / ordinals from unbound static imports.
+    /// These do not identify the files or exports the loader will resolve.
+    pub fn import_libraries(&self) -> &[ImportLibrary] {
+        &self.libraries
     }
 }
 struct Section {
@@ -166,13 +176,21 @@ pub fn inspect_bytes(bytes: &[u8]) -> Result<HostImage, ImageError> {
     if u32_at(optional, 112 + 14 * 8)? != 0 || u32_at(optional, 116 + 14 * 8)? != 0 {
         return Err(ImageError::UnsupportedManagedImage);
     }
+    if u32_at(optional, 112 + 11 * 8)? != 0 || u32_at(optional, 116 + 11 * 8)? != 0 {
+        return Err(ImageError::UnsupportedBoundImports);
+    }
     let import_rva = u32_at(optional, 112 + 8)?;
     let import_size = u32_at(optional, 116 + 8)?;
-    let imports = imports(bytes, &sections, import_rva, import_size)?;
+    let libraries = import_table::inspect(bytes, &sections, import_rva, import_size)?;
+    let imports = libraries
+        .iter()
+        .map(|library| library.name().to_owned())
+        .collect();
     Ok(HostImage {
         entry_point,
         subsystem,
         imports,
+        libraries,
     })
 }
 
@@ -217,70 +235,6 @@ fn rva(sections: &[Section], address: u32, size: u32) -> Result<usize, ImageErro
         .find_map(|section| rva_in(section, address, size))
         .ok_or(ImageError::InvalidImport)
 }
-fn imports(
-    bytes: &[u8],
-    sections: &[Section],
-    address: u32,
-    size: u32,
-) -> Result<Vec<String>, ImageError> {
-    if address == 0 && size == 0 {
-        return Ok(Vec::new());
-    }
-    if address == 0 || size < 20 {
-        return Err(ImageError::InvalidImport);
-    }
-    if size as usize > (MAX_IMPORTS + 1) * 20 {
-        return Err(ImageError::TooManyImports);
-    }
-    let start = rva(sections, address, size)?;
-    let table = region(bytes, start, size as usize).map_err(|_| ImageError::InvalidImport)?;
-    let mut names = BTreeSet::new();
-    for (index, descriptor) in table.as_chunks::<20>().0.iter().enumerate() {
-        if descriptor.iter().all(|byte| *byte == 0) {
-            return Ok(names.into_iter().collect());
-        }
-        if index == MAX_IMPORTS {
-            return Err(ImageError::TooManyImports);
-        }
-        let name = u32_at(descriptor, 12)?;
-        let thunk = u32_at(descriptor, 16)?;
-        if thunk == 0 {
-            return Err(ImageError::InvalidImport);
-        }
-        rva(sections, thunk, 8)?;
-        let mut value = Vec::new();
-        for offset in 0..=128u32 {
-            let position = rva(
-                sections,
-                name.checked_add(offset).ok_or(ImageError::InvalidImport)?,
-                1,
-            )?;
-            let byte = *bytes.get(position).ok_or(ImageError::InvalidImport)?;
-            if byte == 0 {
-                break;
-            }
-            if offset == 128
-                || !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-            {
-                return Err(ImageError::InvalidImport);
-            }
-            value.push(byte.to_ascii_lowercase());
-        }
-        let name = String::from_utf8(value).map_err(|_| ImageError::InvalidImport)?;
-        if name.len() <= 4
-            || !name.ends_with(".dll")
-            || name.starts_with('.')
-            || name.contains("..")
-        {
-            return Err(ImageError::InvalidImport);
-        }
-        // Linkers may emit several descriptors for the same DLL, including
-        // different case spellings. Bound descriptors, not unique names.
-        names.insert(name);
-    }
-    Err(ImageError::InvalidImport)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +270,7 @@ mod tests {
         put32(&mut bytes, SECTION + 16, 0x600);
         put32(&mut bytes, SECTION + 20, 0x200);
         put32(&mut bytes, SECTION + 36, 0x60000020);
+        put32(&mut bytes, 0x300, 0x11c0);
         put32(&mut bytes, 0x300 + 12, 0x1180);
         put32(&mut bytes, 0x300 + 16, 0x11c0);
         bytes[0x380..0x38d].copy_from_slice(b"KERNEL32.dll\0");
@@ -331,6 +286,7 @@ mod tests {
         assert_eq!(image.imports(), &["kernel32.dll"]);
         put16(&mut bytes, OPTIONAL + 68, 2);
         put32(&mut bytes, OPTIONAL + 124, 60);
+        put32(&mut bytes, 0x314, 0x11d0);
         put32(&mut bytes, 0x314 + 12, 0x11a0);
         put32(&mut bytes, 0x314 + 16, 0x11d0);
         bytes[0x3a0..0x3ad].copy_from_slice(b"ADVAPI32.DLL\0");
@@ -358,6 +314,7 @@ mod tests {
         for (directory, error) in [
             (13, ImageError::UnsupportedDelayImports),
             (14, ImageError::UnsupportedManagedImage),
+            (11, ImageError::UnsupportedBoundImports),
         ] {
             for field in [112, 116] {
                 let mut bytes = fixture();
@@ -457,6 +414,7 @@ mod tests {
         for index in 0..129 {
             let row = 0x300 + index * 20;
             bytes[row..row + 20].fill(0);
+            put32(&mut bytes, row, 0x1f40);
             put32(&mut bytes, row + 12, 0x1f00);
             put32(&mut bytes, row + 16, 0x1f40);
         }
@@ -488,5 +446,155 @@ mod tests {
             }
             let _ = inspect_bytes(&bytes);
         }
+    }
+
+    fn put64(bytes: &mut [u8], offset: usize, value: u64) {
+        bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    fn symbol_fixture(values: &[u64]) -> Vec<u8> {
+        assert!(values.len() <= 3);
+        let mut bytes = fixture();
+        put32(&mut bytes, 0x310, 0x11e0);
+        for (index, value) in values.iter().enumerate() {
+            put64(&mut bytes, 0x3c0 + index * 8, *value);
+            put64(&mut bytes, 0x3e0 + index * 8, *value);
+        }
+        bytes[0x402..0x407].copy_from_slice(b"Open\0");
+        bytes[0x442..0x447].copy_from_slice(b"open\0");
+        bytes
+    }
+
+    #[test]
+    fn host_image_collects_exact_names_and_ordinals_across_repeated_dlls() {
+        let mut bytes = symbol_fixture(&[0x1200, (1u64 << 63) | 17, 0x1240]);
+        put32(&mut bytes, OPTIONAL + 124, 60);
+        let descriptor = bytes[0x300..0x314].to_vec();
+        bytes[0x314..0x328].copy_from_slice(&descriptor);
+        let image = inspect_bytes(&bytes).unwrap();
+        assert_eq!(image.imports(), &["kernel32.dll"]);
+        let libraries = image.import_libraries();
+        assert_eq!(libraries.len(), 1);
+        assert_eq!(libraries[0].name(), "kernel32.dll");
+        assert_eq!(
+            libraries[0].symbols(),
+            &[
+                ImportSymbol::Name("Open".into()),
+                ImportSymbol::Name("open".into()),
+                ImportSymbol::Ordinal(17),
+            ]
+        );
+    }
+
+    #[test]
+    fn host_image_rejects_reserved_symbol_bits_and_unmapped_hint_names() {
+        for invalid in [
+            0x8000_0000,
+            1u64 << 32,
+            1u64 << 62,
+            (1u64 << 63) | (1 << 16) | 17,
+            (1u64 << 63) | (1 << 32) | 17,
+            0x100,
+            0x15ff,
+        ] {
+            assert_eq!(
+                inspect_bytes(&symbol_fixture(&[invalid])),
+                Err(ImageError::InvalidImport)
+            );
+        }
+        let mut bytes = symbol_fixture(&[0x1200]);
+        put32(&mut bytes, SECTION + 8, 0x800);
+        put64(&mut bytes, 0x3c0, 0x1700);
+        put64(&mut bytes, 0x3e0, 0x1700);
+        assert_eq!(inspect_bytes(&bytes), Err(ImageError::InvalidImport));
+    }
+
+    #[test]
+    fn host_image_requires_matching_terminated_lookup_and_address_tables() {
+        let mut bytes = symbol_fixture(&[0x1200]);
+        put64(&mut bytes, 0x3e0, (1u64 << 63) | 17);
+        assert_eq!(inspect_bytes(&bytes), Err(ImageError::InvalidImport));
+        let mut bytes = symbol_fixture(&[0x1200]);
+        put64(&mut bytes, 0x3e8, (1u64 << 63) | 17);
+        assert_eq!(inspect_bytes(&bytes), Err(ImageError::InvalidImport));
+        for (offset, value) in [
+            (0x300, 0),
+            (0x310, 0),
+            (0x300, u32::MAX - 3),
+            (0x310, 0x15ff),
+        ] {
+            let mut bytes = symbol_fixture(&[0x1200]);
+            put32(&mut bytes, offset, value);
+            assert_eq!(inspect_bytes(&bytes), Err(ImageError::InvalidImport));
+        }
+        let mut bytes = symbol_fixture(&[]);
+        put32(&mut bytes, 0x300, 0x15f8);
+        put32(&mut bytes, 0x310, 0x15f8);
+        put64(&mut bytes, 0x7f8, (1u64 << 63) | 17);
+        assert_eq!(inspect_bytes(&bytes), Err(ImageError::InvalidImport));
+    }
+
+    #[test]
+    fn host_image_bounds_symbol_names_and_rejects_bound_descriptor() {
+        for name in [b"".as_slice(), b"has space", b"bad\x80name", b"bad\nname"] {
+            let mut bytes = symbol_fixture(&[0x1200]);
+            bytes[0x402..0x480].fill(0);
+            bytes[0x402..0x402 + name.len()].copy_from_slice(name);
+            assert_eq!(inspect_bytes(&bytes), Err(ImageError::InvalidImport));
+        }
+        let mut bytes = symbol_fixture(&[0x1200]);
+        bytes[0x402..0x402 + 512].fill(b'a');
+        bytes[0x402 + 512] = 0;
+        assert!(inspect_bytes(&bytes).is_ok());
+        bytes[0x402 + 512] = b'a';
+        assert_eq!(inspect_bytes(&bytes), Err(ImageError::InvalidImport));
+        let mut bytes = symbol_fixture(&[0x1200]);
+        put32(&mut bytes, 0x304, u32::MAX);
+        assert_eq!(
+            inspect_bytes(&bytes),
+            Err(ImageError::UnsupportedBoundImports)
+        );
+        let mut bytes = symbol_fixture(&[0x15ee]);
+        bytes.resize(0xa00, 0);
+        bytes[0x7f0..0x800].fill(b'a');
+        put16(&mut bytes, 0x86, 2);
+        put32(&mut bytes, SECTION + 40 + 8, 0x200);
+        put32(&mut bytes, SECTION + 40 + 12, 0x1600);
+        put32(&mut bytes, SECTION + 40 + 16, 0x200);
+        put32(&mut bytes, SECTION + 40 + 20, 0x800);
+        // A name terminated only in the next section is outside this profile.
+        assert_eq!(inspect_bytes(&bytes), Err(ImageError::InvalidImport));
+    }
+
+    fn ordinal_fixture(count: usize) -> Vec<u8> {
+        let mut bytes = fixture();
+        bytes.resize(0x20200, 0);
+        put32(&mut bytes, SECTION + 8, 0x20000);
+        put32(&mut bytes, SECTION + 16, 0x20000);
+        put32(&mut bytes, OPTIONAL + 56, 0x22000);
+        put32(&mut bytes, 0x310, 0xb000);
+        for index in 0..count {
+            put64(&mut bytes, 0x3c0 + index * 8, (1u64 << 63) | 17);
+            put64(&mut bytes, 0xa200 + index * 8, (1u64 << 63) | 17);
+        }
+        bytes
+    }
+
+    #[test]
+    fn host_image_charges_duplicate_symbols_to_per_descriptor_and_global_limits() {
+        let bytes = ordinal_fixture(4096);
+        assert_eq!(
+            inspect_bytes(&bytes).unwrap().import_libraries()[0].symbols(),
+            &[ImportSymbol::Ordinal(17)]
+        );
+        assert_eq!(
+            inspect_bytes(&ordinal_fixture(4097)),
+            Err(ImageError::TooManySymbols)
+        );
+        let mut bytes = ordinal_fixture(3000);
+        put32(&mut bytes, OPTIONAL + 124, 80);
+        let descriptor = bytes[0x300..0x314].to_vec();
+        bytes[0x314..0x328].copy_from_slice(&descriptor);
+        bytes[0x328..0x33c].copy_from_slice(&descriptor);
+        assert_eq!(inspect_bytes(&bytes), Err(ImageError::TooManySymbols));
     }
 }

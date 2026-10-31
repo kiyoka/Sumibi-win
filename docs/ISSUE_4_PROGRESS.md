@@ -228,6 +228,15 @@ Windows APIから得たsystem directoryだけをPATHへ設定し、環境注入�
 関連3crateの全target Clippy、fmt検査も成功した。
 詳細は[ADR 0078](adr/0078-suspended-launch-environment.md)を参照。
 
+静的importをDLL名から関数名・序数まで展開し、未boundのlookup/IATを最後のNULまで
+照合するようにした。予約bit、範囲外・終端欠落・bound形式を拒否し、descriptorごと
+4096件・全体8192件の上限は重複分も数える。関数名の大文字・小文字は区別する。
+parser 13件と実Hostビルド1件が成功し、17種類のDLLに対する165件の正規化済み参照を取得した。
+依存DLLの実体・署名、exportとの照合、API set/forwarderや動的依存の解決は残る。
+追加後のworkspace testは489件成功、明示実行用の公開HTTPS試験3件はignored。
+関連3crateの全target Clippyとfmt検査も成功した。
+詳細は[ADR 0079](adr/0079-static-import-symbols.md)を参照。
+
 ## 2026-10-25 の追加確認
 
 - `U+FFFC`をCore、Protocol、Job/Worker、TSFの本文境界で拒否する。
