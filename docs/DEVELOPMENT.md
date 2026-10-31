@@ -46,9 +46,12 @@ OSロックの根拠: [File::try_lock](https://doc.rust-lang.org/std/fs/struct.F
 署名済みvswhereの一時コピーから停止中の子を作り、画像パスと保持中ファイルのID照合、
 書込拒否、終了待ちと4件の容量制限を検査する。Unicode・空白を含むパスも使う。
 子は作成時から終了連動jobに所属させ、実行再開しない。既存Host、キーや機械登録は操作しない。
+環境はWindows API由来の4変数だけを明示し、親のPATHやキーを引き継がない。
+リモート/Low label画像の拒否とSystem32優先を設定し、停止中の子から有効状態を読み戻す。
 スクリプトは署名済みfixtureがない環境や非対応tokenでのスキップを成功と扱わない。
 これは起動診断であり、製品Hostの起動許可や実行中の画像sectionの認証ではない。
 詳細は[ADR 0076](adr/0076-suspended-signed-image-probe.md)を参照。
+環境の制限と検証範囲は[ADR 0078](adr/0078-suspended-launch-environment.md)を参照。
 
 ## Host画像の読取検査
 

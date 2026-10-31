@@ -32,6 +32,8 @@ PROC_THREAD_ATTRIBUTE_JOB_LISTを使い、子の作成と同時に所属させ�
 後からAssignProcessToJobObjectするまでの隙間は作らず、jobを使用できない場合は
 未所属の子を作るfallbackを行わない。Windows 10以降の対応機能を必要とする。
 属性listのstorageとjob配列はDeleteProcThreadAttributeListまで保持する。
+親環境を継承しない明示的な環境と、作成時の画像読込制限・読み戻しも適用する。
+詳細は[ADR 0078](0078-suspended-launch-environment.md)を参照。
 [UpdateProcThreadAttribute](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute)、
 [SetInformationJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-setinformationjobobject)、
 [KILL_ON_JOB_CLOSE](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_limit_information)。
@@ -57,7 +59,7 @@ Windowsの署名検証後に保持し、実子の観測パス照合、保持中�
 別ファイルIDのコピー拒否、同時4件と超過拒否、終了後の枠回復も確認した。
 job handleだけを閉じても子が終了し、close完了まではファイルが保持されることを確認した。
 
-`tools/Test-SuspendedImageProbe.ps1`は4検査を明示実行し、fixtureや通常desktop tokenが
+`tools/Test-SuspendedImageProbe.ps1`は環境検査を含む6検査を明示実行し、fixtureや通常desktop tokenが
 ない場合のスキップを成功として扱わない。テストが取得するvswhereの署名者指紋は
 fixtureの期待値であり、製品の署名者allowlistを構成する方法ではない。
 保護配置Hostでの成功検査、製品署名方針、画像section・依存物・更新モデルの検証、

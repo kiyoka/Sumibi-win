@@ -1,6 +1,9 @@
 //! Suspended signed-file diagnostics, not an authenticated Host launcher.
 //! The observed path's current file ID is not proof of the mapped image section.
 //! Creation, observation and cleanup belong on a worker, never a TSF callback.
+#[path = "launch_environment.rs"]
+mod environment;
+
 use crate::authenticode::{path_identity, InspectionError};
 use crate::support::{own, raw, Error};
 use crate::PinnedProcess;
@@ -16,16 +19,22 @@ use windows::Win32::System::JobObjects::{
     JOBOBJECT_BASIC_LIMIT_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+use windows::Win32::System::SystemServices::PROCESS_MITIGATION_IMAGE_LOAD_POLICY;
 use windows::Win32::System::Threading::{
-    CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
-    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject, CREATE_NO_WINDOW,
-    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT,
-    LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_JOB_LIST,
+    CreateProcessW, DeleteProcThreadAttributeList, GetProcessMitigationPolicy,
+    InitializeProcThreadAttributeList, ProcessImageLoadPolicy, TerminateProcess,
+    UpdateProcThreadAttribute, WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+    CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
     STARTUPINFOEXW, STARTUPINFOW,
 };
 
 const CAPACITY: usize = 4;
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+// SDK PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_{NO_REMOTE,
+// NO_LOW_LABEL,PREFER_SYSTEM32}_ALWAYS_ON. Never mask out unsupported bits.
+const IMAGE_LOAD_MITIGATIONS: u64 = (1u64 << 52) | (1u64 << 56) | (1u64 << 60);
+const REQUIRED_IMAGE_LOAD_FLAGS: u32 = 0b111;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProbeError {
     InvalidPath,
@@ -36,6 +45,8 @@ pub enum ProbeError {
     Capacity,
     CreateFailed,
     JobUnavailable,
+    EnvironmentUnavailable,
+    MitigationUnavailable,
     CleanupFailed,
     Timeout,
     InvalidDeadline,
@@ -78,7 +89,8 @@ pub struct SuspendedImageProbe<L> {
 }
 impl<L> SuspendedImageProbe<L> {
     /// Observe the live pinned child's Win32 image path and compare the current
-    /// filesystem entry with the retained verified file. This is metadata only:
+    /// filesystem entry with the retained verified file, then require all three
+    /// image-load restrictions to be reported by the OS. This is metadata only:
     /// unprotected ancestors or dependencies still cannot authorize execution.
     pub fn verify_observed_path(&self) -> Result<(), ProbeError> {
         let state = self.state.as_ref().ok_or(ProbeError::CleanupFailed)?;
@@ -88,6 +100,7 @@ impl<L> SuspendedImageProbe<L> {
             return Err(ProbeError::FileMismatch);
         }
         peer.require_same(peer).map_err(ProbeError::Peer)?;
+        require_image_load_policy(&state.process)?;
         Ok(())
     }
     /// Terminate this created child and wait up to five seconds. A timeout or
@@ -132,10 +145,12 @@ pub(crate) fn start<L: 'static>(
         return Err(ProbeError::FileMismatch);
     }
     let _caller = PinnedProcess::current().map_err(ProbeError::Peer)?;
+    let environment = environment::minimal()?;
     let permit = Permit::acquire()?;
     let job = create_job()?;
     let jobs = [raw(&job)];
-    let attributes = JobAttributes::new(&jobs)?;
+    let mitigations = IMAGE_LOAD_MITIGATIONS;
+    let attributes = LaunchAttributes::new(&jobs, &mitigations)?;
     let startup = STARTUPINFOEXW {
         StartupInfo: STARTUPINFOW {
             cb: std::mem::size_of::<STARTUPINFOEXW>() as u32,
@@ -145,8 +160,9 @@ pub(crate) fn start<L: 'static>(
     };
     let mut info = PROCESS_INFORMATION::default();
     // SAFETY: exact non-null application name, writable quoted command line,
-    // valid parent directory and output buffers. No handle inheritance, shell,
-    // elevation fallback or entrypoint resume is requested.
+    // valid parent directory, explicit double-NUL Unicode environment and output
+    // buffers. Attribute values and environment remain live through the call.
+    // No handle inheritance, shell, elevation fallback or entrypoint resume.
     unsafe {
         CreateProcessW(
             PCWSTR(application.as_ptr()),
@@ -158,7 +174,7 @@ pub(crate) fn start<L: 'static>(
                 | CREATE_NO_WINDOW
                 | CREATE_UNICODE_ENVIRONMENT
                 | EXTENDED_STARTUPINFO_PRESENT,
-            None,
+            Some(environment.as_ptr().cast()),
             PCWSTR(directory.as_ptr()),
             &startup.StartupInfo,
             &mut info,
@@ -209,18 +225,19 @@ fn create_job() -> Result<OwnedHandle, ProbeError> {
     Ok(job)
 }
 
-struct JobAttributes<'a> {
+struct LaunchAttributes<'a> {
     list: LPPROC_THREAD_ATTRIBUTE_LIST,
     _storage: Vec<usize>,
     _jobs: &'a [HANDLE],
+    _mitigations: &'a u64,
 }
-impl<'a> JobAttributes<'a> {
-    fn new(jobs: &'a [HANDLE]) -> Result<Self, ProbeError> {
+impl<'a> LaunchAttributes<'a> {
+    fn new(jobs: &'a [HANDLE], mitigations: &'a u64) -> Result<Self, ProbeError> {
         let mut bytes = 0;
         // SAFETY: query and bound allocation size, then retain aligned storage
-        // and the caller's job list until DeleteProcThreadAttributeList.
+        // and the caller's job list / mitigation value until deletion.
         unsafe {
-            let error = InitializeProcThreadAttributeList(None, 1, None, &mut bytes)
+            let error = InitializeProcThreadAttributeList(None, 2, None, &mut bytes)
                 .err()
                 .ok_or(ProbeError::JobUnavailable)?;
             if error.code() != windows::core::HRESULT::from_win32(ERROR_INSUFFICIENT_BUFFER.0)
@@ -231,12 +248,13 @@ impl<'a> JobAttributes<'a> {
             }
             let mut storage = vec![0usize; bytes.div_ceil(std::mem::size_of::<usize>())];
             let list = LPPROC_THREAD_ATTRIBUTE_LIST(storage.as_mut_ptr().cast());
-            InitializeProcThreadAttributeList(Some(list), 1, None, &mut bytes)
+            InitializeProcThreadAttributeList(Some(list), 2, None, &mut bytes)
                 .map_err(|_| ProbeError::JobUnavailable)?;
             let result = Self {
                 list,
                 _storage: storage,
                 _jobs: jobs,
+                _mitigations: mitigations,
             };
             UpdateProcThreadAttribute(
                 list,
@@ -248,16 +266,46 @@ impl<'a> JobAttributes<'a> {
                 None,
             )
             .map_err(|_| ProbeError::JobUnavailable)?;
+            UpdateProcThreadAttribute(
+                list,
+                0,
+                PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY as usize,
+                Some((mitigations as *const u64).cast()),
+                std::mem::size_of_val(mitigations),
+                None,
+                None,
+            )
+            .map_err(|_| ProbeError::MitigationUnavailable)?;
             Ok(result)
         }
     }
 }
-impl Drop for JobAttributes<'_> {
+impl Drop for LaunchAttributes<'_> {
     fn drop(&mut self) {
         unsafe {
             DeleteProcThreadAttributeList(self.list);
         }
     }
+}
+
+fn require_image_load_policy(process: &OwnedHandle) -> Result<(), ProbeError> {
+    let mut policy = PROCESS_MITIGATION_IMAGE_LOAD_POLICY::default();
+    // SAFETY: this probe owns a live process handle with query access. The
+    // initialized output has the documented native policy layout and size.
+    unsafe {
+        GetProcessMitigationPolicy(
+            raw(process),
+            ProcessImageLoadPolicy,
+            (&mut policy as *mut PROCESS_MITIGATION_IMAGE_LOAD_POLICY).cast(),
+            std::mem::size_of_val(&policy),
+        )
+    }
+    .map_err(|_| ProbeError::MitigationUnavailable)?;
+    // SAFETY: GetProcessMitigationPolicy wrote the Flags union member.
+    if unsafe { policy.Anonymous.Flags } & REQUIRED_IMAGE_LOAD_FLAGS != REQUIRED_IMAGE_LOAD_FLAGS {
+        return Err(ProbeError::MitigationUnavailable);
+    }
+    Ok(())
 }
 
 fn stop_child(process: &OwnedHandle, deadline: Instant) -> Result<(), ProbeError> {
@@ -468,7 +516,7 @@ mod tests {
             child.observed_image_path(),
             Err(Error::Disconnected)
         ));
-        println!("signed suspended child image observed and reaped; no resume performed");
+        println!("signed suspended child image and required image-load policy observed; reaped without resume");
     }
 
     #[test]

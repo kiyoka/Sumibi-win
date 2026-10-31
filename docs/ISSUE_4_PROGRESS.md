@@ -218,6 +218,16 @@ DLL・別architecture・delay import/CLR、範囲外や重複sectionを子作成
 hard link警告は継続しているが、コードのClippy指摘は残っていない。
 詳細と再現手順は[ADR 0077](adr/0077-host-image-metadata.md)を参照。
 
+停止起動診断へ、親の環境を継承しない4変数の明示的環境を追加した。
+Windows APIから得たsystem directoryだけをPATHへ設定し、環境注入と長さ超過を拒否する。
+子作成時にリモート/Low label画像の拒否とSystem32優先を設定し、3項目を
+所有process handleから読み戻す。設定・確認に失敗すれば診断を拒否して終了処理を行う。
+署名済みの停止中の子を含む6件が成功した。環境は生成bufferで検査し、子のメモリーを
+読み出す検査やDLL実ロードは行っていない。依存実体の信頼・製品起動と発見は残る。
+追加後のworkspace testは484件成功、明示実行用の公開HTTPS試験3件はignored。
+関連3crateの全target Clippy、fmt検査も成功した。
+詳細は[ADR 0078](adr/0078-suspended-launch-environment.md)を参照。
+
 ## 2026-10-25 の追加確認
 
 - `U+FFFC`をCore、Protocol、Job/Worker、TSFの本文境界で拒否する。
