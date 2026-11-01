@@ -25,6 +25,7 @@ pub(crate) fn exercise_broker_keys(
             "apply",
             "shared-ready",
             "process-ready",
+            "process-discovery",
             "process-http",
             "process-preparing",
             "process-preparing-exit",
@@ -102,39 +103,41 @@ pub(crate) fn exercise_broker_keys(
             let sink: ITfKeyEventSink = provider
                 .GetFunction(&FUNCTION_TEST_KEY_SINK, &ITfKeyEventSink::IID)?
                 .cast()?;
-            let (shared, mut process, bridge) =
-                if matches!(case, "process-preparing" | "process-preparing-exit") {
-                    let (fixture, worker) =
-                        crate::broker_process_fixture::Fixture::start_pending()?;
-                    (None, Some(fixture), Bridge::new_preparing(worker)?)
-                } else if case == "process-http" {
-                    let (fixture, worker) = crate::broker_process_fixture::Fixture::start_http()?;
-                    (None, Some(fixture), Bridge::new_prepared(worker)?)
-                } else if matches!(case, "process-ready" | "process-exit") {
-                    let (fixture, worker) = crate::broker_process_fixture::Fixture::start()?;
-                    (None, Some(fixture), Bridge::new_prepared(worker)?)
-                } else if case.starts_with("shared-") {
-                    let (fixture, worker) = crate::broker_shared_fixture::Fixture::start(
-                        case == "shared-inflight-revoke",
-                        matches!(
-                            case,
-                            "shared-text-restored"
-                                | "shared-selection-restored"
-                                | "shared-focus-restored"
-                        ),
-                    )?;
-                    (Some(fixture), None, Bridge::new_prepared(worker)?)
-                } else {
-                    (
-                        None,
-                        None,
-                        Bridge::new(if case == "disabled" {
-                            Mode::Disabled
-                        } else {
-                            Mode::DiagnosticFixed { delay_ms: 200 }
-                        })?,
-                    )
-                };
+            let (discovery, shared, mut process, bridge) = if case == "process-discovery" {
+                let (fixture, worker) = crate::broker_discovery_fixture::DiscoveryFixture::start()?;
+                (Some(fixture), None, None, Bridge::new_prepared(worker)?)
+            } else if matches!(case, "process-preparing" | "process-preparing-exit") {
+                let (fixture, worker) = crate::broker_process_fixture::Fixture::start_pending()?;
+                (None, None, Some(fixture), Bridge::new_preparing(worker)?)
+            } else if case == "process-http" {
+                let (fixture, worker) = crate::broker_process_fixture::Fixture::start_http()?;
+                (None, None, Some(fixture), Bridge::new_prepared(worker)?)
+            } else if matches!(case, "process-ready" | "process-exit") {
+                let (fixture, worker) = crate::broker_process_fixture::Fixture::start()?;
+                (None, None, Some(fixture), Bridge::new_prepared(worker)?)
+            } else if case.starts_with("shared-") {
+                let (fixture, worker) = crate::broker_shared_fixture::Fixture::start(
+                    case == "shared-inflight-revoke",
+                    matches!(
+                        case,
+                        "shared-text-restored"
+                            | "shared-selection-restored"
+                            | "shared-focus-restored"
+                    ),
+                )?;
+                (None, Some(fixture), None, Bridge::new_prepared(worker)?)
+            } else {
+                (
+                    None,
+                    None,
+                    None,
+                    Bridge::new(if case == "disabled" {
+                        Mode::Disabled
+                    } else {
+                        Mode::DiagnosticFixed { delay_ms: 200 }
+                    })?,
+                )
+            };
             let transport = bridge.to_interface::<ISpikeBrokerTransport>();
             let reentry = Rc::new(Cell::new(false));
             if case == "reuse-delivery-reentry" {
@@ -476,6 +479,7 @@ pub(crate) fn exercise_broker_keys(
                 "apply"
                     | "shared-ready"
                     | "process-ready"
+                    | "process-discovery"
                     | "process-http"
                     | "process-preparing"
                     | "double-key"
@@ -497,6 +501,17 @@ pub(crate) fn exercise_broker_keys(
                     .last_exchange()
                     .ok_or("missing process exchange")?;
                 assert_ne!(
+                    pid,
+                    windows::Win32::System::Threading::GetCurrentProcessId()
+                );
+                assert_eq!(wire, 1);
+            }
+            if case == "process-discovery" {
+                let (pid, wire) = bridge
+                    .get()
+                    .last_exchange()
+                    .ok_or("missing process exchange")?;
+                assert_eq!(
                     pid,
                     windows::Win32::System::Threading::GetCurrentProcessId()
                 );
@@ -582,6 +597,9 @@ pub(crate) fn exercise_broker_keys(
             store.get().write_hook.borrow_mut().take();
             store.get().deny_lock.set(false);
             bridge.get().shutdown()?;
+            if let Some(fixture) = discovery {
+                fixture.finish()?;
+            }
             if let Some(fixture) = shared {
                 fixture.finish()?;
             }

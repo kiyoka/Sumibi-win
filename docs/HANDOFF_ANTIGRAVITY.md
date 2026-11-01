@@ -23,7 +23,7 @@ API set、全依存DLLの信頼、実際のloaderのbind先、安全なHost発�
 | 現在のbranch | `codex/issue-4-protocol-session` |
 | upstream | `origin/codex/issue-4-protocol-session` |
 | origin | `https://github.com/kiyoka/Sumibi-win.git` |
-| 引継ぎ基準HEAD | `7cf2295` (元: `adba3c46d4e6eb43217961266eef7c4098e8f753`) |
+| 引継ぎ基準HEAD | `17b484c` |
 | Shell / target | PowerShell / `x86_64-pc-windows-msvc` |
 | Rust / Cargo | ともに1.99.1（引継ぎ書作成時に確認） |
 | toolchain | `rust-toolchain.toml`で`1.99.1-x86_64-pc-windows-msvc`を指定 |
@@ -48,7 +48,7 @@ GitHubのIssue/PR状態は今回APIで再照会していない。リポジトリ
 6. [ADR 0045](adr/0045-machine-registration-boundary.md) — 機械登録前の境界。
 7. [ADR 0069](adr/0069-offline-authenticode-inspection.md)から[ADR 0081](adr/0081-bounded-export-forwarders.md) — 直近の署名・通信・Host・依存検査。
 
-進捗資料の古い日付や件数は当時の記録。最新の全体テスト基準は519件（+3 ignored）。
+進捗資料の古い日付や件数は当時の記録。最新の全体テスト基準は520件（+3 ignored）。
 
 ## 4. 現在の実装を探す場所
 

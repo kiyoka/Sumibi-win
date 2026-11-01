@@ -1,6 +1,8 @@
 #[cfg(windows)]
 mod broker_bridge;
 #[cfg(windows)]
+mod broker_discovery_fixture;
+#[cfg(windows)]
 mod broker_http_fixture;
 #[cfg(windows)]
 mod broker_process_fixture;

@@ -839,3 +839,12 @@ Issue #4とPR #10は引き続き未完了・draftとして扱う。
    - `Worker::prepare_discovered` / `Worker::prepare_discovery`: TSF STA スレッドを一切ブロックせず、バックグラウンド Worker 内で bootstrap 接続 → Host 相互認証 → handoff 受領 → プライベートパイプ接続 → Ready 政策取得までを自律完了。
    - `HostControl::serve_bootstrap_handoff`: HostControl ワーカーループと bootstrap 待受の統合結合テスト（発見接続 → 政策 Ready → 予約 → 同意取消 → 予約拒否 → クローズ）を検証。
    - 全体テスト 519 passed / 3 ignored（全件合格）。
+5. ログオン限定 Discovery 待受と TSF キー入力・変換ライフサイクルの統合検証:
+   - `crates/sumibi-setup/src/broker_discovery_fixture.rs`: ログオン限定ブートストラップ待受を立て、TSF クライアント側 Worker からの自律 Discovery 接続・ハンドオフ・Ready 政策取得・変換要求の処理を行う統合フィクスチャを実装。
+   - `discovery_fixture_serves_discovery_and_converts` 結合テストを追加し、Discovery 経由での接続・ポリシー承認・予約・要求変換（"nihongo" → "日本語"）・完了結果受領・正常シャットダウンの全シーケンスを実証。
+   - `crates/sumibi-setup/src/broker_keys.rs`: 実 DLL のキー入力検査（`exercise_broker_keys`）に `"process-discovery"` ケースを追加。Discovery 経由で取得した Worker を Bridge に装着し、実 DLL 経由での変換ディスパッチ・プロセス同一性照合・テキスト適用・1回 Undo のパイプラインを統合。
+   - 全体テスト: **全 520 passed / 3 ignored（全件合格）**。
+   - `cargo clippy`: 警告ゼロ。
+   - `cargo fmt --check`: 差分なし。
+   - `Test-HostImage.ps1`: 全 33 テスト合格。
+   - `Test-SuspendedImageProbe.ps1`: 全 6 テスト合格。
