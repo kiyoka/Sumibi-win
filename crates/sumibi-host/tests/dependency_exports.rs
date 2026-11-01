@@ -26,8 +26,11 @@ fn system_fixture(name: &str) -> File {
             | "ntdll.dll"
             | "oleaut32.dll"
             | "shell32.dll"
+            | "ucrtbase.dll"
             | "user32.dll"
             | "vcruntime140.dll"
+            | "winhttp.dll"
+            | "ws2_32.dll"
     ));
     let mut directory = vec![0u16; 32768];
     // SAFETY: writable bounded buffer, used only to locate a read-only fixture.
@@ -220,4 +223,43 @@ fn built_host_non_api_set_imports_resolve_completely_through_leased_system_modul
         forwarder_count
     );
     println!("All non-API-set static imports resolved through securely leased system DLLs; no LoadLibrary, dynamic resolution, or process execution.");
+}
+
+#[test]
+fn built_host_api_set_target_mapping_observation() {
+    let host = inspect_bytes(&std::fs::read(env!("CARGO_BIN_EXE_sumibi-host")).unwrap()).unwrap();
+    let api_sets: Vec<_> = host
+        .import_libraries()
+        .iter()
+        .filter(|lib| lib.name().starts_with("api-") || lib.name().starts_with("ext-"))
+        .collect();
+
+    let mut kb_file = system_fixture("kernelbase.dll");
+    let kb_exports = inspect_file(&mut kb_file).unwrap();
+    let mut ucrt_file = system_fixture("ucrtbase.dll");
+    let ucrt_exports = inspect_file(&mut ucrt_file).unwrap();
+
+    let mut synch_matched = 0;
+    let mut ucrt_matched = 0;
+
+    for lib in &api_sets {
+        for sym in lib.symbols() {
+            if lib.name().contains("synch") {
+                if let Some(target) = kb_exports.lookup(sym) {
+                    println!("synch in kernelbase: {sym:?} -> {target:?}");
+                    synch_matched += 1;
+                } else {
+                    println!("synch MISSING in kernelbase: {sym:?}");
+                }
+            } else if lib.name().contains("crt") {
+                if let Some(target) = ucrt_exports.lookup(sym) {
+                    println!("crt in ucrtbase: {sym:?} -> {target:?}");
+                    ucrt_matched += 1;
+                } else {
+                    println!("crt MISSING in ucrtbase: {sym:?}");
+                }
+            }
+        }
+    }
+    println!("synch matched: {synch_matched}/3, crt matched: {ucrt_matched}/25");
 }

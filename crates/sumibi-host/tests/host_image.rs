@@ -33,3 +33,24 @@ fn built_host_has_supported_native_image_and_static_import_inventory() {
     println!("Built Host static import symbols: {symbol_count}");
     println!("PE metadata only; no code loaded and no dependency trust asserted.");
 }
+
+#[test]
+fn built_host_api_set_imports_inventory() {
+    let bytes = std::fs::read(env!("CARGO_BIN_EXE_sumibi-host")).unwrap();
+    let image = inspect_bytes(&bytes).expect("built Host must match the narrow x64 image profile");
+    let api_sets: Vec<_> = image
+        .import_libraries()
+        .iter()
+        .filter(|lib| lib.name().starts_with("api-") || lib.name().starts_with("ext-"))
+        .collect();
+
+    let mut total_symbols = 0;
+    for lib in &api_sets {
+        println!("{}: {} symbols", lib.name(), lib.symbols().len());
+        for sym in lib.symbols() {
+            println!("  {sym:?}");
+            total_symbols += 1;
+        }
+    }
+    println!("Total API set symbols: {total_symbols}");
+}

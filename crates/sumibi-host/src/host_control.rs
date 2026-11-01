@@ -1,6 +1,6 @@
 //! Explicit Host lifetime for a responsive consent window. Peer discovery and
 //! autostart integration remain separate: the boot is unadvertised.
-use crate::broker_boot::BrokerBoot;
+use crate::broker_boot::{AcceptId, BrokerBoot};
 use crate::broker_runtime::RuntimeError;
 use crate::consent_task::{ConsentOffer, ConsentTask, ConsentTaskError, ConsentUpdate};
 use crate::policy::{ChangeError, PolicyAuthority};
@@ -12,7 +12,7 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use sumibi_ipc::Stop;
+use sumibi_ipc::{Nonce, PinnedProcess, Stop};
 
 const STEP: Duration = Duration::from_millis(25);
 
@@ -46,9 +46,34 @@ pub struct HostStatus {
     pub credential_error: bool,
     pub error: Option<ControlError>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DispatchMode {
+    NativeChat,
+    #[cfg(test)]
+    DiagnosticChat,
+}
+
 enum Command {
     Grant(ConsentOffer),
     Revoke,
+}
+
+#[derive(Clone)]
+pub struct PrivateAccept {
+    pub id: AcceptId,
+    pub name: Nonce,
+    pub broker: Nonce,
+}
+
+enum PeerRequest {
+    Shared {
+        peer: PinnedProcess,
+        reply: SyncSender<Result<AcceptId, ControlError>>,
+    },
+    Private {
+        peer: PinnedProcess,
+        reply: SyncSender<Result<PrivateAccept, ControlError>>,
+    },
 }
 
 /// Commands, status capture and completion polling never wait on native I/O.
@@ -57,6 +82,7 @@ enum Command {
 #[must_use = "request close and poll completion before ending the UI"]
 pub struct HostControl {
     commands: SyncSender<Command>,
+    peer_requests: SyncSender<PeerRequest>,
     closing: Arc<AtomicBool>,
     active: Arc<AtomicBool>,
     status: Arc<Mutex<HostStatus>>,
@@ -75,6 +101,7 @@ impl HostControl {
                     .map_err(|_| ControlError::Unavailable)?
                     .ok_or(ControlError::AlreadyRunning)
             },
+            DispatchMode::NativeChat,
         )
     }
     #[cfg(test)]
@@ -84,13 +111,21 @@ impl HostControl {
         // Lifecycle tests use an isolated lease. The native fixed-name lease
         // is tested with private random names in sumibi-ipc, so test runs never
         // contend with a user's actual running Host.
-        Self::start_scoped(load, || Ok(()))
+        Self::start_scoped(load, || Ok(()), DispatchMode::NativeChat)
+    }
+    #[cfg(test)]
+    pub fn start_diagnostic(
+        load: impl FnOnce() -> Result<(Arc<PolicyAuthority>, bool), ControlError> + Send + 'static,
+    ) -> Result<Self, ControlError> {
+        Self::start_scoped(load, || Ok(()), DispatchMode::DiagnosticChat)
     }
     fn start_scoped<L: 'static>(
         load: impl FnOnce() -> Result<(Arc<PolicyAuthority>, bool), ControlError> + Send + 'static,
         acquire: impl FnOnce() -> Result<L, ControlError> + Send + 'static,
+        mode: DispatchMode,
     ) -> Result<Self, ControlError> {
         let (send, receive) = mpsc::sync_channel(1);
+        let (peer_send, peer_receive) = mpsc::sync_channel(8);
         let closing = Arc::new(AtomicBool::new(false));
         let active = Arc::new(AtomicBool::new(false));
         let status = Arc::new(Mutex::new(HostStatus {
@@ -109,9 +144,11 @@ impl HostControl {
                     Ok(_lease) => run(
                         load,
                         receive,
+                        peer_receive,
                         &worker_closing,
                         &worker_active,
                         &worker_status,
+                        mode,
                     ),
                     Err(error) => Err(error),
                 };
@@ -134,6 +171,7 @@ impl HostControl {
             .map_err(|_| ControlError::WorkerFailed)?;
         Ok(Self {
             commands: send,
+            peer_requests: peer_send,
             closing,
             active,
             status,
@@ -153,8 +191,41 @@ impl HostControl {
     pub fn try_revoke(&self) -> Result<(), ControlError> {
         self.submit(Command::Revoke)
     }
+    pub fn try_accept_peer(&self, peer: PinnedProcess) -> Result<AcceptId, ControlError> {
+        let (send, receive) = mpsc::sync_channel(1);
+        self.submit_peer_request(PeerRequest::Shared { peer, reply: send })?;
+        receive.recv().map_err(|_| ControlError::Closed)?
+    }
+    pub fn try_accept_private_peer(
+        &self,
+        peer: PinnedProcess,
+    ) -> Result<PrivateAccept, ControlError> {
+        let (send, receive) = mpsc::sync_channel(1);
+        self.submit_peer_request(PeerRequest::Private { peer, reply: send })?;
+        receive.recv().map_err(|_| ControlError::Closed)?
+    }
     pub fn is_updating(&self) -> bool {
         self.active.load(Ordering::Acquire)
+    }
+    fn submit_peer_request(&self, request: PeerRequest) -> Result<(), ControlError> {
+        if self.closing.load(Ordering::Acquire)
+            || self
+                .worker
+                .as_ref()
+                .is_none_or(|worker| worker.is_finished())
+        {
+            return Err(ControlError::Closed);
+        }
+        self.peer_requests
+            .try_send(request)
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => ControlError::Busy,
+                mpsc::TrySendError::Disconnected(_) => ControlError::Closed,
+            })?;
+        if let Some(worker) = &self.worker {
+            worker.thread().unpark();
+        }
+        Ok(())
     }
     fn submit(&self, command: Command) -> Result<(), ControlError> {
         if self.closing.load(Ordering::Acquire)
@@ -223,9 +294,11 @@ fn classify(error: ConsentTaskError) -> ControlError {
 fn run(
     load: impl FnOnce() -> Result<(Arc<PolicyAuthority>, bool), ControlError>,
     commands: Receiver<Command>,
+    peer_requests: Receiver<PeerRequest>,
     closing: &AtomicBool,
     active: &AtomicBool,
     status: &Mutex<HostStatus>,
+    mode: DispatchMode,
 ) -> Result<(), ControlError> {
     let (authority, credential_error) = load()?;
     let stop = Stop::new().map_err(|_| ControlError::Broker)?;
@@ -240,6 +313,16 @@ fn run(
     loop {
         let is_closing = closing.load(Ordering::Acquire);
         if is_closing {
+            while let Ok(request) = peer_requests.try_recv() {
+                match request {
+                    PeerRequest::Shared { reply, .. } => {
+                        let _ = reply.send(Err(ControlError::Closed));
+                    }
+                    PeerRequest::Private { reply, .. } => {
+                        let _ = reply.send(Err(ControlError::Closed));
+                    }
+                }
+            }
             // Retire first so even a pending grant cannot admit a new request.
             // Each retry retains the boot and its unfinished native resources.
             let retired = boot.retire_for_restart(Instant::now() + STEP);
@@ -281,6 +364,28 @@ fn run(
                 return failure.map_or(Ok(()), Err);
             }
         } else {
+            while let Ok(request) = peer_requests.try_recv() {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                match request {
+                    PeerRequest::Shared { peer, reply } => {
+                        let result = boot
+                            .begin_tracked_accept(peer, deadline)
+                            .map_err(|_| ControlError::Broker);
+                        let _ = reply.send(result);
+                    }
+                    PeerRequest::Private { peer, reply } => {
+                        let result = boot
+                            .begin_private_accept(peer, deadline)
+                            .map(|(id, name)| PrivateAccept {
+                                id,
+                                name,
+                                broker: boot.name().clone(),
+                            })
+                            .map_err(|_| ControlError::Broker);
+                        let _ = reply.send(result);
+                    }
+                }
+            }
             if pending.is_none() && update.is_none() {
                 match commands.try_recv() {
                     Ok(command) => {
@@ -335,10 +440,26 @@ fn run(
                     }
                 }
             }
-            // No peer is advertised or accepted in this entry yet. Do not
-            // poll conversion dispatch while waiting behind a send guard;
-            // only explicit consent receipts need Broker acknowledgment here.
             let busy = active.load(Ordering::Acquire);
+            // Advance broker peer connections and conversion dispatch only when
+            // not transitioning policy or waiting behind a send guard.
+            if pending.is_none() && update.is_none() && !busy {
+                let step_deadline = Instant::now() + Duration::from_millis(5);
+                let dispatch_result = match mode {
+                    DispatchMode::NativeChat => {
+                        boot.advance_native_chat(authority.clone(), &stop, step_deadline)
+                    }
+                    #[cfg(test)]
+                    DispatchMode::DiagnosticChat => {
+                        boot.advance_diagnostic_chat(authority.clone(), &stop, step_deadline)
+                    }
+                };
+                if let Err(error) = dispatch_result {
+                    if !matches!(error, RuntimeError::Transport(sumibi_ipc::Error::Timeout)) {
+                        // Non-timeout errors in broker dispatch: unadmitted or invalid state
+                    }
+                }
+            }
             let offer = if busy {
                 None
             } else {
@@ -569,6 +690,7 @@ mod tests {
                         .map_err(|_| ControlError::AlreadyRunning)?;
                     Ok(Lease(held))
                 },
+                DispatchMode::NativeChat,
             )
             .unwrap()
         };
@@ -615,5 +737,99 @@ mod tests {
         restarted.request_close();
         assert_eq!(finish(&mut restarted), Ok(()));
         assert!(!held.load(Ordering::Acquire));
+    }
+
+    fn wait_prepared_outcome(
+        worker: &sumibi_ipc::worker::Worker,
+        deadline: Instant,
+    ) -> Result<sumibi_protocol::message::Policy, sumibi_ipc::Error> {
+        loop {
+            assert!(Instant::now() < deadline, "preparation timed out");
+            match worker.prepared_policy() {
+                Ok(Some(policy)) => return Ok(policy),
+                Ok(None) => thread::sleep(Duration::from_millis(5)),
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    #[test]
+    fn host_control_accepts_pinned_peer_and_dispatches_when_consented() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let authority = configured();
+        let mut control =
+            HostControl::start_diagnostic(move || Ok((authority.clone(), false))).unwrap();
+        let ready = until(&control, |status| status.phase == Phase::Ready);
+        let current = sumibi_ipc::PinnedProcess::current().unwrap();
+
+        // 1. Before consent: accept and connect, preparation fails with PolicyDenied
+        let accept_unconsented = control
+            .try_accept_private_peer(current.try_clone().unwrap())
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut worker_unconsented = sumibi_ipc::worker::Worker::prepare_pinned(
+            sumibi_ipc::job::Reservation::acquire().unwrap(),
+            accept_unconsented.name,
+            accept_unconsented.broker,
+            sumibi_ipc::PinnedProcess::current().unwrap(),
+            deadline,
+        )
+        .unwrap();
+        assert!(matches!(
+            wait_prepared_outcome(&worker_unconsented, deadline),
+            Err(sumibi_ipc::Error::PolicyDenied)
+        ));
+        assert!(worker_unconsented.reserve(1).is_err());
+        worker_unconsented.shutdown(Duration::from_secs(1)).unwrap();
+
+        // 2. Grant consent
+        control.try_grant(ready.offer.unwrap()).unwrap();
+        until(&control, |status| {
+            status.offer.as_ref().is_some_and(ConsentOffer::allowed)
+        });
+
+        // 3. After consent: accept and connect, preparation succeeds with allowed policy
+        let accept_consented = control
+            .try_accept_private_peer(current.try_clone().unwrap())
+            .unwrap();
+        let mut worker_consented = sumibi_ipc::worker::Worker::prepare_pinned(
+            sumibi_ipc::job::Reservation::acquire().unwrap(),
+            accept_consented.name,
+            accept_consented.broker,
+            sumibi_ipc::PinnedProcess::current().unwrap(),
+            deadline,
+        )
+        .unwrap();
+        let policy = wait_prepared_outcome(&worker_consented, deadline).unwrap();
+        assert!(policy.allowed);
+        let permit = worker_consented.reserve(1).unwrap();
+        drop(permit);
+
+        // 4. Revoke consent
+        control.try_revoke().unwrap();
+        until(&control, |status| {
+            status.phase == Phase::Ready && status.offer.as_ref().is_some_and(|o| !o.allowed())
+        });
+
+        // 5. After revoke: reservation on the existing connection fails
+        // Wait briefly for the revocation notice to propagate across the pipe
+        let revoke_deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if worker_consented.reserve(2).is_err() {
+                break;
+            }
+            assert!(
+                Instant::now() < revoke_deadline,
+                "revocation notice timed out"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        worker_consented.shutdown(Duration::from_secs(1)).unwrap();
+        control.request_close();
+        assert_eq!(finish(&mut control), Ok(()));
     }
 }
