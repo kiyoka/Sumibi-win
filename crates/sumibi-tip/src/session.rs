@@ -15,15 +15,25 @@ use sumibi_ipc::bootstrap::Mode;
 use sumibi_ipc::job::{Request, Reservation};
 use sumibi_ipc::worker::Worker;
 use sumibi_ipc::{current_bootstrap_pipe_name, Stop};
-use windows::core::{Interface, Result, BOOL, GUID};
-use windows::Win32::Foundation::{E_FAIL, RPC_E_WRONG_THREAD};
+use windows::core::{Interface, Result, BOOL, GUID, PCWSTR};
+use windows::Win32::Foundation::{
+    E_FAIL, HINSTANCE, HWND, LPARAM, LRESULT, RPC_E_WRONG_THREAD, WPARAM,
+};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::TextServices::*;
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, PostMessageW,
+    RegisterClassExW, SetWindowLongPtrW, UnregisterClassW, GWLP_USERDATA, HWND_MESSAGE, WM_APP,
+    WM_NCDESTROY, WNDCLASSEXW,
+};
 
 pub const COMMAND_CONVERT: GUID = GUID::from_u128(0x42e4ca10_7cae_4a74_bf57_d497c5667a2c);
 pub const CONVERT_KEY: TF_PRESERVEDKEY = TF_PRESERVEDKEY {
     uVKey: 0x4a, // 'J'
     uModifiers: TF_MOD_CONTROL,
 };
+
+const WM_SUMIBI_DRAIN: u32 = WM_APP + 42;
 
 /// Lock-free observable state shared between the background IPC worker and the STA thread.
 pub struct SharedSessionState {
@@ -74,6 +84,155 @@ enum WorkerEvent {
     Failed { request_id: u64 },
 }
 
+struct DrainSink {
+    owner: ThreadId,
+    manager: ITfThreadMgr,
+    client: u32,
+    event_receiver: Receiver<WorkerEvent>,
+    pending_ticket: RefCell<Option<(u64, Revision, ManualEdit)>>,
+}
+
+impl DrainSink {
+    fn drain(&self) -> Result<bool> {
+        if self.owner != thread::current().id() {
+            return Err(RPC_E_WRONG_THREAD.into());
+        }
+        let mut handled = false;
+        while let Ok(event) = self.event_receiver.try_recv() {
+            match event {
+                WorkerEvent::Completed { request_id, text } => {
+                    if let Some((pending_id, revision, ticket)) =
+                        self.pending_ticket.borrow_mut().take()
+                    {
+                        if pending_id == request_id {
+                            let result = ticket.finish(
+                                &self.manager,
+                                self.client,
+                                RequestId(pending_id.into()),
+                                revision,
+                                text,
+                            );
+                            if result.is_ok() {
+                                handled = true;
+                            }
+                        } else {
+                            let mut t = ticket;
+                            let _ = t.cancel();
+                        }
+                    }
+                }
+                WorkerEvent::Failed { request_id } => {
+                    if let Some((pending_id, revision, mut ticket)) =
+                        self.pending_ticket.borrow_mut().take()
+                    {
+                        if pending_id == request_id {
+                            let _ = ticket.cancel();
+                        } else {
+                            *self.pending_ticket.borrow_mut() =
+                                Some((pending_id, revision, ticket));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(handled)
+    }
+
+    fn cancel_pending(&self) {
+        if let Some((_, _, mut ticket)) = self.pending_ticket.borrow_mut().take() {
+            let _ = ticket.cancel();
+        }
+    }
+}
+
+struct DrainWindow {
+    hwnd: HWND,
+    class_name: Vec<u16>,
+}
+
+impl DrainWindow {
+    fn create(sink: *const DrainSink) -> Option<Self> {
+        let instance = unsafe { GetModuleHandleW(None).ok()? };
+        let hinstance: HINSTANCE = instance.into();
+        let class_name_str = format!("Sumibi.TipDrain.{:x}\0", sink as usize);
+        let class_name: Vec<u16> = class_name_str.encode_utf16().collect();
+
+        let wnd_class = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(drain_window_proc),
+            hInstance: hinstance,
+            lpszClassName: PCWSTR(class_name.as_ptr()),
+            ..Default::default()
+        };
+
+        let atom = unsafe { RegisterClassExW(&wnd_class) };
+        if atom == 0 {
+            return None;
+        }
+
+        let hwnd = unsafe {
+            CreateWindowExW(
+                Default::default(),
+                PCWSTR(class_name.as_ptr()),
+                PCWSTR::null(),
+                Default::default(),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                Some(hinstance),
+                None,
+            )
+        };
+
+        if let Ok(hwnd) = hwnd {
+            unsafe {
+                let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, sink as isize);
+            }
+            Some(Self { hwnd, class_name })
+        } else {
+            unsafe {
+                let _ = UnregisterClassW(PCWSTR(class_name.as_ptr()), Some(hinstance));
+            }
+            None
+        }
+    }
+
+    fn destroy(&mut self) {
+        unsafe {
+            let instance: Option<HINSTANCE> = GetModuleHandleW(None).ok().map(Into::into);
+            let _ = SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0);
+            let _ = DestroyWindow(self.hwnd);
+            let _ = UnregisterClassW(PCWSTR(self.class_name.as_ptr()), instance);
+        }
+    }
+}
+
+unsafe extern "system" fn drain_window_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_SUMIBI_DRAIN => {
+            let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const DrainSink;
+            if !ptr.is_null() {
+                let sink = unsafe { &*ptr };
+                let _ = sink.drain();
+            }
+            LRESULT(0)
+        }
+        WM_NCDESTROY => unsafe {
+            let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        },
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
 pub struct TipHostSession {
     owner: ThreadId,
     manager: ITfThreadMgr,
@@ -81,11 +240,11 @@ pub struct TipHostSession {
     state: Arc<SharedSessionState>,
     stop: Stop,
     command_sender: SyncSender<WorkerCommand>,
-    event_receiver: Receiver<WorkerEvent>,
+    sink: Rc<DrainSink>,
     worker_thread: RefCell<Option<JoinHandle<()>>>,
-    pending_ticket: RefCell<Option<(u64, Revision, ManualEdit)>>,
     preserved_registered: Cell<bool>,
     next_request_id: Cell<u64>,
+    drain_window: RefCell<Option<DrainWindow>>,
 }
 
 impl TipHostSession {
@@ -97,13 +256,24 @@ impl TipHostSession {
         let (cmd_tx, cmd_rx) = mpsc::sync_channel(4);
         let (evt_tx, evt_rx) = mpsc::sync_channel(4);
 
+        let sink = Rc::new(DrainSink {
+            owner: thread::current().id(),
+            manager: manager.clone(),
+            client,
+            event_receiver: evt_rx,
+            pending_ticket: RefCell::new(None),
+        });
+
+        let drain_window = DrainWindow::create(Rc::as_ptr(&sink));
+        let drain_hwnd = drain_window.as_ref().map(|w| w.hwnd.0 as isize);
+
         let thread_state = state.clone();
         let thread_stop = stop.clone();
 
         let worker_thread = thread::Builder::new()
             .name("sumibi-tip-session".into())
             .spawn(move || {
-                worker_loop(thread_state, thread_stop, cmd_rx, evt_tx);
+                worker_loop(thread_state, thread_stop, cmd_rx, evt_tx, drain_hwnd);
             })
             .map_err(|_| windows::core::Error::from(E_FAIL))?;
 
@@ -114,11 +284,11 @@ impl TipHostSession {
             state,
             stop,
             command_sender: cmd_tx,
-            event_receiver: evt_rx,
+            sink,
             worker_thread: RefCell::new(Some(worker_thread)),
-            pending_ticket: RefCell::new(None),
             preserved_registered: Cell::new(false),
             next_request_id: Cell::new(0),
+            drain_window: RefCell::new(drain_window),
         };
 
         // Register preserved key (Ctrl+J)
@@ -213,7 +383,7 @@ impl TipHostSession {
         };
 
         let revision = ticket.revision();
-        *self.pending_ticket.borrow_mut() = Some((request_id, revision, ticket));
+        *self.sink.pending_ticket.borrow_mut() = Some((request_id, revision, ticket));
 
         // 3. Dispatch to background worker
         let timeout = Duration::from_secs(5);
@@ -227,9 +397,7 @@ impl TipHostSession {
             })
             .is_err()
         {
-            if let Some((_, _, mut ticket)) = self.pending_ticket.borrow_mut().take() {
-                let _ = ticket.cancel();
-            }
+            self.sink.cancel_pending();
             return Ok(false.into());
         }
 
@@ -238,56 +406,16 @@ impl TipHostSession {
 
     /// Drain completed conversion events on the STA thread and apply text replacement.
     pub fn drain(&self) -> Result<bool> {
-        if self.owner != thread::current().id() {
-            return Err(RPC_E_WRONG_THREAD.into());
-        }
-        let mut handled = false;
-        while let Ok(event) = self.event_receiver.try_recv() {
-            match event {
-                WorkerEvent::Completed { request_id, text } => {
-                    if let Some((pending_id, revision, ticket)) =
-                        self.pending_ticket.borrow_mut().take()
-                    {
-                        if pending_id == request_id {
-                            let result = ticket.finish(
-                                &self.manager,
-                                self.client,
-                                RequestId(pending_id.into()),
-                                revision,
-                                text,
-                            );
-                            if result.is_ok() {
-                                handled = true;
-                            }
-                        } else {
-                            let mut t = ticket;
-                            let _ = t.cancel();
-                        }
-                    }
-                }
-                WorkerEvent::Failed { request_id } => {
-                    if let Some((pending_id, revision, mut ticket)) =
-                        self.pending_ticket.borrow_mut().take()
-                    {
-                        if pending_id == request_id {
-                            let _ = ticket.cancel();
-                        } else {
-                            *self.pending_ticket.borrow_mut() =
-                                Some((pending_id, revision, ticket));
-                        }
-                    }
-                }
-            }
-        }
-        Ok(handled)
+        self.sink.drain()
     }
 
     /// Stop the session gracefully.
     pub fn close(&self) -> Result<()> {
         let _ = self.unregister_preserved_key();
-        if let Some((_, _, mut ticket)) = self.pending_ticket.borrow_mut().take() {
-            let _ = ticket.cancel();
+        if let Some(mut window) = self.drain_window.borrow_mut().take() {
+            window.destroy();
         }
+        self.sink.cancel_pending();
         let _ = self.stop.cancel();
         if let Some(thread) = self.worker_thread.borrow_mut().take() {
             let _ = thread.join();
@@ -302,11 +430,25 @@ impl Drop for TipHostSession {
     }
 }
 
+fn notify_drain(hwnd: Option<isize>, request_id: u64) {
+    if let Some(hwnd_val) = hwnd {
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(hwnd_val as *mut _)),
+                WM_SUMIBI_DRAIN,
+                WPARAM(request_id as usize),
+                LPARAM(0),
+            );
+        }
+    }
+}
+
 fn worker_loop(
     state: Arc<SharedSessionState>,
     stop: Stop,
     receiver: Receiver<WorkerCommand>,
     event_sender: SyncSender<WorkerEvent>,
+    drain_hwnd: Option<isize>,
 ) {
     let mut current_worker: Option<Worker> = None;
 
@@ -395,6 +537,7 @@ fn worker_loop(
 
                         if worker.submit(permit, request).is_err() {
                             let _ = event_sender.send(WorkerEvent::Failed { request_id });
+                            notify_drain(drain_hwnd, request_id);
                             continue;
                         }
 
@@ -412,10 +555,12 @@ fn worker_loop(
                                                     request_id,
                                                     text: result_text.to_owned(),
                                                 });
+                                                notify_drain(drain_hwnd, request_id);
                                             }
                                             Err(_) => {
                                                 let _ = event_sender
                                                     .send(WorkerEvent::Failed { request_id });
+                                                notify_drain(drain_hwnd, request_id);
                                             }
                                         }
                                     }
@@ -426,12 +571,14 @@ fn worker_loop(
                                         let _ = worker.cancel(request_id);
                                         let _ =
                                             event_sender.send(WorkerEvent::Failed { request_id });
+                                        notify_drain(drain_hwnd, request_id);
                                         break;
                                     }
                                     thread::sleep(Duration::from_millis(5));
                                 }
                                 Err(_) => {
                                     let _ = event_sender.send(WorkerEvent::Failed { request_id });
+                                    notify_drain(drain_hwnd, request_id);
                                     break;
                                 }
                             }
@@ -439,6 +586,7 @@ fn worker_loop(
                     }
                     Err(_) => {
                         let _ = event_sender.send(WorkerEvent::Failed { request_id });
+                        notify_drain(drain_hwnd, request_id);
                     }
                 }
             }
@@ -579,5 +727,62 @@ mod tests {
 
         session.close().expect("close session");
         host_service.stop().expect("stop host service");
+    }
+
+    #[test]
+    fn drain_window_posts_and_processes_message_on_sta_thread() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, PeekMessageW, MSG, PM_REMOVE,
+        };
+
+        let manager = crate::mock::new_manager().to_interface::<ITfThreadMgr>();
+        let (evt_tx, evt_rx) = mpsc::sync_channel(4);
+        let sink = Rc::new(DrainSink {
+            owner: thread::current().id(),
+            manager,
+            client: 7,
+            event_receiver: evt_rx,
+            pending_ticket: RefCell::new(None),
+        });
+
+        let mut window = DrainWindow::create(Rc::as_ptr(&sink)).expect("create drain window");
+        let hwnd_val = window.hwnd.0 as isize;
+
+        // Push a completed event into the channel
+        evt_tx
+            .send(WorkerEvent::Completed {
+                request_id: 100,
+                text: "test".into(),
+            })
+            .expect("send event");
+
+        // Notify drain via PostMessage from another thread
+        let join_handle = thread::spawn(move || {
+            notify_drain(Some(hwnd_val), 100);
+        });
+        join_handle.join().expect("join worker thread");
+
+        // Pump messages on this STA thread
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut msg = MSG::default();
+        loop {
+            unsafe {
+                if PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    DispatchMessageW(&msg);
+                    if msg.message == WM_SUMIBI_DRAIN {
+                        break;
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                panic!("timed out waiting for WM_SUMIBI_DRAIN message");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        // WindowProc should have called sink.drain(), which consumed the event from event_receiver
+        assert!(sink.event_receiver.try_recv().is_err());
+
+        window.destroy();
     }
 }

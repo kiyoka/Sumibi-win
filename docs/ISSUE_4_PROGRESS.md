@@ -887,9 +887,16 @@ Issue #4とPR #10は引き続き未完了・draftとして扱う。
      - `Active` および `KeySink` に `TipHostSession` を統合。
      - `Activate` 時に `TipHostSession::start` を起動し、`OnPreservedKey` で `session.on_preserved_key` へディスパッチ。
      - `Deactivate` 時に `active.revoke()` から `session.close()` を呼び出し、安全にドレイン終了。
-5. 全体検証:
-   - `cargo test --workspace`: **529 passed, 0 failed, 4 ignored（全件合格）**。
-   - `cargo test --workspace --features sumibi-host/spike`: **529 passed, 0 failed, 4 ignored（全件合格）**。
+5. [ADR 0088](adr/0088-sta-async-drain-window.md) に基づき、メッセージ専用ウィンドウによる STA への非同期完了通知とテキスト自動適用（`DrainWindow` / `AsyncDrain`）を実装した。
+   - `crates/sumibi-tip/src/session.rs`:
+     - `DrainSink`: TSF 所有 STA スレッド上に固定される完了ドレインレシーバ（`owner`, `manager`, `client`, `event_receiver`, `pending_ticket`）。
+     - `DrainWindow`: 親に `HWND_MESSAGE` を指定したメッセージ専用ウィンドウを STA スレッド上に生成。非表示でタスクバーや UI に影響を与えず、モーダルループ中もメッセージが破棄されない。
+     - `WM_SUMIBI_DRAIN` (`WM_APP + 42`): バックグラウンドワーカーから `PostMessageW` で非同期に STA スレッドを起こし、`WindowProc` 経由で自動的に `sink.drain()` を実行してテキストを置換適用。
+     - `session.close()` 時に `GWLP_USERDATA` のクリアと `DestroyWindow` を直列化し、破棄後の不正参照を構造的に防止。
+     - 単体テスト `drain_window_posts_and_processes_message_on_sta_thread`（別スレッドからの `PostMessageW` 送信 → STA メッセージループ起床 → `WindowProc` での `sink.drain()` 自動実行とイベント消費）を検証。
+6. 全体検証:
+   - `cargo test --workspace`: **530 passed, 0 failed, 4 ignored（全件合格）**。
+   - `cargo test --workspace --features sumibi-host/spike`: **530 passed, 0 failed, 4 ignored（全件合格）**。
    - `cargo clippy --workspace --all-targets --locked --offline -- -D warnings`: 警告ゼロ。
    - `cargo fmt --all --check`: 差分なし。
    - `Test-HostImage.ps1`: 全 37 テスト合格。

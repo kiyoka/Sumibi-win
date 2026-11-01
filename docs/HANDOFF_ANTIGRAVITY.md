@@ -23,7 +23,7 @@ API set、全依存DLLの信頼、実際のloaderのbind先、安全なHost発�
 | 現在のbranch | `codex/issue-4-protocol-session` |
 | upstream | `origin/codex/issue-4-protocol-session` |
 | origin | `https://github.com/kiyoka/Sumibi-win.git` |
-| 引継ぎ基準HEAD | `18763a7` |
+| 引継ぎ基準HEAD | `cef6141` |
 | Shell / target | PowerShell / `x86_64-pc-windows-msvc` |
 | Rust / Cargo | ともに1.99.1（引継ぎ書作成時に確認） |
 | toolchain | `rust-toolchain.toml`で`1.99.1-x86_64-pc-windows-msvc`を指定 |
@@ -48,7 +48,7 @@ GitHubのIssue/PR状態は今回APIで再照会していない。リポジトリ
 6. [ADR 0045](adr/0045-machine-registration-boundary.md) — 機械登録前の境界。
 7. [ADR 0069](adr/0069-offline-authenticode-inspection.md)から[ADR 0081](adr/0081-bounded-export-forwarders.md) — 直近の署名・通信・Host・依存検査。
 
-進捗資料の古い日付や件数は当時の記録。最新の全体テスト基準は529件（+4 ignored）。
+進捗資料の古い日付や件数は当時の記録。最新の全体テスト基準は530件（+4 ignored）。
 
 ## 4. 現在の実装を探す場所
 
@@ -242,7 +242,8 @@ workerの終了を確認してから保存された正確なerrorを検査する
 
 | Commit | 内容 |
 | --- | --- |
-| (今回) | ADR 0087: 一般アプリ内 TIP の自律 Host 発見・セッション維持と安全なキー変換結合 (TipHostSession) |
+| (今回) | ADR 0088: メッセージ専用ウィンドウによる STA 非同期完了通知とテキスト自動適用 (AsyncDrain) |
+| `cef6141` | ADR 0087: 一般アプリ内 TIP の自律 Host 発見・セッション維持と安全なキー変換結合 (TipHostSession) |
 | `18763a7` | ADR 0086: 常駐 Host のログオン限定待受ループと停止調停 (HostService, host run CLI) |
 | `a4fcf37` | ADR 0085: ログオン限定ブートストラップ待受による Host / TIP 相互発見・ハンドオフプロトコル |
 | `7cf2295` | ADR 0083, ADR 0084: HostControl ワーカーループへの peer 受付と変換ディスパッチ統合、API set 境界定義 |
