@@ -142,6 +142,9 @@ name = "sumibi-tip"
 version = "0.1.0"
 dependencies = [
  "sumibi-core",
+ "sumibi-host",
+ "sumibi-ipc",
+ "sumibi-protocol",
  "windows",
  "windows-core",
 ]

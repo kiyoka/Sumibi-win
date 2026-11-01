@@ -23,7 +23,7 @@ API set、全依存DLLの信頼、実際のloaderのbind先、安全なHost発�
 | 現在のbranch | `codex/issue-4-protocol-session` |
 | upstream | `origin/codex/issue-4-protocol-session` |
 | origin | `https://github.com/kiyoka/Sumibi-win.git` |
-| 引継ぎ基準HEAD | `17b484c` |
+| 引継ぎ基準HEAD | `18763a7` |
 | Shell / target | PowerShell / `x86_64-pc-windows-msvc` |
 | Rust / Cargo | ともに1.99.1（引継ぎ書作成時に確認） |
 | toolchain | `rust-toolchain.toml`で`1.99.1-x86_64-pc-windows-msvc`を指定 |
@@ -48,7 +48,7 @@ GitHubのIssue/PR状態は今回APIで再照会していない。リポジトリ
 6. [ADR 0045](adr/0045-machine-registration-boundary.md) — 機械登録前の境界。
 7. [ADR 0069](adr/0069-offline-authenticode-inspection.md)から[ADR 0081](adr/0081-bounded-export-forwarders.md) — 直近の署名・通信・Host・依存検査。
 
-進捗資料の古い日付や件数は当時の記録。最新の全体テスト基準は526件（+4 ignored）。
+進捗資料の古い日付や件数は当時の記録。最新の全体テスト基準は529件（+4 ignored）。
 
 ## 4. 現在の実装を探す場所
 
@@ -73,6 +73,7 @@ GitHubのIssue/PR状態は今回APIで再照会していない。リポジトリ
 - [export_resolver.rs](../crates/sumibi-ipc/src/export_resolver.rs): 明示した公開表間の有限forwarder追跡。
 - [dependency_exports.rs](../crates/sumibi-host/tests/dependency_exports.rs): 実Hostと保持したsystem DLLの読取検査。
 - [host_control.rs](../crates/sumibi-host/src/host_control.rs), [host_service.rs](../crates/sumibi-host/src/host_service.rs), [host_runner.rs](../crates/sumibi-host/src/host_runner.rs), [broker_boot.rs](../crates/sumibi-host/src/broker_boot.rs), [policy.rs](../crates/sumibi-host/src/policy.rs): Host寿命・ログオン限定Discovery待受ループ・停止調停・政策所有。
+- [session.rs](../crates/sumibi-tip/src/session.rs), [keys.rs](../crates/sumibi-tip/src/keys.rs), [com.rs](../crates/sumibi-tip/src/com.rs): 一般アプリ内TIPの自律Host発見・セッション維持（TipHostSession）、非ブロッキング状態共有、安全なホットキー結合。
 - [consent_task.rs](../crates/sumibi-host/src/consent_task.rs), [consent_window.rs](../crates/sumibi-host/src/consent_window.rs): 表示版へ結び付いた同意操作と常駐待受統合。
 - [first_conversion.rs](../crates/sumibi-host/src/first_conversion.rs): 初回Chat変換の形式・応答検査。
 
@@ -241,7 +242,9 @@ workerの終了を確認してから保存された正確なerrorを検査する
 
 | Commit | 内容 |
 | --- | --- |
-| (今回) | ADR 0085: ログオン限定ブートストラップ待受による Host / TIP 相互発見・ハンドオフプロトコル |
+| (今回) | ADR 0087: 一般アプリ内 TIP の自律 Host 発見・セッション維持と安全なキー変換結合 (TipHostSession) |
+| `18763a7` | ADR 0086: 常駐 Host のログオン限定待受ループと停止調停 (HostService, host run CLI) |
+| `a4fcf37` | ADR 0085: ログオン限定ブートストラップ待受による Host / TIP 相互発見・ハンドオフプロトコル |
 | `7cf2295` | ADR 0083, ADR 0084: HostControl ワーカーループへの peer 受付と変換ディスパッチ統合、API set 境界定義 |
 | `6bc5dce` | ADR 0082: 保持された実 DLL lease による静的依存エクスポート解決 (SystemModuleLease / SystemModuleCatalog) |
 | `adba3c4` | 明示したDLL metadataの有限forwarder追跡。Kernel32の89参照を最終RVAへ照合 |

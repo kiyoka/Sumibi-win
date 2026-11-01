@@ -18,6 +18,7 @@ mod notifications;
 #[cfg(feature = "spike")]
 mod owned_composition;
 mod protection;
+pub mod session;
 #[cfg(feature = "spike")]
 pub mod spike;
 

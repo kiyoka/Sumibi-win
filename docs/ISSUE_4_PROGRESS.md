@@ -874,3 +874,23 @@ Issue #4とPR #10は引き続き未完了・draftとして扱う。
    - `cargo fmt --all --check`: 差分なし。
    - `Test-HostImage.ps1`: 全 37 テスト合格。
    - `Test-SuspendedImageProbe.ps1`: 全 6 テスト合格。
+
+4. [ADR 0087](adr/0087-tip-host-session-lifecycle.md) に基づき、一般アプリ内 TIP の自律 Host 発見・セッション維持と安全なキー変換結合（`TipHostSession`）を実装した。
+   - `crates/sumibi-tip/src/session.rs`:
+     - `SharedSessionState`: アトミックな `connected`, `allowed`, `settings`, `authorization` 状態共有。ロック不要・TSF STA スレッドへの完全な非ブロッキング保証。
+     - `TipHostSession`: TSF ライフサイクル（`start` / `close`）と連動するマネージャ。
+     - ホットキー（Ctrl+J: `COMMAND_CONVERT`）を `ITfKeystrokeMgr::PreserveKey` で登録・解除。
+     - バックグラウンドワーカー（`sumibi-tip-session`）による自律的な Discovery 接続試行、未同意（`PolicyDenied`）時のバックオフ再試行、同意付与時の政策同期、同意失効時のセッション切断・再接続待機（Self-Healing Connection）。
+     - 変換ホットキー押下時（`on_preserved_key`）の絶対的 Fail-Closed 保護：未同意時や未接続時は即座に `Ok(false.into())` を返し、キーをスルー。入力本文の取得や外部送信を構造的に遮断。
+     - 単体テスト `shared_session_state_reflects_atomic_updates`, `session_on_preserved_key_denies_when_not_ready`, `session_autonomously_discovers_host_and_updates_policy`（未同意時のキー拒否 → 同意付与後の自律発見・接続・Ready 反映 → 同意取消後の失効反映 → 安全なクローズ）を検証。
+   - `crates/sumibi-tip/src/keys.rs` & `com.rs`:
+     - `Active` および `KeySink` に `TipHostSession` を統合。
+     - `Activate` 時に `TipHostSession::start` を起動し、`OnPreservedKey` で `session.on_preserved_key` へディスパッチ。
+     - `Deactivate` 時に `active.revoke()` から `session.close()` を呼び出し、安全にドレイン終了。
+5. 全体検証:
+   - `cargo test --workspace`: **529 passed, 0 failed, 4 ignored（全件合格）**。
+   - `cargo test --workspace --features sumibi-host/spike`: **529 passed, 0 failed, 4 ignored（全件合格）**。
+   - `cargo clippy --workspace --all-targets --locked --offline -- -D warnings`: 警告ゼロ。
+   - `cargo fmt --all --check`: 差分なし。
+   - `Test-HostImage.ps1`: 全 37 テスト合格。
+   - `Test-SuspendedImageProbe.ps1`: 全 6 テスト合格。

@@ -6,9 +6,10 @@ use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::TextServices::{ITfContext, ITfKeyEventSink, ITfKeyEventSink_Impl};
 
 use crate::com::ObjectLease;
+#[cfg(not(feature = "spike"))]
+use crate::session::COMMAND_CONVERT;
 #[cfg(feature = "spike")]
 use crate::spike::{Controller, COMMAND_CONVERT};
-#[cfg(feature = "spike")]
 use std::{
     rc::Weak,
     thread::{self, ThreadId},
@@ -18,7 +19,7 @@ use std::{
 pub(super) struct KeySink {
     #[cfg(feature = "spike")]
     controller: Weak<Controller>,
-    #[cfg(feature = "spike")]
+    session: Weak<crate::session::TipHostSession>,
     owner: ThreadId,
     // A manager can retain this sink even after releasing the TIP.
     // Keep the DLL loaded until its last reference has been released.
@@ -68,12 +69,16 @@ impl KeySink {
         });
         eaten
     }
-    #[cfg(any(test, not(feature = "spike")))]
+    #[allow(dead_code)]
     pub(super) fn create() -> ITfKeyEventSink {
+        Self::with_session(Weak::new())
+    }
+    #[allow(dead_code)]
+    pub(super) fn with_session(session: Weak<crate::session::TipHostSession>) -> ITfKeyEventSink {
         Self {
             #[cfg(feature = "spike")]
             controller: Weak::new(),
-            #[cfg(feature = "spike")]
+            session,
             owner: thread::current().id(),
             _lease: ObjectLease::new(),
         }
@@ -81,8 +86,16 @@ impl KeySink {
     }
     #[cfg(feature = "spike")]
     pub(super) fn with_controller(controller: Weak<Controller>) -> ITfKeyEventSink {
+        Self::with_controller_and_session(controller, Weak::new())
+    }
+    #[cfg(feature = "spike")]
+    pub(super) fn with_controller_and_session(
+        controller: Weak<Controller>,
+        session: Weak<crate::session::TipHostSession>,
+    ) -> ITfKeyEventSink {
         Self {
             controller,
+            session,
             owner: thread::current().id(),
             _lease: ObjectLease::new(),
         }
@@ -129,26 +142,24 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
     }
 
     fn OnPreservedKey(&self, _context: Ref<ITfContext>, _key: *const GUID) -> Result<BOOL> {
-        #[cfg(feature = "spike")]
-        {
-            if self.owner != thread::current().id() || _key.is_null() {
-                return Ok(false.into());
-            }
-            // SAFETY: TSF supplies a valid command GUID for this callback.
-            if unsafe { *_key } != COMMAND_CONVERT {
-                return Ok(false.into());
-            }
-            let Some(context) = _context.as_ref() else {
-                return Ok(false.into());
-            };
-            let Some(controller) = self.controller.upgrade() else {
-                return Ok(false.into());
-            };
-            Ok(crate::com::boundary(|| controller.convert(context))
-                .is_ok()
-                .into())
+        if self.owner != thread::current().id() || _key.is_null() {
+            return Ok(false.into());
         }
-        #[cfg(not(feature = "spike"))]
+        if unsafe { *_key } != COMMAND_CONVERT {
+            return Ok(false.into());
+        }
+        let Some(context) = _context.as_ref() else {
+            return Ok(false.into());
+        };
+        #[cfg(feature = "spike")]
+        if let Some(controller) = self.controller.upgrade() {
+            return Ok(crate::com::boundary(|| controller.convert(context))
+                .is_ok()
+                .into());
+        }
+        if let Some(session) = self.session.upgrade() {
+            return session.on_preserved_key(Some(context), unsafe { &*_key });
+        }
         Ok(false.into())
     }
 }

@@ -7,7 +7,6 @@ use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-#[cfg(feature = "spike")]
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::{self, ThreadId};
@@ -108,10 +107,14 @@ struct Active {
     controller: Rc<Controller>,
     #[cfg(feature = "spike")]
     provider: Option<ProviderSubscription>,
+    session: Option<Rc<crate::session::TipHostSession>>,
 }
 
 impl Active {
     fn revoke(&mut self) -> Result<()> {
+        if let Some(session) = self.session.take() {
+            let _ = session.close();
+        }
         #[cfg(feature = "spike")]
         {
             self.controller.revoke()?;
@@ -194,14 +197,22 @@ impl ITfTextInputProcessor_Impl for Tip_Impl {
                 return Err(E_UNEXPECTED.into());
             }
             let keys: ITfKeystrokeMgr = manager.cast()?;
+            let session = crate::session::TipHostSession::start(manager, client)
+                .ok()
+                .map(Rc::new);
             #[cfg(feature = "spike")]
             let controller = Controller::new(manager, client);
             #[cfg(feature = "spike")]
             let provider = ProviderSubscription::register(manager, client, &controller)?;
             #[cfg(feature = "spike")]
-            let sink = crate::keys::KeySink::with_controller(Rc::downgrade(&controller));
+            let sink = crate::keys::KeySink::with_controller_and_session(
+                Rc::downgrade(&controller),
+                session.as_ref().map(Rc::downgrade).unwrap_or_default(),
+            );
             #[cfg(not(feature = "spike"))]
-            let sink = crate::keys::KeySink::create();
+            let sink = crate::keys::KeySink::with_session(
+                session.as_ref().map(Rc::downgrade).unwrap_or_default(),
+            );
             // SAFETY: activation runs on the owning TSF thread; manager/client
             // are supplied by TSF. No RefCell borrow survives this external call.
             unsafe { keys.AdviseKeyEventSink(client, &sink, true)? };
@@ -212,6 +223,7 @@ impl ITfTextInputProcessor_Impl for Tip_Impl {
                 controller,
                 #[cfg(feature = "spike")]
                 provider,
+                session,
             });
             Ok(())
         })

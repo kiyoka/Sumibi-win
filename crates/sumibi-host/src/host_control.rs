@@ -49,7 +49,7 @@ pub struct HostStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DispatchMode {
     NativeChat,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "spike"))]
     DiagnosticChat,
 }
 
@@ -113,7 +113,7 @@ impl HostControl {
         // contend with a user's actual running Host.
         Self::start_scoped(load, || Ok(()), DispatchMode::NativeChat)
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "spike"))]
     pub fn start_diagnostic(
         load: impl FnOnce() -> Result<(Arc<PolicyAuthority>, bool), ControlError> + Send + 'static,
     ) -> Result<Self, ControlError> {
@@ -482,7 +482,7 @@ fn run(
                     DispatchMode::NativeChat => {
                         boot.advance_native_chat(authority.clone(), &stop, step_deadline)
                     }
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "spike"))]
                     DispatchMode::DiagnosticChat => {
                         boot.advance_diagnostic_chat(authority.clone(), &stop, step_deadline)
                     }

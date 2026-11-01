@@ -79,10 +79,10 @@ impl ITfKeystrokeMgr_Impl for Manager_Impl {
         _: &PCWSTR,
         _: u32,
     ) -> Result<()> {
-        Err(E_NOTIMPL.into())
+        Ok(())
     }
     fn UnpreserveKey(&self, _: *const GUID, _: *const TF_PRESERVEDKEY) -> Result<()> {
-        Err(E_NOTIMPL.into())
+        Ok(())
     }
     fn SetPreservedKeyDescription(&self, _: *const GUID, _: &PCWSTR, _: u32) -> Result<()> {
         Err(E_NOTIMPL.into())
