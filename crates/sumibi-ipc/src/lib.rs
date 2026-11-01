@@ -38,6 +38,8 @@ pub mod protected_acl;
 #[cfg(windows)]
 mod support;
 #[cfg(windows)]
+pub mod system_module;
+#[cfg(windows)]
 pub mod worker;
 
 #[cfg(windows)]

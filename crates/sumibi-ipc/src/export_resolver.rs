@@ -66,7 +66,7 @@ impl<'a> ExportCatalog<'a> {
         Self::default()
     }
     pub fn insert(&mut self, module: &str, exports: &'a DllExports) -> Result<(), ResolveError> {
-        let module = module_name(module)?;
+        let module = normalize_module_name(module)?;
         if self.modules.contains_key(&module) {
             return Err(ResolveError::DuplicateModule);
         }
@@ -81,7 +81,7 @@ impl<'a> ExportCatalog<'a> {
         module: &str,
         symbol: &ImportSymbol,
     ) -> Result<ResolvedExport, ResolveError> {
-        let mut module = module_name(module)?;
+        let mut module = normalize_module_name(module)?;
         validate_symbol(symbol)?;
         let mut symbol = symbol.clone();
         let mut seen = BTreeSet::new();
@@ -117,7 +117,7 @@ impl<'a> ExportCatalog<'a> {
     }
 }
 
-fn module_name(value: &str) -> Result<String, ResolveError> {
+pub fn normalize_module_name(value: &str) -> Result<String, ResolveError> {
     if value.is_empty() || value.len() > 128 || !value.is_ascii() {
         return Err(ResolveError::InvalidModule);
     }
@@ -162,7 +162,7 @@ fn forwarder(value: &str) -> Result<(String, ImportSymbol), ResolveError> {
     if target.contains('.') {
         return Err(ResolveError::InvalidForwarder);
     }
-    let module = module_name(module).map_err(|error| match error {
+    let module = normalize_module_name(module).map_err(|error| match error {
         ResolveError::ApiSetUnresolved => error,
         _ => ResolveError::InvalidForwarder,
     })?;
