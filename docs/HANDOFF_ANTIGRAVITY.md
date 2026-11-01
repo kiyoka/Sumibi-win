@@ -48,7 +48,7 @@ GitHubのIssue/PR状態は今回APIで再照会していない。リポジトリ
 6. [ADR 0045](adr/0045-machine-registration-boundary.md) — 機械登録前の境界。
 7. [ADR 0069](adr/0069-offline-authenticode-inspection.md)から[ADR 0081](adr/0081-bounded-export-forwarders.md) — 直近の署名・通信・Host・依存検査。
 
-進捗資料の古い日付や件数は当時の記録。最新の全体テスト基準は520件（+3 ignored）。
+進捗資料の古い日付や件数は当時の記録。最新の全体テスト基準は526件（+4 ignored）。
 
 ## 4. 現在の実装を探す場所
 
@@ -72,8 +72,8 @@ GitHubのIssue/PR状態は今回APIで再照会していない。リポジトリ
 - [dll_exports.rs](../crates/sumibi-ipc/src/dll_exports.rs): 公開名・序数・RVA・未解決forwarder。
 - [export_resolver.rs](../crates/sumibi-ipc/src/export_resolver.rs): 明示した公開表間の有限forwarder追跡。
 - [dependency_exports.rs](../crates/sumibi-host/tests/dependency_exports.rs): 実Hostと保持したsystem DLLの読取検査。
-- [host_control.rs](../crates/sumibi-host/src/host_control.rs), [broker_boot.rs](../crates/sumibi-host/src/broker_boot.rs), [policy.rs](../crates/sumibi-host/src/policy.rs): Host寿命・待受・政策所有。
-- [consent_task.rs](../crates/sumibi-host/src/consent_task.rs), [consent_window.rs](../crates/sumibi-host/src/consent_window.rs): 表示版へ結び付いた同意操作。
+- [host_control.rs](../crates/sumibi-host/src/host_control.rs), [host_service.rs](../crates/sumibi-host/src/host_service.rs), [host_runner.rs](../crates/sumibi-host/src/host_runner.rs), [broker_boot.rs](../crates/sumibi-host/src/broker_boot.rs), [policy.rs](../crates/sumibi-host/src/policy.rs): Host寿命・ログオン限定Discovery待受ループ・停止調停・政策所有。
+- [consent_task.rs](../crates/sumibi-host/src/consent_task.rs), [consent_window.rs](../crates/sumibi-host/src/consent_window.rs): 表示版へ結び付いた同意操作と常駐待受統合。
 - [first_conversion.rs](../crates/sumibi-host/src/first_conversion.rs): 初回Chat変換の形式・応答検査。
 
 ## 5. 実装済みの範囲と、成功を広げて解釈してはいけない点
@@ -96,7 +96,9 @@ Hostは送信未同意で開始し、同意操作は表示した設定版・認�
 正常TLS送受信、不正応答、期限切れ・自己署名証明書拒否の検査がある。
 **実キーによる実provider変換と一般アプリへの結果適用は製品受入未確認。**
 
-`startup-check`、`settings-init`、`settings-window`、`host-window`がある。
+`startup-check`、`settings-init`、`settings-window`、`host-window`、`run`（`host-run`）がある。
+`run` は常駐サービスとしてコンソールシグナル（Ctrl+C）による停止調停とDiscovery待受ループを実行する。
+`host-window` は送信管理画面とともにバックグラウンドDiscovery待受ループを実行する。
 `settings-window`は単独編集画面で、変更は次回Host起動用。
 `host-window`は同意と寿命の管理画面で、現在peerを公開・受付せず変換dispatchも行わない。
 ログオン単位の単一起動枠はあるが、自動常駐・tray・製品発見は未実装。

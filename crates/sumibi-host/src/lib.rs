@@ -20,6 +20,8 @@ pub mod diagnostic_http;
 pub mod first_conversion;
 #[cfg(windows)]
 pub mod host_control;
+#[cfg(windows)]
+pub mod host_service;
 pub mod manual;
 #[cfg(windows)]
 pub mod native_https;

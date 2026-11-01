@@ -848,3 +848,29 @@ Issue #4とPR #10は引き続き未完了・draftとして扱う。
    - `cargo fmt --check`: 差分なし。
    - `Test-HostImage.ps1`: 全 33 テスト合格。
    - `Test-SuspendedImageProbe.ps1`: 全 6 テスト合格。
+
+2026-11-02:
+1. [ADR 0086](adr/0086-host-service-discovery-loop.md) に基づき、常駐 Host サービス待受ループと停止調停（`HostService`）を実装した。
+   - `HostService` (`crates/sumibi-host/src/host_service.rs`):
+     - 同期的に `BootstrapServer::create` で第1インスタンスを作成し、起動直後の接続競合（`ERROR_FILE_NOT_FOUND`）を完全に排除。
+     - バックグラウンド待受スレッド（`sumibi-discovery-listener`）で、`additional()` により常に次の待受インスタンスを先行確保しながら接続を受け付ける連続待受ループを実装。
+     - クライアント接続時に `HostControl::try_accept_private_peer` で private pipe を発行し、`handoff::send` で安全に引き渡し。
+     - `HostControl` の worker ハンドルを `Mutex<Option<JoinHandle>>` に変更し、`try_finish` を `&self` で安全に呼べるようにするとともに、`HostService::stop` において Discovery 待受スレッドとワーカースレッドの双方を完全にドレイン終了（Graceful Teardown）させる仕組みを統合。
+     - 単体テスト `host_service_starts_accepts_discovery_and_shuts_down`（Discovery 接続 → 同意付与 → Ready 政策取得 → 予約 → 同意取消 → 予約拒否 → ドレイン終了）および `host_service_starts_with_invalid_settings_path_reports_failed` を追加。
+2. CLI 常駐ランナー（`sumibi-host run [settings-path]`）の実装:
+   - `crates/sumibi-host/src/host_runner.rs`:
+     - Windows の `SetConsoleCtrlHandler` による Ctrl+C シグナルハンドラを導入。
+     - 初期起動フェーズの監視、稼働中のエラー検知、および終了シグナル受信時の安全な停止調停（`service.stop()`）を実装。
+   - `crates/sumibi-host/src/consent_window.rs`:
+     - 送信管理ウィンドウ（UI）起動中も `HostService` を通じてバックグラウンド Discovery 待受ループを同時稼働するよう更新。
+   - `crates/sumibi-host/src/main.rs`:
+     - `run` / `host-run` コマンドを追加。
+   - `crates/sumibi-host/tests/startup_cli.rs`:
+     - `host_run_rejects_extra_arguments`, `host_run_fails_with_invalid_settings` 統合テストを追加。
+3. 全体検証:
+   - `cargo test --workspace`: **526 passed, 0 failed, 4 ignored（全件合格）**。
+   - `cargo test --workspace --features sumibi-host/spike`: **526 passed, 0 failed, 4 ignored（全件合格）**。
+   - `cargo clippy --workspace --all-targets --locked --offline -- -D warnings`: 警告ゼロ。
+   - `cargo fmt --all --check`: 差分なし。
+   - `Test-HostImage.ps1`: 全 37 テスト合格。
+   - `Test-SuspendedImageProbe.ps1`: 全 6 テスト合格。

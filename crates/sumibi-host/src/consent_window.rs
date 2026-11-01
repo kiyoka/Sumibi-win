@@ -2,7 +2,8 @@
 use std::{cell::Cell, path::PathBuf, rc::Rc};
 use sumibi_host::{
     consent_task::ConsentOffer,
-    host_control::{ControlError, HostControl, HostStatus, Phase},
+    host_control::{ControlError, HostStatus, Phase},
+    host_service::HostService,
     manual::Scheme,
 };
 use windows::core::{w, Result as WinResult, PCWSTR};
@@ -257,7 +258,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
     // Construct the native view first, so a UI creation failure cannot leave
     // an unpolled Host running while main exits the process.
     let view = View::new().map_err(|_| "host window unavailable")?;
-    let mut control = HostControl::start(path).map_err(|_| "host worker unavailable")?;
+    let mut service = HostService::start(path).map_err(|_| "host service unavailable")?;
     let mut displayed: Option<ConsentOffer> = None;
     let mut finished = None;
     let mut pump = true;
@@ -282,7 +283,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         if view.actions.close.get() {
-            control.request_close();
+            service.control().request_close();
         }
         if !view.actions.close.get() && finished.is_none() {
             if view.actions.grant.replace(false) {
@@ -300,18 +301,18 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                         )
                     } == IDYES;
                     if confirmed {
-                        let _ = control.try_grant(offer);
+                        let _ = service.control().try_grant(offer);
                     }
                 }
             }
             if view.actions.revoke.replace(false) {
-                let _ = control.try_revoke();
+                let _ = service.control().try_revoke();
             }
         }
-        if let Some(result) = control.try_finish() {
+        if let Some(result) = service.try_finish() {
             finished = Some(result);
         }
-        match control.try_status() {
+        match service.try_status() {
             Ok(Some(status)) => {
                 set_text(view.status, status_text(&status));
                 if status.phase == Phase::Failed {
@@ -321,7 +322,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                     );
                 }
                 let ready = status.phase == Phase::Ready
-                    && !control.is_updating()
+                    && !service.control().is_updating()
                     && !view.actions.close.get()
                     && finished.is_none();
                 let offer = status.offer.filter(|_| ready);
@@ -357,12 +358,13 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
             Err(_) => {
                 loop_error = true;
                 view.actions.close.set(true);
-                control.request_close();
+                service.control().request_close();
             }
         }
         if view.actions.close.get() {
             set_text(view.status, "送信を停止し、処理の終了を待っています…");
             if let Some(result) = finished {
+                let _ = service.stop();
                 return if loop_error || result.is_err() {
                     Err("host stopped with an error")
                 } else {

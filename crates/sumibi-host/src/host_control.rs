@@ -86,7 +86,7 @@ pub struct HostControl {
     closing: Arc<AtomicBool>,
     active: Arc<AtomicBool>,
     status: Arc<Mutex<HostStatus>>,
-    worker: Option<JoinHandle<Result<(), ControlError>>>,
+    worker: Mutex<Option<JoinHandle<Result<(), ControlError>>>>,
 }
 impl HostControl {
     pub fn start(path: PathBuf) -> Result<Self, ControlError> {
@@ -105,7 +105,7 @@ impl HostControl {
         )
     }
     #[cfg(test)]
-    fn start_with(
+    pub(crate) fn start_with(
         load: impl FnOnce() -> Result<(Arc<PolicyAuthority>, bool), ControlError> + Send + 'static,
     ) -> Result<Self, ControlError> {
         // Lifecycle tests use an isolated lease. The native fixed-name lease
@@ -175,7 +175,7 @@ impl HostControl {
             closing,
             active,
             status,
-            worker: Some(worker),
+            worker: Mutex::new(Some(worker)),
         })
     }
     pub fn try_status(&self) -> Result<Option<HostStatus>, ControlError> {
@@ -232,9 +232,9 @@ impl HostControl {
         self.active.load(Ordering::Acquire)
     }
     fn submit_peer_request(&self, request: PeerRequest) -> Result<(), ControlError> {
+        let worker_guard = self.worker.lock().unwrap();
         if self.closing.load(Ordering::Acquire)
-            || self
-                .worker
+            || worker_guard
                 .as_ref()
                 .is_none_or(|worker| worker.is_finished())
         {
@@ -246,15 +246,15 @@ impl HostControl {
                 mpsc::TrySendError::Full(_) => ControlError::Busy,
                 mpsc::TrySendError::Disconnected(_) => ControlError::Closed,
             })?;
-        if let Some(worker) = &self.worker {
+        if let Some(worker) = worker_guard.as_ref() {
             worker.thread().unpark();
         }
         Ok(())
     }
     fn submit(&self, command: Command) -> Result<(), ControlError> {
+        let worker_guard = self.worker.lock().unwrap();
         if self.closing.load(Ordering::Acquire)
-            || self
-                .worker
+            || worker_guard
                 .as_ref()
                 .is_none_or(|worker| worker.is_finished())
         {
@@ -274,28 +274,37 @@ impl HostControl {
                 mpsc::TrySendError::Disconnected(_) => ControlError::Closed,
             });
         }
-        if let Some(worker) = &self.worker {
+        if let Some(worker) = worker_guard.as_ref() {
             worker.thread().unpark();
         }
         Ok(())
     }
     pub fn request_close(&self) {
         self.closing.store(true, Ordering::Release);
-        if let Some(worker) = &self.worker {
+        if let Some(worker) = self.worker.lock().unwrap().as_ref() {
             worker.thread().unpark();
         }
     }
-    pub fn try_finish(&mut self) -> Option<Result<(), ControlError>> {
-        if !self.worker.as_ref()?.is_finished() {
+    pub fn try_finish(&self) -> Option<Result<(), ControlError>> {
+        let mut guard = self.worker.lock().unwrap();
+        if !guard.as_ref()?.is_finished() {
             return None;
         }
         Some(
-            self.worker
+            guard
                 .take()
                 .unwrap()
                 .join()
                 .unwrap_or(Err(ControlError::WorkerFailed)),
         )
+    }
+    pub fn join(&self) -> Result<(), ControlError> {
+        let worker = self.worker.lock().unwrap().take();
+        if let Some(handle) = worker {
+            handle.join().unwrap_or(Err(ControlError::WorkerFailed))
+        } else {
+            Ok(())
+        }
     }
 }
 impl Drop for HostControl {

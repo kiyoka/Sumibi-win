@@ -71,3 +71,28 @@ fn settings_init_creates_resolved_settings_and_refuses_to_overwrite() {
     assert_eq!(run().status.code(), Some(1));
     assert_eq!(std::fs::read(&path).unwrap(), b"invalid record");
 }
+
+#[test]
+fn host_run_rejects_extra_arguments() {
+    let output = Command::new(env!("CARGO_BIN_EXE_sumibi-host"))
+        .args(["run", "private-settings-name.json", "unexpected"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap().trim(),
+        "usage: sumibi-host run [absolute-settings-path]"
+    );
+}
+
+#[test]
+fn host_run_fails_with_invalid_settings() {
+    let output = Command::new(env!("CARGO_BIN_EXE_sumibi-host"))
+        .args(["run", "Z:\\nonexistent\\settings.json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8(output.stderr)
+        .unwrap()
+        .contains("settings invalid or unavailable"));
+}
