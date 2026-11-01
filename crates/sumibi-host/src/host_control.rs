@@ -204,6 +204,30 @@ impl HostControl {
         self.submit_peer_request(PeerRequest::Private { peer, reply: send })?;
         receive.recv().map_err(|_| ControlError::Closed)?
     }
+    /// Accept one client peer over a bootstrap pipe, create a private accept in this
+    /// HostControl, and hand off the private pipe coordinates to the client.
+    pub fn serve_bootstrap_handoff(
+        &self,
+        server: sumibi_ipc::BootstrapServer,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<PinnedProcess, ControlError> {
+        let (pipe, client_peer) = server
+            .accept(stop, deadline)
+            .map_err(|_| ControlError::Broker)?;
+        let accept = self
+            .try_accept_private_peer(client_peer.try_clone().map_err(|_| ControlError::Broker)?)?;
+        sumibi_ipc::handoff::send(
+            pipe,
+            &client_peer,
+            &accept.name,
+            &accept.broker,
+            stop,
+            deadline,
+        )
+        .map_err(|_| ControlError::Broker)?;
+        Ok(client_peer)
+    }
     pub fn is_updating(&self) -> bool {
         self.active.load(Ordering::Acquire)
     }
@@ -829,6 +853,85 @@ mod tests {
         }
 
         worker_consented.shutdown(Duration::from_secs(1)).unwrap();
+        control.request_close();
+        assert_eq!(finish(&mut control), Ok(()));
+    }
+
+    #[test]
+    fn host_control_serves_discovery_and_dispatches_to_discovered_worker() {
+        let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
+        let authority = configured();
+        let a = authority.clone();
+        let mut control =
+            HostControl::start_diagnostic(move || Ok((a, false))).expect("control starts");
+
+        // 1. Grant consent
+        let offer = until(&control, |status| {
+            status.phase == Phase::Ready && status.offer.is_some()
+        })
+        .offer
+        .unwrap();
+        control.try_grant(offer).unwrap();
+        until(&control, |status| {
+            status.phase == Phase::Ready && status.offer.as_ref().is_some_and(|o| o.allowed())
+        });
+
+        // 2. Set up discovery server
+        let bootstrap_name = format!(
+            r"\\.\pipe\Sumibi.Bootstrap.Test.{}",
+            Nonce::random().unwrap().bootstrap()
+        );
+        let bootstrap_server = sumibi_ipc::BootstrapServer::create(&bootstrap_name, 1).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        // Run discovery handoff on a separate responder thread using thread::scope
+        let s_stop = stop.clone();
+        thread::scope(|s| {
+            s.spawn(|| {
+                control
+                    .serve_bootstrap_handoff(bootstrap_server, &s_stop, deadline)
+                    .unwrap();
+            });
+
+            // 3. Client (TIP) connects via discovery
+            let mut worker = sumibi_ipc::worker::Worker::prepare_discovery(
+                sumibi_ipc::job::Reservation::acquire().unwrap(),
+                bootstrap_name,
+                deadline,
+            )
+            .unwrap();
+
+            let policy = wait_prepared_outcome(&worker, deadline).unwrap();
+            assert!(policy.allowed);
+            let permit = worker.reserve(1).unwrap();
+            drop(permit);
+
+            // 4. Revoke consent
+            control.try_revoke().unwrap();
+            until(&control, |status| {
+                status.phase == Phase::Ready && status.offer.as_ref().is_some_and(|o| !o.allowed())
+            });
+
+            // 5. Reservation fails after revoke
+            let revoke_deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if worker.reserve(2).is_err() {
+                    break;
+                }
+                assert!(
+                    Instant::now() < revoke_deadline,
+                    "revocation notice timed out"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+
+            worker.shutdown(Duration::from_secs(1)).unwrap();
+        });
+
         control.request_close();
         assert_eq!(finish(&mut control), Ok(()));
     }

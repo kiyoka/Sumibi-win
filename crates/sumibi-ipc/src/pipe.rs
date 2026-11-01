@@ -212,6 +212,176 @@ impl Server {
     }
 }
 
+pub fn bootstrap_pipe_name_for_sid(sid: &str) -> String {
+    format!(r"\\.\pipe\Sumibi.Bootstrap.v1.{sid}")
+}
+
+pub fn current_bootstrap_pipe_name() -> Result<String> {
+    let local = PinnedProcess::current()?;
+    Ok(bootstrap_pipe_name_for_sid(&local.identity().logon_text))
+}
+
+/// Logon-scoped bootstrap server. Accepts incoming connections from the same
+/// logon session without prior peer knowledge, then discovers and pins the client.
+pub struct BootstrapServer {
+    handle: OwnedHandle,
+    permit: Permit,
+    pipe_name: String,
+    max_instances: u32,
+}
+
+impl BootstrapServer {
+    pub fn create(pipe_name: &str, max_instances: u32) -> Result<Self> {
+        Self::create_instance(pipe_name, true, max_instances)
+    }
+
+    pub fn additional(&self) -> Result<Self> {
+        if self.max_instances == 1 {
+            return Err(Error::InvalidArgument);
+        }
+        Self::create_instance(&self.pipe_name, false, self.max_instances)
+    }
+
+    fn create_instance(pipe_name: &str, first: bool, max_instances: u32) -> Result<Self> {
+        if !(1..=MAX_ENDPOINTS as u32).contains(&max_instances) {
+            return Err(Error::InvalidArgument);
+        }
+        let permit = Permit::acquire()?;
+        let local = PinnedProcess::current()?;
+        let descriptor: Vec<u16> = format!("D:P(A;;GA;;;{})", local.identity().logon_text)
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let mut security = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: descriptor is kernel-derived SID only; allocations outlive creation.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR(descriptor.as_ptr()),
+                SDDL_REVISION_1,
+                &mut security,
+                None,
+            )?;
+            let _allocation = Local(security.0);
+            let attributes = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: security.0,
+                bInheritHandle: false.into(),
+            };
+            let encoded_name: Vec<u16> = pipe_name.encode_utf16().chain(Some(0)).collect();
+            let mut access = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
+            if first {
+                access |= FILE_FLAG_FIRST_PIPE_INSTANCE;
+            }
+            let handle = CreateNamedPipeW(
+                PCWSTR(encoded_name.as_ptr()),
+                access,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                max_instances,
+                CHUNK as u32,
+                CHUNK as u32,
+                0,
+                Some(&attributes),
+            );
+            if handle.is_invalid() {
+                return Err(last_error());
+            }
+            Ok(Self {
+                handle: own(handle),
+                permit,
+                pipe_name: pipe_name.to_string(),
+                max_instances,
+            })
+        }
+    }
+
+    pub fn pipe_name(&self) -> &str {
+        &self.pipe_name
+    }
+
+    pub fn accept(self, stop: &Stop, deadline: Instant) -> Result<(Pipe, PinnedProcess)> {
+        let remaining_duration = remaining(deadline)?;
+        if stop.is_cancelled()? {
+            return Err(Error::Cancelled);
+        }
+        let event = unsafe { own(CreateEventW(None, true, false, None)?) };
+        let mut overlapped = OVERLAPPED {
+            hEvent: raw(&event),
+            ..Default::default()
+        };
+        let connected = unsafe { ConnectNamedPipe(raw(&self.handle), Some(&mut overlapped)) };
+        let mut pending = match connected {
+            Ok(()) => false,
+            Err(error) if error.code() == HRESULT::from_win32(ERROR_PIPE_CONNECTED.0) => false,
+            Err(error) if error.code() == HRESULT::from_win32(ERROR_IO_PENDING.0) => true,
+            Err(error) => return Err(classify(error)),
+        };
+        if pending {
+            let handles = [stop.raw(), raw(&event)];
+            let waited = unsafe {
+                WaitForMultipleObjects(
+                    &handles,
+                    false,
+                    remaining_duration.as_millis().clamp(1, 60_000) as u32,
+                )
+            };
+            match waited.0 {
+                v if v == WAIT_OBJECT_0.0 => {
+                    unsafe {
+                        let _ = CancelIoEx(raw(&self.handle), Some(&overlapped));
+                        let _ = WaitForSingleObject(raw(&event), 1000);
+                    }
+                    return Err(Error::Cancelled);
+                }
+                v if v == WAIT_OBJECT_0.0 + 1 => {
+                    let mut count = 0;
+                    let completion = unsafe {
+                        GetOverlappedResult(raw(&self.handle), &overlapped, &mut count, false)
+                    };
+                    if let Err(error) = completion {
+                        return Err(classify(error));
+                    }
+                    pending = false;
+                }
+                v if v == WAIT_TIMEOUT.0 => {
+                    unsafe {
+                        let _ = CancelIoEx(raw(&self.handle), Some(&overlapped));
+                        let _ = WaitForSingleObject(raw(&event), 1000);
+                    }
+                    return Err(Error::Timeout);
+                }
+                _ => {
+                    unsafe {
+                        let _ = CancelIoEx(raw(&self.handle), Some(&overlapped));
+                        let _ = WaitForSingleObject(raw(&event), 1000);
+                    }
+                    return Err(last_error());
+                }
+            }
+        }
+        let _ = pending;
+        let mut client_pid = 0;
+        unsafe {
+            GetNamedPipeClientProcessId(raw(&self.handle), &mut client_pid)?;
+        }
+        let peer = PinnedProcess::from_peer_pid(client_pid)?;
+        peer.verify(raw(&self.handle), true)?;
+        remaining(deadline)?;
+
+        let pipe = Pipe {
+            resource: Arc::new(Resource {
+                handle: self.handle,
+                peer: peer.try_clone()?,
+                _permit: self.permit,
+                group: None,
+            }),
+            closed: false,
+            authenticated: true,
+            busy: false,
+        };
+        Ok((pipe, peer))
+    }
+}
+
 /// One bounded OS accept running outside the Broker owner thread. The result
 /// contains a pipe only after the pinned peer and desktop token checks pass.
 /// An owner may poll other connections while this task waits. Dropping the
@@ -450,6 +620,50 @@ impl Pipe {
             authenticated: true,
             busy: false,
         })
+    }
+    /// Connect to a logon-scoped bootstrap pipe and discover its pinned server peer.
+    pub fn connect_bootstrap(
+        pipe_name: &str,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<(Self, PinnedProcess)> {
+        remaining(deadline)?;
+        if stop.is_cancelled()? {
+            return Err(Error::Cancelled);
+        }
+        let permit = Permit::acquire()?;
+        let encoded_name: Vec<u16> = pipe_name.encode_utf16().chain(Some(0)).collect();
+        let handle = unsafe {
+            own(CreateFileW(
+                PCWSTR(encoded_name.as_ptr()),
+                GENERIC_READ.0 | GENERIC_WRITE.0,
+                FILE_SHARE_MODE(0),
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                None,
+            )?)
+        };
+        let mut server_pid = 0;
+        unsafe {
+            GetNamedPipeServerProcessId(raw(&handle), &mut server_pid)?;
+        }
+        let peer = PinnedProcess::from_peer_pid(server_pid)?;
+        peer.verify(raw(&handle), false)?;
+        remaining(deadline)?;
+
+        let pipe = Self {
+            resource: Arc::new(Resource {
+                handle,
+                peer: peer.try_clone()?,
+                _permit: permit,
+                group: None,
+            }),
+            closed: false,
+            authenticated: true,
+            busy: false,
+        };
+        Ok((pipe, peer))
     }
     pub fn start_read(&mut self, stop: &Stop, deadline: Instant) -> Result<Operation<'_>> {
         self.check()?;
@@ -2667,5 +2881,58 @@ mod tests {
             assert!(Nonce::from_bootstrap(value).is_err());
         }
         assert!(Nonce::from_bootstrap("00000000000000000000000000000001").is_ok());
+    }
+
+    #[test]
+    fn bootstrap_server_and_client_mutual_peer_discovery_and_handoff() {
+        if !native_pipe_tests_supported() {
+            return;
+        }
+        let _guard = PIPE_TEST_LOCK.lock().unwrap();
+        let pipe_name = format!(
+            r"\\.\pipe\Sumibi.Bootstrap.Test.{}",
+            Nonce::random().unwrap().bootstrap()
+        );
+        let server = BootstrapServer::create(&pipe_name, 1).unwrap();
+        let stop = Stop::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        let client_pipe_name = pipe_name.clone();
+        let client_stop = stop.clone();
+        let client_handle = thread::spawn(move || {
+            Pipe::connect_bootstrap(&client_pipe_name, &client_stop, deadline)
+        });
+
+        let (server_pipe, client_peer) = server.accept(&stop, deadline).unwrap();
+        let (client_pipe, host_peer) = client_handle.join().unwrap().unwrap();
+
+        let current = PinnedProcess::current().unwrap();
+        assert!(client_peer.identity() == current.identity());
+        assert!(host_peer.identity() == current.identity());
+
+        // Perform one-shot handoff over the bootstrap connection
+        let offer_name = Nonce::random().unwrap();
+        let offer_broker = Nonce::random().unwrap();
+
+        let send_stop = stop.clone();
+        let send_client_peer = client_peer.try_clone().unwrap();
+        let send_offer_name = offer_name.clone();
+        let send_offer_broker = offer_broker.clone();
+        let send_handle = thread::spawn(move || {
+            crate::handoff::send(
+                server_pipe,
+                &send_client_peer,
+                &send_offer_name,
+                &send_offer_broker,
+                &send_stop,
+                deadline,
+            )
+        });
+
+        let received = crate::handoff::receive(client_pipe, &host_peer, &stop, deadline).unwrap();
+        assert_eq!(received.name.bootstrap(), offer_name.bootstrap());
+        assert_eq!(received.broker.bootstrap(), offer_broker.bootstrap());
+
+        send_handle.join().unwrap().unwrap();
     }
 }

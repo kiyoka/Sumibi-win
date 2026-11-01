@@ -822,3 +822,20 @@ Issue #4とPR #10は引き続き未完了・draftとして扱う。
 署名者証明書のSHA-1指紋を記録と照合する。自己署名の実DLLでは一致と不一致の
 拒否を確認し、Windowsの信頼検査は引き続き失敗する。これは開発用の整合性診断で、
 署名の信頼、製品の起動許可、実行中processの認証を提供しない。
+
+2026-11-01:
+1. [ADR 0082](adr/0082-system-module-lease-catalog.md) に基づき、保持された実DLL lease による静的依存エクスポート解決を実装した。
+   System32配下の実DLLを排他読取・reparse point拒否で開いて保持する `SystemModuleLease` と、有限forwarder追跡を行う `SystemModuleCatalog` を用意し、
+   Hostの非API set静的依存13モジュール（158シンボル、winhttp.dll / ws2_32.dll を含む）が最終RVAまで完全解決されることを検証した。
+2. [ADR 0083](adr/0083-api-set-boundary.md) に基づき、API setの調査（Microsoft公式仕様およびPEB ApiSetMap）を実施し、
+   contract名からの推測や内部構造体走査を禁止し、カタログ上では `ApiSetUnresolved` 拒否を維持する境界を確定した。
+3. [ADR 0084](adr/0084-host-control-broker-dispatch.md) に基づき、`HostControl` ワーカーループに peer 受付チャネル（`try_accept_peer` / `try_accept_private_peer`）と
+   変換ディスパッチ（`advance_native_chat` / `advance_diagnostic_chat`）を統合した。
+   同意前拒否 → 同意付与後の接続・許可 → 同意取消後の失効拒否 → 正常終了のライフサイクルを結合テストで検証した。
+4. [ADR 0085](adr/0085-logon-bootstrap-discovery.md) に基づき、独立したプロセス同士（常駐Hostと一般アプリ内TIP）が相互に発見・認証・ハンドオフを行う製品接続プロトコルを実装した。
+   - `PinnedProcess::from_peer_pid`: パイプ接続後にカーネルから取得したピア PID を同一ログオンセッション・同一デスクトップ・Medium Integrity（0x2000）・非昇格・非AppContainerの条件で固定・検証。
+   - `BootstrapServer` / `Pipe::connect_bootstrap`: ログオン限定パイプ `\\.\pipe\Sumibi.Bootstrap.v1.{logon_sid}` による相互発見と PID 照合・同一性検証。
+   - `discovery::discover_offer` / `serve_offer`: 認証済みブートストラップパイプを通じた一回限りプライベートパイプの handoff 転送。
+   - `Worker::prepare_discovered` / `Worker::prepare_discovery`: TSF STA スレッドを一切ブロックせず、バックグラウンド Worker 内で bootstrap 接続 → Host 相互認証 → handoff 受領 → プライベートパイプ接続 → Ready 政策取得までを自律完了。
+   - `HostControl::serve_bootstrap_handoff`: HostControl ワーカーループと bootstrap 待受の統合結合テスト（発見接続 → 政策 Ready → 予約 → 同意取消 → 予約拒否 → クローズ）を検証。
+   - 全体テスト 519 passed / 3 ignored（全件合格）。

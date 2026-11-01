@@ -211,6 +211,9 @@ enum Target {
         name: Nonce,
         peer: PinnedProcess,
     },
+    Discovery {
+        pipe_name: String,
+    },
 }
 struct Finished {
     state: Arc<State>,
@@ -368,6 +371,37 @@ impl Worker {
         Self::spawn(
             reservation,
             Target::Bootstrap { name, peer: host },
+            Mode::Pinned,
+            Some(deadline),
+        )
+    }
+
+    /// Discover a running Host via the current user's logon-scoped bootstrap pipe,
+    /// authenticate its pinned process, receive a one-shot private peer offer,
+    /// and prepare the channel completely on the worker thread.
+    pub fn prepare_discovered(reservation: Reservation, deadline: Instant) -> Result<Self> {
+        let pipe_name = crate::pipe::current_bootstrap_pipe_name()?;
+        Self::prepare_discovery(reservation, pipe_name, deadline)
+    }
+
+    /// Discover a running Host via an explicit logon-scoped bootstrap pipe name,
+    /// authenticate its pinned process, receive a one-shot private peer offer,
+    /// and prepare the channel completely on the worker thread.
+    pub fn prepare_discovery(
+        reservation: Reservation,
+        pipe_name: String,
+        deadline: Instant,
+    ) -> Result<Self> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Error::Timeout);
+        }
+        if remaining > Duration::from_secs(60) {
+            return Err(Error::InvalidArgument);
+        }
+        Self::spawn(
+            reservation,
+            Target::Discovery { pipe_name },
             Mode::Pinned,
             Some(deadline),
         )
@@ -670,6 +704,23 @@ fn run(
                         )
                     })
             }
+            Some(Target::Discovery { pipe_name }) => Pipe::connect_bootstrap(
+                &pipe_name,
+                &state.stop,
+                deadline,
+            )
+            .and_then(|(pipe, host_peer)| {
+                crate::handoff::receive(pipe, &host_peer, &state.stop, deadline).and_then(|offer| {
+                    Channel::connect_pinned_reserved(
+                        &offer.name,
+                        offer.broker,
+                        host_peer,
+                        &state.stop,
+                        deadline,
+                        reservation.clone(),
+                    )
+                })
+            }),
             _ => Err(Error::InvalidArgument),
         };
         match opened.and_then(|mut opened| {
@@ -749,7 +800,8 @@ fn run(
                     )?,
                     Target::Handoff { .. }
                     | Target::Listening { .. }
-                    | Target::Bootstrap { .. } => return Err(Error::InvalidArgument),
+                    | Target::Bootstrap { .. }
+                    | Target::Discovery { .. } => return Err(Error::InvalidArgument),
                 };
                 peer = Some(opened.peer_process()?);
                 channel = Some(opened);
@@ -962,5 +1014,92 @@ mod tests {
         let completion = receive.try_recv().unwrap();
         assert_eq!(completion.id, 1);
         assert!(matches!(completion.outcome(), Err(Error::Cancelled)));
+    }
+
+    #[test]
+    fn worker_prepares_discovery_over_bootstrap_pipe() {
+        use std::thread;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let stop = Stop::new().unwrap();
+        let pipe_name = format!(
+            r"\\.\pipe\Sumibi.Bootstrap.Test.{}",
+            Nonce::random().unwrap().bootstrap()
+        );
+        let bootstrap_server = crate::pipe::BootstrapServer::create(&pipe_name, 1).unwrap();
+
+        let private_name = Nonce::random().unwrap();
+        let private_server = Server::create(&private_name).unwrap();
+        let broker_id = Nonce::random().unwrap();
+
+        let s_stop = stop.clone();
+        let s_private_name = private_name.clone();
+        let s_broker_id = broker_id.clone();
+        let server_thread = thread::spawn(move || {
+            let (pipe, client_peer) = bootstrap_server.accept(&s_stop, deadline).unwrap();
+            crate::handoff::send(
+                pipe,
+                &client_peer,
+                &s_private_name,
+                &s_broker_id,
+                &s_stop,
+                deadline,
+            )
+            .unwrap();
+            let mut private_pipe = private_server
+                .accept(client_peer, &s_stop, deadline)
+                .unwrap();
+            // Read client Hello frame
+            let mut inbox = crate::framed::FrameInbox::default();
+            let chunk = private_pipe
+                .start_read(&s_stop, deadline)
+                .unwrap()
+                .wait()
+                .unwrap();
+            inbox.push(chunk.bytes).unwrap();
+            let hello_envelope = inbox.next_frame().unwrap().unwrap();
+            let client_session_id = hello_envelope.session;
+
+            // Write Ready policy frame
+            let envelope = sumibi_protocol::message::Envelope {
+                version: sumibi_protocol::message::VERSION,
+                session: client_session_id,
+                generation: 1,
+                message: sumibi_protocol::message::Message::Ready(
+                    sumibi_protocol::message::Ready {
+                        broker: s_broker_id.id(),
+                        policy: sumibi_protocol::message::Policy {
+                            settings: 1,
+                            authorization: 1,
+                            allowed: true,
+                        },
+                    },
+                ),
+            };
+            let frame = sumibi_protocol::message::encode(&envelope).unwrap();
+            private_pipe.write_all(frame, &s_stop, deadline).unwrap();
+            // Keep pipe alive until client finishes
+            let _ = private_pipe.start_read(&s_stop, deadline).unwrap().wait();
+        });
+
+        let reservation = Reservation::acquire().unwrap();
+        let mut worker = Worker::prepare_discovery(reservation, pipe_name, deadline).unwrap();
+
+        let prepare_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(Instant::now() < prepare_deadline, "preparation timed out");
+            match worker.prepared_policy() {
+                Ok(Some(policy)) => {
+                    assert!(policy.allowed);
+                    break;
+                }
+                Ok(None) => thread::sleep(Duration::from_millis(5)),
+                Err(error) => panic!("preparation failed: {error:?}"),
+            }
+        }
+
+        let permit = worker.reserve(1).unwrap();
+        drop(permit);
+        worker.shutdown(Duration::from_secs(1)).unwrap();
+        server_thread.join().unwrap();
     }
 }

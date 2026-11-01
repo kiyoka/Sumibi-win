@@ -14,6 +14,8 @@ pub mod channel;
 #[cfg(windows)]
 pub mod development_placement;
 #[cfg(windows)]
+pub mod discovery;
+#[cfg(windows)]
 pub mod dll_exports;
 #[cfg(windows)]
 pub mod export_resolver;
@@ -46,8 +48,9 @@ pub mod worker;
 pub use identity::PinnedProcess;
 #[cfg(windows)]
 pub use pipe::{
-    wait_any, AcceptTask, Completion, Operation, Pipe, ReadBatch, ReadRequest, Server,
-    SharedAnchor, Stop, WriteBatch, WriteRequest, MAX_ENDPOINTS,
+    bootstrap_pipe_name_for_sid, current_bootstrap_pipe_name, wait_any, AcceptTask,
+    BootstrapServer, Completion, Operation, Pipe, ReadBatch, ReadRequest, Server, SharedAnchor,
+    Stop, WriteBatch, WriteRequest, MAX_ENDPOINTS,
 };
 #[cfg(windows)]
 pub use support::{Error, Nonce, Result};

@@ -51,6 +51,29 @@ impl PinnedProcess {
         // SAFETY: caller borrows a live process launch handle for this call.
         unsafe { Self::duplicate(HANDLE(handle.as_raw_handle())) }
     }
+    /// Open and pin an ordinary desktop process by PID.
+    /// Used only during mutual peer verification over an active named pipe.
+    /// Fails closed if the peer is elevated, in an AppContainer, has non-medium
+    /// integrity, or belongs to a different desktop/logon session.
+    pub fn from_peer_pid(pid: u32) -> Result<Self> {
+        primary_thread()?;
+        if pid == 0 {
+            return Err(Error::InvalidArgument);
+        }
+        let current_identity = unsafe { identity(GetCurrentProcess())? };
+        let handle = unsafe {
+            own(OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                false,
+                pid,
+            )?)
+        };
+        let pinned = Self::owned(handle)?;
+        if !pinned.identity.same_desktop(&current_identity) {
+            return Err(Error::WrongPeer);
+        }
+        Ok(pinned)
+    }
     unsafe fn duplicate(source: HANDLE) -> Result<Self> {
         let mut duplicated = HANDLE::default();
         // SAFETY: duplicate into this process with only query/synchronize rights.
@@ -454,5 +477,25 @@ mod tests {
         assert_eq!(result.unwrap(), command_path);
         assert_eq!(pinned.observed_image_path(), Err(Error::Disconnected));
         println!("pinned child image observed and rejected after exit");
+    }
+
+    #[test]
+    fn from_peer_pid_pins_current_desktop_and_rejects_invalid_pid() {
+        if matches!(
+            PinnedProcess::current(),
+            Err(Error::UnsupportedAppContainer
+                | Error::UnsupportedElevation
+                | Error::UnsupportedIntegrity)
+        ) {
+            eprintln!("from_peer_pid test skipped: unsupported caller");
+            return;
+        }
+        assert!(matches!(
+            PinnedProcess::from_peer_pid(0),
+            Err(Error::InvalidArgument)
+        ));
+        let pinned = PinnedProcess::from_peer_pid(std::process::id()).unwrap();
+        let current = PinnedProcess::current().unwrap();
+        assert!(pinned.identity() == current.identity());
     }
 }
