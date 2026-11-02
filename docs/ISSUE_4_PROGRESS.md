@@ -935,7 +935,16 @@ Issue #4とPR #10は引き続き未完了・draftとして扱う。
     - `crates/sumibi-host/src/consent_window.rs`:
       - ウィンドウの「×」閉じるボタンおよび最小化ボタン（`SC_MINIMIZE`）押下時に、プロセスを終了せずウィンドウを非表示（`SW_HIDE`）にしてトレイへ格納し、バックグラウンド待受を継続。
       - トレイメニューからの設定画面（`settings_window`）起動、および「Host を終了」による安全な停止シーケンスを統合。
-11. 全体検証:
+11. [ADR 0093](adr/0093-background-minimized-host-startup.md) に基づき、製品 Host のバックグラウンド常駐起動オプション（`--minimized` / `--tray` / `-m`）を実装した。
+    - `crates/sumibi-host/src/consent_window.rs`:
+      - `run(path: PathBuf, start_minimized: bool)` および `View::new(start_minimized: bool)` を拡張。
+      - `start_minimized == true` 時にウィンドウを `SW_HIDE` で生成し、画面を表示せずトレイアイコンのみ登録して直ちに待受を開始。
+    - `crates/sumibi-host/src/main.rs`:
+      - コマンドライン引数 `--minimized` / `--tray` / `-m` をパースし、引数なしまたは `host-window` 起動時に最小化常駐を適用。
+      - `--help` 出力にオプションの説明を追加。
+    - `crates/sumibi-host/tests/startup_cli.rs`:
+      - `host_cli_help_displays_minimized_option` テストを追加・検証。
+12. 全体検証:
    - `powershell -ExecutionPolicy Bypass -File .\dev.ps1 test-all`: **全件合格**。
      - standard workspace tests: 532 passed, 0 failed, 4 ignored。
      - workspace tests with sumibi-host/spike: 532 passed, 0 failed, 4 ignored。

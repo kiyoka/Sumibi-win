@@ -174,7 +174,7 @@ fn status_text(status: &HostStatus) -> &'static str {
     }
 }
 impl View {
-    fn new() -> WinResult<Self> {
+    fn new(start_minimized: bool) -> WinResult<Self> {
         unsafe {
             let instance = GetModuleHandleW(None)?;
             let class = w!("SumibiHostConsent");
@@ -297,16 +297,16 @@ impl View {
             if SetTimer(Some(hwnd), 1, 50, None) == 0 {
                 return Err(windows::core::Error::from_thread());
             }
-            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = ShowWindow(hwnd, if start_minimized { SW_HIDE } else { SW_SHOW });
             Ok(view)
         }
     }
 }
 
-pub fn run(path: PathBuf) -> Result<(), &'static str> {
+pub fn run(path: PathBuf, start_minimized: bool) -> Result<(), &'static str> {
     // Construct the native view first, so a UI creation failure cannot leave
     // an unpolled Host running while main exits the process.
-    let view = View::new().map_err(|_| "host window unavailable")?;
+    let view = View::new(start_minimized).map_err(|_| "host window unavailable")?;
     let mut service = HostService::start(path.clone()).map_err(|_| "host service unavailable")?;
     let mut displayed: Option<ConsentOffer> = None;
     let mut finished = None;

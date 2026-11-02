@@ -15,7 +15,12 @@ mod tray;
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
 
-    if args.is_empty() {
+    let is_minimized_flag =
+        |arg: &std::ffi::OsString| arg == "--minimized" || arg == "--tray" || arg == "-m";
+    let start_minimized = args.iter().any(is_minimized_flag);
+    let non_flag_args: Vec<_> = args.iter().filter(|arg| !is_minimized_flag(arg)).collect();
+
+    if non_flag_args.is_empty() {
         let path = match host_paths::settings_path() {
             Ok(path) => path,
             Err(()) => {
@@ -26,7 +31,7 @@ fn main() {
         // If configured, launch the consent window and background service.
         // Otherwise, launch the settings window to allow initial setup.
         if path.exists() {
-            if let Err(message) = consent_window::run(path) {
+            if let Err(message) = consent_window::run(path, start_minimized) {
                 eprintln!("{message}");
                 std::process::exit(1);
             }
@@ -37,9 +42,9 @@ fn main() {
         return;
     }
 
-    if args
+    if non_flag_args
         .first()
-        .is_some_and(|arg| arg == "--help" || arg == "-h" || arg == "help")
+        .is_some_and(|arg| **arg == "--help" || **arg == "-h" || **arg == "help")
     {
         println!("Sumibi Host service and settings management");
         println!();
@@ -53,16 +58,21 @@ fn main() {
         println!("  settings-init <host> <model> [base-path] Initialize settings file");
         println!("  startup-check [path]      Verify settings and credential status");
         println!("  help, --help, -h          Show this help message");
+        println!();
+        println!("Options:");
+        println!(
+            "  --minimized, --tray, -m   Start minimized to system tray without displaying window"
+        );
         return;
     }
 
-    if args
+    if non_flag_args
         .first()
-        .is_some_and(|arg| arg == "run" || arg == "host-run")
+        .is_some_and(|arg| **arg == "run" || **arg == "host-run")
     {
-        let path = match args.len() {
+        let path = match non_flag_args.len() {
             1 => host_paths::settings_path().ok(),
-            2 => Some(std::path::PathBuf::from(&args[1])),
+            2 => Some(std::path::PathBuf::from(non_flag_args[1])),
             _ => None,
         };
         if let Err(message) = path
@@ -74,25 +84,31 @@ fn main() {
         }
         return;
     }
-    if args.first().is_some_and(|arg| arg == "host-window") {
-        let path = match args.len() {
+    if non_flag_args
+        .first()
+        .is_some_and(|arg| **arg == "host-window")
+    {
+        let path = match non_flag_args.len() {
             1 => host_paths::settings_path().ok(),
-            2 => Some(std::path::PathBuf::from(&args[1])),
+            2 => Some(std::path::PathBuf::from(non_flag_args[1])),
             _ => None,
         };
         if let Err(message) = path
-            .ok_or("usage: sumibi-host host-window [absolute-settings-path]")
-            .and_then(consent_window::run)
+            .ok_or("usage: sumibi-host host-window [--minimized] [absolute-settings-path]")
+            .and_then(|p| consent_window::run(p, start_minimized))
         {
             eprintln!("{message}");
             std::process::exit(1);
         }
         return;
     }
-    if args.first().is_some_and(|arg| arg == "settings-window") {
-        let path = match args.len() {
+    if non_flag_args
+        .first()
+        .is_some_and(|arg| **arg == "settings-window")
+    {
+        let path = match non_flag_args.len() {
             1 => host_paths::settings_path().ok(),
-            2 => Some(std::path::PathBuf::from(&args[1])),
+            2 => Some(std::path::PathBuf::from(non_flag_args[1])),
             _ => None,
         };
         let result = path
