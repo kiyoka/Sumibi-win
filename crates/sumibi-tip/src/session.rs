@@ -86,6 +86,15 @@ enum WorkerEvent {
     Failed { request_id: u64 },
 }
 
+fn debug_log(msg: &str) {
+    let wide: Vec<u16> = format!("[Sumibi-TIP] {msg}\0").encode_utf16().collect();
+    unsafe {
+        windows::Win32::System::Diagnostics::Debug::OutputDebugStringW(windows::core::PCWSTR(
+            wide.as_ptr(),
+        ));
+    }
+}
+
 struct DrainSink {
     owner: ThreadId,
     manager: ITfThreadMgr,
@@ -115,7 +124,15 @@ impl DrainSink {
                                 text,
                             );
                             if result.is_ok() {
+                                debug_log(&format!(
+                                    "Drain applied text for request_id={pending_id}"
+                                ));
                                 handled = true;
+                            } else if let Err(err) = result {
+                                debug_log(&format!(
+                                    "Drain finish rejected for request_id={pending_id}: HRESULT 0x{:08x}",
+                                    err.code().0 as u32
+                                ));
                             }
                         } else {
                             let mut t = ticket;
@@ -354,10 +371,14 @@ impl TipHostSession {
 
         // 1. Consent and readiness gate: if not ready, ignore key immediately (never read text!)
         if !self.state.is_ready() {
+            debug_log(
+                "Preserved key ignored: host session is not ready (not connected or not allowed)",
+            );
             return Ok(false.into());
         }
 
         let Some(context) = context else {
+            debug_log("Preserved key ignored: TSF context is None");
             return Ok(false.into());
         };
 
@@ -381,14 +402,22 @@ impl TipHostSession {
             deadline,
         ) {
             Ok(ticket) => ticket,
-            Err(_) => {
+            Err(error) => {
+                debug_log(&format!(
+                    "Preserved key capture rejected: HRESULT 0x{:08x}",
+                    error.code().0 as u32
+                ));
                 return Ok(false.into());
             }
         };
 
         let text = match ticket.source() {
             Ok(source) => source,
-            Err(_) => {
+            Err(error) => {
+                debug_log(&format!(
+                    "Preserved key source rejected: HRESULT 0x{:08x}",
+                    error.code().0 as u32
+                ));
                 return Ok(false.into());
             }
         };
@@ -408,10 +437,14 @@ impl TipHostSession {
             })
             .is_err()
         {
+            debug_log("Preserved key dispatch failed: command sender queue full");
             self.sink.cancel_pending();
             return Ok(false.into());
         }
 
+        debug_log(&format!(
+            "Preserved key conversion dispatched: request_id={request_id}"
+        ));
         Ok(true.into())
     }
 

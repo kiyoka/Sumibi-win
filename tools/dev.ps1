@@ -8,7 +8,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('session-test', 'build', 'build-tip', 'test', 'test-all', 'check', 'fmt', 'verify', 'ci', 'help')]
+    [ValidateSet('session-test', 'build', 'build-tip', 'test', 'test-all', 'check', 'fmt', 'verify', 'ci', 'register-dev', 'unregister-dev', 'verify-com', 'help')]
     [string]$Task = 'session-test',
 
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -111,18 +111,42 @@ try {
                 & powershell -ExecutionPolicy Bypass -File "$PSScriptRoot/dev.ps1" verify
             }
         }
+        'register-dev' {
+            Invoke-Step 'Build sumibi-tip' {
+                & cargo build --package sumibi-tip --features spike
+            }
+            Invoke-Step 'Build sumibi-setup' {
+                & cargo build --package sumibi-setup
+            }
+            Invoke-Step 'Register development COM class in HKCU' {
+                & cargo run --package sumibi-setup -- register-com-dev --dll target/debug/sumibi_tip.dll
+            }
+        }
+        'unregister-dev' {
+            Invoke-Step 'Unregister development COM class in HKCU' {
+                & cargo run --package sumibi-setup -- unregister-com-dev
+            }
+        }
+        'verify-com' {
+            Invoke-Step 'Verify development COM class in HKCU' {
+                & cargo run --package sumibi-setup -- verify-com-dev
+            }
+        }
         'help' {
             Write-Host "Usage: .\tools\dev.ps1 <task> [extra args...]" -ForegroundColor Yellow
             Write-Host "Available tasks:"
-            Write-Host "  session-test  : Build sumibi-tip with spike and run session-key-test (default)"
-            Write-Host "  build-tip     : Build sumibi-tip with spike feature"
-            Write-Host "  build         : Build entire workspace"
-            Write-Host "  test          : Run workspace unit/integration tests"
-            Write-Host "  test-all      : Run workspace tests, image security checks, and session tests"
-            Write-Host "  check         : Run cargo fmt check and clippy (-D warnings)"
-            Write-Host "  fmt           : Run cargo fmt --all"
-            Write-Host "  verify / ci   : Run fmt, check, and test-all end-to-end"
-            Write-Host "  help          : Show this message"
+            Write-Host "  session-test   : Build sumibi-tip with spike and run session-key-test (default)"
+            Write-Host "  build-tip      : Build sumibi-tip with spike feature"
+            Write-Host "  build          : Build entire workspace"
+            Write-Host "  test           : Run workspace unit/integration tests"
+            Write-Host "  test-all       : Run workspace tests, image security checks, and session tests"
+            Write-Host "  check          : Run cargo fmt check and clippy (-D warnings)"
+            Write-Host "  fmt            : Run cargo fmt --all"
+            Write-Host "  verify / ci    : Run fmt, check, and test-all end-to-end"
+            Write-Host "  register-dev   : Register development COM class in HKCU for sumibi_tip.dll"
+            Write-Host "  unregister-dev : Unregister development COM class from HKCU"
+            Write-Host "  verify-com     : Verify development COM registration in HKCU"
+            Write-Host "  help           : Show this message"
         }
     }
 }

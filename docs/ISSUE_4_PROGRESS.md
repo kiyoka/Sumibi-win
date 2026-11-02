@@ -919,7 +919,15 @@ Issue #4とPR #10は引き続き未完了・draftとして扱う。
      - 待受案内文を更新し、バックグラウンドで一般アプリからの変換要求を待受中であることを明示。
    - `crates/sumibi-host/tests/startup_cli.rs`:
      - `host_cli_help_displays_usage_and_commands` テストを追加・検証。
-9. 全体検証:
+9. [ADR 0091](adr/0091-manual-app-verification-and-diagnostics.md) に基づき、一般アプリ実機検証手順と非機密 TSF 保護診断を整備した。
+   - `crates/sumibi-tip/src/session.rs`:
+     - ホットキー押下時（`on_preserved_key`）およびドレイン完了時（`DrainSink::drain`）に、機密本文テキストを一切含まず、固定の識別子・エラーコード（HRESULT）のみを `OutputDebugStringW` へ出力する非機密診断機能を追加。
+     - 一般アプリ（Notepad 等）の実プロセス内で動作した際の Fail-Closed 拒否理由（`HiddenTextPossible` による `0x80070005`、空選択による `0x80004004` 等）を外部デバッガ（DebugView 等）から安全に観測可能とした。
+   - 統合開発ランナー（`dev.ps1` / `tools/dev.ps1` / `Makefile`）の拡張:
+     - `register-dev`（HKCU への開発用 COM クラス一時登録と検証）、`unregister-dev`（安全な登録解除）、`verify-com`（登録状態検証）タスクを追加。
+   - 実機手動検証手順書 [`docs/MANUAL_APP_VERIFICATION.md`](MANUAL_APP_VERIFICATION.md) の策定:
+     - 安全原則（HKLM への恒久登録禁止、テスト後の確実な解除）、ビルド・Host 起動・TIP 登録・Notepad 等での挙動確認・クリーンアップまでの手順を体系化。
+10. 全体検証:
    - `powershell -ExecutionPolicy Bypass -File .\dev.ps1 test-all`: **全件合格**。
      - standard workspace tests: 532 passed, 0 failed, 4 ignored。
      - workspace tests with sumibi-host/spike: 532 passed, 0 failed, 4 ignored。
