@@ -155,7 +155,8 @@ fn prepare(
     credential: &str,
     source: &str,
 ) -> Result<(SocketAddr, String, Vec<u8>), TransportError> {
-    if !sumibi_protocol::message::valid_text(source) {
+    if destination.scheme() != Scheme::HttpLoopback || !sumibi_protocol::message::valid_text(source)
+    {
         return Err(TransportError::InvalidRequest);
     }
     let body =
@@ -168,7 +169,7 @@ fn prepare_body(
     credential: &str,
     body: Vec<u8>,
 ) -> Result<(SocketAddr, String, Vec<u8>), TransportError> {
-    if destination.scheme() != Scheme::HttpLoopback
+    if (destination.scheme() != Scheme::HttpLoopback && destination.scheme() != Scheme::Https)
         || !credential.bytes().all(|byte| byte.is_ascii_graphic())
         || credential.is_empty()
     {

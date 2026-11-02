@@ -130,6 +130,7 @@ enum Exercise {
     NativeEdit,
     BrokerKeys,
     BrokerHttpKeys,
+    SessionKeys,
     BrokerInput,
     Protection,
     Composition,
@@ -265,6 +266,7 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "native-edit-test"
             && args[0] != "broker-key-test"
             && args[0] != "broker-http-key-test"
+            && args[0] != "session-key-test"
             && args[0] != "broker-input-test"
             && args[0] != "protection-test"
             && args[0] != "composition-test"
@@ -289,7 +291,7 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "demo")
     {
         return Err(
-            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|window-test-interactive|input-test|close-test|delayed-test|broker-test|range-target-test|native-edit-test|broker-key-test|broker-http-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|composing-input-test|composing-demo|input-notify-test|transaction-input-test|backspace-input-test|grapheme-input-test|recovery-input-test|waiting-input-test|waiting-input-test-interactive|waiting-demo|waiting-demo-test|waiting-demo-test-interactive|recovery-demo|transaction-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
+            "usage: sumibi-setup <plan|probe|self-test|edit-test|key-test|window-test|window-test-interactive|input-test|close-test|delayed-test|broker-test|range-target-test|native-edit-test|broker-key-test|broker-http-key-test|session-key-test|broker-input-test|protection-test|composition-test|owned-composition-test|tracking-input-test|tracking-demo|composing-input-test|composing-demo|input-notify-test|transaction-input-test|backspace-input-test|grapheme-input-test|recovery-input-test|waiting-input-test|waiting-input-test-interactive|waiting-demo|waiting-demo-test|waiting-demo-test-interactive|recovery-demo|transaction-demo|broker-demo|demo> --dll <sumibi_tip.dll>"
                 .into(),
         );
     }
@@ -350,6 +352,7 @@ pub(super) fn run() -> Result<(), Failure> {
                 Some("native-edit-test") => Exercise::NativeEdit,
                 Some("broker-key-test") => Exercise::BrokerKeys,
                 Some("broker-http-key-test") => Exercise::BrokerHttpKeys,
+                Some("session-key-test") => Exercise::SessionKeys,
                 Some("broker-input-test") => Exercise::BrokerInput,
                 Some("protection-test") => Exercise::Protection,
                 Some("composition-test") => Exercise::Composition,
@@ -522,6 +525,9 @@ fn registered_probe(
             }
             Exercise::BrokerHttpKeys => {
                 crate::edit_host::exercise_broker_keys(&manager.0, app_client, true)?
+            }
+            Exercise::SessionKeys => {
+                crate::edit_host::exercise_session_keys(&manager.0, app_client)?
             }
             Exercise::BrokerInput => {
                 crate::edit_host::exercise_broker_input(&manager.0, app_client)?

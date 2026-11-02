@@ -84,6 +84,7 @@ impl KeySink {
         }
         .into()
     }
+    #[allow(dead_code)]
     #[cfg(feature = "spike")]
     pub(super) fn with_controller(controller: Weak<Controller>) -> ITfKeyEventSink {
         Self::with_controller_and_session(controller, Weak::new())
@@ -153,9 +154,11 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         };
         #[cfg(feature = "spike")]
         if let Some(controller) = self.controller.upgrade() {
-            return Ok(crate::com::boundary(|| controller.convert(context))
-                .is_ok()
-                .into());
+            if controller.has_grant(context) {
+                return Ok(crate::com::boundary(|| controller.convert(context))
+                    .is_ok()
+                    .into());
+            }
         }
         if let Some(session) = self.session.upgrade() {
             return session.on_preserved_key(Some(context), unsafe { &*_key });

@@ -201,7 +201,11 @@ impl ITfTextInputProcessor_Impl for Tip_Impl {
                 .ok()
                 .map(Rc::new);
             #[cfg(feature = "spike")]
-            let controller = Controller::new(manager, client);
+            let controller = Controller::new(
+                manager,
+                client,
+                session.as_ref().map(Rc::downgrade).unwrap_or_default(),
+            );
             #[cfg(feature = "spike")]
             let provider = ProviderSubscription::register(manager, client, &controller)?;
             #[cfg(feature = "spike")]
@@ -316,7 +320,7 @@ mod tests {
             {
                 let manager = crate::mock::new_manager();
                 let interface = manager.to_interface::<ITfThreadMgr>();
-                let state = crate::spike::Controller::new(&interface, 7);
+                let state = crate::spike::Controller::new(&interface, 7, std::rc::Weak::new());
                 let control = crate::spike::control(&state)
                     .cast::<crate::spike::ISpikeControl>()
                     .unwrap();

@@ -39,6 +39,9 @@ pub(super) use native_edit_host::exercise_native_edit;
 #[path = "broker_keys.rs"]
 mod broker_keys;
 pub(super) use broker_keys::exercise_broker_keys;
+#[path = "session_keys.rs"]
+mod session_keys;
+pub(super) use session_keys::exercise_session_keys;
 #[path = "scope_fixture.rs"]
 mod scope_fixture;
 use scope_fixture::{scope_value, ScopeSpec};

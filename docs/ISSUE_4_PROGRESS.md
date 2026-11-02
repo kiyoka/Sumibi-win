@@ -894,10 +894,28 @@ Issue #4とPR #10は引き続き未完了・draftとして扱う。
      - `WM_SUMIBI_DRAIN` (`WM_APP + 42`): バックグラウンドワーカーから `PostMessageW` で非同期に STA スレッドを起こし、`WindowProc` 経由で自動的に `sink.drain()` を実行してテキストを置換適用。
      - `session.close()` 時に `GWLP_USERDATA` のクリアと `DestroyWindow` を直列化し、破棄後の不正参照を構造的に防止。
      - 単体テスト `drain_window_posts_and_processes_message_on_sta_thread`（別スレッドからの `PostMessageW` 送信 → STA メッセージループ起床 → `WindowProc` での `sink.drain()` 自動実行とイベント消費）を検証。
-6. 全体検証:
-   - `cargo test --workspace`: **530 passed, 0 failed, 4 ignored（全件合格）**。
-   - `cargo test --workspace --features sumibi-host/spike`: **530 passed, 0 failed, 4 ignored（全件合格）**。
-   - `cargo clippy --workspace --all-targets --locked --offline -- -D warnings`: 警告ゼロ。
-   - `cargo fmt --all --check`: 差分なし。
-   - `Test-HostImage.ps1`: 全 37 テスト合格。
-   - `Test-SuspendedImageProbe.ps1`: 全 6 テスト合格。
+6. [ADR 0089](adr/0089-end-to-end-session-key-conversion.md) に基づき、実 DLL（`sumibi_tip.dll`）と外部常駐 Host（`HostService`）のエンドツーエンド自律セッション結合検証（`sumibi-setup session-key-test`）を実装・完全成立させた。
+   - `crates/sumibi-tip/src/spike.rs` & `keys.rs`:
+     - `has_grant` によるディスパッチ調停（明示的テスト grant なし時は実機同様に `TipHostSession` へディスパッチ）。
+     - `KeySink` への `session: Weak<TipHostSession>` 引き継ぎ。
+     - `SharedSessionState` の初期 `input` revision を `1` に設定し、`ManualConversion` gate の前提条件を満たすよう整合。
+   - `crates/sumibi-host/src/diagnostic_http.rs`:
+     - `prepare_body` において、`Destination` のループバック検証（`address.is_loopback()`）を維持したまま `Scheme::Https`（`ConsentOffer::can_grant()` 要件）を許容し、E2E のモック HTTP サーバー結合を実現。
+   - `crates/sumibi-setup/src/session_keys.rs`:
+     - 全 5 シナリオを網羅するエンドツーエンド検証 Harness を新設。
+     - シナリオ 1: 未同意時の Fail-Closed（ホットキー即時拒否、`body_reads == 0`）。
+     - シナリオ 2: 自律発見・接続、ホットキー受付、バックグラウンド変換（"nihongo" → "日本語"）、`WM_SUMIBI_DRAIN` による STA 非同期テキスト置換（"prefix 日本語 suffix"）。
+     - シナリオ 3: TextStore の 1-step Undo（"prefix nihongo suffix" への完全復元）。
+     - シナリオ 4: 同意失効時の自律検知と Fail-Closed（失効後は即時拒絶、`body_reads` 増加なし）。
+     - シナリオ 5: 終了処理、COM/TSF プロファイルの登録解除と `DllCanUnloadNow` クリーンアップ。
+7. 開発・検証統合ランナー（`dev.ps1` / `tools/dev.ps1` / `Makefile`）の導入:
+   - 頻出するビルド・テスト・検証コマンドを 1 つの PowerShell スクリプト（`.\dev.ps1 <task>`）に集約し、Antigravity / エージェント環境における権限許可の問い合わせ回数を最小限（プレフィックス承認で 1 回）に抑制。
+   - サポートタスク: `session-test`, `build`, `build-tip`, `test`, `test-all`, `check`, `fmt`, `verify`, `ci`, `help`。
+8. 全体検証:
+   - `powershell -ExecutionPolicy Bypass -File .\dev.ps1 test-all`: **全件合格**。
+     - standard workspace tests: 531 passed, 0 failed, 4 ignored。
+     - workspace tests with sumibi-host/spike: 531 passed, 0 failed, 4 ignored。
+     - `Test-HostImage.ps1`: 全 37 テスト合格。
+     - `Test-SuspendedImageProbe.ps1`: 全 6 テスト合格。
+     - `session-key-test`: 全 5 シナリオ完全合格。
+   - `powershell -ExecutionPolicy Bypass -File .\dev.ps1 check`: 警告・フォーマット差分ゼロ。

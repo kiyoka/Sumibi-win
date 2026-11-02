@@ -39,6 +39,7 @@ const WM_SUMIBI_DRAIN: u32 = WM_APP + 42;
 pub struct SharedSessionState {
     connected: AtomicBool,
     allowed: AtomicBool,
+    input: AtomicU64,
     settings: AtomicU64,
     authorization: AtomicU64,
 }
@@ -48,6 +49,7 @@ impl SharedSessionState {
         Self {
             connected: AtomicBool::new(false),
             allowed: AtomicBool::new(false),
+            input: AtomicU64::new(1),
             settings: AtomicU64::new(0),
             authorization: AtomicU64::new(0),
         }
@@ -63,7 +65,7 @@ impl SharedSessionState {
 
     pub fn revision(&self) -> Revision {
         Revision {
-            input: 0,
+            input: self.input.load(Ordering::Acquire),
             settings: self.settings.load(Ordering::Acquire),
             authorization: self.authorization.load(Ordering::Acquire),
         }
@@ -309,13 +311,18 @@ impl TipHostSession {
             return Ok(());
         }
         let keys: ITfKeystrokeMgr = self.manager.cast()?;
-        unsafe {
+        let res = unsafe {
             keys.PreserveKey(
                 self.client,
                 &COMMAND_CONVERT,
                 &CONVERT_KEY,
                 &"Sumibi conversion".encode_utf16().collect::<Vec<_>>(),
-            )?;
+            )
+        };
+        if let Err(error) = res {
+            if error.code().0 as u32 != 0x80040205 {
+                return Err(error);
+            }
         }
         self.preserved_registered.set(true);
         Ok(())
@@ -374,12 +381,16 @@ impl TipHostSession {
             deadline,
         ) {
             Ok(ticket) => ticket,
-            Err(_) => return Ok(false.into()),
+            Err(_) => {
+                return Ok(false.into());
+            }
         };
 
         let text = match ticket.source() {
             Ok(source) => source,
-            Err(_) => return Ok(false.into()),
+            Err(_) => {
+                return Ok(false.into());
+            }
         };
 
         let revision = ticket.revision();
@@ -455,9 +466,19 @@ fn worker_loop(
     while !stop.is_cancelled().unwrap_or(true) {
         // 1. Ensure worker connection
         if current_worker.is_none() || current_worker.as_ref().is_some_and(|w| w.is_closed()) {
+            let was_reconnect = current_worker.is_some();
             state.connected.store(false, Ordering::Release);
             state.allowed.store(false, Ordering::Release);
             current_worker = None;
+
+            if was_reconnect {
+                for _ in 0..6 {
+                    if stop.is_cancelled().unwrap_or(true) {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
 
             if let Ok(pipe_name) = current_bootstrap_pipe_name() {
                 if let Ok(reservation) = Reservation::acquire() {
@@ -470,13 +491,47 @@ fn worker_loop(
             }
 
             if current_worker.is_none() {
-                // Sleep briefly with cancellation check
                 for _ in 0..10 {
                     if stop.is_cancelled().unwrap_or(true) {
                         return;
                     }
                     thread::sleep(Duration::from_millis(50));
                 }
+                continue;
+            }
+
+            // Await initial policy preparation on the newly created worker
+            let prep_deadline = Instant::now() + Duration::from_secs(3);
+            let mut prep_ok = false;
+            while Instant::now() < prep_deadline {
+                if stop.is_cancelled().unwrap_or(true) {
+                    return;
+                }
+                match current_worker.as_ref().unwrap().prepared_policy() {
+                    Ok(Some(policy)) => {
+                        state.settings.store(policy.settings, Ordering::Release);
+                        state
+                            .authorization
+                            .store(policy.authorization, Ordering::Release);
+                        state.allowed.store(policy.allowed, Ordering::Release);
+                        state.connected.store(true, Ordering::Release);
+                        prep_ok = true;
+                        break;
+                    }
+                    Ok(None) => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => {
+                        // Handshake failed or PolicyDenied (e.g. unconsented)
+                        break;
+                    }
+                }
+            }
+
+            if !prep_ok {
+                state.connected.store(false, Ordering::Release);
+                state.allowed.store(false, Ordering::Release);
+                current_worker = None;
                 continue;
             }
         }
@@ -495,17 +550,10 @@ fn worker_loop(
             }
             Ok(None) => {}
             Err(_) => {
-                // Connection broken or unconsented PolicyDenied
+                // Connection broken or revoked
                 state.connected.store(false, Ordering::Release);
                 state.allowed.store(false, Ordering::Release);
                 current_worker = None;
-                // Brief backoff before reconnecting
-                for _ in 0..5 {
-                    if stop.is_cancelled().unwrap_or(true) {
-                        return;
-                    }
-                    thread::sleep(Duration::from_millis(20));
-                }
                 continue;
             }
         }
@@ -635,6 +683,7 @@ mod tests {
         state.settings.store(3, Ordering::Release);
         state.authorization.store(5, Ordering::Release);
         let rev = state.revision();
+        assert_eq!(rev.input, 1);
         assert_eq!(rev.settings, 3);
         assert_eq!(rev.authorization, 5);
 

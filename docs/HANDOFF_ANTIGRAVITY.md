@@ -242,7 +242,8 @@ workerの終了を確認してから保存された正確なerrorを検査する
 
 | Commit | 内容 |
 | --- | --- |
-| (今回) | ADR 0088: メッセージ専用ウィンドウによる STA 非同期完了通知とテキスト自動適用 (AsyncDrain) |
+| (今回) | ADR 0089: 自律セッション（TipHostSession）によるエンドツーエンドTSF変換・Undo検証と開発統合ランナー |
+| `a46d1bf` | ADR 0088: メッセージ専用ウィンドウによる STA 非同期完了通知とテキスト自動適用 (AsyncDrain) |
 | `cef6141` | ADR 0087: 一般アプリ内 TIP の自律 Host 発見・セッション維持と安全なキー変換結合 (TipHostSession) |
 | `18763a7` | ADR 0086: 常駐 Host のログオン限定待受ループと停止調停 (HostService, host run CLI) |
 | `a4fcf37` | ADR 0085: ログオン限定ブートストラップ待受による Host / TIP 相互発見・ハンドオフプロトコル |

@@ -111,7 +111,10 @@ impl ITfFunctionProvider_Impl for Provider_Impl {
                 && unsafe { *iid } == ITfKeyEventSink::IID
             {
                 let state = self.state.upgrade().ok_or(E_ABORT)?;
-                let sink = crate::keys::KeySink::with_controller(Rc::downgrade(&state));
+                let sink = crate::keys::KeySink::with_controller_and_session(
+                    Rc::downgrade(&state),
+                    state.session.clone(),
+                );
                 // SAFETY: preserve the requested interface's vtable and transfer
                 // its owned COM reference through GetFunction's IUnknown ABI.
                 result = Some(unsafe { IUnknown::from_raw(sink.into_raw()) });
@@ -275,6 +278,7 @@ pub(crate) struct Controller {
     request_deadline: Cell<Option<Instant>>,
     pub(crate) broker: RefCell<Option<Rc<crate::broker_spike::Broker>>>,
     pub(crate) broker_request_floor: Rc<Cell<u64>>,
+    pub(crate) session: Weak<crate::session::TipHostSession>,
 }
 
 struct Busy<'a>(&'a Cell<bool>);
@@ -295,11 +299,16 @@ impl Controller {
         self.check_thread()?;
         Ok((self.manager.clone(), self.client))
     }
-    pub(crate) fn new(manager: &ITfThreadMgr, client: u32) -> Rc<Self> {
+    pub(crate) fn new(
+        manager: &ITfThreadMgr,
+        client: u32,
+        session: Weak<crate::session::TipHostSession>,
+    ) -> Rc<Self> {
         Rc::new(Self {
             owner: thread::current().id(),
             manager: manager.clone(),
             client,
+            session,
             granted: RefCell::new(None),
             policy: Rc::new(Cell::new(EditPolicy {
                 revision: Revision {
@@ -353,12 +362,17 @@ impl Controller {
                 return Err(E_ABORT.into());
             }
             let keys: ITfKeystrokeMgr = self.manager.cast()?;
-            keys.PreserveKey(
+            let res = keys.PreserveKey(
                 self.client,
                 &COMMAND_CONVERT,
                 &CONVERT_KEY,
                 &"Sumibi spike conversion".encode_utf16().collect::<Vec<_>>(),
-            )?;
+            );
+            if let Err(error) = res {
+                if error.code().0 as u32 != 0x80040205 {
+                    return Err(error);
+                }
+            }
         }
         self.preserved.set(true);
         *self.observers.borrow_mut() = observers;
@@ -493,6 +507,20 @@ impl Controller {
             Some(granted) => granted.cast::<IUnknown>()? == context.cast::<IUnknown>()?,
             None => false,
         })
+    }
+
+    pub(crate) fn has_grant(&self, context: &ITfContext) -> bool {
+        if self.check_thread().is_err() {
+            return false;
+        }
+        let Ok(target) = context.cast::<IUnknown>() else {
+            return false;
+        };
+        self.granted
+            .borrow()
+            .as_ref()
+            .and_then(|g| g.cast::<IUnknown>().ok())
+            .is_some_and(|g| g == target)
     }
 
     pub(crate) fn check_focus_notification(self: &Rc<Self>) -> Result<()> {
