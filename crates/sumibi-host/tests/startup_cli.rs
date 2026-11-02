@@ -96,3 +96,20 @@ fn host_run_fails_with_invalid_settings() {
         .unwrap()
         .contains("settings invalid or unavailable"));
 }
+
+#[test]
+fn host_cli_help_displays_usage_and_commands() {
+    for flag in ["--help", "-h", "help"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_sumibi-host"))
+            .arg(flag)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains("Sumibi Host service and settings management"));
+        assert!(stdout.contains("Usage: sumibi-host [command] [options...]"));
+        assert!(stdout.contains("host-window"));
+        assert!(stdout.contains("settings-window"));
+        assert!(stdout.contains("run"));
+    }
+}

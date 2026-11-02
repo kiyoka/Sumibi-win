@@ -201,7 +201,16 @@ impl View {
                 );
                 Ok(control)
             };
-            child(w!("STATIC"), "この起動中だけ、手動変換の送信を許可できます。\r\n入力アプリとの接続は準備中です。", WINDOW_STYLE(0), 18, 16, 605, 43, 0)?;
+            child(
+                w!("STATIC"),
+                "この起動中だけ、手動変換の送信を許可できます。\r\n起動中は一般アプリ内の Sumibi からの変換接続を受け付けます。",
+                WINDOW_STYLE(0),
+                18,
+                16,
+                605,
+                43,
+                0,
+            )?;
             view.details = child(
                 w!("EDIT"),
                 "設定を読み込んでいます…",

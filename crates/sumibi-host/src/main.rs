@@ -12,6 +12,48 @@ mod settings_window;
 #[cfg(windows)]
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+
+    if args.is_empty() {
+        let path = match host_paths::settings_path() {
+            Ok(path) => path,
+            Err(()) => {
+                eprintln!("settings location unavailable");
+                std::process::exit(1);
+            }
+        };
+        // If configured, launch the consent window and background service.
+        // Otherwise, launch the settings window to allow initial setup.
+        if path.exists() {
+            if let Err(message) = consent_window::run(path) {
+                eprintln!("{message}");
+                std::process::exit(1);
+            }
+        } else if let Err(message) = settings_window::run(path) {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--help" || arg == "-h" || arg == "help")
+    {
+        println!("Sumibi Host service and settings management");
+        println!();
+        println!("Usage: sumibi-host [command] [options...]");
+        println!();
+        println!("Commands:");
+        println!("  (none)                    Launch GUI (host-window, or settings-window if unconfigured)");
+        println!("  run [settings-path]       Run continuous Host service in console mode");
+        println!("  host-window [path]        Open GUI consent manager and run background service");
+        println!("  settings-window [path]    Open GUI settings and API key manager");
+        println!("  settings-init <host> <model> [base-path] Initialize settings file");
+        println!("  startup-check [path]      Verify settings and credential status");
+        println!("  help, --help, -h          Show this help message");
+        return;
+    }
+
     if args
         .first()
         .is_some_and(|arg| arg == "run" || arg == "host-run")

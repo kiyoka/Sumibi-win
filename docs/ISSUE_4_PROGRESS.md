@@ -911,10 +911,18 @@ Issue #4とPR #10は引き続き未完了・draftとして扱う。
 7. 開発・検証統合ランナー（`dev.ps1` / `tools/dev.ps1` / `Makefile`）の導入:
    - 頻出するビルド・テスト・検証コマンドを 1 つの PowerShell スクリプト（`.\dev.ps1 <task>`）に集約し、Antigravity / エージェント環境における権限許可の問い合わせ回数を最小限（プレフィックス承認で 1 回）に抑制。
    - サポートタスク: `session-test`, `build`, `build-tip`, `test`, `test-all`, `check`, `fmt`, `verify`, `ci`, `help`。
-8. 全体検証:
+8. [ADR 0090](adr/0090-default-gui-host-entry.md) に基づき、製品 Host エントリー（`sumibi-host.exe`）の引数なしデフォルト GUI 起動と設定自動誘導を実装した。
+   - `crates/sumibi-host/src/main.rs`:
+     - 引数なし（`args.is_empty()`）起動時の自動ルーティング：設定ファイル存在時は `consent_window::run`（送信管理画面＋常駐待受）、未作成時は `settings_window::run`（初期設定画面）を自動起動。
+     - `--help` / `-h` / `help` によるコマンドラインヘルプ表示を標準装備。
+   - `crates/sumibi-host/src/consent_window.rs`:
+     - 待受案内文を更新し、バックグラウンドで一般アプリからの変換要求を待受中であることを明示。
+   - `crates/sumibi-host/tests/startup_cli.rs`:
+     - `host_cli_help_displays_usage_and_commands` テストを追加・検証。
+9. 全体検証:
    - `powershell -ExecutionPolicy Bypass -File .\dev.ps1 test-all`: **全件合格**。
-     - standard workspace tests: 531 passed, 0 failed, 4 ignored。
-     - workspace tests with sumibi-host/spike: 531 passed, 0 failed, 4 ignored。
+     - standard workspace tests: 532 passed, 0 failed, 4 ignored。
+     - workspace tests with sumibi-host/spike: 532 passed, 0 failed, 4 ignored。
      - `Test-HostImage.ps1`: 全 37 テスト合格。
      - `Test-SuspendedImageProbe.ps1`: 全 6 テスト合格。
      - `session-key-test`: 全 5 シナリオ完全合格。
