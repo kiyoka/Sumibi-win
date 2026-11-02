@@ -1,5 +1,7 @@
 //! Explicit consent UI. Only nonsecret offers cross the native UI boundary.
-use std::{cell::Cell, path::PathBuf, rc::Rc};
+use crate::settings_window;
+use crate::tray::{TrayIcon, TRAY_CMD_EXIT, TRAY_CMD_OPEN, TRAY_CMD_SETTINGS, WM_SUMIBI_TRAY};
+use std::{cell::Cell, cell::RefCell, path::PathBuf, rc::Rc};
 use sumibi_host::{
     consent_task::ConsentOffer,
     host_control::{ControlError, HostStatus, Phase},
@@ -19,22 +21,32 @@ struct Actions {
     grant: Cell<bool>,
     revoke: Cell<bool>,
     close: Cell<bool>,
+    open_settings: Cell<bool>,
 }
+
+struct WindowContext {
+    actions: Rc<Actions>,
+    tray: RefCell<Option<TrayIcon>>,
+}
+
 struct View {
     hwnd: HWND,
     details: HWND,
     status: HWND,
     grant: HWND,
     revoke: HWND,
-    actions: Rc<Actions>,
+    context: Rc<WindowContext>,
 }
+
 impl Drop for View {
     fn drop(&mut self) {
         unsafe {
+            drop(self.context.tray.borrow_mut().take());
             let _ = DestroyWindow(self.hwnd);
         }
     }
 }
+
 unsafe extern "system" fn procedure(
     hwnd: HWND,
     message: u32,
@@ -42,20 +54,44 @@ unsafe extern "system" fn procedure(
     data: LPARAM,
 ) -> LRESULT {
     std::panic::catch_unwind(|| unsafe {
-        let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Actions;
+        let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const WindowContext;
         if !pointer.is_null() {
+            let ctx = &*pointer;
             if message == WM_NCDESTROY {
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
             if message == WM_CLOSE {
-                (*pointer).close.set(true);
+                // Minimize to tray instead of closing Host service
+                let _ = ShowWindow(hwnd, SW_HIDE);
+                return LRESULT(0);
+            }
+            if message == WM_SYSCOMMAND && (key.0 & 0xfff0) == SC_MINIMIZE as usize {
+                // Minimize to tray
+                let _ = ShowWindow(hwnd, SW_HIDE);
+                return LRESULT(0);
+            }
+            if message == WM_SUMIBI_TRAY {
+                if let Some(tray) = ctx.tray.borrow().as_ref() {
+                    tray.handle_message(data);
+                }
                 return LRESULT(0);
             }
             if message == WM_COMMAND && key.0 >> 16 == 0 {
                 match key.0 & 0xffff {
-                    1 => (*pointer).grant.set(true),
-                    2 => (*pointer).revoke.set(true),
-                    3 => (*pointer).close.set(true),
+                    1 => ctx.actions.grant.set(true),
+                    2 => ctx.actions.revoke.set(true),
+                    3 => ctx.actions.close.set(true),
+                    TRAY_CMD_OPEN => {
+                        let _ = ShowWindow(hwnd, SW_SHOW);
+                        let _ = ShowWindow(hwnd, SW_RESTORE);
+                        let _ = SetForegroundWindow(hwnd);
+                    }
+                    TRAY_CMD_SETTINGS => {
+                        ctx.actions.open_settings.set(true);
+                    }
+                    TRAY_CMD_EXIT => {
+                        ctx.actions.close.set(true);
+                    }
                     _ => return DefWindowProcW(hwnd, message, key, data),
                 }
                 return LRESULT(0);
@@ -168,15 +204,19 @@ impl View {
                 None,
             )?;
             let actions = Rc::new(Actions::default());
+            let context = Rc::new(WindowContext {
+                actions,
+                tray: RefCell::new(Some(TrayIcon::new(hwnd))),
+            });
             let mut view = Self {
                 hwnd,
                 details: HWND::default(),
                 status: HWND::default(),
                 grant: HWND::default(),
                 revoke: HWND::default(),
-                actions,
+                context,
             };
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, Rc::as_ptr(&view.actions) as isize);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, Rc::as_ptr(&view.context) as isize);
             let child = |kind, label: &str, style, x, y, width, height, id| -> WinResult<HWND> {
                 let label = wide(label);
                 let control = CreateWindowExW(
@@ -267,7 +307,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
     // Construct the native view first, so a UI creation failure cannot leave
     // an unpolled Host running while main exits the process.
     let view = View::new().map_err(|_| "host window unavailable")?;
-    let mut service = HostService::start(path).map_err(|_| "host service unavailable")?;
+    let mut service = HostService::start(path.clone()).map_err(|_| "host service unavailable")?;
     let mut displayed: Option<ConsentOffer> = None;
     let mut finished = None;
     let mut pump = true;
@@ -279,7 +319,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
             if result.0 <= 0 {
                 loop_error = result.0 < 0;
                 pump = false;
-                view.actions.close.set(true);
+                view.context.actions.close.set(true);
             } else {
                 unsafe {
                     if !IsDialogMessageW(view.hwnd, &message).as_bool() {
@@ -291,11 +331,18 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
         } else {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        if view.actions.close.get() {
+        if view.context.actions.open_settings.replace(false) {
+            let _ = settings_window::run(path.clone());
+            unsafe {
+                let _ = ShowWindow(view.hwnd, SW_SHOW);
+                let _ = SetForegroundWindow(view.hwnd);
+            }
+        }
+        if view.context.actions.close.get() {
             service.control().request_close();
         }
-        if !view.actions.close.get() && finished.is_none() {
-            if view.actions.grant.replace(false) {
+        if !view.context.actions.close.get() && finished.is_none() {
+            if view.context.actions.grant.replace(false) {
                 if let Some(offer) = displayed
                     .take()
                     .filter(|offer| offer.can_grant() && !offer.allowed())
@@ -314,7 +361,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                     }
                 }
             }
-            if view.actions.revoke.replace(false) {
+            if view.context.actions.revoke.replace(false) {
                 let _ = service.control().try_revoke();
             }
         }
@@ -332,7 +379,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                 }
                 let ready = status.phase == Phase::Ready
                     && !service.control().is_updating()
-                    && !view.actions.close.get()
+                    && !view.context.actions.close.get()
                     && finished.is_none();
                 let offer = status.offer.filter(|_| ready);
                 if let Some(offer) = &offer {
@@ -366,11 +413,11 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
             }
             Err(_) => {
                 loop_error = true;
-                view.actions.close.set(true);
+                view.context.actions.close.set(true);
                 service.control().request_close();
             }
         }
-        if view.actions.close.get() {
+        if view.context.actions.close.get() {
             set_text(view.status, "送信を停止し、処理の終了を待っています…");
             if let Some(result) = finished {
                 let _ = service.stop();

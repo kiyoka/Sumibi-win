@@ -927,7 +927,15 @@ Issue #4とPR #10は引き続き未完了・draftとして扱う。
      - `register-dev`（HKCU への開発用 COM クラス一時登録と検証）、`unregister-dev`（安全な登録解除）、`verify-com`（登録状態検証）タスクを追加。
    - 実機手動検証手順書 [`docs/MANUAL_APP_VERIFICATION.md`](MANUAL_APP_VERIFICATION.md) の策定:
      - 安全原則（HKLM への恒久登録禁止、テスト後の確実な解除）、ビルド・Host 起動・TIP 登録・Notepad 等での挙動確認・クリーンアップまでの手順を体系化。
-10. 全体検証:
+10. [ADR 0092](adr/0092-system-tray-and-background-minimize.md) に基づき、常駐 Host のシステムトレイ（タスクバー通知領域）統合と最小化常駐を実装した。
+    - `crates/sumibi-host/src/tray.rs`:
+      - `Shell_NotifyIconW` によるタスクバー通知領域アイコン（`TrayIcon`）のライフサイクル管理（RAII: 終了時に `NIM_DELETE` で確実な消去）。
+      - トレイアイコンの左クリック / ダブルクリックで送信管理画面の再表示（`SW_RESTORE` + `SetForegroundWindow`）。
+      - トレイアイコンの右クリックでポップアップメニュー（「送信管理画面を開く」「設定画面を開く」「Host を終了」）を表示・ディスパッチ。
+    - `crates/sumibi-host/src/consent_window.rs`:
+      - ウィンドウの「×」閉じるボタンおよび最小化ボタン（`SC_MINIMIZE`）押下時に、プロセスを終了せずウィンドウを非表示（`SW_HIDE`）にしてトレイへ格納し、バックグラウンド待受を継続。
+      - トレイメニューからの設定画面（`settings_window`）起動、および「Host を終了」による安全な停止シーケンスを統合。
+11. 全体検証:
    - `powershell -ExecutionPolicy Bypass -File .\dev.ps1 test-all`: **全件合格**。
      - standard workspace tests: 532 passed, 0 failed, 4 ignored。
      - workspace tests with sumibi-host/spike: 532 passed, 0 failed, 4 ignored。
