@@ -1449,7 +1449,8 @@ mod tests {
             Err(
                 IpcError::UnsupportedElevation
                 | IpcError::UnsupportedAppContainer
-                | IpcError::UnsupportedIntegrity,
+                | IpcError::UnsupportedIntegrity
+                | IpcError::UnsupportedToken(_),
             ) => false,
             Err(error) => panic!("current process identity failed: {error:?}"),
         }

@@ -541,7 +541,8 @@ mod tests {
             Err(
                 sumibi_ipc::Error::UnsupportedAppContainer
                 | sumibi_ipc::Error::UnsupportedElevation
-                | sumibi_ipc::Error::UnsupportedIntegrity,
+                | sumibi_ipc::Error::UnsupportedIntegrity
+                | sumibi_ipc::Error::UnsupportedToken(_),
             ) => false,
             Err(error) => panic!("cannot inspect fixture identity: {error:?}"),
         }

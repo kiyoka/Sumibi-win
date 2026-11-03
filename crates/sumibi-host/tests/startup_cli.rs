@@ -87,6 +87,15 @@ fn host_run_rejects_extra_arguments() {
 
 #[test]
 fn host_run_fails_with_invalid_settings() {
+    if matches!(
+        sumibi_ipc::PinnedProcess::current(),
+        Err(sumibi_ipc::Error::UnsupportedElevation
+            | sumibi_ipc::Error::UnsupportedAppContainer
+            | sumibi_ipc::Error::UnsupportedIntegrity
+            | sumibi_ipc::Error::UnsupportedToken(_),)
+    ) {
+        return;
+    }
     let output = Command::new(env!("CARGO_BIN_EXE_sumibi-host"))
         .args(["run", "Z:\\nonexistent\\settings.json"])
         .output()

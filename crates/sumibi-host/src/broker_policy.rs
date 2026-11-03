@@ -244,7 +244,12 @@ mod tests {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         match PinnedProcess::current() {
             Ok(_) => {}
-            Err(IpcError::UnsupportedElevation | IpcError::UnsupportedAppContainer) => return,
+            Err(
+                IpcError::UnsupportedElevation
+                | IpcError::UnsupportedAppContainer
+                | IpcError::UnsupportedIntegrity
+                | IpcError::UnsupportedToken(_),
+            ) => return,
             Err(error) => panic!("current process identity failed: {error:?}"),
         }
         let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();
@@ -332,7 +337,12 @@ mod tests {
         let _guard = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
         match PinnedProcess::current() {
             Ok(_) => {}
-            Err(IpcError::UnsupportedElevation | IpcError::UnsupportedAppContainer) => return,
+            Err(
+                IpcError::UnsupportedElevation
+                | IpcError::UnsupportedAppContainer
+                | IpcError::UnsupportedIntegrity
+                | IpcError::UnsupportedToken(_),
+            ) => return,
             Err(error) => panic!("current process identity failed: {error:?}"),
         }
         let destination = Destination::new(Scheme::Https, "example.org", 443, "/").unwrap();

@@ -1023,7 +1023,8 @@ mod tests {
             Err(
                 Error::UnsupportedElevation
                 | Error::UnsupportedAppContainer
-                | Error::UnsupportedIntegrity,
+                | Error::UnsupportedIntegrity
+                | Error::UnsupportedToken(_),
             ) => false,
             Err(error) => panic!("cannot inspect fixture identity: {error:?}"),
         }

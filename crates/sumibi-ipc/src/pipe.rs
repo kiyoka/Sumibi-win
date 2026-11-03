@@ -1311,7 +1311,8 @@ mod tests {
             Err(
                 Error::UnsupportedElevation
                 | Error::UnsupportedAppContainer
-                | Error::UnsupportedIntegrity,
+                | Error::UnsupportedIntegrity
+                | Error::UnsupportedToken(_),
             ) => {
                 eprintln!("native pipe test requires an ordinary desktop process");
                 false

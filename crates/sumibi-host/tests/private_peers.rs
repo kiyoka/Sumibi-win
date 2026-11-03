@@ -59,7 +59,10 @@ fn idle_pinned_worker_retires_when_its_host_exits_before_first_request() {
     let _guard = PIPE_TEST_LOCK.lock().unwrap();
     if matches!(
         PinnedProcess::current(),
-        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+        Err(sumibi_ipc::Error::UnsupportedElevation
+            | sumibi_ipc::Error::UnsupportedAppContainer
+            | sumibi_ipc::Error::UnsupportedIntegrity
+            | sumibi_ipc::Error::UnsupportedToken(_),)
     ) {
         return;
     }
@@ -104,7 +107,10 @@ fn preparing_worker_blocks_reservation_and_reports_shutdown() {
     let _guard = PIPE_TEST_LOCK.lock().unwrap();
     if matches!(
         PinnedProcess::current(),
-        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+        Err(sumibi_ipc::Error::UnsupportedElevation
+            | sumibi_ipc::Error::UnsupportedAppContainer
+            | sumibi_ipc::Error::UnsupportedIntegrity
+            | sumibi_ipc::Error::UnsupportedToken(_),)
     ) {
         return;
     }
@@ -141,7 +147,10 @@ fn preparing_worker_reports_a_missing_endpoint_without_input() {
     let _guard = PIPE_TEST_LOCK.lock().unwrap();
     if matches!(
         PinnedProcess::current(),
-        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+        Err(sumibi_ipc::Error::UnsupportedElevation
+            | sumibi_ipc::Error::UnsupportedAppContainer
+            | sumibi_ipc::Error::UnsupportedIntegrity
+            | sumibi_ipc::Error::UnsupportedToken(_),)
     ) {
         return;
     }
@@ -175,7 +184,10 @@ fn preparing_worker_reports_ready_denial_without_accepting_input() {
     let _guard = PIPE_TEST_LOCK.lock().unwrap();
     if matches!(
         PinnedProcess::current(),
-        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+        Err(sumibi_ipc::Error::UnsupportedElevation
+            | sumibi_ipc::Error::UnsupportedAppContainer
+            | sumibi_ipc::Error::UnsupportedIntegrity
+            | sumibi_ipc::Error::UnsupportedToken(_),)
     ) {
         return;
     }
@@ -229,7 +241,10 @@ fn preparation_preserves_the_request_id_until_ready_then_converts() {
     let _guard = PIPE_TEST_LOCK.lock().unwrap();
     if matches!(
         PinnedProcess::current(),
-        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+        Err(sumibi_ipc::Error::UnsupportedElevation
+            | sumibi_ipc::Error::UnsupportedAppContainer
+            | sumibi_ipc::Error::UnsupportedIntegrity
+            | sumibi_ipc::Error::UnsupportedToken(_),)
     ) {
         return;
     }
@@ -332,7 +347,10 @@ fn preparing_worker_reports_a_ready_timeout() {
     let _guard = PIPE_TEST_LOCK.lock().unwrap();
     if matches!(
         PinnedProcess::current(),
-        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+        Err(sumibi_ipc::Error::UnsupportedElevation
+            | sumibi_ipc::Error::UnsupportedAppContainer
+            | sumibi_ipc::Error::UnsupportedIntegrity
+            | sumibi_ipc::Error::UnsupportedToken(_),)
     ) {
         return;
     }
@@ -526,7 +544,10 @@ fn two_child_processes_authenticate_the_same_host_on_private_pipes() {
     let _guard = PIPE_TEST_LOCK.lock().unwrap();
     if matches!(
         PinnedProcess::current(),
-        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+        Err(sumibi_ipc::Error::UnsupportedElevation
+            | sumibi_ipc::Error::UnsupportedAppContainer
+            | sumibi_ipc::Error::UnsupportedIntegrity
+            | sumibi_ipc::Error::UnsupportedToken(_),)
     ) {
         return;
     }
@@ -682,7 +703,10 @@ fn private_client_rejects_a_different_host_before_sending_hello() {
     let _guard = PIPE_TEST_LOCK.lock().unwrap();
     if matches!(
         PinnedProcess::current(),
-        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+        Err(sumibi_ipc::Error::UnsupportedElevation
+            | sumibi_ipc::Error::UnsupportedAppContainer
+            | sumibi_ipc::Error::UnsupportedIntegrity
+            | sumibi_ipc::Error::UnsupportedToken(_),)
     ) {
         return;
     }
@@ -762,7 +786,10 @@ fn handoff_rejects_a_pipe_pinned_to_a_different_recipient_before_accepting() {
     let _guard = PIPE_TEST_LOCK.lock().unwrap();
     if matches!(
         PinnedProcess::current(),
-        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+        Err(sumibi_ipc::Error::UnsupportedElevation
+            | sumibi_ipc::Error::UnsupportedAppContainer
+            | sumibi_ipc::Error::UnsupportedIntegrity
+            | sumibi_ipc::Error::UnsupportedToken(_),)
     ) {
         return;
     }
@@ -810,7 +837,10 @@ fn private_listener_rejects_another_process_then_accepts_the_pinned_child() {
     let _guard = PIPE_TEST_LOCK.lock().unwrap();
     if matches!(
         PinnedProcess::current(),
-        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+        Err(sumibi_ipc::Error::UnsupportedElevation
+            | sumibi_ipc::Error::UnsupportedAppContainer
+            | sumibi_ipc::Error::UnsupportedIntegrity
+            | sumibi_ipc::Error::UnsupportedToken(_),)
     ) {
         return;
     }
@@ -929,7 +959,10 @@ fn cancelling_a_pinned_worker_closes_its_connection_and_reaps_the_job() {
     let _guard = PIPE_TEST_LOCK.lock().unwrap();
     if matches!(
         PinnedProcess::current(),
-        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+        Err(sumibi_ipc::Error::UnsupportedElevation
+            | sumibi_ipc::Error::UnsupportedAppContainer
+            | sumibi_ipc::Error::UnsupportedIntegrity
+            | sumibi_ipc::Error::UnsupportedToken(_),)
     ) {
         return;
     }
@@ -1032,7 +1065,10 @@ fn pinned_worker_refuses_a_stale_policy_without_submitting_text() {
     let _guard = PIPE_TEST_LOCK.lock().unwrap();
     if matches!(
         PinnedProcess::current(),
-        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+        Err(sumibi_ipc::Error::UnsupportedElevation
+            | sumibi_ipc::Error::UnsupportedAppContainer
+            | sumibi_ipc::Error::UnsupportedIntegrity
+            | sumibi_ipc::Error::UnsupportedToken(_),)
     ) {
         return;
     }
@@ -1123,7 +1159,10 @@ fn prepared_worker_rejects_revocation_before_input_is_submitted() {
     let _guard = PIPE_TEST_LOCK.lock().unwrap();
     if matches!(
         PinnedProcess::current(),
-        Err(sumibi_ipc::Error::UnsupportedElevation | sumibi_ipc::Error::UnsupportedAppContainer)
+        Err(sumibi_ipc::Error::UnsupportedElevation
+            | sumibi_ipc::Error::UnsupportedAppContainer
+            | sumibi_ipc::Error::UnsupportedIntegrity
+            | sumibi_ipc::Error::UnsupportedToken(_),)
     ) {
         return;
     }
