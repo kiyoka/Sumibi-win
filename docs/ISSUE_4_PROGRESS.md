@@ -944,11 +944,20 @@ Issue #4とPR #10は引き続き未完了・draftとして扱う。
       - `--help` 出力にオプションの説明を追加。
     - `crates/sumibi-host/tests/startup_cli.rs`:
       - `host_cli_help_displays_minimized_option` テストを追加・検証。
-12. 全体検証:
+12. [ADR 0094](adr/0094-host-self-healing-and-app-protection-diagnostics.md) に基づき、Host 障害復旧（Self-Healing 再接続）のテスト検証と一般アプリ TSF 保護診断の強化を実装した。
+    - `crates/sumibi-tip/src/session.rs`:
+      - 結合テスト `session_reconnects_after_host_restart_and_recovers_ready` を追加。Host 停止・クラッシュ時の切断検知（Fail-Closed 遷移）と、Host 再起動・同意付与後の自律再発見・再接続・Ready 回復（Self-Healing）を決定論的に実証。
+      - `HOST_TEST_LOCK` による同一ログオンセッション内テストの直列化を導入。
+      - `on_preserved_key`（Ctrl+J 押下時）に、機密本文テキストを一切含まず、`context.GetStatus()`（`dwDynamicFlags`, `dwStaticFlags`）、`input_status_denial`（`HiddenTextPossible` 等）、およびコンパートメント値（`kbd_disabled`, `empty_ctx`）を `OutputDebugStringW` へ出力する詳細診断を追加。Notepad 等の実機アプリで拒絶された理由をリアルタイムに観測可能とした。
+    - `tools/dev.ps1` / `dev.ps1` / `Makefile`:
+      - `native-edit` タスクを新設し、`test-all` にも組み込み。
+      - Windows 標準の RichEdit（`Msftedit.dll`）と EDIT コントロールに対する 7 つの拒絶シナリオをワンコマンドで自動検証可能とした。
+13. 全体検証:
    - `powershell -ExecutionPolicy Bypass -File .\dev.ps1 test-all`: **全件合格**。
-     - standard workspace tests: 532 passed, 0 failed, 4 ignored。
-     - workspace tests with sumibi-host/spike: 532 passed, 0 failed, 4 ignored。
+     - standard workspace tests: 533 passed, 0 failed, 4 ignored。
+     - workspace tests with sumibi-host/spike: 533 passed, 0 failed, 4 ignored。
      - `Test-HostImage.ps1`: 全 37 テスト合格。
      - `Test-SuspendedImageProbe.ps1`: 全 6 テスト合格。
      - `session-key-test`: 全 5 シナリオ完全合格。
+     - `native-edit-test`: 全 7 拒絶シナリオ完全合格。
    - `powershell -ExecutionPolicy Bypass -File .\dev.ps1 check`: 警告・フォーマット差分ゼロ。

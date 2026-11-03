@@ -8,7 +8,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('session-test', 'build', 'build-tip', 'test', 'test-all', 'check', 'fmt', 'verify', 'ci', 'register-dev', 'unregister-dev', 'verify-com', 'help')]
+    [ValidateSet('session-test', 'native-edit', 'build', 'build-tip', 'test', 'test-all', 'check', 'fmt', 'verify', 'ci', 'register-dev', 'unregister-dev', 'verify-com', 'help')]
     [string]$Task = 'session-test',
 
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -39,6 +39,14 @@ try {
             }
             Invoke-Step 'Run sumibi-setup session-key-test' {
                 & cargo run --package sumibi-setup -- session-key-test --dll target/debug/sumibi_tip.dll @ExtraArgs
+            }
+        }
+        'native-edit' {
+            Invoke-Step 'Build sumibi-tip with spike feature' {
+                & cargo build --package sumibi-tip --features spike
+            }
+            Invoke-Step 'Run sumibi-setup native-edit-test' {
+                & cargo run --package sumibi-setup -- native-edit-test --dll target/debug/sumibi_tip.dll @ExtraArgs
             }
         }
         'build-tip' {
@@ -77,6 +85,9 @@ try {
             }
             Invoke-Step 'Run session-key-test' {
                 & cargo run --package sumibi-setup -- session-key-test --dll target/debug/sumibi_tip.dll
+            }
+            Invoke-Step 'Run native-edit-test' {
+                & cargo run --package sumibi-setup -- native-edit-test --dll target/debug/sumibi_tip.dll
             }
         }
         'check' {
@@ -136,6 +147,7 @@ try {
             Write-Host "Usage: .\tools\dev.ps1 <task> [extra args...]" -ForegroundColor Yellow
             Write-Host "Available tasks:"
             Write-Host "  session-test   : Build sumibi-tip with spike and run session-key-test (default)"
+            Write-Host "  native-edit    : Build sumibi-tip and run native-edit-test (RichEdit & EDIT rejection)"
             Write-Host "  build-tip      : Build sumibi-tip with spike feature"
             Write-Host "  build          : Build entire workspace"
             Write-Host "  test           : Run workspace unit/integration tests"

@@ -48,7 +48,7 @@ GitHubのIssue/PR状態は今回APIで再照会していない。リポジトリ
 6. [ADR 0045](adr/0045-machine-registration-boundary.md) — 機械登録前の境界。
 7. [ADR 0069](adr/0069-offline-authenticode-inspection.md)から[ADR 0081](adr/0081-bounded-export-forwarders.md) — 直近の署名・通信・Host・依存検査。
 
-進捗資料の古い日付や件数は当時の記録。最新の全体テスト基準は530件（+4 ignored）。
+進捗資料の古い日付や件数は当時の記録。最新の全体テスト基準は533件（+4 ignored）。
 
 ## 4. 現在の実装を探す場所
 
@@ -242,7 +242,8 @@ workerの終了を確認してから保存された正確なerrorを検査する
 
 | Commit | 内容 |
 | --- | --- |
-| (今回) | ADR 0093: 製品 Host のバックグラウンド常駐起動オプション（`--minimized` / `--tray`） |
+| (今回) | ADR 0094: Host 障害復旧（Self-Healing 再接続）の検証と一般アプリ TSF 保護診断の強化 |
+| `94262f5` | ADR 0093: 製品 Host のバックグラウンド常駐起動オプション（`--minimized` / `--tray`） |
 | `ea408dd` | ADR 0092: 常駐 Host のシステムトレイ（通知領域）統合と最小化常駐 |
 | `d118bdc` | ADR 0091: 一般アプリ実機検証手順と非機密 TSF 保護診断の整備 |
 | `1062e3c` | ADR 0090: 製品 Host エントリーのデフォルト GUI 起動と設定自動誘導 |

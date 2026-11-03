@@ -382,6 +382,32 @@ impl TipHostSession {
             return Ok(false.into());
         };
 
+        // Log non-confidential TSF protection diagnostics for manual app verification
+        if let Ok(status) = unsafe { context.GetStatus() } {
+            let denial = crate::protection::input_status_denial(status);
+            debug_log(&format!(
+                "Preserved key status: dyn=0x{:08x}, stat=0x{:08x}, denial={:?}",
+                status.dwDynamicFlags, status.dwStaticFlags, denial
+            ));
+        } else {
+            debug_log("Preserved key status query failed");
+        }
+
+        if let Ok(compartments) = context.cast::<ITfCompartmentMgr>() {
+            let kbd_disabled =
+                unsafe { compartments.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED) }
+                    .and_then(|c| unsafe { c.GetValue() })
+                    .map(|v| unsafe { v.Anonymous.Anonymous.Anonymous.lVal })
+                    .unwrap_or(-1);
+            let empty_ctx = unsafe { compartments.GetCompartment(&GUID_COMPARTMENT_EMPTYCONTEXT) }
+                .and_then(|c| unsafe { c.GetValue() })
+                .map(|v| unsafe { v.Anonymous.Anonymous.Anonymous.lVal })
+                .unwrap_or(-1);
+            debug_log(&format!(
+                "Preserved key compartments: kbd_disabled={kbd_disabled}, empty_ctx={empty_ctx}"
+            ));
+        }
+
         // 2. Capture selection and check protection inside an edit session
         let edit_policy = Rc::new(Cell::new(EditPolicy {
             revision: self.state.revision(),
@@ -689,6 +715,8 @@ mod tests {
     use sumibi_host::manual::{Credential, Destination, Scheme};
     use sumibi_host::policy::PolicyAuthority;
 
+    static HOST_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn configured_authority() -> Arc<PolicyAuthority> {
         let authority = Arc::new(PolicyAuthority::new(
             Destination::for_chat_completions(Scheme::Https, "example.test", 443, "/").unwrap(),
@@ -740,8 +768,7 @@ mod tests {
 
     #[test]
     fn session_autonomously_discovers_host_and_updates_policy() {
-        static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _lock = TEST_LOCK.lock().unwrap();
+        let _lock = HOST_TEST_LOCK.lock().unwrap();
 
         let authority = configured_authority();
         let control =
@@ -809,6 +836,116 @@ mod tests {
 
         session.close().expect("close session");
         host_service.stop().expect("stop host service");
+    }
+
+    #[test]
+    fn session_reconnects_after_host_restart_and_recovers_ready() {
+        let _lock = HOST_TEST_LOCK.lock().unwrap();
+
+        // 1. Start Host #1
+        let authority1 = configured_authority();
+        let control1 =
+            Arc::new(HostControl::start_diagnostic(move || Ok((authority1, false))).unwrap());
+        let mut host_service1 =
+            HostService::start_with_control(control1).expect("start host service 1");
+
+        let manager = crate::mock::new_manager().to_interface::<ITfThreadMgr>();
+        let session = TipHostSession::start(&manager, 7).expect("start session");
+
+        // Grant consent on Host #1
+        let offer_deadline = Instant::now() + Duration::from_secs(5);
+        let offer1 = loop {
+            if let Ok(Some(status)) = host_service1.try_status() {
+                if status.phase == sumibi_host::host_control::Phase::Ready {
+                    if let Some(offer) = status.offer {
+                        break offer;
+                    }
+                }
+            }
+            if Instant::now() >= offer_deadline {
+                panic!("timed out waiting for host 1 offer");
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        host_service1
+            .control()
+            .try_grant(offer1)
+            .expect("grant consent 1");
+
+        // Wait for TIP session to achieve ready
+        let ready_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if session.state().is_ready() {
+                break;
+            }
+            if Instant::now() >= ready_deadline {
+                panic!("timed out waiting for session ready with host 1");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(session.state().is_ready());
+
+        // 2. Stop Host #1 (simulating host shutdown or crash)
+        host_service1.stop().expect("stop host service 1");
+
+        // Confirm TIP session observes disconnection and is no longer ready
+        let disconnect_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if !session.state().is_connected() && !session.state().is_ready() {
+                break;
+            }
+            if Instant::now() >= disconnect_deadline {
+                panic!("timed out waiting for session to disconnect after host 1 stop");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!session.state().is_connected());
+        assert!(!session.state().is_ready());
+
+        // 3. Start Host #2 (simulating host restart)
+        let authority2 = configured_authority();
+        let control2 =
+            Arc::new(HostControl::start_diagnostic(move || Ok((authority2, false))).unwrap());
+        let mut host_service2 =
+            HostService::start_with_control(control2).expect("start host service 2");
+
+        // Grant consent on Host #2
+        let offer_deadline2 = Instant::now() + Duration::from_secs(5);
+        let offer2 = loop {
+            if let Ok(Some(status)) = host_service2.try_status() {
+                if status.phase == sumibi_host::host_control::Phase::Ready {
+                    if let Some(offer) = status.offer {
+                        break offer;
+                    }
+                }
+            }
+            if Instant::now() >= offer_deadline2 {
+                panic!("timed out waiting for host 2 offer");
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        host_service2
+            .control()
+            .try_grant(offer2)
+            .expect("grant consent 2");
+
+        // 4. Wait for TIP session to autonomously self-heal and reconnect to Host #2
+        let recover_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if session.state().is_ready() {
+                break;
+            }
+            if Instant::now() >= recover_deadline {
+                panic!("timed out waiting for session to recover ready with host 2");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(session.state().is_ready());
+        assert!(session.state().is_connected());
+
+        // Cleanup
+        session.close().expect("close session");
+        host_service2.stop().expect("stop host service 2");
     }
 
     #[test]

@@ -1,11 +1,14 @@
 # Sumibi-win consolidated build and test workflow
 
-.PHONY: all session-test build build-tip test test-all check fmt verify ci register-dev unregister-dev verify-com help
+.PHONY: all session-test native-edit build build-tip test test-all check fmt verify ci register-dev unregister-dev verify-com help
 
 all: session-test
 
 session-test:
 	powershell -ExecutionPolicy Bypass -File tools/dev.ps1 session-test
+
+native-edit:
+	powershell -ExecutionPolicy Bypass -File tools/dev.ps1 native-edit
 
 build-tip:
 	powershell -ExecutionPolicy Bypass -File tools/dev.ps1 build-tip
