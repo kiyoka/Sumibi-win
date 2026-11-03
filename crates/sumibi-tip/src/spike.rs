@@ -317,6 +317,7 @@ impl Controller {
                     authorization: 0,
                 },
                 allowed: false,
+                profile: crate::edit::ProtectionProfile::Strict,
             })),
             preserved: Cell::new(false),
             busy: Cell::new(false),

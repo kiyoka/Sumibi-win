@@ -352,6 +352,7 @@ impl ManualEdit {
         let range = self.snapshot.range.clone();
         let style = self.snapshot.style;
         let expected = self.snapshot.protection;
+        let profile = self.snapshot.captured_policy.profile;
         let observation = self.guard.state.clone();
         run(
             &context,
@@ -360,7 +361,9 @@ impl ManualEdit {
             Box::new(move |cookie| {
                 ensure_target(&manager, &target)?;
                 let current = checked_selection(&target, &range, style, cookie)?;
-                crate::protection::validate(&target, &current, cookie, expected)?;
+                crate::protection::validate_with_profile(
+                    &target, &current, cookie, expected, profile,
+                )?;
                 ensure_target(&manager, &target)?;
                 if observation.invalid.get() {
                     return Err(E_ABORT.into());
@@ -454,7 +457,7 @@ fn fresh_target(
     // validate_snapshot already checked native endpoints, direction, context,
     // source and protection. Keep the native range local; Core needs only this
     // explicit retained-range stamp, never invented document coordinates.
-    let text = read_all(range, cookie)?;
+    let text = read_all_with_profile(range, cookie, snapshot.captured_policy.profile)?;
     let policy = snapshot.policy.get();
     Ok(Target {
         context: identity,

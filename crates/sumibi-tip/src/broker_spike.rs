@@ -84,6 +84,7 @@ impl Broker {
                     authorization: 1,
                 },
                 allowed: true,
+                profile: crate::edit::ProtectionProfile::Strict,
             })),
             ticket: RefCell::new(None),
             last_request,

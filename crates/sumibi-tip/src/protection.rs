@@ -9,6 +9,14 @@ use windows::Win32::UI::TextServices::*;
 
 const MAX_SCOPES: usize = 16;
 
+/// Protection profile specifying strictness for general applications vs restricted test stores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ProtectionProfile {
+    #[default]
+    Standard,
+    Strict,
+}
+
 /// Fixed metadata-only diagnostic codes. These carry no document text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputStatusDenial {
@@ -23,10 +31,11 @@ pub enum InputStatusDenial {
     UnknownStaticFlags,
 }
 
-/// Explain the first unsupported document-status condition. `None` means only
-/// that status passed; scopes, compartments, focus, selection and composition
-/// still require the ordinary gate. This never grants permission to read/edit.
-pub fn input_status_denial(status: TS_STATUS) -> Option<InputStatusDenial> {
+/// Explain the first unsupported document-status condition for a given profile.
+pub fn input_status_denial_with_profile(
+    status: TS_STATUS,
+    profile: ProtectionProfile,
+) -> Option<InputStatusDenial> {
     use InputStatusDenial::*;
     let known_dynamic = TS_SD_READONLY
         | TS_SD_LOADING
@@ -38,7 +47,7 @@ pub fn input_status_denial(status: TS_STATUS) -> Option<InputStatusDenial> {
         | TS_SD_EMBEDDEDHANDWRITINGVIEW_ENABLED
         | TS_SD_EMBEDDEDHANDWRITINGVIEW_VISIBLE;
     let supported_static =
-        TS_SS_NOHIDDENTEXT | TS_SS_TKBAUTOCORRECTENABLE | TS_SS_TKBPREDICTIONENABLE;
+        TS_SS_NOHIDDENTEXT | TS_SS_TKBAUTOCORRECTENABLE | TS_SS_TKBPREDICTIONENABLE | TS_SS_REGIONS;
     if status.dwDynamicFlags & TS_SD_READONLY != 0 {
         Some(ReadOnly)
     } else if status.dwDynamicFlags & TS_SD_LOADING != 0 {
@@ -47,19 +56,27 @@ pub fn input_status_denial(status: TS_STATUS) -> Option<InputStatusDenial> {
         Some(ReservedDynamicFlags)
     } else if status.dwDynamicFlags & !known_dynamic != 0 {
         Some(UnknownDynamicFlags)
-    } else if status.dwStaticFlags & TS_SS_NOHIDDENTEXT == 0 {
-        Some(HiddenTextPossible)
     } else if status.dwStaticFlags & TS_SS_DISJOINTSEL != 0 {
         Some(MultipleSelections)
-    } else if status.dwStaticFlags & TS_SS_REGIONS != 0 {
-        Some(MultipleRegions)
     } else if status.dwStaticFlags & TS_SS_TRANSITORY != 0 {
         Some(TransitoryContext)
+    } else if profile == ProtectionProfile::Strict && status.dwStaticFlags & TS_SS_NOHIDDENTEXT == 0
+    {
+        Some(HiddenTextPossible)
+    } else if profile == ProtectionProfile::Strict && status.dwStaticFlags & TS_SS_REGIONS != 0 {
+        Some(MultipleRegions)
     } else if status.dwStaticFlags & !supported_static != 0 {
         Some(UnknownStaticFlags)
     } else {
         None
     }
+}
+
+/// Explain the first unsupported document-status condition in Strict profile. `None` means only
+/// that status passed; scopes, compartments, focus, selection and composition
+/// still require the ordinary gate. This never grants permission to read/edit.
+pub fn input_status_denial(status: TS_STATUS) -> Option<InputStatusDenial> {
+    input_status_denial_with_profile(status, ProtectionProfile::Strict)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -73,8 +90,23 @@ fn denied<T>() -> Result<T> {
     Err(E_ACCESSDENIED.into())
 }
 
-fn classify(status: TS_STATUS, scopes: &[InputScope]) -> Result<Stamp> {
-    if input_status_denial(status).is_some() || scopes.is_empty() || scopes.len() > MAX_SCOPES {
+/// Universal strict rejection: passwords, PINs, and private fields are NEVER allowed.
+pub fn is_confidential_scope(scope: InputScope) -> bool {
+    matches!(
+        scope,
+        IS_PASSWORD | IS_NUMERIC_PIN | IS_NUMERIC_PASSWORD | IS_PRIVATE
+    )
+}
+
+fn classify_with_profile(
+    status: TS_STATUS,
+    scopes: &[InputScope],
+    profile: ProtectionProfile,
+) -> Result<Stamp> {
+    if input_status_denial_with_profile(status, profile).is_some()
+        || scopes.is_empty()
+        || scopes.len() > MAX_SCOPES
+    {
         return denied();
     }
     let mut stamp = Stamp {
@@ -84,15 +116,32 @@ fn classify(status: TS_STATUS, scopes: &[InputScope]) -> Result<Stamp> {
         count: scopes.len(),
     };
     for (index, scope) in scopes.iter().enumerate() {
-        // Default/absent and all unreviewed special-purpose scopes are denied.
-        // This includes passwords, PINs, private, login, grammar and new values.
-        if !matches!(*scope, IS_TEXT | IS_CHAT | IS_CHAT_WITHOUT_EMOJI) {
+        if is_confidential_scope(*scope) {
+            return denied();
+        }
+        let is_allowed = match profile {
+            ProtectionProfile::Strict => {
+                matches!(*scope, IS_TEXT | IS_CHAT | IS_CHAT_WITHOUT_EMOJI)
+            }
+            ProtectionProfile::Standard => {
+                matches!(
+                    *scope,
+                    IS_DEFAULT | IS_TEXT | IS_CHAT | IS_CHAT_WITHOUT_EMOJI
+                )
+            }
+        };
+        if !is_allowed {
             return denied();
         }
         stamp.scopes[index] = scope.0;
     }
     stamp.scopes[..stamp.count].sort_unstable();
     Ok(stamp)
+}
+
+#[cfg(test)]
+fn classify(status: TS_STATUS, scopes: &[InputScope]) -> Result<Stamp> {
+    classify_with_profile(status, scopes, ProtectionProfile::Strict)
 }
 struct ScopeMemory(*mut InputScope);
 impl Drop for ScopeMemory {
@@ -104,11 +153,21 @@ impl Drop for ScopeMemory {
         }
     }
 }
-pub(crate) fn check(context: &ITfContext, range: &ITfRange, cookie: u32) -> Result<Stamp> {
-    check_with(context, range, cookie, || {
+pub(crate) fn check_with_profile(
+    context: &ITfContext,
+    range: &ITfRange,
+    cookie: u32,
+    profile: ProtectionProfile,
+) -> Result<Stamp> {
+    check_with_profile_internal(context, range, cookie, profile, || {
         crate::composition::require_idle(context)
     })
 }
+
+pub(crate) fn check(context: &ITfContext, range: &ITfRange, cookie: u32) -> Result<Stamp> {
+    check_with_profile(context, range, cookie, ProtectionProfile::Strict)
+}
+
 /// Metadata inspection may admit the exact owned composition. This check alone
 /// never authorizes body access. Capture/source/result application require idle;
 /// the diagnostic input writer separately validates supplied text and an owned
@@ -120,26 +179,45 @@ pub(crate) fn owned_metadata(
     cookie: u32,
     owned: &crate::owned_composition::OwnedComposition,
 ) -> Result<Stamp> {
-    check_with(context, range, cookie, || owned.require_exclusive(context))
+    check_with_profile_internal(context, range, cookie, ProtectionProfile::Strict, || {
+        owned.require_exclusive(context)
+    })
 }
-fn check_with(
+
+fn check_with_profile_internal(
     context: &ITfContext,
     range: &ITfRange,
     cookie: u32,
+    profile: ProtectionProfile,
     composition_gate: impl Fn() -> Result<()>,
 ) -> Result<Stamp> {
     // SAFETY: caller owns a current read/write cookie for this context/range.
     unsafe {
         let status = context.GetStatus()?;
-        // Reject status before requesting even the scope object's metadata.
-        classify(status, &[IS_TEXT])?;
+        let dummy_scope = if profile == ProtectionProfile::Standard {
+            IS_DEFAULT
+        } else {
+            IS_TEXT
+        };
+        classify_with_profile(status, &[dummy_scope], profile)?;
         let compartments: ITfCompartmentMgr = context.cast()?;
         for guid in [
             GUID_COMPARTMENT_KEYBOARD_DISABLED,
             GUID_COMPARTMENT_EMPTYCONTEXT,
         ] {
-            let value = compartments.GetCompartment(&guid)?.GetValue()?;
-            if value.vt() != VT_I4 || value.Anonymous.Anonymous.Anonymous.lVal != 0 {
+            if let Ok(comp) = compartments.GetCompartment(&guid) {
+                if let Ok(value) = comp.GetValue() {
+                    if value.vt() == VT_I4 {
+                        if value.Anonymous.Anonymous.Anonymous.lVal != 0 {
+                            return denied();
+                        }
+                    } else if profile == ProtectionProfile::Strict {
+                        return denied();
+                    }
+                } else if profile == ProtectionProfile::Strict {
+                    return denied();
+                }
+            } else if profile == ProtectionProfile::Strict {
                 return denied();
             }
         }
@@ -156,24 +234,40 @@ fn check_with(
         } else {
             Some(ITfReadOnlyProperty::from_raw(raw_property))
         };
-        if status_property != S_OK {
+
+        let stamp = if let (S_OK, Some(property)) = (status_property, property) {
+            let res = property.GetValue(cookie, range);
+            match res {
+                Ok(value) if value.vt() != windows::Win32::System::Variant::VT_EMPTY => {
+                    let unknown = IUnknown::try_from(&value)?;
+                    let scope: ITfInputScope = unknown.cast()?;
+                    let mut memory = ScopeMemory(std::ptr::null_mut());
+                    let mut count = 0;
+                    if (scope.vtable().GetInputScopes)(scope.as_raw(), &mut memory.0, &mut count)
+                        != S_OK
+                    {
+                        return denied();
+                    }
+                    if memory.0.is_null() || count == 0 || count as usize > MAX_SCOPES {
+                        return denied();
+                    }
+                    let scopes = std::slice::from_raw_parts(memory.0, count as usize);
+                    classify_with_profile(status, scopes, profile)?
+                }
+                _ => {
+                    if profile == ProtectionProfile::Standard {
+                        classify_with_profile(status, &[IS_DEFAULT], profile)?
+                    } else {
+                        return denied();
+                    }
+                }
+            }
+        } else if profile == ProtectionProfile::Standard {
+            classify_with_profile(status, &[IS_DEFAULT], profile)?
+        } else {
             return denied();
-        }
-        let property = property.ok_or(E_ACCESSDENIED)?;
-        // Missing, partial or mixed coverage returns VT_EMPTY and is rejected.
-        let value = property.GetValue(cookie, range)?;
-        let unknown = IUnknown::try_from(&value)?;
-        let scope: ITfInputScope = unknown.cast()?;
-        let mut memory = ScopeMemory(std::ptr::null_mut());
-        let mut count = 0;
-        if (scope.vtable().GetInputScopes)(scope.as_raw(), &mut memory.0, &mut count) != S_OK {
-            return denied();
-        }
-        if memory.0.is_null() || count == 0 || count as usize > MAX_SCOPES {
-            return denied();
-        }
-        let scopes = std::slice::from_raw_parts(memory.0, count as usize);
-        let stamp = classify(status, scopes)?;
+        };
+
         composition_gate()?;
         // External metadata providers can reenter while returning their scope.
         let latest = context.GetStatus()?;
@@ -187,7 +281,11 @@ fn check_with(
             GUID_COMPARTMENT_EMPTYCONTEXT,
         ] {
             let value = compartments.GetCompartment(&guid)?.GetValue()?;
-            if value.vt() != VT_I4 || value.Anonymous.Anonymous.Anonymous.lVal != 0 {
+            if value.vt() == VT_I4 {
+                if value.Anonymous.Anonymous.Anonymous.lVal != 0 {
+                    return denied();
+                }
+            } else if profile == ProtectionProfile::Strict {
                 return denied();
             }
         }
@@ -195,16 +293,27 @@ fn check_with(
         Ok(stamp)
     }
 }
+
+pub(crate) fn validate_with_profile(
+    context: &ITfContext,
+    range: &ITfRange,
+    cookie: u32,
+    expected: Stamp,
+    profile: ProtectionProfile,
+) -> Result<()> {
+    if check_with_profile(context, range, cookie, profile)? != expected {
+        return denied();
+    }
+    Ok(())
+}
+
 pub(crate) fn validate(
     context: &ITfContext,
     range: &ITfRange,
     cookie: u32,
     expected: Stamp,
 ) -> Result<()> {
-    if check(context, range, cookie)? != expected {
-        return denied();
-    }
-    Ok(())
+    validate_with_profile(context, range, cookie, expected, ProtectionProfile::Strict)
 }
 
 #[cfg(test)]
@@ -290,5 +399,68 @@ mod tests {
         for scope in [IS_PASSWORD, IS_PRIVATE, IS_DEFAULT] {
             assert!(classify(status(), &[scope]).is_err());
         }
+    }
+
+    #[test]
+    fn standard_profile_admits_default_scope_and_regions_while_retaining_inviolable_guards() {
+        let mut standard_status = TS_STATUS {
+            dwDynamicFlags: 0,
+            dwStaticFlags: TS_SS_REGIONS,
+        };
+        // 1. Standard profile allows regions without HiddenTextPossible
+        assert_eq!(
+            input_status_denial_with_profile(standard_status, ProtectionProfile::Standard),
+            None
+        );
+        // And admits IS_DEFAULT
+        assert!(
+            classify_with_profile(standard_status, &[IS_DEFAULT], ProtectionProfile::Standard)
+                .is_ok()
+        );
+
+        // 2. Strict profile still denies standard_status
+        assert_eq!(
+            input_status_denial_with_profile(standard_status, ProtectionProfile::Strict),
+            Some(InputStatusDenial::HiddenTextPossible)
+        );
+        assert!(
+            classify_with_profile(standard_status, &[IS_DEFAULT], ProtectionProfile::Strict)
+                .is_err()
+        );
+
+        // 3. Inviolable guards: Passwords, PINs, Private, and ReadOnly are ALWAYS denied even in Standard profile
+        for confidential in [IS_PASSWORD, IS_NUMERIC_PIN, IS_NUMERIC_PASSWORD, IS_PRIVATE] {
+            assert!(classify_with_profile(
+                standard_status,
+                &[confidential],
+                ProtectionProfile::Standard
+            )
+            .is_err());
+            assert!(classify_with_profile(
+                standard_status,
+                &[IS_DEFAULT, confidential],
+                ProtectionProfile::Standard
+            )
+            .is_err());
+        }
+
+        // ReadOnly is ALWAYS denied
+        standard_status.dwDynamicFlags |= TS_SD_READONLY;
+        assert_eq!(
+            input_status_denial_with_profile(standard_status, ProtectionProfile::Standard),
+            Some(InputStatusDenial::ReadOnly)
+        );
+        assert!(
+            classify_with_profile(standard_status, &[IS_DEFAULT], ProtectionProfile::Standard)
+                .is_err()
+        );
+
+        // Transitory is ALWAYS denied
+        standard_status.dwDynamicFlags = 0;
+        standard_status.dwStaticFlags |= TS_SS_TRANSITORY;
+        assert_eq!(
+            input_status_denial_with_profile(standard_status, ProtectionProfile::Standard),
+            Some(InputStatusDenial::TransitoryContext)
+        );
     }
 }

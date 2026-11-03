@@ -93,6 +93,7 @@ pub(crate) fn exercise_broker(
                     authorization: 1,
                 },
                 allowed: true,
+                profile: sumibi_tip::edit::ProtectionProfile::Strict,
             }));
             let reservation = Reservation::acquire()?;
             let deadline = Instant::now()

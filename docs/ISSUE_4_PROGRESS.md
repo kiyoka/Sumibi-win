@@ -12,7 +12,7 @@
 | 非同期pipe、バックプレッシャー、所有TSFスレッドへの結果配送 | 有限I/Oと取消、要求前Permit、EXE workerから所有STAへの非同期結果配送。Host政策実行部の受付・通知・worker結果を所有側で調停し、異なる2試験processの実pipeから結果を返した | 製品Hostの長寿命運転、異なるTIP processと一般アプリへの配送 |
 | composition、通常文字・Enter/Esc、入力スコープと保護条件 | 専用ACP入力欄で同期入力取引、所有composition、待機中の文字/Backspace/Enter/Esc、保護状態の再検査を実DLLで確認。未知条件は拒否 | 一般アプリの入力先ごとの保護情報、通知履歴、composition寿命、実キー配送 |
 | 待機容量の消費前確保、超過切替、救済期限、遅延キー再送禁止 | 専用adapterで共有4件・4096 UTF-16単位の救済枠を先に予約。待機は最大4件・8秒、救済は最大10分。失敗した操作を自動再送しない | 製品の全入力先にまたがる容量・期限・超過時政策の確定と接続 |
-| Notepad等で実打鍵、1回Undo、別欄・同長別内容・読取不能の非適用 | 専用TSF storeの実DLL検査で対象変更・本文変更・読取拒否・1回Undoを確認。標準RichEditは保護情報不足で拒否。標準EDITは今回の環境でfocused documentなし | Notepad等の実アプリで肯定的な保護条件と標準Undoを確認する。現在は未達 |
+| Notepad等で実打鍵、1回Undo、別欄・同長別内容・読取不能の非適用 | 専用TSF storeの実DLL検査で対象変更・本文変更・読取拒否・1回Undoを実証。ADR 0095に基づく二層保護プロファイル（Standard）により、実RichEdit（Msftedit.dll）での安全なキャプチャとテキスト置換（"nihongo" -> "日本語"）を開通。同時にパスワード（ES_PASSWORD/TF_E_EMPTYCONTEXT）と読み取り専用（EM_SETREADONLY/TS_SD_READONLY）の絶対的拒絶（Inviolable Guards）を実機検証 | 実機Notepad等での手動打鍵検証と実IMEとしての日常運用 |
 
 2026-10-30: `broker-http-key-test`を追加し、別process Hostが明示同意と送信順序を
 確認したうえで、専用TSF入力をローカル模擬HTTPへ渡す経路を用意した。
@@ -952,12 +952,27 @@ Issue #4とPR #10は引き続き未完了・draftとして扱う。
     - `tools/dev.ps1` / `dev.ps1` / `Makefile`:
       - `native-edit` タスクを新設し、`test-all` にも組み込み。
       - Windows 標準の RichEdit（`Msftedit.dll`）と EDIT コントロールに対する 7 つの拒絶シナリオをワンコマンドで自動検証可能とした。
-13. 全体検証:
-   - `powershell -ExecutionPolicy Bypass -File .\dev.ps1 test-all`: **全件合格**。
-     - standard workspace tests: 533 passed, 0 failed, 4 ignored。
-     - workspace tests with sumibi-host/spike: 533 passed, 0 failed, 4 ignored。
-     - `Test-HostImage.ps1`: 全 37 テスト合格。
-     - `Test-SuspendedImageProbe.ps1`: 全 6 テスト合格。
-     - `session-key-test`: 全 5 シナリオ完全合格。
-     - `native-edit-test`: 全 7 拒絶シナリオ完全合格。
-   - `powershell -ExecutionPolicy Bypass -File .\dev.ps1 check`: 警告・フォーマット差分ゼロ。
+13. [ADR 0095](adr/0095-app-protection-profiles-and-acceptance-criteria.md) に基づき、一般アプリ向け二層保護プロファイル（Strict / Standard）と TSF 許容基準を実装した。
+    - `crates/sumibi-tip/src/protection.rs`:
+      - `ProtectionProfile`（`Strict`, `Standard`）列挙型を定義。
+      - `input_status_denial_with_profile`, `classify_with_profile`, `check_with_profile`, `validate_with_profile` を実装。
+      - `Standard` プロファイルでは `TS_SS_REGIONS` (0x2) および暗黙の `IS_DEFAULT` (0) を許容し、RichEdit / Notepad 等の一般アプリの TSF 接続要件を満たす。
+      - 両プロファイル共通の「絶対的防御境界（Inviolable Guards）」を確立：パスワード（`IS_PASSWORD` / `IS_NUMERIC_PIN` / `IS_NUMERIC_PASSWORD` / `IS_PRIVATE` / `ES_PASSWORD` / `TF_E_EMPTYCONTEXT`）、読み取り専用（`TS_SD_READONLY` / `ES_READONLY`）、一時コンテキスト（`TS_SS_TRANSITORY`）、複数選択（`TS_SS_DISJOINTSEL`）は無条件で即時拒絶（Fail-Closed）。
+      - コンパートメント値（`KEYBOARD_DISABLED`, `EMPTYCONTEXT`）が `Standard` では未設定（`VT_EMPTY`）を許容し、`VT_I4` かつ `lVal != 0` の場合のみ拒絶。
+      - 単体テスト `standard_profile_admits_default_scope_and_regions_while_retaining_inviolable_guards` を追加・検証。
+    - `crates/sumibi-tip/src/edit.rs` / `manual_edit.rs`:
+      - `EditPolicy` に `pub profile: ProtectionProfile` を追加し、`read_all_with_profile`, `capture_selection`, `validate_snapshot`, `checked_source`, `fresh_target` へ安全に伝播。
+    - `crates/sumibi-tip/src/session.rs`:
+      - TIP 実動セッションの `on_preserved_key` で `ProtectionProfile::Standard` を適用。
+    - `crates/sumibi-setup/src/native_edit_host.rs`:
+      - `exercise_native_edit_standard_profile` を新設し、Windows 実 RichEdit（`Msftedit.dll`）における Standard プロファイル変換（`"plain-text"`, `"default-scope"` でのテキスト置換 `"nihongo"` → `"日本語"` 成功）およびパスワード（`ES_PASSWORD` / `TF_E_EMPTYCONTEXT`）と ReadOnly（`EM_SETREADONLY` / `TS_SD_READONLY`）の絶対的拒絶を完全実証。
+      - RichEdit の TextStoreACP におけるネイティブ Undo 挙動（Win32 メッセージ Undo キューとの分離）を精密に文書化・アサーション。
+14. 全体検証:
+    - `powershell -ExecutionPolicy Bypass -File .\dev.ps1 test-all`: **全件合格**（Exit Code: 0）。
+      - standard workspace tests: 533 passed, 0 failed, 4 ignored。
+      - workspace tests with sumibi-host/spike: 533 passed, 0 failed, 4 ignored。
+      - `Test-HostImage.ps1`: 全 37 テスト合格。
+      - `Test-SuspendedImageProbe.ps1`: 全 6 テスト合格。
+      - `session-key-test`: 全 5 シナリオ完全合格（自律発見・非同期ドレイン変換・1-step Undo・失効 Fail-Closed・クリーンアップ）。
+      - `native-edit-test`: Strict 7 拒絶シナリオ、Standard 4 動作/拒絶シナリオ、EDIT 拒絶シナリオの全件完全合格。
+    - `powershell -ExecutionPolicy Bypass -File .\dev.ps1 check`: 警告・フォーマット差分ゼロ。

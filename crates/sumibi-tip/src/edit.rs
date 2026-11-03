@@ -4,7 +4,9 @@
 #![allow(non_snake_case)]
 
 use crate::com::{boundary, ObjectLease};
-pub use crate::protection::{input_status_denial, InputStatusDenial};
+pub use crate::protection::{
+    input_status_denial, input_status_denial_with_profile, InputStatusDenial, ProtectionProfile,
+};
 use std::cell::{Cell, RefCell};
 use std::mem::ManuallyDrop;
 use std::rc::Rc;
@@ -39,6 +41,7 @@ pub mod preview;
 pub struct EditPolicy {
     pub revision: Revision,
     pub allowed: bool,
+    pub profile: ProtectionProfile,
 }
 
 /// Single-use snapshot. No Debug implementation: it contains private input.
@@ -237,21 +240,30 @@ fn selection(context: &ITfContext, cookie: u32) -> Result<(ITfRange, TF_SELECTIO
     Ok((range, selection.0.style))
 }
 
+#[allow(dead_code)]
 fn read_all(range: &ITfRange, cookie: u32) -> Result<Vec<u16>> {
+    read_all_with_profile(range, cookie, ProtectionProfile::Strict)
+}
+
+pub(crate) fn read_all_with_profile(
+    range: &ITfRange,
+    cookie: u32,
+    profile: ProtectionProfile,
+) -> Result<Vec<u16>> {
     // SAFETY: cloned range and edit cookie are confined to this edit session.
     unsafe {
         let context = range.GetContext()?;
-        let protection = crate::protection::check(&context, range, cookie)?;
+        let protection = crate::protection::check_with_profile(&context, range, cookie, profile)?;
         let cursor = range.Clone()?;
         let mut text = Vec::new();
         while !cursor.IsEmpty(cookie)?.as_bool() {
-            crate::protection::validate(&context, range, cookie, protection)?;
+            crate::protection::validate_with_profile(&context, range, cookie, protection, profile)?;
             let mut chunk = [0u16; 256];
             let mut count = 0;
             #[cfg(feature = "spike")]
             BODY_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             cursor.GetText(cookie, 0, &mut chunk, &mut count)?;
-            crate::protection::validate(&context, range, cookie, protection)?;
+            crate::protection::validate_with_profile(&context, range, cookie, protection, profile)?;
             let count = count as usize;
             if count == 0 || count > chunk.len() || text.len() + count > MAX_SELECTION_UNITS {
                 return Err(E_ABORT.into());
@@ -298,9 +310,20 @@ pub fn capture_selection(
             if !same_context(&unsafe { range.GetContext()? }, &target)? {
                 return Err(E_ABORT.into());
             }
-            let protection = crate::protection::check(&target, &range, cookie)?;
-            let original = read_all(&range, cookie)?;
-            crate::protection::validate(&target, &range, cookie, protection)?;
+            let protection = crate::protection::check_with_profile(
+                &target,
+                &range,
+                cookie,
+                captured_policy.profile,
+            )?;
+            let original = read_all_with_profile(&range, cookie, captured_policy.profile)?;
+            crate::protection::validate_with_profile(
+                &target,
+                &range,
+                cookie,
+                protection,
+                captured_policy.profile,
+            )?;
             if policy.get() != captured_policy {
                 return Err(E_ABORT.into());
             }
@@ -390,8 +413,15 @@ fn validate_snapshot(
     }
     ensure_target(manager, &snapshot.context)?;
     let range = checked_selection(&snapshot.context, &snapshot.range, snapshot.style, cookie)?;
-    crate::protection::validate(&snapshot.context, &range, cookie, snapshot.protection)?;
-    if read_all(&range, cookie)? != snapshot.original {
+    crate::protection::validate_with_profile(
+        &snapshot.context,
+        &range,
+        cookie,
+        snapshot.protection,
+        snapshot.captured_policy.profile,
+    )?;
+    if read_all_with_profile(&range, cookie, snapshot.captured_policy.profile)? != snapshot.original
+    {
         return Err(E_ABORT.into());
     }
     ensure_target(manager, &snapshot.context)?;

@@ -2,7 +2,7 @@
 #![allow(non_snake_case)]
 
 use crate::edit::manual::ManualEdit;
-use crate::edit::EditPolicy;
+use crate::edit::{EditPolicy, ProtectionProfile};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -412,6 +412,7 @@ impl TipHostSession {
         let edit_policy = Rc::new(Cell::new(EditPolicy {
             revision: self.state.revision(),
             allowed: true,
+            profile: ProtectionProfile::Standard,
         }));
 
         let request_id = self.next_request_id.get().wrapping_add(1).max(1);

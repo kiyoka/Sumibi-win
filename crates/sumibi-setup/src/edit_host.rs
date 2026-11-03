@@ -773,6 +773,7 @@ pub(super) fn exercise(
                     authorization: 1,
                 },
                 allowed: case != "protected",
+                profile: sumibi_tip::edit::ProtectionProfile::Strict,
             }));
             let rejected_capture = matches!(
                 case,
@@ -937,6 +938,7 @@ fn exercise_previews(
                     authorization: 1,
                 },
                 allowed: true,
+                profile: sumibi_tip::edit::ProtectionProfile::Strict,
             }));
             let snapshot = capture_selection(manager, &context, client, policy.clone())?;
             let mut pending = Preview::begin(manager, client, snapshot)?;
@@ -1071,6 +1073,7 @@ fn exercise_attributes(
                     authorization: 1,
                 },
                 allowed: true,
+                profile: sumibi_tip::edit::ProtectionProfile::Strict,
             }));
             let snapshot = capture_selection(manager, &context, client, policy.clone())?;
             if case == "revoked" {

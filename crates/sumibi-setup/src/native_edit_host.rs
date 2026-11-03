@@ -193,6 +193,7 @@ pub(crate) fn exercise_native_edit(
             }
             let policy = Rc::new(Cell::new(EditPolicy {
                 allowed: true,
+                profile: sumibi_tip::edit::ProtectionProfile::Strict,
                 revision: Revision {
                     input: 1,
                     settings: 1,
@@ -262,8 +263,193 @@ pub(crate) fn exercise_native_edit(
             }
         }
     }
-    println!("Native RichEdit: 7 rejection scenarios passed; conversion and standard Undo remain unsupported");
+    println!("Native RichEdit Strict Profile: 7 rejection scenarios passed; conversion and standard Undo remain unsupported");
+    exercise_native_edit_standard_profile(manager, client, &messages)?;
     inspect_standard_edit(manager, &messages)?;
+    Ok(())
+}
+
+fn exercise_native_edit_standard_profile(
+    manager: &ITfThreadMgr,
+    client: u32,
+    messages: &ITfMessagePump,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    // RichEdit (Msftedit.dll) natively implements TextStoreACP without bridging
+    // Win32 SetInputScope to TSF GUID_PROP_INPUTSCOPE (GetValue always returns E_FAIL).
+    // Inviolable protection against confidential scopes (IS_PRIVATE, IS_PASSWORD, etc.)
+    // is independently validated in unit tests and TextStore fixtures.
+    // Here we verify native RichEdit conversion (plain-text, default-scope) and
+    // inviolable rejection of passwords (ES_PASSWORD) and readonly (EM_SETREADONLY).
+    for (case_index, case) in ["plain-text", "default-scope", "password", "readonly"]
+        .into_iter()
+        .enumerate()
+    {
+        unsafe {
+            let parent = crate::window_host::Window::new(manager)?;
+            let module = LoadLibraryExW(w!("Msftedit.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32)?;
+            let password = if case == "password" { ES_PASSWORD } else { 0 };
+            let hwnd = match CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("RICHEDIT50W"),
+                w!(""),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE((ES_MULTILINE | password) as u32),
+                10,
+                10,
+                620,
+                140,
+                Some(parent.hwnd()),
+                None,
+                None,
+                None,
+            ) {
+                Ok(hwnd) => hwnd,
+                Err(error) => {
+                    let _ = FreeLibrary(module);
+                    return Err(error.into());
+                }
+            };
+            let edit = NativeEdit { hwnd, module };
+            let _ = SendMessageW(
+                hwnd,
+                EM_SETTEXTMODE,
+                Some(WPARAM(TM_PLAINTEXT.0 as usize)),
+                Some(LPARAM(0)),
+            );
+            let flags = SendMessageW(
+                hwnd,
+                EM_SETEDITSTYLE,
+                Some(WPARAM(SES_USECTF as usize)),
+                Some(LPARAM(SES_USECTF as isize)),
+            );
+            assert_ne!(flags.0 as u32 & SES_USECTF, 0);
+
+            let scope = match case {
+                "default-scope" => IS_DEFAULT,
+                _ => IS_TEXT,
+            };
+            set_input_scope(hwnd, scope)
+                .map_err(|e| format!("{case}: native SetInputScope: {e}"))?;
+
+            let original = "prefix nihongo suffix";
+            let text: Vec<u16> = original.encode_utf16().chain(Some(0)).collect();
+            SetWindowTextW(hwnd, PCWSTR(text.as_ptr()))?;
+            SendMessageW(hwnd, EM_EMPTYUNDOBUFFER, None, None);
+            let _ = SetFocus(Some(hwnd));
+            pump_tsf_messages(messages)?;
+            assert_eq!(GetFocus(), hwnd, "{case}: focus not transferred to hwnd");
+
+            let document = manager
+                .GetFocus()
+                .map_err(|e| format!("{case}: native TSF focus: {e}"))?;
+            let context = document
+                .GetTop()
+                .map_err(|e| format!("{case}: native TSF context: {e}"))?;
+
+            let selected = CHARRANGE {
+                cpMin: 7,
+                cpMax: 14,
+            };
+            SendMessageW(
+                hwnd,
+                EM_EXSETSEL,
+                None,
+                Some(LPARAM((&selected as *const CHARRANGE) as isize)),
+            );
+
+            if case == "readonly" {
+                assert_ne!(
+                    SendMessageW(hwnd, EM_SETREADONLY, Some(WPARAM(1)), None).0,
+                    0
+                );
+            }
+            pump_tsf_messages(messages)?;
+
+            let policy = Rc::new(Cell::new(EditPolicy {
+                allowed: true,
+                profile: sumibi_tip::edit::ProtectionProfile::Standard,
+                revision: Revision {
+                    input: 1,
+                    settings: 1,
+                    authorization: 1,
+                },
+            }));
+
+            let request_id = (case_index as u128 + 1) * 1000;
+            let ticket = ManualEdit::capture(
+                manager,
+                &context,
+                client,
+                policy,
+                RequestId(request_id),
+                request_id,
+                Instant::now() + Duration::from_secs(5),
+            );
+
+            match case {
+                "plain-text" | "default-scope" => {
+                    let ticket = ticket.map_err(|e| {
+                        format!("{case}: expected Standard profile capture success: {e}")
+                    })?;
+                    let source = ticket.source()?;
+                    assert_eq!(source, "nihongo");
+
+                    ticket.finish(
+                        manager,
+                        client,
+                        RequestId(request_id),
+                        Revision {
+                            input: 1,
+                            settings: 1,
+                            authorization: 1,
+                        },
+                        "日本語".into(),
+                    )?;
+
+                    pump_tsf_messages(messages)?;
+
+                    let mut buffer = vec![0u16; 64];
+                    let len = GetWindowTextW(hwnd, &mut buffer);
+                    let current = String::from_utf16(&buffer[..len as usize])?;
+                    assert_eq!(current, "prefix 日本語 suffix");
+
+                    // Windows RichEdit (msftedit) uses an internal TSF TextStore ACP
+                    // implementation. Programmatic TSF range.SetText updates do not
+                    // populate the Win32 edit control's undo stack (EM_CANUNDO == 0),
+                    // as TSF maintains undo separately through ITfUndoManager.
+                    assert_eq!(SendMessageW(hwnd, EM_CANUNDO, None, None).0, 0);
+
+                    println!(
+                        "Native RichEdit / {case} (Standard Profile): conversion succeeded (text replaced; native EM_CANUNDO=0): OK"
+                    );
+                }
+                "password" => {
+                    assert!(
+                        ticket.is_err(),
+                        "password must be rejected even in Standard profile"
+                    );
+                    println!(
+                        "Native RichEdit / password (Standard Profile): inviolable rejection: OK"
+                    );
+                }
+                "readonly" => {
+                    assert!(
+                        ticket.is_err(),
+                        "readonly must be rejected even in Standard profile"
+                    );
+                    println!(
+                        "Native RichEdit / readonly (Standard Profile): inviolable rejection: OK"
+                    );
+                }
+                _ => unreachable!(),
+            }
+
+            drop(context);
+            drop(document);
+            edit.close()?;
+            pump_tsf_messages(messages)?;
+        }
+    }
+    println!("Native RichEdit Standard Profile: conversion and confidential rejections passed");
     Ok(())
 }
 

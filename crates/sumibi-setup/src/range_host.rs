@@ -71,6 +71,7 @@ pub(crate) fn exercise_ranges(
             pump_tsf_messages(&messages)?;
             let policy = Rc::new(Cell::new(EditPolicy {
                 allowed: true,
+                profile: sumibi_tip::edit::ProtectionProfile::Strict,
                 revision: Revision {
                     input: 1,
                     settings: 1,

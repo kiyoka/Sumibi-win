@@ -130,6 +130,7 @@ fn composition_count(context: &ITfContext) -> Result<usize> {
 fn policy() -> Rc<Cell<EditPolicy>> {
     Rc::new(Cell::new(EditPolicy {
         allowed: true,
+        profile: sumibi_tip::edit::ProtectionProfile::Strict,
         revision: Revision {
             input: 1,
             settings: 1,

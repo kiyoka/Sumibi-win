@@ -100,6 +100,7 @@ pub(crate) fn exercise_owned_composition(
                 // composition now covers exactly the same text and range.
                 let policy = Rc::new(Cell::new(EditPolicy {
                     allowed: true,
+                    profile: sumibi_tip::edit::ProtectionProfile::Strict,
                     revision: Revision {
                         input: 1,
                         settings: 1,

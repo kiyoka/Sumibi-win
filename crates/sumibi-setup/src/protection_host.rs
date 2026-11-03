@@ -159,6 +159,7 @@ pub(crate) fn exercise_protection(
             if case == "source-recheck" {
                 let policy = Rc::new(Cell::new(EditPolicy {
                     allowed: true,
+                    profile: sumibi_tip::edit::ProtectionProfile::Strict,
                     revision: Revision {
                         input: 1,
                         settings: 1,
