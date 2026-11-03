@@ -370,7 +370,8 @@ impl Controller {
                 &"Sumibi spike conversion".encode_utf16().collect::<Vec<_>>(),
             );
             if let Err(error) = res {
-                if error.code().0 as u32 != 0x80040205 {
+                let code = error.code().0 as u32;
+                if code != 0x80040205 && code != 0x80040503 {
                     return Err(error);
                 }
             }

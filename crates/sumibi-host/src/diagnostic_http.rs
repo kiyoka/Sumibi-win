@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
+use sumibi_core::candidate::CandidateItem;
 
 const MAX_HEADER_BYTES: usize = 8192;
 const MAX_RESPONSE_BYTES: usize = 8192;
@@ -48,6 +49,83 @@ pub fn convert_chat_with_policy(
     let model = snapshot.model.as_deref().ok_or(SendError::PolicyDenied)?;
     let adapter = DiagnosticChatLoopback::new(model).ok_or(SendError::InvalidRequest)?;
     crate::manual::convert_ordered(request, authority, admission, &adapter)
+}
+
+/// Diagnostic additional chat conversion with local dictionary completions (ADR 0099, ADR 0100).
+pub fn convert_additional_chat_with_policy(
+    request: ManualRequest<'_>,
+    current_result: &str,
+    authority: &crate::policy::PolicyAuthority,
+    admission: &impl SendAdmission,
+) -> Result<Vec<CandidateItem>, SendError> {
+    let snapshot = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    if snapshot.settings != request.revision.settings
+        || snapshot.authorization != request.revision.authorization
+    {
+        return Err(SendError::PolicyDenied);
+    }
+    let model = snapshot.model.as_deref().ok_or(SendError::PolicyDenied)?;
+    let adapter = DiagnosticAdditionalChatLoopback {
+        model: model.to_owned(),
+        current_result: current_result.to_owned(),
+    };
+    let json = crate::manual::convert_ordered(request, authority, admission, &adapter)?;
+    serde_json::from_str::<Vec<CandidateItem>>(&json).map_err(|_| SendError::InvalidResponse)
+}
+
+struct DiagnosticAdditionalChatLoopback {
+    model: String,
+    current_result: String,
+}
+
+impl OrderedConversionTransport for DiagnosticAdditionalChatLoopback {
+    fn convert_ordered(
+        &self,
+        destination: &Destination,
+        credential: &str,
+        source: &str,
+        deadline: Instant,
+        gate: &mut dyn SendGate,
+    ) -> Result<String, SendError> {
+        let input = crate::first_conversion::ConversionInput::with_context(
+            source,
+            Some(&self.current_result),
+            None,
+        );
+        let body = crate::first_conversion::request_body_additional(&self.model, &input)
+            .map_err(|_| SendError::InvalidRequest)?;
+        let (address, headers, body) =
+            prepare_body(destination, credential, body).map_err(SendError::Transport)?;
+        if gate.is_cancelled() {
+            return Err(SendError::PolicyDenied);
+        }
+        let mut stream = TcpStream::connect_timeout(
+            &address,
+            remaining(deadline).map_err(SendError::Transport)?,
+        )
+        .map_err(classify_io)
+        .map_err(SendError::Transport)?;
+        if gate.is_cancelled() {
+            return Err(SendError::PolicyDenied);
+        }
+        gate.write_authorized(&mut || {
+            send_request(&mut stream, headers.as_bytes(), &body, deadline)
+        })?;
+        let response_text = read_response(&mut stream, deadline, &|| gate.is_cancelled())
+            .map_err(SendError::Transport)?;
+        let llm_candidates = crate::first_conversion::response_candidates(
+            response_text.as_bytes(),
+            Some(&self.current_result),
+        )
+        .map_err(|_| SendError::InvalidResponse)?;
+        let complete = crate::local_dictionary::build_complete_candidates(
+            source,
+            Some(&self.current_result),
+            &llm_candidates,
+            crate::first_conversion::MAX_ADDITIONAL_CANDIDATES,
+        );
+        serde_json::to_string(&complete).map_err(|_| SendError::InvalidResponse)
+    }
 }
 
 impl OrderedConversionTransport for DiagnosticChatLoopback {
