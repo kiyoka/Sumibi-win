@@ -24,25 +24,75 @@ function Invoke-Spike {
 }
 
 $previousIncremental = $env:CARGO_INCREMENTAL
+$restoreDefaultHost = $false
+$restorePassiveTip = $false
 Push-Location -LiteralPath $workspacePath
 try {
     $env:CARGO_INCREMENTAL = '0'
+    & (Join-Path $PSScriptRoot 'Test-SystemRegistrationDevAcl.ps1')
     Invoke-Cargo -Arguments @('fmt', '--all', '--check')
     Invoke-Cargo -Arguments @('test', '--workspace', '--locked', '--offline')
+    Invoke-Cargo -Arguments @('test', '--workspace', '--features', 'sumibi-host/spike', '--locked', '--offline')
     Invoke-Cargo -Arguments @('clippy', '--workspace', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings')
     Invoke-Cargo -Arguments @('clippy', '-p', 'sumibi-tip', '--no-default-features', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings')
+    Invoke-Cargo -Arguments @('clippy', '-p', 'sumibi-host', '--all-features', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings')
     Invoke-Cargo -Arguments @('build', '--workspace', '--locked', '--offline')
+    $restorePassiveTip = $true
+    & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') registration-transaction-test
+    if ($LASTEXITCODE -ne 0) { throw 'Registration transaction fixture failed; inspect its preserved journal.' }
+    & (Join-Path $PSScriptRoot 'Test-NativeRegistrationBackend.ps1')
     Invoke-Cargo -Arguments @('run', '-p', 'sumibi-tip', '--features', 'spike', '--example', 'load_smoke', '--locked', '--offline', '--', 'target/debug/sumibi_tip.dll')
     foreach ($name in @('self-test', 'edit-test', 'key-test')) { Invoke-Spike -Name $name }
     if (!$SkipDesktop) {
+        & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') broker-channel-denied-test
+        if ($LASTEXITCODE -ne 0) { throw 'Default Host broker channel rejection check failed.' }
+        $restoreDefaultHost = $true
+        Invoke-Cargo -Arguments @('build', '-p', 'sumibi-host', '--features', 'spike', '--locked', '--offline')
+        & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') broker-channel-test
+        if ($LASTEXITCODE -ne 0) { throw 'Reusable broker channel check failed.' }
+        & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') broker-worker-test
+        if ($LASTEXITCODE -ne 0) { throw 'Reusable broker worker check failed.' }
+        Invoke-Spike -Name 'broker-test'
+        Invoke-Spike -Name 'range-target-test'
+        Invoke-Spike -Name 'native-edit-test'
+        Invoke-Spike -Name 'broker-key-test'
+        Invoke-Spike -Name 'broker-input-test'
+        Invoke-Spike -Name 'protection-test'
+        Invoke-Spike -Name 'composition-test'
+        Invoke-Spike -Name 'owned-composition-test'
+        Invoke-Spike -Name 'tracking-input-test'
+        Invoke-Spike -Name 'composing-input-test'
+        Invoke-Spike -Name 'input-notify-test'
+        Invoke-Spike -Name 'transaction-input-test'
+        Invoke-Spike -Name 'backspace-input-test'
+        Invoke-Spike -Name 'grapheme-input-test'
+        Invoke-Spike -Name 'recovery-input-test'
+        Invoke-Spike -Name 'waiting-input-test'
+        Invoke-Spike -Name 'waiting-demo-test'
         foreach ($name in @('window-test', 'input-test', 'close-test', 'delayed-test')) { Invoke-Spike -Name $name }
         & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') ipc-test
         if ($LASTEXITCODE -ne 0) { throw 'Desktop pipe check failed; use a normal user session.' }
+        & (Join-Path $workspacePath 'target/debug/sumibi-setup.exe') ipc-peer-test
+        if ($LASTEXITCODE -ne 0) { throw 'Two-process pipe check failed; use a normal user session.' }
     }
-    Write-Output 'All selected spike checks passed.'
-    if ($SkipDesktop) { Write-Output 'Desktop window/input/delayed/pipe checks were explicitly skipped.' }
 }
 finally {
-    $env:CARGO_INCREMENTAL = $previousIncremental
-    Pop-Location
+    try {
+        if ($restoreDefaultHost) {
+            Invoke-Cargo -Arguments @('build', '-p', 'sumibi-host', '--locked', '--offline')
+        }
+    }
+    finally {
+        try {
+            if ($restorePassiveTip) {
+                Invoke-Cargo -Arguments @('build', '-p', 'sumibi-tip', '--locked', '--offline')
+            }
+        }
+        finally {
+            $env:CARGO_INCREMENTAL = $previousIncremental
+            Pop-Location
+        }
+    }
 }
+Write-Output 'All selected spike checks passed; passive TIP and default Host restored.'
+if ($SkipDesktop) { Write-Output 'Desktop window/input/close/delayed/broker/range-target/native-edit/broker-channel/broker-worker/protection/composition/owned-composition/tracking/composing/input-notify/transaction/backspace/grapheme/recovery/waiting/waiting-demo/pipe/peer checks were explicitly skipped.' }

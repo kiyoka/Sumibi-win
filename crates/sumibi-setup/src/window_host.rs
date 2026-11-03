@@ -8,21 +8,24 @@ use std::sync::OnceLock;
 use std::thread::{self, ThreadId};
 use windows::core::{Interface, Result, HRESULT};
 use windows::Win32::Foundation::{
-    E_ABORT, E_FAIL, E_UNEXPECTED, HWND, LPARAM, LRESULT, RPC_E_WRONG_THREAD, WPARAM,
+    E_ABORT, E_ACCESSDENIED, E_FAIL, E_UNEXPECTED, HWND, LPARAM, LRESULT, RPC_E_WRONG_THREAD,
+    WPARAM,
 };
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
-use windows::Win32::UI::TextServices::{ITfDocumentMgr, ITfThreadMgr};
+use windows::Win32::UI::TextServices::{ITfDocumentMgr, ITfMessagePump, ITfThreadMgr};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
     GetWindowLongPtrW, LoadCursorW, PostMessageW, RegisterClassW, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowTextW, TranslateMessage, GWLP_USERDATA, IDC_ARROW, MSG, WM_APP,
-    WM_CHAR, WM_CLOSE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_NCDESTROY, WM_PAINT, WNDCLASSW,
-    WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    SetWindowLongPtrW, SetWindowTextW, TranslateMessage, GWLP_USERDATA, IDC_ARROW, MSG, PM_REMOVE,
+    WM_ACTIVATEAPP, WM_APP, WM_CANCELMODE, WM_CHAR, WM_CLOSE, WM_ENABLE, WM_KEYDOWN, WM_KEYUP,
+    WM_KILLFOCUS, WM_NCDESTROY, WM_PAINT, WNDCLASSW, WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW,
+    WS_VISIBLE,
 };
 
 pub(crate) struct Window {
+    messages: ITfMessagePump,
     hwnd: HWND,
     previous_focus: HWND,
     previous_foreground: HWND,
@@ -45,6 +48,13 @@ struct View {
 }
 type Refresh = Rc<dyn Fn() -> Result<Frame>>;
 pub(crate) type Input = Rc<dyn Fn(u32, WPARAM, LPARAM) -> Result<bool>>;
+
+/// Owner-detected loss of input eligibility, even without a TSF focus notice.
+/// Positive activation/enable messages never grant or revive an old request.
+pub(crate) fn input_boundary(message: u32, wparam: WPARAM) -> bool {
+    matches!(message, WM_KILLFOCUS | WM_CANCELMODE)
+        || (matches!(message, WM_ACTIVATEAPP | WM_ENABLE) && wparam.0 == 0)
+}
 
 const WM_REFRESH: u32 = WM_APP + 17;
 const WM_CLOSE_READY: u32 = WM_APP + 18;
@@ -154,19 +164,25 @@ unsafe extern "system" fn window_proc(
             if message == WM_CLOSE_READY {
                 return LRESULT(0);
             }
-            if matches!(message, WM_CHAR | WM_KILLFOCUS) && view.active.get() {
+            let boundary = input_boundary(message, wparam);
+            if (message == WM_CHAR || boundary) && view.active.get() {
                 let input = view.input.borrow().clone();
                 if let Some(input) = input {
                     match input(message, wparam, lparam) {
-                        Ok(true) => return LRESULT(0),
+                        Ok(true) if !boundary => return LRESULT(0),
+                        Ok(true) => {}
                         Ok(false) => {}
                         Err(error) => {
                             view.input_error.set(Some(error.code()));
-                            return LRESULT(0);
+                            if !boundary {
+                                return LRESULT(0);
+                            }
                         }
                     }
                 }
             }
+            // Boundary notices still reach DefWindowProc, including failures:
+            // WM_CANCELMODE must retain native menu/capture cancellation.
             if message == WM_REFRESH {
                 if !view.active.get() || wparam.0 != view.token.get() {
                     return LRESULT(0);
@@ -250,7 +266,8 @@ unsafe extern "system" fn window_proc(
     .unwrap_or(LRESULT(0))
 }
 impl Window {
-    pub(crate) fn new() -> Result<Self> {
+    pub(crate) fn new(manager: &ITfThreadMgr) -> Result<Self> {
+        let messages: ITfMessagePump = manager.cast()?;
         // SAFETY: register a process-lifetime class in this executable. The
         // procedure uses DefWindowProc until Window installs its stable Rc state.
         // STATIC must not be used: its hit testing returns HTTRANSPARENT and
@@ -290,6 +307,7 @@ impl Window {
                 None,
             )?;
             let window = Self {
+                messages,
                 hwnd,
                 previous_focus,
                 previous_foreground,
@@ -308,6 +326,31 @@ impl Window {
     }
     pub(crate) fn hwnd(&self) -> HWND {
         self.hwnd
+    }
+    /// The TSF wrapper performs pre/post processing even when no ordinary
+    /// message is returned. Raw user32 PeekMessage can leave focus notices pending.
+    pub(crate) fn peek_message(&self, message: &mut MSG) -> Result<bool> {
+        let mut found = windows::core::BOOL(0);
+        // SAFETY: this window and manager belong to the calling STA; output is
+        // live, and the wrapper processes only this thread's message queue.
+        unsafe {
+            self.messages
+                .PeekMessageW(message, HWND::default(), 0, 0, PM_REMOVE.0, &mut found)?;
+        }
+        Ok(found.as_bool())
+    }
+    pub(crate) fn get_message(&self, message: &mut MSG) -> Result<bool> {
+        let mut found = windows::core::BOOL(0);
+        // SAFETY: same ownership/output contract as peek_message. Used only by
+        // the blocking demo loop, never by TSF/notification callbacks.
+        unsafe {
+            self.messages
+                .GetMessageW(message, HWND::default(), 0, 0, &mut found)?;
+        }
+        if found.0 < 0 {
+            return Err(windows::core::Error::from_thread());
+        }
+        Ok(found.as_bool())
     }
     pub(crate) fn set_title(&self, title: &str) -> Result<()> {
         let text: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
@@ -391,6 +434,15 @@ impl Window {
             if GetFocus() != self.hwnd {
                 return Err(E_FAIL.into());
             }
+        }
+        Ok(())
+    }
+    /// Native TSF key routing requires foreground activation in addition to
+    /// thread focus. Tests must report this restriction instead of substituting
+    /// a direct DLL callback and claiming native key-manager coverage.
+    pub(crate) fn require_foreground(&self) -> Result<()> {
+        if unsafe { GetForegroundWindow() } != self.hwnd {
+            return Err(E_ACCESSDENIED.into());
         }
         Ok(())
     }

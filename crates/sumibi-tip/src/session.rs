@@ -1,0 +1,1064 @@
+//! Self-healing logon-scoped Host discovery, session lifecycle and protected conversion dispatch.
+#![allow(non_snake_case)]
+
+use crate::edit::manual::ManualEdit;
+use crate::edit::{EditPolicy, ProtectionProfile};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle, ThreadId};
+use std::time::{Duration, Instant};
+use sumibi_core::{RequestId, Revision};
+use sumibi_ipc::bootstrap::Mode;
+use sumibi_ipc::job::{Request, Reservation};
+use sumibi_ipc::worker::Worker;
+use sumibi_ipc::{current_bootstrap_pipe_name, Stop};
+use windows::core::{Interface, Result, BOOL, GUID, PCWSTR};
+use windows::Win32::Foundation::{
+    E_FAIL, HINSTANCE, HWND, LPARAM, LRESULT, RPC_E_WRONG_THREAD, WPARAM,
+};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::TextServices::*;
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, PostMessageW,
+    RegisterClassExW, SetWindowLongPtrW, UnregisterClassW, GWLP_USERDATA, HWND_MESSAGE, WM_APP,
+    WM_NCDESTROY, WNDCLASSEXW,
+};
+
+pub const COMMAND_CONVERT: GUID = GUID::from_u128(0x42e4ca10_7cae_4a74_bf57_d497c5667a2c);
+pub const CONVERT_KEY: TF_PRESERVEDKEY = TF_PRESERVEDKEY {
+    uVKey: 0x4a, // 'J'
+    uModifiers: TF_MOD_CONTROL,
+};
+
+const WM_SUMIBI_DRAIN: u32 = WM_APP + 42;
+
+/// Lock-free observable state shared between the background IPC worker and the STA thread.
+pub struct SharedSessionState {
+    connected: AtomicBool,
+    allowed: AtomicBool,
+    input: AtomicU64,
+    settings: AtomicU64,
+    authorization: AtomicU64,
+    protection_profile: std::sync::atomic::AtomicU8,
+}
+
+impl SharedSessionState {
+    fn new() -> Self {
+        Self {
+            connected: AtomicBool::new(false),
+            allowed: AtomicBool::new(false),
+            input: AtomicU64::new(1),
+            settings: AtomicU64::new(0),
+            authorization: AtomicU64::new(0),
+            protection_profile: std::sync::atomic::AtomicU8::new(0),
+        }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.connected.load(Ordering::Acquire) && self.allowed.load(Ordering::Acquire)
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::Acquire)
+    }
+
+    pub fn revision(&self) -> Revision {
+        Revision {
+            input: self.input.load(Ordering::Acquire),
+            settings: self.settings.load(Ordering::Acquire),
+            authorization: self.authorization.load(Ordering::Acquire),
+        }
+    }
+
+    pub fn protection_profile(&self) -> ProtectionProfile {
+        match self.protection_profile.load(Ordering::Acquire) {
+            1 => ProtectionProfile::Strict,
+            _ => ProtectionProfile::Standard,
+        }
+    }
+
+    pub fn set_protection_profile(&self, profile: ProtectionProfile) {
+        let val = match profile {
+            ProtectionProfile::Standard => 0,
+            ProtectionProfile::Strict => 1,
+        };
+        self.protection_profile.store(val, Ordering::Release);
+    }
+}
+
+enum WorkerCommand {
+    Convert {
+        request_id: u64,
+        revision: Revision,
+        text: String,
+        timeout: Duration,
+    },
+}
+
+enum WorkerEvent {
+    Completed { request_id: u64, text: String },
+    Failed { request_id: u64 },
+}
+
+fn debug_log(msg: &str) {
+    let wide: Vec<u16> = format!("[Sumibi-TIP] {msg}\0").encode_utf16().collect();
+    unsafe {
+        windows::Win32::System::Diagnostics::Debug::OutputDebugStringW(windows::core::PCWSTR(
+            wide.as_ptr(),
+        ));
+    }
+}
+
+struct DrainSink {
+    owner: ThreadId,
+    manager: ITfThreadMgr,
+    client: u32,
+    event_receiver: Receiver<WorkerEvent>,
+    pending_ticket: RefCell<Option<(u64, Revision, ManualEdit)>>,
+}
+
+impl DrainSink {
+    fn drain(&self) -> Result<bool> {
+        if self.owner != thread::current().id() {
+            return Err(RPC_E_WRONG_THREAD.into());
+        }
+        let mut handled = false;
+        while let Ok(event) = self.event_receiver.try_recv() {
+            match event {
+                WorkerEvent::Completed { request_id, text } => {
+                    if let Some((pending_id, revision, ticket)) =
+                        self.pending_ticket.borrow_mut().take()
+                    {
+                        if pending_id == request_id {
+                            let result = ticket.finish(
+                                &self.manager,
+                                self.client,
+                                RequestId(pending_id.into()),
+                                revision,
+                                text,
+                            );
+                            if result.is_ok() {
+                                debug_log(&format!(
+                                    "Drain applied text for request_id={pending_id}"
+                                ));
+                                handled = true;
+                            } else if let Err(err) = result {
+                                debug_log(&format!(
+                                    "Drain finish rejected for request_id={pending_id}: HRESULT 0x{:08x}",
+                                    err.code().0 as u32
+                                ));
+                            }
+                        } else {
+                            let mut t = ticket;
+                            let _ = t.cancel();
+                        }
+                    }
+                }
+                WorkerEvent::Failed { request_id } => {
+                    if let Some((pending_id, revision, mut ticket)) =
+                        self.pending_ticket.borrow_mut().take()
+                    {
+                        if pending_id == request_id {
+                            let _ = ticket.cancel();
+                        } else {
+                            *self.pending_ticket.borrow_mut() =
+                                Some((pending_id, revision, ticket));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(handled)
+    }
+
+    fn cancel_pending(&self) {
+        if let Some((_, _, mut ticket)) = self.pending_ticket.borrow_mut().take() {
+            let _ = ticket.cancel();
+        }
+    }
+}
+
+struct DrainWindow {
+    hwnd: HWND,
+    class_name: Vec<u16>,
+}
+
+impl DrainWindow {
+    fn create(sink: *const DrainSink) -> Option<Self> {
+        let instance = unsafe { GetModuleHandleW(None).ok()? };
+        let hinstance: HINSTANCE = instance.into();
+        let class_name_str = format!("Sumibi.TipDrain.{:x}\0", sink as usize);
+        let class_name: Vec<u16> = class_name_str.encode_utf16().collect();
+
+        let wnd_class = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(drain_window_proc),
+            hInstance: hinstance,
+            lpszClassName: PCWSTR(class_name.as_ptr()),
+            ..Default::default()
+        };
+
+        let atom = unsafe { RegisterClassExW(&wnd_class) };
+        if atom == 0 {
+            return None;
+        }
+
+        let hwnd = unsafe {
+            CreateWindowExW(
+                Default::default(),
+                PCWSTR(class_name.as_ptr()),
+                PCWSTR::null(),
+                Default::default(),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                Some(hinstance),
+                None,
+            )
+        };
+
+        if let Ok(hwnd) = hwnd {
+            unsafe {
+                let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, sink as isize);
+            }
+            Some(Self { hwnd, class_name })
+        } else {
+            unsafe {
+                let _ = UnregisterClassW(PCWSTR(class_name.as_ptr()), Some(hinstance));
+            }
+            None
+        }
+    }
+
+    fn destroy(&mut self) {
+        unsafe {
+            let instance: Option<HINSTANCE> = GetModuleHandleW(None).ok().map(Into::into);
+            let _ = SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0);
+            let _ = DestroyWindow(self.hwnd);
+            let _ = UnregisterClassW(PCWSTR(self.class_name.as_ptr()), instance);
+        }
+    }
+}
+
+unsafe extern "system" fn drain_window_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_SUMIBI_DRAIN => {
+            let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const DrainSink;
+            if !ptr.is_null() {
+                let sink = unsafe { &*ptr };
+                let _ = sink.drain();
+            }
+            LRESULT(0)
+        }
+        WM_NCDESTROY => unsafe {
+            let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        },
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+pub struct TipHostSession {
+    owner: ThreadId,
+    manager: ITfThreadMgr,
+    client: u32,
+    state: Arc<SharedSessionState>,
+    stop: Stop,
+    command_sender: SyncSender<WorkerCommand>,
+    sink: Rc<DrainSink>,
+    worker_thread: RefCell<Option<JoinHandle<()>>>,
+    preserved_registered: Cell<bool>,
+    next_request_id: Cell<u64>,
+    drain_window: RefCell<Option<DrainWindow>>,
+}
+
+impl TipHostSession {
+    /// Start the autonomous session manager and register the conversion hotkey.
+    pub fn start(manager: &ITfThreadMgr, client: u32) -> Result<Self> {
+        let stop = Stop::new().map_err(|_| windows::core::Error::from(E_FAIL))?;
+        let state = Arc::new(SharedSessionState::new());
+
+        let (cmd_tx, cmd_rx) = mpsc::sync_channel(4);
+        let (evt_tx, evt_rx) = mpsc::sync_channel(4);
+
+        let sink = Rc::new(DrainSink {
+            owner: thread::current().id(),
+            manager: manager.clone(),
+            client,
+            event_receiver: evt_rx,
+            pending_ticket: RefCell::new(None),
+        });
+
+        let drain_window = DrainWindow::create(Rc::as_ptr(&sink));
+        let drain_hwnd = drain_window.as_ref().map(|w| w.hwnd.0 as isize);
+
+        let thread_state = state.clone();
+        let thread_stop = stop.clone();
+
+        let worker_thread = thread::Builder::new()
+            .name("sumibi-tip-session".into())
+            .spawn(move || {
+                worker_loop(thread_state, thread_stop, cmd_rx, evt_tx, drain_hwnd);
+            })
+            .map_err(|_| windows::core::Error::from(E_FAIL))?;
+
+        let session = Self {
+            owner: thread::current().id(),
+            manager: manager.clone(),
+            client,
+            state,
+            stop,
+            command_sender: cmd_tx,
+            sink,
+            worker_thread: RefCell::new(Some(worker_thread)),
+            preserved_registered: Cell::new(false),
+            next_request_id: Cell::new(0),
+            drain_window: RefCell::new(drain_window),
+        };
+
+        // Register preserved key (Ctrl+J)
+        session.register_preserved_key()?;
+
+        Ok(session)
+    }
+
+    pub fn state(&self) -> &Arc<SharedSessionState> {
+        &self.state
+    }
+
+    fn register_preserved_key(&self) -> Result<()> {
+        if self.owner != thread::current().id() {
+            return Err(RPC_E_WRONG_THREAD.into());
+        }
+        if self.preserved_registered.get() {
+            return Ok(());
+        }
+        let keys: ITfKeystrokeMgr = self.manager.cast()?;
+        let res = unsafe {
+            keys.PreserveKey(
+                self.client,
+                &COMMAND_CONVERT,
+                &CONVERT_KEY,
+                &"Sumibi conversion".encode_utf16().collect::<Vec<_>>(),
+            )
+        };
+        if let Err(error) = res {
+            if error.code().0 as u32 != 0x80040205 {
+                return Err(error);
+            }
+        }
+        self.preserved_registered.set(true);
+        Ok(())
+    }
+
+    fn unregister_preserved_key(&self) -> Result<()> {
+        if self.owner != thread::current().id() {
+            return Err(RPC_E_WRONG_THREAD.into());
+        }
+        if !self.preserved_registered.get() {
+            return Ok(());
+        }
+        let keys: ITfKeystrokeMgr = self.manager.cast()?;
+        unsafe {
+            keys.UnpreserveKey(&COMMAND_CONVERT, &CONVERT_KEY)?;
+        }
+        self.preserved_registered.set(false);
+        Ok(())
+    }
+
+    /// Handle preserved hotkey event safely. Returns Ok(TRUE) if conversion is admitted and dispatched.
+    pub fn on_preserved_key(&self, context: Option<&ITfContext>, key: &GUID) -> Result<BOOL> {
+        if self.owner != thread::current().id() {
+            return Err(RPC_E_WRONG_THREAD.into());
+        }
+        if *key != COMMAND_CONVERT {
+            return Ok(false.into());
+        }
+
+        // 1. Consent and readiness gate: if not ready, ignore key immediately (never read text!)
+        if !self.state.is_ready() {
+            debug_log(
+                "Preserved key ignored: host session is not ready (not connected or not allowed)",
+            );
+            return Ok(false.into());
+        }
+
+        let Some(context) = context else {
+            debug_log("Preserved key ignored: TSF context is None");
+            return Ok(false.into());
+        };
+
+        // Log non-confidential TSF protection diagnostics for manual app verification
+        if let Ok(status) = unsafe { context.GetStatus() } {
+            let denial = crate::protection::input_status_denial(status);
+            debug_log(&format!(
+                "Preserved key status: dyn=0x{:08x}, stat=0x{:08x}, denial={:?}",
+                status.dwDynamicFlags, status.dwStaticFlags, denial
+            ));
+        } else {
+            debug_log("Preserved key status query failed");
+        }
+
+        if let Ok(compartments) = context.cast::<ITfCompartmentMgr>() {
+            let kbd_disabled =
+                unsafe { compartments.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED) }
+                    .and_then(|c| unsafe { c.GetValue() })
+                    .map(|v| unsafe { v.Anonymous.Anonymous.Anonymous.lVal })
+                    .unwrap_or(-1);
+            let empty_ctx = unsafe { compartments.GetCompartment(&GUID_COMPARTMENT_EMPTYCONTEXT) }
+                .and_then(|c| unsafe { c.GetValue() })
+                .map(|v| unsafe { v.Anonymous.Anonymous.Anonymous.lVal })
+                .unwrap_or(-1);
+            debug_log(&format!(
+                "Preserved key compartments: kbd_disabled={kbd_disabled}, empty_ctx={empty_ctx}"
+            ));
+        }
+
+        // 2. Capture selection and check protection inside an edit session
+        let edit_policy = Rc::new(Cell::new(EditPolicy {
+            revision: self.state.revision(),
+            allowed: true,
+            profile: self.state.protection_profile(),
+        }));
+
+        let request_id = self.next_request_id.get().wrapping_add(1).max(1);
+        self.next_request_id.set(request_id);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let ticket = match ManualEdit::capture(
+            &self.manager,
+            context,
+            self.client,
+            edit_policy,
+            RequestId(request_id.into()),
+            request_id.into(),
+            deadline,
+        ) {
+            Ok(ticket) => ticket,
+            Err(error) => {
+                debug_log(&format!(
+                    "Preserved key capture rejected: HRESULT 0x{:08x}",
+                    error.code().0 as u32
+                ));
+                return Ok(false.into());
+            }
+        };
+
+        let text = match ticket.source() {
+            Ok(source) => source,
+            Err(error) => {
+                debug_log(&format!(
+                    "Preserved key source rejected: HRESULT 0x{:08x}",
+                    error.code().0 as u32
+                ));
+                return Ok(false.into());
+            }
+        };
+
+        let revision = ticket.revision();
+        *self.sink.pending_ticket.borrow_mut() = Some((request_id, revision, ticket));
+
+        // 3. Dispatch to background worker
+        let timeout = Duration::from_secs(5);
+        if self
+            .command_sender
+            .try_send(WorkerCommand::Convert {
+                request_id,
+                revision,
+                text,
+                timeout,
+            })
+            .is_err()
+        {
+            debug_log("Preserved key dispatch failed: command sender queue full");
+            self.sink.cancel_pending();
+            return Ok(false.into());
+        }
+
+        debug_log(&format!(
+            "Preserved key conversion dispatched: request_id={request_id}"
+        ));
+        Ok(true.into())
+    }
+
+    /// Drain completed conversion events on the STA thread and apply text replacement.
+    pub fn drain(&self) -> Result<bool> {
+        self.sink.drain()
+    }
+
+    /// Stop the session gracefully.
+    pub fn close(&self) -> Result<()> {
+        let _ = self.unregister_preserved_key();
+        if let Some(mut window) = self.drain_window.borrow_mut().take() {
+            window.destroy();
+        }
+        self.sink.cancel_pending();
+        let _ = self.stop.cancel();
+        if let Some(thread) = self.worker_thread.borrow_mut().take() {
+            let _ = thread.join();
+        }
+        Ok(())
+    }
+}
+
+impl Drop for TipHostSession {
+    fn drop(&mut self) {
+        let _ = self.close();
+    }
+}
+
+fn notify_drain(hwnd: Option<isize>, request_id: u64) {
+    if let Some(hwnd_val) = hwnd {
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(hwnd_val as *mut _)),
+                WM_SUMIBI_DRAIN,
+                WPARAM(request_id as usize),
+                LPARAM(0),
+            );
+        }
+    }
+}
+
+fn worker_loop(
+    state: Arc<SharedSessionState>,
+    stop: Stop,
+    receiver: Receiver<WorkerCommand>,
+    event_sender: SyncSender<WorkerEvent>,
+    drain_hwnd: Option<isize>,
+) {
+    let mut current_worker: Option<Worker> = None;
+
+    while !stop.is_cancelled().unwrap_or(true) {
+        // 1. Ensure worker connection
+        if current_worker.is_none() || current_worker.as_ref().is_some_and(|w| w.is_closed()) {
+            let was_reconnect = current_worker.is_some();
+            state.connected.store(false, Ordering::Release);
+            state.allowed.store(false, Ordering::Release);
+            current_worker = None;
+
+            if was_reconnect {
+                for _ in 0..6 {
+                    if stop.is_cancelled().unwrap_or(true) {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
+
+            if let Ok(pipe_name) = current_bootstrap_pipe_name() {
+                if let Ok(reservation) = Reservation::acquire() {
+                    let deadline = Instant::now() + Duration::from_secs(3);
+                    if let Ok(worker) = Worker::prepare_discovery(reservation, pipe_name, deadline)
+                    {
+                        current_worker = Some(worker);
+                    }
+                }
+            }
+
+            if current_worker.is_none() {
+                for _ in 0..10 {
+                    if stop.is_cancelled().unwrap_or(true) {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+                continue;
+            }
+
+            // Await initial policy preparation on the newly created worker
+            let prep_deadline = Instant::now() + Duration::from_secs(3);
+            let mut prep_ok = false;
+            while Instant::now() < prep_deadline {
+                if stop.is_cancelled().unwrap_or(true) {
+                    return;
+                }
+                match current_worker.as_ref().unwrap().prepared_policy() {
+                    Ok(Some(policy)) => {
+                        state.settings.store(policy.settings, Ordering::Release);
+                        state
+                            .authorization
+                            .store(policy.authorization, Ordering::Release);
+                        state.allowed.store(policy.allowed, Ordering::Release);
+                        state.set_protection_profile(policy.protection_profile);
+                        state.connected.store(true, Ordering::Release);
+                        prep_ok = true;
+                        break;
+                    }
+                    Ok(None) => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => {
+                        // Handshake failed or PolicyDenied (e.g. unconsented)
+                        break;
+                    }
+                }
+            }
+
+            if !prep_ok {
+                state.connected.store(false, Ordering::Release);
+                state.allowed.store(false, Ordering::Release);
+                current_worker = None;
+                continue;
+            }
+        }
+
+        let worker = current_worker.as_mut().unwrap();
+
+        // 2. Poll policy updates
+        match worker.prepared_policy() {
+            Ok(Some(policy)) => {
+                state.settings.store(policy.settings, Ordering::Release);
+                state
+                    .authorization
+                    .store(policy.authorization, Ordering::Release);
+                state.allowed.store(policy.allowed, Ordering::Release);
+                state.set_protection_profile(policy.protection_profile);
+                state.connected.store(true, Ordering::Release);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                // Connection broken or revoked
+                state.connected.store(false, Ordering::Release);
+                state.allowed.store(false, Ordering::Release);
+                current_worker = None;
+                continue;
+            }
+        }
+
+        // 3. Check for outgoing conversion commands
+        match receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(WorkerCommand::Convert {
+                request_id,
+                revision,
+                text,
+                timeout,
+            }) => {
+                let deadline = Instant::now() + timeout;
+
+                // Reserve permit
+                match worker.reserve(request_id) {
+                    Ok(permit) => {
+                        let request = Request {
+                            id: request_id,
+                            revision: sumibi_protocol::message::Revision {
+                                input: revision.input,
+                                settings: revision.settings,
+                                authorization: revision.authorization,
+                            },
+                            text,
+                            deadline,
+                            mode: Mode::Pinned,
+                        };
+
+                        if worker.submit(permit, request).is_err() {
+                            let _ = event_sender.send(WorkerEvent::Failed { request_id });
+                            notify_drain(drain_hwnd, request_id);
+                            continue;
+                        }
+
+                        // Wait for result
+                        loop {
+                            if stop.is_cancelled().unwrap_or(true) {
+                                break;
+                            }
+                            match worker.try_result() {
+                                Ok(Some(completion)) => {
+                                    if completion.id == request_id {
+                                        match completion.outcome() {
+                                            Ok(result_text) => {
+                                                let _ = event_sender.send(WorkerEvent::Completed {
+                                                    request_id,
+                                                    text: result_text.to_owned(),
+                                                });
+                                                notify_drain(drain_hwnd, request_id);
+                                            }
+                                            Err(_) => {
+                                                let _ = event_sender
+                                                    .send(WorkerEvent::Failed { request_id });
+                                                notify_drain(drain_hwnd, request_id);
+                                            }
+                                        }
+                                    }
+                                    break;
+                                }
+                                Ok(None) => {
+                                    if Instant::now() >= deadline {
+                                        let _ = worker.cancel(request_id);
+                                        let _ =
+                                            event_sender.send(WorkerEvent::Failed { request_id });
+                                        notify_drain(drain_hwnd, request_id);
+                                        break;
+                                    }
+                                    thread::sleep(Duration::from_millis(5));
+                                }
+                                Err(_) => {
+                                    let _ = event_sender.send(WorkerEvent::Failed { request_id });
+                                    notify_drain(drain_hwnd, request_id);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        let _ = event_sender.send(WorkerEvent::Failed { request_id });
+                        notify_drain(drain_hwnd, request_id);
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    if let Some(mut worker) = current_worker {
+        let _ = worker.shutdown(Duration::from_secs(1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sumibi_host::host_control::HostControl;
+    use sumibi_host::host_service::HostService;
+    use sumibi_host::manual::{Credential, Destination, Scheme};
+    use sumibi_host::policy::PolicyAuthority;
+
+    static HOST_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn configured_authority() -> Arc<PolicyAuthority> {
+        let authority = Arc::new(PolicyAuthority::new(
+            Destination::for_chat_completions(Scheme::Https, "example.test", 443, "/").unwrap(),
+        ));
+        authority.set_model("test-model").unwrap();
+        authority
+            .replace_credential(Credential::new("synthetic-test-key".into()))
+            .unwrap();
+        authority
+    }
+
+    #[test]
+    fn shared_session_state_reflects_atomic_updates() {
+        let state = SharedSessionState::new();
+        assert!(!state.is_ready());
+        assert!(!state.is_connected());
+
+        state.connected.store(true, Ordering::Release);
+        assert!(!state.is_ready());
+        assert!(state.is_connected());
+
+        state.allowed.store(true, Ordering::Release);
+        assert!(state.is_ready());
+
+        state.settings.store(3, Ordering::Release);
+        state.authorization.store(5, Ordering::Release);
+        let rev = state.revision();
+        assert_eq!(rev.input, 1);
+        assert_eq!(rev.settings, 3);
+        assert_eq!(rev.authorization, 5);
+
+        state.allowed.store(false, Ordering::Release);
+        assert!(!state.is_ready());
+    }
+
+    fn supported() -> bool {
+        match sumibi_ipc::PinnedProcess::current() {
+            Ok(_) => true,
+            Err(
+                sumibi_ipc::Error::UnsupportedAppContainer
+                | sumibi_ipc::Error::UnsupportedElevation
+                | sumibi_ipc::Error::UnsupportedIntegrity
+                | sumibi_ipc::Error::UnsupportedToken(_),
+            ) => false,
+            Err(error) => panic!("cannot inspect fixture identity: {error:?}"),
+        }
+    }
+
+    #[test]
+    fn session_on_preserved_key_denies_when_not_ready() {
+        if !supported() {
+            return;
+        }
+        let manager = crate::mock::new_manager().to_interface::<ITfThreadMgr>();
+        let session = TipHostSession::start(&manager, 7).expect("start session");
+
+        // When state is not ready, on_preserved_key immediately returns FALSE without reading
+        let result = session
+            .on_preserved_key(None, &COMMAND_CONVERT)
+            .expect("on_preserved_key");
+        assert!(!result.as_bool());
+
+        session.close().expect("close session");
+    }
+
+    #[test]
+    fn session_autonomously_discovers_host_and_updates_policy() {
+        if !supported() {
+            return;
+        }
+        let _lock = HOST_TEST_LOCK.lock().unwrap();
+
+        let authority = configured_authority();
+        let control =
+            Arc::new(HostControl::start_diagnostic(move || Ok((authority, false))).unwrap());
+        let mut host_service =
+            HostService::start_with_control(control).expect("start host service");
+
+        let manager = crate::mock::new_manager().to_interface::<ITfThreadMgr>();
+        let session = TipHostSession::start(&manager, 7).expect("start session");
+
+        // 1. Initially without consent, TIP session is not ready and denies hotkey
+        assert!(!session.state().is_ready());
+        let res = session
+            .on_preserved_key(None, &COMMAND_CONVERT)
+            .expect("on_preserved_key unconsented");
+        assert!(!res.as_bool());
+
+        // 2. Grant consent via host control
+        let offer_deadline = Instant::now() + Duration::from_secs(5);
+        let offer = loop {
+            if let Ok(Some(status)) = host_service.try_status() {
+                if status.phase == sumibi_host::host_control::Phase::Ready {
+                    if let Some(offer) = status.offer {
+                        break offer;
+                    }
+                }
+            }
+            if Instant::now() >= offer_deadline {
+                panic!("timed out waiting for host offer");
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        host_service
+            .control()
+            .try_grant(offer)
+            .expect("grant consent");
+
+        // 3. Wait for background worker to discover host and achieve ready state
+        let ready_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if session.state().is_ready() {
+                break;
+            }
+            if Instant::now() >= ready_deadline {
+                panic!("timed out waiting for session to become ready");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(session.state().is_ready());
+        assert!(session.state().is_connected());
+
+        // 4. Revoke consent and confirm TIP observes revocation
+        host_service.control().try_revoke().expect("revoke consent");
+        let revoke_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if !session.state().is_ready() {
+                break;
+            }
+            if Instant::now() >= revoke_deadline {
+                panic!("timed out waiting for session to observe revocation");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!session.state().is_ready());
+
+        session.close().expect("close session");
+        host_service.stop().expect("stop host service");
+    }
+
+    #[test]
+    fn session_reconnects_after_host_restart_and_recovers_ready() {
+        if !supported() {
+            return;
+        }
+        let _lock = HOST_TEST_LOCK.lock().unwrap();
+
+        // 1. Start Host #1
+        let authority1 = configured_authority();
+        let control1 =
+            Arc::new(HostControl::start_diagnostic(move || Ok((authority1, false))).unwrap());
+        let mut host_service1 =
+            HostService::start_with_control(control1).expect("start host service 1");
+
+        let manager = crate::mock::new_manager().to_interface::<ITfThreadMgr>();
+        let session = TipHostSession::start(&manager, 7).expect("start session");
+
+        // Grant consent on Host #1
+        let offer_deadline = Instant::now() + Duration::from_secs(5);
+        let offer1 = loop {
+            if let Ok(Some(status)) = host_service1.try_status() {
+                if status.phase == sumibi_host::host_control::Phase::Ready {
+                    if let Some(offer) = status.offer {
+                        break offer;
+                    }
+                }
+            }
+            if Instant::now() >= offer_deadline {
+                panic!("timed out waiting for host 1 offer");
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        host_service1
+            .control()
+            .try_grant(offer1)
+            .expect("grant consent 1");
+
+        // Wait for TIP session to achieve ready
+        let ready_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if session.state().is_ready() {
+                break;
+            }
+            if Instant::now() >= ready_deadline {
+                panic!("timed out waiting for session ready with host 1");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(session.state().is_ready());
+
+        // 2. Stop Host #1 (simulating host shutdown or crash)
+        host_service1.stop().expect("stop host service 1");
+
+        // Confirm TIP session observes disconnection and is no longer ready
+        let disconnect_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if !session.state().is_connected() && !session.state().is_ready() {
+                break;
+            }
+            if Instant::now() >= disconnect_deadline {
+                panic!("timed out waiting for session to disconnect after host 1 stop");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!session.state().is_connected());
+        assert!(!session.state().is_ready());
+
+        // 3. Start Host #2 (simulating host restart)
+        let authority2 = configured_authority();
+        let control2 =
+            Arc::new(HostControl::start_diagnostic(move || Ok((authority2, false))).unwrap());
+        let mut host_service2 =
+            HostService::start_with_control(control2).expect("start host service 2");
+
+        // Grant consent on Host #2
+        let offer_deadline2 = Instant::now() + Duration::from_secs(5);
+        let offer2 = loop {
+            if let Ok(Some(status)) = host_service2.try_status() {
+                if status.phase == sumibi_host::host_control::Phase::Ready {
+                    if let Some(offer) = status.offer {
+                        break offer;
+                    }
+                }
+            }
+            if Instant::now() >= offer_deadline2 {
+                panic!("timed out waiting for host 2 offer");
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        host_service2
+            .control()
+            .try_grant(offer2)
+            .expect("grant consent 2");
+
+        // 4. Wait for TIP session to autonomously self-heal and reconnect to Host #2
+        let recover_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if session.state().is_ready() {
+                break;
+            }
+            if Instant::now() >= recover_deadline {
+                panic!("timed out waiting for session to recover ready with host 2");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(session.state().is_ready());
+        assert!(session.state().is_connected());
+
+        // Cleanup
+        session.close().expect("close session");
+        host_service2.stop().expect("stop host service 2");
+    }
+
+    #[test]
+    fn drain_window_posts_and_processes_message_on_sta_thread() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, PeekMessageW, MSG, PM_REMOVE,
+        };
+
+        let manager = crate::mock::new_manager().to_interface::<ITfThreadMgr>();
+        let (evt_tx, evt_rx) = mpsc::sync_channel(4);
+        let sink = Rc::new(DrainSink {
+            owner: thread::current().id(),
+            manager,
+            client: 7,
+            event_receiver: evt_rx,
+            pending_ticket: RefCell::new(None),
+        });
+
+        let mut window = DrainWindow::create(Rc::as_ptr(&sink)).expect("create drain window");
+        let hwnd_val = window.hwnd.0 as isize;
+
+        // Push a completed event into the channel
+        evt_tx
+            .send(WorkerEvent::Completed {
+                request_id: 100,
+                text: "test".into(),
+            })
+            .expect("send event");
+
+        // Notify drain via PostMessage from another thread
+        let join_handle = thread::spawn(move || {
+            notify_drain(Some(hwnd_val), 100);
+        });
+        join_handle.join().expect("join worker thread");
+
+        // Pump messages on this STA thread
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut msg = MSG::default();
+        loop {
+            unsafe {
+                if PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    DispatchMessageW(&msg);
+                    if msg.message == WM_SUMIBI_DRAIN {
+                        break;
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                panic!("timed out waiting for WM_SUMIBI_DRAIN message");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        // WindowProc should have called sink.drain(), which consumed the event from event_receiver
+        assert!(sink.event_receiver.try_recv().is_err());
+
+        window.destroy();
+    }
+
+    #[test]
+    fn shared_session_state_protection_profile_roundtrip() {
+        let state = SharedSessionState::new();
+        // Default must be Standard
+        assert_eq!(state.protection_profile(), ProtectionProfile::Standard);
+
+        // Dynamically switch to Strict
+        state.set_protection_profile(ProtectionProfile::Strict);
+        assert_eq!(state.protection_profile(), ProtectionProfile::Strict);
+
+        // Switch back to Standard
+        state.set_protection_profile(ProtectionProfile::Standard);
+        assert_eq!(state.protection_profile(), ProtectionProfile::Standard);
+    }
+}

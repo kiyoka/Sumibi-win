@@ -7,7 +7,6 @@ use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-#[cfg(feature = "spike")]
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::{self, ThreadId};
@@ -108,10 +107,14 @@ struct Active {
     controller: Rc<Controller>,
     #[cfg(feature = "spike")]
     provider: Option<ProviderSubscription>,
+    session: Option<Rc<crate::session::TipHostSession>>,
 }
 
 impl Active {
     fn revoke(&mut self) -> Result<()> {
+        if let Some(session) = self.session.take() {
+            let _ = session.close();
+        }
         #[cfg(feature = "spike")]
         {
             self.controller.revoke()?;
@@ -194,14 +197,26 @@ impl ITfTextInputProcessor_Impl for Tip_Impl {
                 return Err(E_UNEXPECTED.into());
             }
             let keys: ITfKeystrokeMgr = manager.cast()?;
+            let session = crate::session::TipHostSession::start(manager, client)
+                .ok()
+                .map(Rc::new);
             #[cfg(feature = "spike")]
-            let controller = Controller::new(manager, client);
+            let controller = Controller::new(
+                manager,
+                client,
+                session.as_ref().map(Rc::downgrade).unwrap_or_default(),
+            );
             #[cfg(feature = "spike")]
             let provider = ProviderSubscription::register(manager, client, &controller)?;
             #[cfg(feature = "spike")]
-            let sink = crate::keys::KeySink::with_controller(Rc::downgrade(&controller));
+            let sink = crate::keys::KeySink::with_controller_and_session(
+                Rc::downgrade(&controller),
+                session.as_ref().map(Rc::downgrade).unwrap_or_default(),
+            );
             #[cfg(not(feature = "spike"))]
-            let sink = crate::keys::KeySink::create();
+            let sink = crate::keys::KeySink::with_session(
+                session.as_ref().map(Rc::downgrade).unwrap_or_default(),
+            );
             // SAFETY: activation runs on the owning TSF thread; manager/client
             // are supplied by TSF. No RefCell borrow survives this external call.
             unsafe { keys.AdviseKeyEventSink(client, &sink, true)? };
@@ -212,6 +227,7 @@ impl ITfTextInputProcessor_Impl for Tip_Impl {
                 controller,
                 #[cfg(feature = "spike")]
                 provider,
+                session,
             });
             Ok(())
         })
@@ -304,16 +320,41 @@ mod tests {
             {
                 let manager = crate::mock::new_manager();
                 let interface = manager.to_interface::<ITfThreadMgr>();
-                let state = crate::spike::Controller::new(&interface, 7);
+                let state = crate::spike::Controller::new(&interface, 7, std::rc::Weak::new());
                 let control = crate::spike::control(&state)
                     .cast::<crate::spike::ISpikeControl>()
                     .unwrap();
+                let broker = crate::broker_spike::control(&state)
+                    .cast::<crate::spike::ISpikeBroker>()
+                    .unwrap();
+                let raw_broker = broker.as_raw() as usize;
+                // Deliberate raw diagnostic call, kept alive until join. The
+                // callback must reject before touching its apartment-local Rc.
+                let wrong_thread = std::thread::spawn(move || {
+                    let pointer = raw_broker as *mut c_void;
+                    let borrowed = crate::spike::ISpikeBroker::from_raw_borrowed(&pointer).unwrap();
+                    let mut id = 0;
+                    borrowed.Pending(&mut id)
+                })
+                .join()
+                .unwrap();
+                assert_eq!(wrong_thread, RPC_E_WRONG_THREAD);
                 drop(state);
-                // Expired weak controller: repeated revoke is safe, new work
-                // still fails. The outer unsafe scope supplies the COM contract.
+                // Expired weak controller: revoke remains idempotent, while
+                // new work fails. Both control ABIs independently retain code.
                 control.RevokeContext().ok().unwrap();
                 control.RevokeContext().ok().unwrap();
                 assert!(control.BeginPreview().is_err());
+                assert_eq!(DllCanUnloadNow(), S_FALSE);
+                let mut request = 0;
+                assert_eq!(
+                    broker.Pending(&mut request),
+                    windows::Win32::Foundation::E_ABORT
+                );
+                drop(control);
+                assert_eq!(DllCanUnloadNow(), S_FALSE); // Independent broker ABI lease.
+                drop(broker);
+                assert_eq!(DllCanUnloadNow(), S_OK);
             }
             let sink = crate::keys::KeySink::create();
             assert_eq!(DllCanUnloadNow(), S_FALSE);

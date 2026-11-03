@@ -1,10 +1,34 @@
 //! Keyboard-only, single-line synthetic editor. Never attached to user documents.
 use super::*;
+use crate::broker_bridge::Bridge;
 use std::ops::Range;
+use sumibi_core::grapheme::{Boundaries, Direction};
+use sumibi_tip::spike::{ISpikeBroker, ISpikeBrokerTransport, FUNCTION_TEST_BROKER};
 use sumibi_tip::spike::{ISpikeControl, COMMAND_CONVERT, FUNCTION_TEST_CONTROL};
 use windows::Win32::Foundation::{E_ACCESSDENIED, LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::*;
+
+#[path = "tracking_host.rs"]
+mod tracking_host;
+pub(crate) use tracking_host::{exercise_tracking, run_tracking_demo};
+#[path = "composing_host.rs"]
+mod composing_host;
+pub(crate) use composing_host::{exercise_backspace, exercise_notifications};
+pub(crate) use composing_host::{exercise_composing, run_composing_demo};
+pub(crate) use composing_host::{exercise_transactions, run_transaction_demo};
+#[path = "input_recovery_host.rs"]
+mod input_recovery_host;
+pub(crate) use input_recovery_host::{exercise_recovery, run_recovery_demo};
+#[path = "grapheme_host.rs"]
+mod grapheme_host;
+pub(crate) use grapheme_host::exercise_graphemes;
+#[path = "input_waiting_host.rs"]
+mod waiting_host;
+pub(crate) use waiting_host::{exercise_waiting, exercise_waiting_interactive};
+pub(crate) use waiting_host::{
+    exercise_waiting_demo, exercise_waiting_demo_interactive, run_waiting_demo,
+};
 
 impl TextStore {
     fn boundary(&self, position: usize) -> bool {
@@ -25,6 +49,8 @@ impl TextStore {
         if !self.boundary(anchor) || !self.boundary(caret) {
             return Err(E_INVALIDARG.into());
         }
+        self.host_selection_calls
+            .set(self.host_selection_calls.get() + 1);
         let mut selection = self.selection.get();
         selection.acpStart = anchor.min(caret) as i32;
         selection.acpEnd = anchor.max(caret) as i32;
@@ -48,50 +74,59 @@ impl TextStore {
         let start = selected.acpStart as usize;
         let end = selected.acpEnd as usize;
         let backwards = selected.style.ase == TS_AE_START;
-        let mut caret = if backwards { start } else { end };
+        let caret = if backwards { start } else { end };
         let anchor = if backwards { end } else { start };
-        let length = self.text.borrow().len();
-        for step in 0..repeats.min(MAX_SELECTION_UNITS) {
-            caret = match key {
-                0x24 => 0,
-                0x23 => length,
-                0x25 if !extend && start != end && step == 0 => start,
-                0x27 if !extend && start != end && step == 0 => end,
-                0x25 => {
-                    let mut next = caret.saturating_sub(1);
-                    if !self.boundary(next) {
-                        next -= 1;
-                    }
-                    next
-                }
-                0x27 => {
-                    let mut next = (caret + 1).min(length);
-                    if !self.boundary(next) {
-                        next += 1;
-                    }
-                    next
-                }
-                _ => return Err(E_INVALIDARG.into()),
-            };
+        let map = Boundaries::new(&self.text.borrow()).ok_or(E_INVALIDARG)?;
+        let repeats = repeats.min(MAX_SELECTION_UNITS);
+        if repeats == 0 {
+            return Err(E_INVALIDARG.into());
         }
+        let caret = match key {
+            0x24 => 0,
+            0x23 => map.end(),
+            0x25 | 0x27 => {
+                let direction = if key == 0x25 {
+                    Direction::Backward
+                } else {
+                    Direction::Forward
+                };
+                if !extend && start != end {
+                    let edge = if key == 0x25 { start } else { end };
+                    let snapped = map.snap(edge, direction).ok_or(E_INVALIDARG)?;
+                    if repeats == 1 {
+                        snapped
+                    } else {
+                        map.move_caret(snapped, direction, repeats - 1)
+                            .ok_or(E_INVALIDARG)?
+                    }
+                } else {
+                    map.move_caret(caret, direction, repeats)
+                        .ok_or(E_INVALIDARG)?
+                }
+            }
+            _ => return Err(E_INVALIDARG.into()),
+        };
         self.select_caret(if extend { anchor } else { caret }, caret)
     }
     fn delete_forward(&self, repeats: usize) -> Result<()> {
+        self.delete(Direction::Forward, repeats)
+    }
+    fn backspace(&self, repeats: usize) -> Result<()> {
+        self.delete(Direction::Backward, repeats)
+    }
+    fn delete(&self, direction: Direction, repeats: usize) -> Result<()> {
         let selected = self.selection.get();
-        let start = selected.acpStart as usize;
-        let mut end = selected.acpEnd as usize;
-        if start == end {
-            let length = self.text.borrow().len();
-            for _ in 0..repeats.min(MAX_SELECTION_UNITS) {
-                if end == length {
-                    break;
-                }
-                end += 1;
-                if !self.boundary(end) {
-                    end += 1;
-                }
-            }
-        }
+        // Plan the entire original operation once. Recomputing after each
+        // repeat could delete beyond an explicit selection and split Undo.
+        // No text borrow survives into the edit or external notifications.
+        let map = Boundaries::new(&self.text.borrow()).ok_or(E_INVALIDARG)?;
+        let (start, end) = map
+            .deletion(
+                (selected.acpStart as usize, selected.acpEnd as usize),
+                direction,
+                repeats.min(MAX_SELECTION_UNITS),
+            )
+            .ok_or(E_INVALIDARG)?;
         if start == end {
             return Ok(());
         }
@@ -149,21 +184,6 @@ impl TextStore {
         let selected = self.selection.get();
         self.user_edit(selected.acpStart as usize..selected.acpEnd as usize, text)
     }
-    fn backspace(&self) -> Result<()> {
-        let selected = self.selection.get();
-        let end = selected.acpEnd as usize;
-        let mut start = selected.acpStart as usize;
-        if start == end {
-            if start == 0 {
-                return Ok(());
-            }
-            start -= 1;
-            if !self.boundary(start) {
-                start -= 1;
-            }
-        }
-        self.user_edit(start..end, &[])
-    }
 }
 
 struct Editor {
@@ -173,9 +193,162 @@ struct Editor {
     control: ISpikeControl,
     high: Cell<Option<(u16, usize)>>,
     submits: Cell<usize>,
+    broker: Option<(ISpikeBroker, ComObject<Bridge>)>,
+    tracking: Option<tracking_host::Tracking>,
+    composing: Option<composing_host::Composing>,
+    transaction: bool,
+    input_disposition: Cell<u32>,
+    rescue: input_recovery_host::Rescue,
+    waiting: Option<waiting_host::Owner>,
 }
 impl Editor {
+    fn navigation_boundary(&self) {
+        self.clear_tracking();
+        if let Some(composing) = &self.composing {
+            composing.cancel(self, true);
+        }
+        if let Some(tracking) = &self.tracking {
+            tracking.user_boundary();
+        }
+    }
+    fn navigate(&self, key: usize, extend: bool, repeats: usize) -> Result<()> {
+        if self.transaction
+            && matches!(key, 0x23..=0x25 | 0x27)
+            && !self.store.get().input_problem.get()
+            && (1..=MAX_SELECTION_UNITS).contains(&repeats)
+        {
+            let backward = key == 0x25;
+            let edge = matches!(key, 0x23 | 0x24);
+            let operation = if edge {
+                sumibi_core::recovery::Operation::MoveToEdge {
+                    to_end: key == 0x23,
+                    extend,
+                    count: repeats as u32,
+                }
+            } else if extend {
+                sumibi_core::recovery::Operation::ExtendSelection {
+                    backward,
+                    count: repeats as u32,
+                }
+            } else {
+                sumibi_core::recovery::Operation::MoveCaret {
+                    backward,
+                    count: repeats as u32,
+                }
+            };
+            let disposition = if let Some(ticket) = self.rescue.reserve(operation) {
+                let composing = self.composing.as_ref().ok_or(E_FAIL)?;
+                let disposition = if edge {
+                    composing.edge_tracked(self, key == 0x23, extend, repeats as u32)
+                } else if extend {
+                    composing.extend_tracked(self, backward, repeats as u32)
+                } else {
+                    composing.edit_tracked(self, u32::from(!backward), repeats as u32)
+                }
+                .unwrap_or(sumibi_tip::spike::INPUT_UNCERTAIN);
+                self.rescue.finish(ticket, disposition, &[]);
+                disposition
+            } else {
+                sumibi_tip::spike::INPUT_NOT_ATTEMPTED
+            };
+            if self.handled_transaction(disposition) {
+                return Ok(());
+            }
+        }
+        self.input_disposition
+            .set(sumibi_tip::spike::INPUT_NOT_ATTEMPTED);
+        self.navigation_boundary();
+        self.store.get().navigate(key, extend, repeats)
+    }
+    fn delete_forward(&self, repeats: usize) -> Result<()> {
+        if repeats == 0 {
+            return Err(E_INVALIDARG.into());
+        }
+        let selected = self.store.get().selection.get();
+        if self.store.get().input_problem.get() {
+            self.navigation_boundary();
+        }
+        if self.transaction {
+            let count = u32::try_from(repeats).unwrap_or(u32::MAX);
+            let has_selection = selected.acpStart != selected.acpEnd;
+            let operation = if has_selection {
+                sumibi_core::recovery::Operation::DeleteSelection
+            } else {
+                sumibi_core::recovery::Operation::ForwardDelete(count)
+            };
+            let disposition = if let Some(ticket) = self.rescue.reserve(operation) {
+                let composing = self.composing.as_ref().ok_or(E_FAIL)?;
+                let disposition = if has_selection {
+                    composing.delete_selection(self)
+                } else {
+                    composing.edit_tracked(self, 2, count)
+                }
+                .unwrap_or(sumibi_tip::spike::INPUT_UNCERTAIN);
+                self.rescue.finish(ticket, disposition, &[]);
+                disposition
+            } else {
+                self.clear_tracking();
+                sumibi_tip::spike::INPUT_NOT_ATTEMPTED
+            };
+            if self.handled_transaction(disposition) {
+                return Ok(());
+            }
+        }
+        self.navigation_boundary();
+        self.store.get().delete_forward(repeats)
+    }
+    fn handled_transaction(&self, disposition: u32) -> bool {
+        self.input_disposition.set(disposition);
+        if disposition == sumibi_tip::spike::INPUT_NOT_ATTEMPTED {
+            return false;
+        }
+        if disposition != sumibi_tip::spike::INPUT_APPLIED {
+            self.store.get().input_problem.set(true);
+        }
+        true
+    }
+    fn clear_tracking(&self) {
+        if let Some(composing) = &self.composing {
+            composing.cancel(self, false);
+        }
+        if let Some(tracking) = &self.tracking {
+            tracking.clear();
+        }
+    }
     fn insert(&self, text: &[u16]) -> Result<()> {
+        if let Some(owner) = &self.waiting {
+            if owner.admit(self, sumibi_core::waiting_input::Input::Text(text))? {
+                return Ok(());
+            }
+        }
+        if self.transaction {
+            let Some(ticket) = self
+                .rescue
+                .reserve(sumibi_core::recovery::Operation::Insert(text.len()))
+            else {
+                self.clear_tracking();
+                self.input_disposition
+                    .set(sumibi_tip::spike::INPUT_NOT_ATTEMPTED);
+                return self.store.get().type_text(text);
+            };
+            let disposition = self
+                .composing
+                .as_ref()
+                .ok_or(E_FAIL)?
+                .insert(self, text)
+                .unwrap_or(sumibi_tip::spike::INPUT_UNCERTAIN);
+            self.rescue.finish(ticket, disposition, text);
+            if self.handled_transaction(disposition) {
+                return Ok(());
+            }
+            // Only an explicit not-attempted result permits the original host
+            // input once. Do not attach tracking to a denied transaction.
+            return self.store.get().type_text(text);
+        }
+        let before = self
+            .tracking
+            .as_ref()
+            .and_then(|tracking| tracking.observe(self));
         let selection = self.store.get().selection.get();
         let (start, end) = self
             .store
@@ -183,12 +356,33 @@ impl Editor {
             .bounds(selection.acpStart, selection.acpEnd)?;
         let length = self.store.get().text.borrow().len();
         if length - (end - start) + text.len() > MAX_SELECTION_UNITS {
+            self.clear_tracking();
             return Ok(());
         }
-        self.store.get().type_text(text)
+        let recorded = self
+            .composing
+            .as_ref()
+            .is_some_and(|composing| composing.before(self, false));
+        let result = self.store.get().type_text(text);
+        if let Some(composing) = &self.composing {
+            composing.after(self, text, recorded && result.is_ok());
+        }
+        if let Some(tracking) = &self.tracking {
+            if result.is_ok() {
+                tracking.inserted(self, before, text);
+            } else {
+                tracking.clear();
+            }
+        }
+        result
     }
     fn input(&self, message: u32, key: WPARAM, flags: LPARAM) -> Result<bool> {
         if message == WM_CLOSE {
+            if let Some(owner) = &self.waiting {
+                owner.close();
+            }
+            self.rescue.close();
+            self.clear_tracking();
             self.high.set(None);
             // SAFETY: revoke this editor's owner-thread grant before its view
             // is destroyed, so cleanup still has a live native input target.
@@ -197,8 +391,25 @@ impl Editor {
             }
             return Ok(false);
         }
-        if message == WM_KILLFOCUS {
+        if crate::window_host::input_boundary(message, key) {
+            if let Some(owner) = &self.waiting {
+                owner.boundary();
+            }
+            self.rescue.invalidate();
+            let boundary = self
+                .composing
+                .as_ref()
+                .map_or(Ok(()), |composing| composing.owner_boundary());
+            if let Some(tracking) = &self.tracking {
+                tracking.clear();
+            }
             self.high.set(None);
+            if self.broker.is_some() {
+                unsafe {
+                    self.control.RevokeContext().ok()?;
+                }
+            }
+            boundary?;
             return Ok(false);
         }
         if message == WM_KEYUP {
@@ -216,7 +427,18 @@ impl Editor {
             .unwrap_or(false));
         }
         if message == WM_KEYDOWN {
-            self.high.set(None);
+            if let Some(owner) = &self.waiting {
+                if owner.key(self, key.0, flags)? {
+                    return Ok(true);
+                }
+            }
+            if self.transaction && matches!(key.0, 0x77..=0x79) {
+                self.rescue.request(key.0);
+                return Ok(true);
+            }
+            if self.high.take().is_some() {
+                self.clear_tracking();
+            }
             // SAFETY: test first; only invoke KeyDown when TSF requests it.
             let consumed = unsafe {
                 self.keys.TestKeyDown(key, flags).and_then(|test| {
@@ -232,6 +454,22 @@ impl Editor {
             if consumed {
                 return Ok(true);
             }
+            if let Some((broker, _)) = &self.broker {
+                if matches!(key.0, 0x1b | 0x0d) {
+                    self.clear_tracking();
+                    if let Some(composing) = &self.composing {
+                        composing.cancel(self, true);
+                    }
+                    let mut pending = 0;
+                    unsafe {
+                        let _ = broker.Pending(&mut pending);
+                        let _ = broker.Cancel(0);
+                    }
+                    if key.0 == 0x1b && pending != 0 {
+                        return Ok(true);
+                    }
+                }
+            }
             if matches!(key.0, 0x23..=0x25 | 0x27 | 0x2e) {
                 // SAFETY: read the calling thread's keyboard state; never modify it.
                 let (shift, modified) = unsafe {
@@ -241,20 +479,26 @@ impl Editor {
                     )
                 };
                 if modified {
+                    self.navigation_boundary();
                     return Ok(false);
                 }
                 let repeats = (flags.0 as usize & 0xffff).max(1);
                 if key.0 == 0x2e {
                     if !shift && !self.store.get().readonly.get() {
-                        self.store.get().delete_forward(repeats)?;
+                        self.delete_forward(repeats)?;
+                    } else {
+                        self.navigation_boundary();
                     }
                 } else {
-                    self.store.get().navigate(key.0, shift, repeats)?;
+                    self.navigate(key.0, shift, repeats)?;
                 }
                 return Ok(true);
             }
             match key.0 {
                 0x75 => {
+                    if self.broker.is_some() {
+                        return Ok(true);
+                    }
                     // F6: explicitly grant only this editor's own context.
                     if self.store.get().text.borrow().is_empty() {
                         return Ok(true);
@@ -270,13 +514,77 @@ impl Editor {
                     }
                     return Ok(true);
                 }
-                0x76 => {
+                0x76 | 0x1c if key.0 == 0x76 || self.waiting.is_some() => {
+                    // Only the waiting demo opts into VK_CONVERT. Keep its
+                    // modified forms with the host; F7 retains its prior path.
+                    if key.0 == 0x1c
+                        && (flags.0 & (1 << 29) != 0
+                            || unsafe {
+                                [VK_CONTROL, VK_MENU, VK_SHIFT]
+                                    .iter()
+                                    .any(|key| GetKeyState(key.0 as i32) < 0)
+                            })
+                    {
+                        return Ok(false);
+                    }
+                    if let Some((broker, bridge)) = &self.broker {
+                        if bridge.get().active() || self.store.get().text.borrow().is_empty() {
+                            return Ok(true);
+                        }
+                        let selected = self.store.get().selection.get();
+                        if let Some(composing) = &self.composing {
+                            if !composing.prepare(self, bridge)? {
+                                return Ok(true);
+                            }
+                        } else if selected.acpStart == selected.acpEnd {
+                            if let Some(tracking) = &self.tracking {
+                                if !tracking.select(self, bridge)? {
+                                    return Ok(true);
+                                }
+                            } else {
+                                let length = self.store.get().text.borrow().len();
+                                self.store.get().host_selection(0, length)?;
+                            }
+                        } else {
+                            if self
+                                .tracking
+                                .as_ref()
+                                .is_some_and(|tracking| tracking.blocks_selection())
+                            {
+                                return Ok(true);
+                            }
+                            self.clear_tracking();
+                        }
+                        let transport = bridge.to_interface::<ISpikeBrokerTransport>();
+                        // Explicit F7 opt-in for this owned ACP context only.
+                        unsafe {
+                            let attached = broker
+                                .Attach(self.context.as_raw(), transport.as_raw())
+                                .ok();
+                            if let Err(error) = attached {
+                                bridge.get().clear_input_check();
+                                if let Some(composing) = &self.composing {
+                                    composing.cancel(self, false);
+                                }
+                                return Err(error);
+                            }
+                        }
+                    }
                     // SAFETY: same-thread command for this editor's context;
                     // no keyboard event is sent to the desktop or other apps.
-                    unsafe {
-                        let _ = self
-                            .keys
-                            .SimulatePreservedKey(&self.context, &COMMAND_CONVERT)?;
+                    let result = unsafe {
+                        self.keys
+                            .SimulatePreservedKey(&self.context, &COMMAND_CONVERT)
+                    };
+                    if let Some((_, bridge)) = &self.broker {
+                        bridge.get().clear_input_check();
+                    }
+                    if let Some(composing) = &self.composing {
+                        composing.cancel(self, false);
+                    }
+                    let _ = result?;
+                    if let Some(owner) = &self.waiting {
+                        owner.started(self)?;
                     }
                     return Ok(true);
                 }
@@ -286,30 +594,75 @@ impl Editor {
         if message != WM_CHAR {
             return Ok(false);
         }
+        if self.waiting.as_ref().is_none_or(|owner| !owner.active()) {
+            if let Some((broker, _)) = &self.broker {
+                unsafe {
+                    let _ = broker.Cancel(0);
+                }
+            }
+        }
         let Ok(unit) = u16::try_from(key.0) else {
+            self.clear_tracking();
             self.high.set(None);
             return Ok(true);
         };
         let repeats = (flags.0 as usize & 0xffff).max(1);
         if repeats > MAX_SELECTION_UNITS {
+            self.clear_tracking();
             self.high.set(None);
             return Ok(true);
         }
+        if let Some(owner) = &self.waiting {
+            if owner.active() && (unit < 0x20 || unit == 0x7f) {
+                let input = match unit {
+                    8 => Some(sumibi_core::waiting_input::Input::Backspace(repeats as u32)),
+                    13 => Some(sumibi_core::waiting_input::Input::Enter),
+                    _ => None,
+                };
+                if let Some(input) = input {
+                    if owner.admit(self, input)? {
+                        return Ok(true);
+                    }
+                } else {
+                    owner.stop(self)?;
+                }
+            }
+        }
         if (0xd800..=0xdbff).contains(&unit) {
+            if self.high.get().is_some() {
+                self.clear_tracking();
+            }
             self.high.set(Some((unit, repeats)));
             return Ok(true);
         }
         let previous = self.high.take();
         if self.store.get().readonly.get() {
+            self.clear_tracking();
             return Ok(true);
         }
         if (0xdc00..=0xdfff).contains(&unit) {
             if let Some((high, count)) = previous {
                 if count == repeats && count <= MAX_SELECTION_UNITS / 2 {
                     self.insert(&[high, unit].repeat(count))?;
+                } else {
+                    self.clear_tracking();
                 }
+            } else {
+                self.clear_tracking();
             }
             return Ok(true);
+        }
+        if (unit < 0x20 || unit == 0x7f) && !(unit == 0x08 && self.composing.is_some()) {
+            self.clear_tracking();
+            if let Some(composing) = &self.composing {
+                composing.cancel(self, true);
+            }
+            if let Some(tracking) = &self.tracking {
+                tracking.user_boundary();
+            }
+        }
+        if previous.is_some() {
+            self.clear_tracking();
         }
         match unit {
             0x01 => {
@@ -317,8 +670,37 @@ impl Editor {
                 self.store.get().host_selection(0, length)?;
             }
             0x08 => {
-                for _ in 0..repeats {
-                    self.store.get().backspace()?;
+                if self.transaction {
+                    let ticket = self
+                        .rescue
+                        .reserve(sumibi_core::recovery::Operation::Backspace(repeats as u32));
+                    let disposition = if let Some(ticket) = ticket {
+                        let disposition = self
+                            .composing
+                            .as_ref()
+                            .ok_or(E_FAIL)?
+                            .backspace(self, repeats as u32)
+                            .unwrap_or(sumibi_tip::spike::INPUT_UNCERTAIN);
+                        self.rescue.finish(ticket, disposition, &[]);
+                        disposition
+                    } else {
+                        self.clear_tracking();
+                        sumibi_tip::spike::INPUT_NOT_ATTEMPTED
+                    };
+                    if !self.handled_transaction(disposition) {
+                        // Only an explicit no-write outcome permits this
+                        // original host operation once, including its repeat.
+                        self.store.get().backspace(repeats)?;
+                    }
+                    return Ok(true);
+                }
+                let recorded = self
+                    .composing
+                    .as_ref()
+                    .is_some_and(|composing| composing.before(self, true));
+                self.store.get().backspace(repeats)?;
+                if let Some(composing) = &self.composing {
+                    composing.after(self, &[], recorded);
                 }
             }
             0x0d => {
@@ -355,6 +737,33 @@ pub(crate) fn run_demo(
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     run(manager, client, RunMode::Demo)
 }
+pub(crate) fn run_broker_demo(
+    manager: &ITfThreadMgr,
+    client: u32,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    run(manager, client, RunMode::BrokerDemo)
+}
+pub(crate) fn exercise_broker_input(
+    manager: &ITfThreadMgr,
+    client: u32,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    for case in [
+        "apply",
+        "escape",
+        "enter",
+        "edit",
+        "focus",
+        "composition",
+        "close",
+        "sent-close",
+        "window-deactivate",
+        "window-disable",
+        "window-cancel-mode",
+    ] {
+        run(manager, client, RunMode::BrokerInputTest(case))?;
+    }
+    Ok(())
+}
 
 pub(crate) fn exercise_close(
     manager: &ITfThreadMgr,
@@ -369,7 +778,59 @@ pub(crate) fn exercise_close(
 enum RunMode {
     InputTest,
     Demo,
+    BrokerDemo,
+    BrokerInputTest(&'static str),
     CloseTest(&'static str),
+    TrackingDemo,
+    TrackingTest(&'static str),
+    ComposingDemo,
+    ComposingTest(&'static str),
+    NotificationTest(&'static str),
+    TransactionDemo,
+    TransactionTest(&'static str),
+    WaitingInteractiveTest(&'static str),
+    WaitingDemoInteractiveTest(&'static str),
+    WaitingDemo,
+    WaitingTest(&'static str),
+}
+
+fn wait_for_waiting_foreground(
+    window: &crate::window_host::Window,
+    interactive: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+    let timeout = if interactive {
+        window.set_title("Sumibi waiting test: click this window to activate (30 seconds)")?;
+        println!("Click the waiting-test window if needed; no typing is needed.");
+        Duration::from_secs(30)
+    } else {
+        Duration::from_secs(2)
+    };
+    let deadline = Instant::now() + timeout;
+    let mut foreground_since = None;
+    while Instant::now() < deadline {
+        if !window.is_open() {
+            return Err("waiting-test window closed before activation".into());
+        }
+        let mut message = MSG::default();
+        while window.peek_message(&mut message)? {
+            window.route_message(&message)?;
+        }
+        if window.require_foreground().is_ok() {
+            let since = foreground_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= Duration::from_millis(500) {
+                return Ok(());
+            }
+        } else {
+            foreground_since = None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Err(format!(
+        "waiting test: diagnostic window did not remain foreground within {} seconds",
+        timeout.as_secs()
+    )
+    .into())
 }
 
 fn run(
@@ -379,7 +840,7 @@ fn run(
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     // SAFETY: this process owns the view, text store, apartment and all interfaces.
     unsafe {
-        let window = crate::window_host::Window::new()?;
+        let window = crate::window_host::Window::new(manager)?;
         window
             .set_title("Sumibi input demo | F6 preview | F7 convert | Ctrl+Z undo | Ctrl+Y redo")?;
         let store = ComObject::new(TextStore::new(""));
@@ -396,13 +857,85 @@ fn run(
         )?;
         let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
         document.0.Push(&context)?;
+        scope_fixture::initialise_context(&context, client)?;
         let mut association = crate::window_host::Association::new(manager, &window, &document.0)?;
-        window.focus()?;
+        window
+            .focus()
+            .map_err(|error| format!("input window focus: {error}"))?;
         manager.SetFocus(&document.0)?;
+        if matches!(
+            &mode,
+            RunMode::WaitingInteractiveTest(_) | RunMode::WaitingDemoInteractiveTest(_)
+        ) {
+            wait_for_waiting_foreground(&window, true)?;
+        } else if matches!(&mode, RunMode::TransactionTest(case) if case.starts_with("waiting/"))
+            || matches!(&mode, RunMode::WaitingTest(_))
+        {
+            // Each fresh window can receive queued activation messages after
+            // SetFocus. Let foreground routing settle before the TSF fixture.
+            wait_for_waiting_foreground(&window, false)?;
+        }
+        if matches!(&mode, RunMode::TransactionTest(case) if case.starts_with("waiting/"))
+            || matches!(&mode, RunMode::WaitingInteractiveTest(_))
+            || matches!(&mode, RunMode::WaitingDemoInteractiveTest(_))
+            || matches!(&mode, RunMode::WaitingTest(_))
+        {
+            // Waiting tests deliver a real TSF conversion before checking
+            // queue order. Without foreground activation the original text
+            // remains, which looks like an admission/order regression.
+            window.require_foreground().map_err(|error| {
+                format!(
+                    "waiting test requires foreground activation of its diagnostic window: {error}"
+                )
+            })?;
+        }
         let control: ISpikeControl = manager
             .GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)?
             .GetFunction(&FUNCTION_TEST_CONTROL, &ISpikeControl::IID)?
             .cast()?;
+        let tracking = if matches!(mode, RunMode::TrackingDemo | RunMode::TrackingTest(_)) {
+            Some(tracking_host::Tracking::new(manager, &context, client)?)
+        } else {
+            None
+        };
+        let broker = if matches!(
+            mode,
+            RunMode::BrokerDemo
+                | RunMode::BrokerInputTest(_)
+                | RunMode::TrackingDemo
+                | RunMode::TrackingTest(_)
+                | RunMode::ComposingDemo
+                | RunMode::ComposingTest(_)
+                | RunMode::NotificationTest(_)
+                | RunMode::TransactionDemo
+                | RunMode::TransactionTest(_)
+                | RunMode::WaitingInteractiveTest(_)
+                | RunMode::WaitingDemoInteractiveTest(_)
+                | RunMode::WaitingDemo
+                | RunMode::WaitingTest(_)
+        ) {
+            window.set_title("Sumibi 非同期変換デモ（固定結果） | F7 変換 | Esc 取消 | Enter 原文確定 | Ctrl+Z Undo")?;
+            let broker: ISpikeBroker = manager
+                .GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)?
+                .GetFunction(&FUNCTION_TEST_BROKER, &ISpikeBroker::IID)?
+                .cast()?;
+            Some((
+                broker,
+                Bridge::new(sumibi_ipc::bootstrap::Mode::DiagnosticFixed {
+                    // Give a person time to exercise the waiting/recovery UI;
+                    // automated cases and the other demos keep their 400 ms peer.
+                    delay_ms: if matches!(mode, RunMode::WaitingDemo) {
+                        2000
+                    } else {
+                        400
+                    },
+                })?,
+            ))
+        } else {
+            None
+        };
+        *store.get().composition_broker.borrow_mut() =
+            broker.as_ref().map(|(broker, _)| broker.clone());
         let editor = Rc::new(Editor {
             store: store.clone(),
             context: context.clone(),
@@ -410,21 +943,159 @@ fn run(
             control,
             high: Cell::new(None),
             submits: Cell::new(0),
+            broker,
+            tracking,
+            transaction: matches!(
+                mode,
+                RunMode::TransactionDemo
+                    | RunMode::TransactionTest(_)
+                    | RunMode::WaitingInteractiveTest(_)
+                    | RunMode::WaitingDemoInteractiveTest(_)
+                    | RunMode::WaitingDemo
+                    | RunMode::WaitingTest(_)
+            ),
+            waiting: if matches!(
+                mode,
+                RunMode::WaitingDemo
+                    | RunMode::WaitingTest(_)
+                    | RunMode::WaitingDemoInteractiveTest(_)
+            ) {
+                Some(waiting_host::Owner::new(manager, client))
+            } else {
+                None
+            },
+            input_disposition: Cell::new(sumibi_tip::spike::INPUT_NOT_ATTEMPTED),
+            rescue: input_recovery_host::Rescue::new(
+                manager,
+                &context,
+                client,
+                matches!(
+                    mode,
+                    RunMode::TransactionDemo
+                        | RunMode::TransactionTest(_)
+                        | RunMode::WaitingInteractiveTest(_)
+                        | RunMode::WaitingDemoInteractiveTest(_)
+                        | RunMode::WaitingDemo
+                        | RunMode::WaitingTest(_)
+                ),
+                matches!(mode, RunMode::TransactionTest("rescue/expire-wake")),
+            )?,
+            composing: if matches!(
+                mode,
+                RunMode::ComposingDemo
+                    | RunMode::ComposingTest(_)
+                    | RunMode::NotificationTest(_)
+                    | RunMode::TransactionDemo
+                    | RunMode::TransactionTest(_)
+                    | RunMode::WaitingInteractiveTest(_)
+                    | RunMode::WaitingDemoInteractiveTest(_)
+                    | RunMode::WaitingDemo
+                    | RunMode::WaitingTest(_)
+            ) {
+                Some(composing_host::Composing::new(manager)?)
+            } else {
+                None
+            },
         });
         let input = editor.clone();
+        if let Some(composing) = &editor.composing {
+            composing.connect(&editor);
+        }
         window.set_input(Rc::new(move |message, key, flags| {
             input.input(message, key, flags)
         }))?;
         let mut live = crate::live_render::Binding::attach(&window, &context, client)?;
-        if matches!(mode, RunMode::Demo) {
+        let outcome = if matches!(mode, RunMode::Demo) {
             println!("Type in the single-line demo. F6 previews, F7 converts, Enter confirms the original. Close the window to exit.");
-            message_loop(&window)?;
+            message_loop(&window)
+        } else if matches!(
+            mode,
+            RunMode::BrokerDemo
+                | RunMode::TrackingDemo
+                | RunMode::ComposingDemo
+                | RunMode::TransactionDemo
+                | RunMode::WaitingDemo
+        ) {
+            if matches!(mode, RunMode::WaitingDemo) {
+                window.set_title("Sumibi 待機入力デモ（固定結果） | F7/変換キー | Enterは救済へ | F8順に確認 | 最大4件・10分救済")?;
+            }
+            if matches!(mode, RunMode::TrackingDemo) {
+                window.set_title(
+                    "Sumibi 入力範囲の変換デモ | F7 入力範囲を変換 | 範囲選択可 | Ctrl+Z Undo",
+                )?;
+            }
+            if matches!(mode, RunMode::ComposingDemo) {
+                window.set_title(
+                    "Sumibi 入力composition | F7 変換 | Backspace 範囲縮小 | Esc 取消",
+                )?;
+            }
+            if matches!(mode, RunMode::TransactionDemo) {
+                window.set_title("Sumibi 同期入力取引 | F7 変換 | Esc 取消 | Ctrl+Z Undo")?;
+            }
+            if matches!(mode, RunMode::WaitingDemo) {
+                println!("Waiting fixed-result demo: type, then F7. Waiting stops after 8 seconds or at 4 events; Enter is saved without submission. F8 cycles recovery, F9 discards the displayed record, F10 copies it. Recovery expires after 10 minutes. Close to exit.");
+            } else if matches!(mode, RunMode::TrackingDemo | RunMode::ComposingDemo) {
+                println!("Tracked input demo: F7 converts the recent typed run or an explicit selection. Esc cancels; Enter confirms the original. Close to exit.");
+            } else {
+                println!("Async fixed-result demo: F7 converts the selection (or all text), Esc cancels, Enter confirms the original. Close to exit.");
+            }
+            broker_message_loop(&window, &editor)
+        } else if let RunMode::WaitingTest(case) | RunMode::WaitingDemoInteractiveTest(case) = mode
+        {
+            waiting_host::test_waiting_demo(&window, &editor, case)
+        } else if let RunMode::BrokerInputTest(case) = mode {
+            test_broker_input(&window, &editor, &live, client, case)
+        } else if let RunMode::TrackingTest(case) = mode {
+            tracking_host::test_tracking(&window, &editor, &live, client, case)
+        } else if let RunMode::ComposingTest(case) = mode {
+            if let Some(case) = case.strip_prefix("grapheme/") {
+                grapheme_host::test_graphemes(&window, &editor, &live, case)
+            } else {
+                composing_host::test_composing(&window, &editor, &live, client, case)
+            }
+        } else if let RunMode::NotificationTest(case) = mode {
+            composing_host::test_notifications(&window, &editor, &live, client, case)
+        } else if let RunMode::TransactionTest(case) | RunMode::WaitingInteractiveTest(case) = mode
+        {
+            if let Some(case) = case.strip_prefix("waiting/") {
+                waiting_host::test_waiting(manager, &window, &editor, &live, client, case)
+            } else if let Some(case) = case.strip_prefix("grapheme/") {
+                grapheme_host::test_graphemes(&window, &editor, &live, case)
+            } else if let Some(case) = case.strip_prefix("erase/") {
+                composing_host::test_backspace(&window, &editor, &live, client, case)
+            } else if let Some(case) = case.strip_prefix("rescue/") {
+                input_recovery_host::test_recovery(&window, &editor, &live, client, case)
+            } else {
+                composing_host::test_transactions(&window, &editor, &live, client, case)
+            }
         } else if let RunMode::CloseTest(case) = mode {
-            test_close(&window, &editor, case)?;
+            test_close(&window, &editor, case)
         } else {
-            test_input(&window, &editor, &live)?;
+            test_input(&window, &editor, &live)
+        };
+        if matches!(mode, RunMode::WaitingDemo) {
+            if let Some(owner) = &editor.waiting {
+                let (starts, offered, admitted, peak_recoveries, views_opened, start_failed) =
+                    owner.diagnostics();
+                println!(
+                    "Waiting demo diagnostic: starts={starts}, offered={offered}, admitted={admitted}, peak_recoveries={peak_recoveries}, views_opened={views_opened}, start_failed={start_failed}"
+                );
+            }
         }
         window.clear_input();
+        if let Some(owner) = &editor.waiting {
+            owner.close();
+        }
+        editor.rescue.close();
+        editor.clear_tracking();
+        if let Some(composing) = &editor.composing {
+            composing.close(&editor)?;
+        }
+        store.get().composition_broker.borrow_mut().take();
+        if let Some((broker, bridge)) = &editor.broker {
+            let _ = broker.Cancel(0);
+            bridge.get().shutdown()?;
+        }
         live.close()
             .map_err(|error| format!("input render cleanup: {error}"))?;
         // WM_CLOSE already revoked before destruction. A desktop TSF manager
@@ -440,26 +1111,271 @@ fn run(
         association
             .close()
             .map_err(|error| format!("input association cleanup: {error}"))?;
+        outcome?;
     }
     Ok(())
 }
 
-fn message_loop(window: &crate::window_host::Window) -> Result<()> {
-    // SAFETY: retrieve and route only the calling STA's messages.
-    unsafe {
-        let mut message = MSG::default();
-        while window.is_open() {
-            let result = GetMessageW(&mut message, None, 0, 0).0;
-            if result < 0 {
-                return Err(windows::core::Error::from_thread());
+fn broker_message_loop(window: &crate::window_host::Window, editor: &Editor) -> Result<()> {
+    let (control, bridge) = editor.broker.as_ref().ok_or(E_FAIL)?;
+    let mut pending = false;
+    while window.is_open() {
+        pump(window)?;
+        if !window.is_open() {
+            break;
+        }
+        if let Some(composing) = &editor.composing {
+            composing.poll(editor)?;
+        }
+        if let Some(owner) = &editor.waiting {
+            owner.service(window, editor, &crate::recovery_view::SystemClipboard)?;
+        }
+        if editor.waiting.as_ref().is_none_or(|owner| !owner.active()) {
+            if let Some(delivery) = bridge.get().drain(control)? {
+                if editor.waiting.is_none() {
+                    window.set_title(if delivery == crate::broker_bridge::Delivery::Applied {
+                        "Sumibi 変換完了（固定結果） | F7 変換 | Ctrl+Z Undo"
+                    } else {
+                        "Sumibi 原文を保持しました | F7 変換 | Esc 取消"
+                    })?;
+                }
+                pending = false;
             }
-            if result == 0 {
-                break;
+        }
+        let active = bridge.get().active();
+        if active && !pending && editor.waiting.is_none() {
+            window.set_title("Sumibi 変換中（固定結果） | Esc 取消 | Enter 原文確定")?;
+        }
+        pending = active;
+        if editor.store.get().input_problem.get() {
+            if editor.waiting.is_some() {
+                window.set_title(
+                    "Sumibi 入力結果を確認してください | F8 救済を順に確認 | 自動再入力なし",
+                )?;
+            } else {
+                window.set_title(
+                    "Sumibi 入力取引に失敗しました。入力結果を確認してください（自動再入力なし）",
+                )?;
             }
-            window.route_message(&message)?;
+        }
+        editor.service_recovery(window, &crate::recovery_view::SystemClipboard)?;
+        let handles: Vec<_> = bridge
+            .get()
+            .wait_handle()
+            .into_iter()
+            .chain(
+                editor
+                    .composing
+                    .as_ref()
+                    .and_then(|composing| composing.wait_handle()),
+            )
+            .collect();
+        // No IPC wait or result callback inside WndProc. Sent close/focus
+        // messages are handled by the owner and wake the ordinary message path.
+        let wait = unsafe {
+            MsgWaitForMultipleObjectsEx(
+                Some(&handles),
+                editor.rescue.wait_ms().min(
+                    editor
+                        .waiting
+                        .as_ref()
+                        .map_or(u32::MAX, |owner| owner.wait_ms(editor)),
+                ),
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            )
+        };
+        if wait == windows::Win32::Foundation::WAIT_FAILED {
+            return Err(windows::core::Error::from_thread());
         }
     }
     window.input_status()
+}
+
+fn test_broker_input(
+    window: &crate::window_host::Window,
+    editor: &Editor,
+    live: &crate::live_render::Binding,
+    client: u32,
+    case: &str,
+) -> Result<()> {
+    use std::time::{Duration, Instant};
+    let (control, bridge) = editor.broker.as_ref().ok_or(E_FAIL)?;
+    editor.insert(&"nihongo".encode_utf16().collect::<Vec<_>>())?;
+    editor.store.get().undo.borrow_mut().clear();
+    pump(window)?;
+    editor.input(WM_KEYDOWN, WPARAM(0x76), LPARAM(1))?;
+    assert!(bridge.get().active());
+    let captured = composing_host::input_notify_host::body_reads()?;
+    if let Some(kind) = case.strip_prefix("window-") {
+        test_window_boundary(window, kind)?;
+        let mut pending = 1;
+        unsafe {
+            control.Pending(&mut pending).ok()?;
+        }
+        assert_eq!(
+            pending, 0,
+            "window boundary revokes pending target before delivery"
+        );
+        assert_eq!(composing_host::input_notify_host::body_reads()?, captured);
+    }
+    if case == "composition" {
+        super::composition_host::empty_cycle(&editor.context, client)?;
+        assert!(editor.store.get().composition_events.get() >= 2);
+        let mut pending = 1;
+        unsafe {
+            control.Pending(&mut pending).ok()?;
+        }
+        assert_eq!(
+            pending, 0,
+            "owner callback must retire even an empty composition cycle"
+        );
+    }
+    if case == "sent-close" {
+        test_broker_sent_close(window, editor)?;
+        assert_eq!(
+            *editor.store.get().text.borrow(),
+            "nihongo".encode_utf16().collect::<Vec<_>>()
+        );
+        assert!(editor.store.get().undo.borrow().is_empty());
+        println!("Async input loop / pending F7 / sent SC_CLOSE: OK");
+        return Ok(());
+    }
+    let post = |message, key| unsafe {
+        PostMessageW(Some(window.hwnd()), message, WPARAM(key), LPARAM(1))
+    };
+    match case {
+        "escape" => post(WM_KEYDOWN, 0x1b)?,
+        "enter" => post(WM_KEYDOWN, 0x0d)?,
+        "edit" => post(WM_CHAR, 'x' as usize)?,
+        "focus" => post(WM_KILLFOCUS, 0)?,
+        "close" => post(WM_CLOSE, 0)?,
+        _ => {}
+    }
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        pump(window)?;
+        if !window.is_open() {
+            bridge.get().shutdown()?;
+            break;
+        }
+        if let Some(delivery) = bridge.get().drain(control)? {
+            assert_eq!(
+                delivery == crate::broker_bridge::Delivery::Applied,
+                case == "apply",
+                "{case}"
+            );
+            break;
+        }
+        let handle = bridge.get().wait_handle().ok_or(E_FAIL)?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(E_FAIL.into());
+        }
+        let wait = unsafe {
+            MsgWaitForMultipleObjectsEx(
+                Some(&[handle]),
+                remaining.as_millis() as u32,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            )
+        };
+        if wait == windows::Win32::Foundation::WAIT_TIMEOUT
+            || wait == windows::Win32::Foundation::WAIT_FAILED
+        {
+            return Err(E_FAIL.into());
+        }
+    }
+    pump(window)?;
+    let expected = match case {
+        "apply" => "日本語",
+        "edit" => "x",
+        _ => "nihongo",
+    };
+    assert_eq!(
+        *editor.store.get().text.borrow(),
+        expected.encode_utf16().collect::<Vec<_>>(),
+        "{case}"
+    );
+    assert_eq!(
+        editor.submits.get(),
+        usize::from(case == "enter"),
+        "Enter must reach host exactly once"
+    );
+    if case == "apply" {
+        assert_eq!(editor.store.get().undo.borrow().len(), 1);
+        assert_eq!(
+            live.scene()?.text,
+            "日本語".encode_utf16().collect::<Vec<_>>()
+        );
+        editor.input(WM_CHAR, WPARAM(0x1a), LPARAM(1))?;
+        pump(window)?;
+        assert_eq!(
+            *editor.store.get().text.borrow(),
+            "nihongo".encode_utf16().collect::<Vec<_>>()
+        );
+    } else if case != "edit" {
+        assert!(editor.store.get().undo.borrow().is_empty());
+    }
+    if case.starts_with("window-") {
+        assert_eq!(
+            composing_host::input_notify_host::body_reads()?,
+            captured,
+            "late response after a restored window boundary cannot reread the body"
+        );
+    }
+    println!("Async input loop / F7 / {case}: OK");
+    Ok(())
+}
+
+fn message_loop(window: &crate::window_host::Window) -> Result<()> {
+    let mut message = MSG::default();
+    while window.is_open() {
+        if !window.get_message(&mut message)? {
+            break;
+        }
+        window.route_message(&message)?;
+    }
+    window.input_status()
+}
+
+fn test_broker_sent_close(window: &crate::window_host::Window, editor: &Editor) -> Result<()> {
+    use std::sync::mpsc::sync_channel;
+    use std::time::Duration;
+    use windows::Win32::Foundation::{E_ABORT, HWND};
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    let hwnd = window.hwnd().0 as usize;
+    let thread = unsafe { GetCurrentThreadId() };
+    std::thread::scope(|scope| {
+        let (finished, wait) = sync_channel(1);
+        let worker = scope.spawn(move || unsafe {
+            let sent = SendMessageTimeoutW(
+                HWND(hwnd as *mut _),
+                WM_SYSCOMMAND,
+                WPARAM(SC_CLOSE as usize),
+                LPARAM(0),
+                SMTO_ABORTIFHUNG,
+                1000,
+                None,
+            );
+            let timed_out = wait.recv_timeout(Duration::from_secs(2)).is_err();
+            if timed_out {
+                let _ = PostThreadMessageW(thread, WM_QUIT, WPARAM(1), LPARAM(0));
+            }
+            (sent.0 != 0, timed_out)
+        });
+        let result = broker_message_loop(window, editor);
+        let _ = finished.send(());
+        let (sent, timed_out) = worker
+            .join()
+            .map_err(|_| windows::core::Error::from(E_ABORT))?;
+        assert!(
+            sent && !timed_out,
+            "sent close must release the async demo wait"
+        );
+        assert!(!window.is_open());
+        result
+    })
 }
 
 fn test_close(window: &crate::window_host::Window, editor: &Rc<Editor>, case: &str) -> Result<()> {
@@ -558,16 +1474,42 @@ fn test_close(window: &crate::window_host::Window, editor: &Rc<Editor>, case: &s
     Ok(())
 }
 
-fn pump(window: &crate::window_host::Window) -> Result<()> {
-    // SAFETY: process only this STA's queued messages, with a finite test bound.
+/// Diagnostic delivery through the real WndProc. Deactivation is a synthetic
+/// notice; disable/restore uses EnableWindow and its synchronous OS messages.
+fn test_window_boundary(window: &crate::window_host::Window, kind: &str) -> Result<()> {
     unsafe {
-        let mut message = MSG::default();
-        for _ in 0..512 {
-            if !PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
-                return window.input_status();
+        match kind {
+            "deactivate" => {
+                SendMessageW(window.hwnd(), WM_ACTIVATEAPP, Some(WPARAM(0)), None);
+                SendMessageW(window.hwnd(), WM_ACTIVATEAPP, Some(WPARAM(1)), None);
             }
-            window.route_message(&message)?;
+            "disable" => {
+                use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled};
+                let _ = EnableWindow(window.hwnd(), false);
+                assert!(!IsWindowEnabled(window.hwnd()).as_bool());
+                let _ = EnableWindow(window.hwnd(), true);
+                assert!(IsWindowEnabled(window.hwnd()).as_bool());
+            }
+            "cancel-mode" => {
+                SendMessageW(window.hwnd(), WM_CANCELMODE, None, None);
+            }
+            _ => return Err(E_INVALIDARG.into()),
         }
+    }
+    window.input_status()
+}
+
+fn pump(window: &crate::window_host::Window) -> Result<()> {
+    // Process only this STA's messages through TSF, with a finite test bound.
+    let mut message = MSG::default();
+    for _ in 0..512 {
+        if !window.peek_message(&mut message)? {
+            return window.input_status();
+        }
+        if message.message == WM_QUIT {
+            return Err(windows::Win32::Foundation::E_ABORT.into());
+        }
+        window.route_message(&message)?;
     }
     Err(E_FAIL.into())
 }
@@ -577,6 +1519,7 @@ fn test_input(
     editor: &Editor,
     live: &crate::live_render::Binding,
 ) -> Result<()> {
+    window.require_foreground()?;
     // SAFETY: fixture messages go only to our own window. No SendInput, global
     // keyboard-state changes, or messages to another application are used.
     let post = |message, key| unsafe {
@@ -663,7 +1606,7 @@ fn test_input(
     pump(window)?;
     assert_eq!(live.scene()?.text, "😀".encode_utf16().collect::<Vec<_>>());
     editor.store.get().readonly.set(false);
-    println!("Surrogate pair input / scalar Backspace / invalid low surrogate / read-only: OK");
+    println!("Surrogate pair input / grapheme Backspace / invalid low surrogate / read-only: OK");
     post(WM_KEYDOWN, 0x24)?;
     pump(window)?;
     assert_eq!(live.scene()?.caret, 0);

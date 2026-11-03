@@ -4,6 +4,9 @@
 #![allow(non_snake_case)]
 
 use crate::com::{boundary, ObjectLease};
+pub use crate::protection::{
+    input_status_denial, input_status_denial_with_profile, InputStatusDenial, ProtectionProfile,
+};
 use std::cell::{Cell, RefCell};
 use std::mem::ManuallyDrop;
 use std::rc::Rc;
@@ -16,7 +19,19 @@ use windows::Win32::Foundation::{
 use windows::Win32::UI::TextServices::*;
 
 pub const MAX_SELECTION_UNITS: usize = 1024;
+#[cfg(feature = "spike")]
+static BODY_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "spike")]
+pub(crate) fn body_read_count() -> u64 {
+    BODY_READS.load(std::sync::atomic::Ordering::Relaxed)
+}
 
+#[path = "manual_edit.rs"]
+pub mod manual;
+
+#[cfg(feature = "spike")]
+#[path = "input_composition.rs"]
+pub(crate) mod input_composition;
 #[cfg(feature = "spike")]
 #[path = "preview.rs"]
 pub mod preview;
@@ -26,6 +41,7 @@ pub mod preview;
 pub struct EditPolicy {
     pub revision: Revision,
     pub allowed: bool,
+    pub profile: ProtectionProfile,
 }
 
 /// Single-use snapshot. No Debug implementation: it contains private input.
@@ -36,7 +52,67 @@ pub struct SelectionSnapshot {
     original: Vec<u16>,
     policy: Rc<Cell<EditPolicy>>,
     captured_policy: EditPolicy,
+    protection: crate::protection::Stamp,
     owner: ThreadId,
+}
+/// Current selection/protection only. A collapsed caret is valid here; no
+/// ITfRange.GetText call or inferred word/range search is performed.
+#[derive(Clone, Copy)]
+pub struct InputMetadata {
+    pub selection: (i32, i32),
+    pub active_start: bool,
+    protection: crate::protection::Stamp,
+}
+impl InputMetadata {
+    pub fn same_selection(&self, other: &Self) -> bool {
+        self.selection == other.selection && self.active_start == other.active_start
+    }
+    pub fn same_protection(&self, other: &Self) -> bool {
+        self.protection == other.protection
+    }
+}
+pub fn inspect_input(
+    manager: &ITfThreadMgr,
+    context: &ITfContext,
+    client: u32,
+) -> Result<InputMetadata> {
+    let manager = manager.clone();
+    let target = context.clone();
+    let output = Rc::new(RefCell::new(None));
+    let result = output.clone();
+    run(
+        context,
+        client,
+        false,
+        Box::new(move |cookie| {
+            ensure_target(&manager, &target)?;
+            let (range, style) = selection(&target, cookie)?;
+            if !same_context(&unsafe { range.GetContext()? }, &target)? {
+                return Err(E_ABORT.into());
+            }
+            let protection = crate::protection::check(&target, &range, cookie)?;
+            let acp: ITfRangeACP = range.cast()?;
+            let mut start = 0i32;
+            let mut length = 0i32;
+            unsafe {
+                acp.GetExtent(&mut start, &mut length)?;
+            }
+            let end = start.checked_add(length).ok_or(E_ABORT)?;
+            if start < 0 || length < 0 {
+                return Err(E_ABORT.into());
+            }
+            crate::protection::validate(&target, &range, cookie, protection)?;
+            ensure_target(&manager, &target)?;
+            *result.borrow_mut() = Some(InputMetadata {
+                selection: (start, end),
+                active_start: style.ase == TF_AE_START,
+                protection,
+            });
+            Ok(())
+        }),
+    )?;
+    let metadata = output.borrow_mut().take().ok_or(E_FAIL)?;
+    Ok(metadata)
 }
 
 type EditAction = Box<dyn FnOnce(u32) -> Result<()>>;
@@ -164,15 +240,30 @@ fn selection(context: &ITfContext, cookie: u32) -> Result<(ITfRange, TF_SELECTIO
     Ok((range, selection.0.style))
 }
 
+#[allow(dead_code)]
 fn read_all(range: &ITfRange, cookie: u32) -> Result<Vec<u16>> {
+    read_all_with_profile(range, cookie, ProtectionProfile::Strict)
+}
+
+pub(crate) fn read_all_with_profile(
+    range: &ITfRange,
+    cookie: u32,
+    profile: ProtectionProfile,
+) -> Result<Vec<u16>> {
     // SAFETY: cloned range and edit cookie are confined to this edit session.
     unsafe {
+        let context = range.GetContext()?;
+        let protection = crate::protection::check_with_profile(&context, range, cookie, profile)?;
         let cursor = range.Clone()?;
         let mut text = Vec::new();
         while !cursor.IsEmpty(cookie)?.as_bool() {
+            crate::protection::validate_with_profile(&context, range, cookie, protection, profile)?;
             let mut chunk = [0u16; 256];
             let mut count = 0;
+            #[cfg(feature = "spike")]
+            BODY_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             cursor.GetText(cookie, 0, &mut chunk, &mut count)?;
+            crate::protection::validate_with_profile(&context, range, cookie, protection, profile)?;
             let count = count as usize;
             if count == 0 || count > chunk.len() || text.len() + count > MAX_SELECTION_UNITS {
                 return Err(E_ABORT.into());
@@ -184,7 +275,7 @@ fn read_all(range: &ITfRange, cookie: u32) -> Result<Vec<u16>> {
                 return Err(E_ABORT.into());
             }
         }
-        if text.is_empty() || String::from_utf16(&text).is_err() {
+        if text.is_empty() || text.contains(&0xfffc) || String::from_utf16(&text).is_err() {
             return Err(E_ABORT.into());
         }
         Ok(text)
@@ -219,7 +310,20 @@ pub fn capture_selection(
             if !same_context(&unsafe { range.GetContext()? }, &target)? {
                 return Err(E_ABORT.into());
             }
-            let original = read_all(&range, cookie)?;
+            let protection = crate::protection::check_with_profile(
+                &target,
+                &range,
+                cookie,
+                captured_policy.profile,
+            )?;
+            let original = read_all_with_profile(&range, cookie, captured_policy.profile)?;
+            crate::protection::validate_with_profile(
+                &target,
+                &range,
+                cookie,
+                protection,
+                captured_policy.profile,
+            )?;
             if policy.get() != captured_policy {
                 return Err(E_ABORT.into());
             }
@@ -230,6 +334,7 @@ pub fn capture_selection(
                 original,
                 policy,
                 captured_policy,
+                protection,
                 owner: thread::current().id(),
             });
             Ok(())
@@ -254,7 +359,10 @@ pub fn replace_selection(
         .encode_utf16()
         .take(MAX_SELECTION_UNITS + 1)
         .collect();
-    if replacement.is_empty() || replacement.len() > MAX_SELECTION_UNITS {
+    if replacement.is_empty()
+        || replacement.len() > MAX_SELECTION_UNITS
+        || replacement.contains(&0xfffc)
+    {
         return Err(E_INVALIDARG.into());
     }
     let context = snapshot.context.clone();
@@ -272,6 +380,29 @@ pub fn replace_selection(
     )
 }
 
+/// Metadata-only selection revalidation. Generic TSF endpoints/direction, no
+/// ACP query or body read; the retained native range stays on this thread.
+fn checked_selection(
+    context: &ITfContext,
+    expected: &ITfRange,
+    expected_style: TF_SELECTIONSTYLE,
+    cookie: u32,
+) -> Result<ITfRange> {
+    let (range, style) = selection(context, cookie)?;
+    unsafe {
+        if !same_context(&range.GetContext()?, context)?
+            || style != expected_style
+            || !range
+                .IsEqualStart(cookie, expected, TF_ANCHOR_START)?
+                .as_bool()
+            || !range.IsEqualEnd(cookie, expected, TF_ANCHOR_END)?.as_bool()
+        {
+            return Err(E_ABORT.into());
+        }
+    }
+    Ok(range)
+}
+
 fn validate_snapshot(
     manager: &ITfThreadMgr,
     snapshot: &SelectionSnapshot,
@@ -281,20 +412,17 @@ fn validate_snapshot(
         return Err(E_ABORT.into());
     }
     ensure_target(manager, &snapshot.context)?;
-    let (range, style) = selection(&snapshot.context, cookie)?;
-    // SAFETY: endpoint comparisons and reads use this fresh edit cookie.
-    unsafe {
-        if style != snapshot.style
-            || !range
-                .IsEqualStart(cookie, &snapshot.range, TF_ANCHOR_START)?
-                .as_bool()
-            || !range
-                .IsEqualEnd(cookie, &snapshot.range, TF_ANCHOR_END)?
-                .as_bool()
-            || read_all(&range, cookie)? != snapshot.original
-        {
-            return Err(E_ABORT.into());
-        }
+    let range = checked_selection(&snapshot.context, &snapshot.range, snapshot.style, cookie)?;
+    crate::protection::validate_with_profile(
+        &snapshot.context,
+        &range,
+        cookie,
+        snapshot.protection,
+        snapshot.captured_policy.profile,
+    )?;
+    if read_all_with_profile(&range, cookie, snapshot.captured_policy.profile)? != snapshot.original
+    {
+        return Err(E_ABORT.into());
     }
     ensure_target(manager, &snapshot.context)?;
     if snapshot.policy.get() != snapshot.captured_policy {
