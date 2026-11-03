@@ -12,7 +12,7 @@
 | 非同期pipe、バックプレッシャー、所有TSFスレッドへの結果配送 | 有限I/Oと取消、要求前Permit、EXE workerから所有STAへの非同期結果配送。Host政策実行部の受付・通知・worker結果を所有側で調停し、異なる2試験processの実pipeから結果を返した | 製品Hostの長寿命運転、異なるTIP processと一般アプリへの配送 |
 | composition、通常文字・Enter/Esc、入力スコープと保護条件 | 専用ACP入力欄で同期入力取引、所有composition、待機中の文字/Backspace/Enter/Esc、保護状態の再検査を実DLLで確認。未知条件は拒否 | 一般アプリの入力先ごとの保護情報、通知履歴、composition寿命、実キー配送 |
 | 待機容量の消費前確保、超過切替、救済期限、遅延キー再送禁止 | 専用adapterで共有4件・4096 UTF-16単位の救済枠を先に予約。待機は最大4件・8秒、救済は最大10分。失敗した操作を自動再送しない | 製品の全入力先にまたがる容量・期限・超過時政策の確定と接続 |
-| Notepad等で実打鍵、1回Undo、別欄・同長別内容・読取不能の非適用 | 専用TSF storeの実DLL検査で対象変更・本文変更・読取拒否・1回Undoを実証。ADR 0095に基づく二層保護プロファイル（Standard）により、実RichEdit（Msftedit.dll）での安全なキャプチャとテキスト置換（"nihongo" -> "日本語"）を開通。同時にパスワード（ES_PASSWORD/TF_E_EMPTYCONTEXT）と読み取り専用（EM_SETREADONLY/TS_SD_READONLY）の絶対的拒絶（Inviolable Guards）を実機検証 | 実機Notepad等での手動打鍵検証と実IMEとしての日常運用 |
+| Notepad等で実打鍵、1回Undo、別欄・同長別内容・読取不能の非適用 | 専用TSF storeの実DLL検査で対象変更・本文変更・読取拒否・1回Undoを実証。ADR 0095に基づく二層保護プロファイル（Standard）により、実RichEdit（Msftedit.dll）での安全なキャプチャとテキスト置換（"nihongo" -> "日本語"）を開通。同時にパスワード（ES_PASSWORD/TF_E_EMPTYCONTEXT）と読み取り専用（EM_SETREADONLY/TS_SD_READONLY）の絶対的拒絶（Inviolable Guards）を実機検証。ADR 0096-0097で設定UIと政策同期を統合。公式実機手動検証ランブック（MANUAL_APP_VERIFICATION.md）を完備 | 実機Notepad等での手動打鍵検証と実IMEとしての日常運用 |
 
 2026-10-30: `broker-http-key-test`を追加し、別process Hostが明示同意と送信順序を
 確認したうえで、専用TSF入力をローカル模擬HTTPへ渡す経路を用意した。
@@ -993,7 +993,14 @@ Issue #4とPR #10は引き続き未完了・draftとして扱う。
       - 保存時に `profile_strict` のチェック状態を判定し、`Settings::new` に対して `with_protection_profile(profile)` で選択値を反映して安全に保存・適用。
       - 保存処理中（`pending`）のコントロール無効化対象にラジオボタンを追加し、競合や二重保存を抑止。
       - 単体テスト `view_initializes_and_reads_protection_profile_radio_buttons` を追加・検証（標準 / 厳格それぞれの初期チェック状態、および動的切り替え後の値読み取りを実証）。
-16. 全体検証:
+16. [MANUAL_APP_VERIFICATION.md](MANUAL_APP_VERIFICATION.md) を改訂し、ADR 0092〜0097 の成果（トレイ常駐、二層保護プロファイル、設定UI、動的政策同期、Inviolable Guards）を網羅した公式実機手動検証ランブック（Manual App Verification Runbook）を完成させた。
+    - 原則と安全基準（HKLM 汚染防止、機密テキスト非出力、合成データ）。
+    - 二層保護プロファイル（Standard / Strict）と絶対的防御境界（Inviolable Guards）の対照表。
+    - 事前準備（ビルド、HKCU 開発用 COM 登録、DebugView 等のログ監視）。
+    - 自動化された実機コンポーネント検証（`dev.ps1 native-edit` による RichEdit / EDIT の 13 シナリオ検証、`dev.ps1 session-test` による非同期ドレインと Undo 検証）。
+    - デスクトップ手動検証手順（Host 起動、トレイ最小化・メニュー、設定画面ラジオボタン切り替え、Notepad での打鍵・変換・1-step Undo、Strict 切替による不変拒絶、パスワード・ReadOnly・空選択・未同意の絶対遮断確認）。
+    - 検証後クリーンアップ手順（`unregister-dev`、Host 終了）。
+17. 全体検証:
     - `powershell -ExecutionPolicy Bypass -File .\dev.ps1 test-all`: **全件合格**（Exit Code: 0）。
       - standard workspace tests: 535 passed, 0 failed, 4 ignored。
       - workspace tests with sumibi-host/spike: 535 passed, 0 failed, 4 ignored。

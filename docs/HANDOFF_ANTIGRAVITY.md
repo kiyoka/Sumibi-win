@@ -242,7 +242,8 @@ workerの終了を確認してから保存された正確なerrorを検査する
 
 | Commit | 内容 |
 | --- | --- |
-| (今回) | ADR 0097: 設定画面（settings_window）への保護プロファイル選択 UI の追加 |
+| (今回) | 一般アプリ実機手動検証手順書（MANUAL_APP_VERIFICATION.md）の全面改訂とランブック整備 |
+| `c195534` | ADR 0097: 設定画面（settings_window）への保護プロファイル選択 UI の追加 |
 | `e724370` | ADR 0096: 保護プロファイル設定（settings.json）と Host/TIP 政策動的同期 |
 | `5b35331` | ADR 0095: 一般アプリ向け二層保護プロファイル（Strict / Standard）と TSF 許容基準 |
 | `d7ec411` | ADR 0094: Host 障害復旧（Self-Healing 再接続）の検証と一般アプリ TSF 保護診断の強化 |

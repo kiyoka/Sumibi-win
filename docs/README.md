@@ -9,6 +9,7 @@
 3. [実装照合表](IMPLEMENTATION_AUDIT.md)：コード・未実装・検証結果・受入条件。
 4. [開発と操作手順](DEVELOPMENT.md)、[TSFスパイク記録](TSF_SPIKE.md)：再現方法と限定条件。
 5. [Issue #4 の受入進捗](ISSUE_4_PROGRESS.md)：現時点の根拠と、製品接続・一般アプリで残る条件。
+6. [一般アプリ実機手動検証手順書](MANUAL_APP_VERIFICATION.md)：実機 Notepad / RichEdit アプリ等での打鍵・変換・Undo、保護プロファイル切り替え、絶対的防御境界（Inviolable Guards）の公式検証ガイド。
 
 ## 採用判断と参照元
 
@@ -65,6 +66,15 @@
 - [ADR 0066](adr/0066-registration-journal-and-recovery.md)：登録の先行記録、途中終了後の逆順復旧、所有不一致での解除停止と専用HKCU検査。
 - [ADR 0067](adr/0067-isolated-native-registration-backend.md)：低整合性の隔離レジストリで実COM/TSF APIの登録、解除、中断後復旧を検査する境界。
 - [ADR 0068](adr/0068-fixed-registration-journal-store.md)：固定ロック、解除済みjournalの退避と次回登録、保護state配置の前提。
+- [ADR 0089](adr/0089-end-to-end-session-key-conversion.md)：自律セッション（TipHostSession）によるエンドツーエンドTSF変換・Undo検証と開発統合ランナー。
+- [ADR 0090](adr/0090-default-gui-host-entry.md)：製品HostエントリーのデフォルトGUI起動と設定自動誘導。
+- [ADR 0091](adr/0091-manual-app-verification-and-diagnostics.md)：一般アプリ実機検証手順と非機密TSF保護診断の整備。
+- [ADR 0092](adr/0092-system-tray-and-background-minimize.md)：常駐Hostのシステムトレイ（通知領域）統合と最小化常駐。
+- [ADR 0093](adr/0093-background-minimized-host-startup.md)：製品Hostのバックグラウンド常駐起動オプション（`--minimized` / `--tray`）。
+- [ADR 0094](adr/0094-host-self-healing-and-app-protection-diagnostics.md)：Host障害復旧（Self-Healing再接続）の検証と一般アプリTSF保護診断の強化。
+- [ADR 0095](adr/0095-app-protection-profiles-and-acceptance-criteria.md)：一般アプリ向け二層保護プロファイル（Strict / Standard）とTSF許容基準。
+- [ADR 0096](adr/0096-protection-profile-configuration-and-dynamic-propagation.md)：保護プロファイル設定（`settings.json`）とHost/TIP政策動的同期。
+- [ADR 0097](adr/0097-settings-window-protection-profile-ui.md)：設定画面（`settings_window`）への保護プロファイル選択UIの追加。
 
 ## 更新の規則
 
