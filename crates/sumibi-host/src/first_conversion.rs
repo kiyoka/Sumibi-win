@@ -15,6 +15,16 @@ pub const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
 const SYSTEM_PROMPT_PREFIX: &str = "あなたはローマ字と英語を、通常は自然な日本語へ変換するIMEです。ユーザーによる追加の変換指示で出力言語が指定された場合は、その言語へ翻訳してください。\nMarkdown記法、URL、固有名詞は可能な限り維持してください。\n入力にない情報は追加しないでください。";
 const SYSTEM_PROMPT_SUFFIX: &str = "ユーザーによる追加の変換指示はありません。\nユーザーによる追加の変換指示がある場合はそれを反映し、ない場合は文脈に最も自然な日本語変換を1件だけ作ってください。{\"candidates\":[\"候補1\"]}というJSONだけを返してください。\nJSON以外の説明やMarkdownのコードフェンスは返さないでください。";
+const ADDITIONAL_SYSTEM_PROMPT_SUFFIX: &str = "ユーザーによる追加の変換指示はありません。\nユーザーによる追加の変換指示がある場合はそれを反映し、ない場合は文脈に合う自然な日本語の変換候補を複数件（最大10件）作ってください。{\"candidates\":[\"候補1\",\"候補2\",...]}というJSONだけを返してください。\nJSON以外の説明やMarkdownのコードフェンスは返さないでください。";
+
+pub const MAX_ADDITIONAL_CANDIDATES: usize = 10;
+
+/// Kind of manual conversion: initial (single candidate) or additional (multiple candidates).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConversionKind {
+    Initial,
+    Additional,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PayloadError {
@@ -127,10 +137,11 @@ struct Candidates {
     candidates: Vec<String>,
 }
 
-/// Create Chat Completions request body with structured conversion inputs.
-pub fn request_body_with_input(
+/// Create Chat Completions request body with structured conversion inputs and conversion kind.
+pub fn request_body_with_input_and_kind(
     model: &str,
     input: &ConversionInput<'_>,
+    kind: ConversionKind,
 ) -> Result<Vec<u8>, PayloadError> {
     if !valid_model(model) {
         return Err(PayloadError::InvalidModel);
@@ -145,7 +156,11 @@ pub fn request_body_with_input(
         _ => "ユーザー辞書は登録されていません。".to_owned(),
     };
 
-    let system_prompt = format!("{SYSTEM_PROMPT_PREFIX}\n{dict_prompt}\n{SYSTEM_PROMPT_SUFFIX}");
+    let suffix = match kind {
+        ConversionKind::Initial => SYSTEM_PROMPT_SUFFIX,
+        ConversionKind::Additional => ADDITIONAL_SYSTEM_PROMPT_SUFFIX,
+    };
+    let system_prompt = format!("{SYSTEM_PROMPT_PREFIX}\n{dict_prompt}\n{suffix}");
 
     let current_str = input.current_result.unwrap_or("なし");
     let user_prompt = format!(
@@ -161,6 +176,22 @@ pub fn request_body_with_input(
         ]
     }))
     .map_err(|_| PayloadError::InvalidSource)
+}
+
+/// Create Chat Completions request body with structured conversion inputs (initial conversion).
+pub fn request_body_with_input(
+    model: &str,
+    input: &ConversionInput<'_>,
+) -> Result<Vec<u8>, PayloadError> {
+    request_body_with_input_and_kind(model, input, ConversionKind::Initial)
+}
+
+/// Create Chat Completions request body for additional candidate acquisition (re-conversion).
+pub fn request_body_additional(
+    model: &str,
+    input: &ConversionInput<'_>,
+) -> Result<Vec<u8>, PayloadError> {
+    request_body_with_input_and_kind(model, input, ConversionKind::Additional)
 }
 
 /// Create only the initial-conversion body for a single source string.
@@ -201,6 +232,71 @@ pub fn response_candidate(bytes: &[u8]) -> Result<String, PayloadError> {
         return Err(PayloadError::InvalidResponse);
     }
     Ok(candidate.to_owned())
+}
+
+/// Extract multiple safe candidates from a response, enforcing limits and deduplication.
+/// If `current_result` is provided, it is placed at index 0 and duplicates are omitted.
+pub fn response_candidates(
+    bytes: &[u8],
+    current_result: Option<&str>,
+) -> Result<Vec<String>, PayloadError> {
+    if bytes.is_empty() || bytes.len() > MAX_RESPONSE_BYTES {
+        return Err(PayloadError::InvalidResponse);
+    }
+    let response: ChatResponse =
+        serde_json::from_slice(bytes).map_err(|_| PayloadError::InvalidResponse)?;
+    let choices = &response.choices;
+    if choices.len() != 1 {
+        return Err(PayloadError::InvalidResponse);
+    }
+    let choice = &choices[0];
+    if choice.finish_reason.as_deref() != Some("stop") {
+        return Err(PayloadError::InvalidResponse);
+    }
+    let message = &choice.message;
+    if message.role != "assistant" || message.refusal.is_some() {
+        return Err(PayloadError::InvalidResponse);
+    }
+    let content = message
+        .content
+        .as_deref()
+        .ok_or(PayloadError::InvalidResponse)?;
+    let payload: Candidates =
+        serde_json::from_str(content).map_err(|_| PayloadError::InvalidResponse)?;
+    if payload.candidates.is_empty() {
+        return Err(PayloadError::InvalidResponse);
+    }
+
+    let mut result_candidates = Vec::new();
+    if let Some(curr) = current_result {
+        let trimmed = curr.trim();
+        if !trimmed.is_empty() && sumibi_protocol::message::valid_text(trimmed) {
+            result_candidates.push(trimmed.to_owned());
+        }
+    }
+
+    for c in payload.candidates {
+        let trimmed = c.trim();
+        if trimmed.is_empty() || !sumibi_protocol::message::valid_text(trimmed) {
+            continue;
+        }
+        if !result_candidates.iter().any(|existing| existing == trimmed) {
+            result_candidates.push(trimmed.to_owned());
+        }
+        let limit = if current_result.is_some() {
+            MAX_ADDITIONAL_CANDIDATES + 1
+        } else {
+            MAX_ADDITIONAL_CANDIDATES
+        };
+        if result_candidates.len() >= limit {
+            break;
+        }
+    }
+
+    if result_candidates.is_empty() {
+        return Err(PayloadError::InvalidResponse);
+    }
+    Ok(result_candidates)
 }
 
 #[cfg(test)]
@@ -361,5 +457,63 @@ mod tests {
             response_candidate(&vec![b' '; MAX_RESPONSE_BYTES + 1]),
             Err(PayloadError::InvalidResponse)
         );
+    }
+
+    #[test]
+    fn prompt_uses_additional_suffix_when_requested() {
+        let input = ConversionInput::with_context("nihongo", Some("日本語"), None);
+        let body_bytes = request_body_additional("fixture-model", &input).unwrap();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+        let system = body["messages"][0]["content"].as_str().unwrap();
+        assert!(
+            system.contains("文脈に合う自然な日本語の変換候補を複数件（最大10件）作ってください。")
+        );
+    }
+
+    #[test]
+    fn response_candidates_extracts_multiple_deduplicates_and_keeps_current() {
+        let reply_json =
+            r#"{"candidates":[" 日本語 ", "ニホンゴ", "nihongo", "日本語", "にほんご"]}"#;
+        let candidates = response_candidates(&reply(reply_json, "stop"), Some("日本語")).unwrap();
+        // "日本語" is current_result (index 0). Duplicates in payload must be omitted.
+        assert_eq!(
+            candidates,
+            vec!["日本語", "ニホンゴ", "nihongo", "にほんご"]
+        );
+
+        // When current_result is not in response, it is still at index 0
+        let candidates2 = response_candidates(
+            &reply(r#"{"candidates":["候補A", "候補B"]}"#, "stop"),
+            Some("現在結果"),
+        )
+        .unwrap();
+        assert_eq!(candidates2, vec!["現在結果", "候補A", "候補B"]);
+
+        // When current_result is None, payload candidates are returned directly
+        let candidates3 =
+            response_candidates(&reply(r#"{"candidates":["候補A", "候補B"]}"#, "stop"), None)
+                .unwrap();
+        assert_eq!(candidates3, vec!["候補A", "候補B"]);
+    }
+
+    #[test]
+    fn response_candidates_enforces_limits_and_rejections() {
+        // Empty candidates array is invalid
+        assert_eq!(
+            response_candidates(&reply(r#"{"candidates":[]}"#, "stop"), None),
+            Err(PayloadError::InvalidResponse)
+        );
+        // Truncated / length finish_reason is rejected
+        assert_eq!(
+            response_candidates(&reply(r#"{"candidates":["a"]}"#, "length"), None),
+            Err(PayloadError::InvalidResponse)
+        );
+        // Over MAX_ADDITIONAL_CANDIDATES is clamped
+        let many: Vec<String> = (0..20).map(|i| format!("cand{i}")).collect();
+        let many_json = serde_json::to_string(&json!({"candidates": many})).unwrap();
+        let clamped = response_candidates(&reply(&many_json, "stop"), Some("initial")).unwrap();
+        // 1 (current) + 10 (additional) = 11
+        assert_eq!(clamped.len(), 11);
+        assert_eq!(clamped[0], "initial");
     }
 }
