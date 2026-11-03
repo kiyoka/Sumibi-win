@@ -10,6 +10,8 @@ pub mod input;
 pub mod recovery;
 pub mod waiting_input;
 
+pub use input::BACKSPACE_UNICODE_VERSION;
+
 /// Current single-result manual IPC and owned TSF edit ceiling.
 pub const MAX_MANUAL_UNITS: usize = 1024;
 

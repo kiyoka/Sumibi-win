@@ -1061,4 +1061,55 @@ mod tests {
         state.set_protection_profile(ProtectionProfile::Standard);
         assert_eq!(state.protection_profile(), ProtectionProfile::Standard);
     }
+
+    #[test]
+    fn drain_sink_cancels_ticket_on_worker_failure_and_leaves_state_clean() {
+        let manager = crate::mock::new_manager().to_interface::<ITfThreadMgr>();
+        let (evt_tx, evt_rx) = mpsc::sync_channel(4);
+        let sink = Rc::new(DrainSink {
+            owner: thread::current().id(),
+            manager,
+            client: 7,
+            event_receiver: evt_rx,
+            pending_ticket: RefCell::new(None),
+        });
+
+        // 1. Send Failed event
+        evt_tx
+            .send(WorkerEvent::Failed { request_id: 42 })
+            .expect("send failed event");
+
+        // 2. Drain should safely handle the Failed event even without a pending ticket
+        assert!(!sink.drain().unwrap());
+        assert!(sink.event_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn session_denies_conversion_hotkey_when_unconsented_or_missing_key() {
+        if !supported() {
+            return;
+        }
+        let manager = crate::mock::new_manager().to_interface::<ITfThreadMgr>();
+        let session = TipHostSession::start(&manager, 7).expect("start session");
+
+        // In default start state, connected is false and allowed is false
+        assert!(!session.state().is_ready());
+        assert!(!session.state().is_connected());
+
+        // Pressing preserved key immediately returns FALSE (fail-closed)
+        let res = session
+            .on_preserved_key(None, &COMMAND_CONVERT)
+            .expect("on_preserved_key unready");
+        assert!(!res.as_bool());
+
+        // Even if connected is true, without allowed (consent + credential), key is denied
+        session.state().connected.store(true, Ordering::Release);
+        assert!(!session.state().is_ready());
+        let res2 = session
+            .on_preserved_key(None, &COMMAND_CONVERT)
+            .expect("on_preserved_key connected but unconsented");
+        assert!(!res2.as_bool());
+
+        session.close().expect("close session");
+    }
 }

@@ -131,6 +131,8 @@ enum Exercise {
     BrokerKeys,
     BrokerHttpKeys,
     SessionKeys,
+    LiveConversion,
+    LiveDemo,
     BrokerInput,
     Protection,
     Composition,
@@ -267,6 +269,8 @@ pub(super) fn run() -> Result<(), Failure> {
             && args[0] != "broker-key-test"
             && args[0] != "broker-http-key-test"
             && args[0] != "session-key-test"
+            && args[0] != "live-conversion-test"
+            && args[0] != "live-demo"
             && args[0] != "broker-input-test"
             && args[0] != "protection-test"
             && args[0] != "composition-test"
@@ -353,6 +357,8 @@ pub(super) fn run() -> Result<(), Failure> {
                 Some("broker-key-test") => Exercise::BrokerKeys,
                 Some("broker-http-key-test") => Exercise::BrokerHttpKeys,
                 Some("session-key-test") => Exercise::SessionKeys,
+                Some("live-conversion-test") => Exercise::LiveConversion,
+                Some("live-demo") => Exercise::LiveDemo,
                 Some("broker-input-test") => Exercise::BrokerInput,
                 Some("protection-test") => Exercise::Protection,
                 Some("composition-test") => Exercise::Composition,
@@ -529,6 +535,10 @@ fn registered_probe(
             Exercise::SessionKeys => {
                 crate::edit_host::exercise_session_keys(&manager.0, app_client)?
             }
+            Exercise::LiveConversion => {
+                crate::edit_host::exercise_live_conversion(&manager.0, app_client)?
+            }
+            Exercise::LiveDemo => crate::edit_host::exercise_live_demo(&manager.0, app_client)?,
             Exercise::BrokerInput => {
                 crate::edit_host::exercise_broker_input(&manager.0, app_client)?
             }
