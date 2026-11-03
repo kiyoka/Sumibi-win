@@ -7,6 +7,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+pub use sumibi_protocol::ProtectionProfile;
 
 const MAX_SETTINGS_BYTES: u64 = 16 * 1024;
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -30,6 +31,8 @@ struct Record {
     port: u16,
     chat_path: String,
     model: String,
+    #[serde(default)]
+    protection_profile: ProtectionProfile,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -44,6 +47,7 @@ enum StoredScheme {
 pub struct Settings {
     destination: Destination,
     model: String,
+    protection_profile: ProtectionProfile,
 }
 
 /// The version must be acknowledged by the matching Broker before the
@@ -78,7 +82,21 @@ impl Settings {
         Ok(Self {
             destination,
             model: model.to_owned(),
+            protection_profile: ProtectionProfile::Standard,
         })
+    }
+
+    pub fn with_protection_profile(mut self, profile: ProtectionProfile) -> Self {
+        self.protection_profile = profile;
+        self
+    }
+
+    pub fn set_protection_profile(&mut self, profile: ProtectionProfile) {
+        self.protection_profile = profile;
+    }
+
+    pub fn protection_profile(&self) -> ProtectionProfile {
+        self.protection_profile
     }
 
     pub fn destination(&self) -> &Destination {
@@ -90,7 +108,8 @@ impl Settings {
 
     /// Restoring settings never restores a key or authorizes network sending.
     pub fn new_authority(&self) -> Result<PolicyAuthority, SettingsError> {
-        let authority = PolicyAuthority::new(self.destination.clone());
+        let authority =
+            PolicyAuthority::new_with_profile(self.destination.clone(), self.protection_profile);
         authority
             .set_model(&self.model)
             .map_err(SettingsError::Policy)?;
@@ -104,10 +123,12 @@ impl Settings {
         path: &Path,
         authority: &'a PolicyAuthority,
     ) -> Result<SettingsUpdate<'a>, SettingsError> {
-        let version =
-            authority.save_settings(self.destination.clone(), self.model.clone(), || {
-                self.save(path)
-            })?;
+        let version = authority.save_settings(
+            self.destination.clone(),
+            self.model.clone(),
+            self.protection_profile,
+            || self.save(path),
+        )?;
         Ok(SettingsUpdate { authority, version })
     }
 
@@ -119,10 +140,12 @@ impl Settings {
         expected: &Settings,
         authority: &'a PolicyAuthority,
     ) -> Result<SettingsUpdate<'a>, SettingsError> {
-        let version =
-            authority.save_settings(self.destination.clone(), self.model.clone(), || {
-                self.save_if_unchanged(path, expected)
-            })?;
+        let version = authority.save_settings(
+            self.destination.clone(),
+            self.model.clone(),
+            self.protection_profile,
+            || self.save_if_unchanged(path, expected),
+        )?;
         Ok(SettingsUpdate { authority, version })
     }
 
@@ -137,6 +160,7 @@ impl Settings {
             port: self.destination.port(),
             chat_path: self.destination.base_path().to_owned(),
             model: self.model.clone(),
+            protection_profile: self.protection_profile,
         }
     }
 
@@ -152,7 +176,7 @@ impl Settings {
             StoredScheme::Https => Scheme::Https,
             StoredScheme::HttpLoopback => Scheme::HttpLoopback,
         };
-        let settings = Self::new(
+        let mut settings = Self::new(
             scheme,
             &record.host,
             record.port,
@@ -164,6 +188,7 @@ impl Settings {
         if settings.destination.base_path() != record.chat_path {
             return Err(SettingsError::Invalid);
         }
+        settings.protection_profile = record.protection_profile;
         Ok(settings)
     }
 
@@ -411,6 +436,11 @@ mod tests {
             !snapshot.allowed && snapshot.credential.is_none() && snapshot.manual_consent.is_none()
         );
         assert_eq!(snapshot.model.as_deref(), Some("fixture-model"));
+        assert_eq!(snapshot.protection_profile, ProtectionProfile::Standard);
+        assert_eq!(
+            authority.wire_policy().unwrap().protection_profile,
+            ProtectionProfile::Standard
+        );
     }
 
     #[test]
@@ -419,12 +449,68 @@ mod tests {
             r#"{"version":2,"scheme":"https","host":"example.test","port":443,"chat_path":"/v1/chat/completions","model":"x"}"#,
             r#"{"version":1,"scheme":"https","host":"example.test","port":443,"chat_path":"/v1","model":"x"}"#,
             r#"{"version":1,"scheme":"https","host":"example.test","port":443,"chat_path":"/v1/chat/completions","model":"x","key":"secret"}"#,
+            r#"{"version":1,"scheme":"https","host":"example.test","port":443,"chat_path":"/v1/chat/completions","model":"x","protection_profile":"invalid"}"#,
             r#"{"version":1,"version":1,"scheme":"https","host":"example.test","port":443,"chat_path":"/v1/chat/completions","model":"x"}"#,
             r#"{"version":1,"scheme":"http-loopback","host":"example.test","port":80,"chat_path":"/v1/chat/completions","model":"x"}"#,
         ] {
             assert!(Settings::parse(json.as_bytes()).is_err());
         }
         assert!(Settings::parse(&vec![b' '; MAX_SETTINGS_BYTES as usize + 1]).is_err());
+    }
+
+    #[test]
+    fn settings_protection_profile_default_and_explicit_options() {
+        // 1. Missing protection_profile defaults to Standard (backward compatibility)
+        let json_omitted = br#"{"version":1,"scheme":"https","host":"example.test","port":443,"chat_path":"/v1/chat/completions","model":"gpt-4o"}"#;
+        let parsed_default = Settings::parse(json_omitted).unwrap();
+        assert_eq!(
+            parsed_default.protection_profile(),
+            ProtectionProfile::Standard
+        );
+
+        // 2. Explicit standard profile
+        let json_standard = br#"{"version":1,"scheme":"https","host":"example.test","port":443,"chat_path":"/v1/chat/completions","model":"gpt-4o","protection_profile":"standard"}"#;
+        let parsed_standard = Settings::parse(json_standard).unwrap();
+        assert_eq!(
+            parsed_standard.protection_profile(),
+            ProtectionProfile::Standard
+        );
+
+        // 3. Explicit strict profile
+        let json_strict = br#"{"version":1,"scheme":"https","host":"example.test","port":443,"chat_path":"/v1/chat/completions","model":"gpt-4o","protection_profile":"strict"}"#;
+        let parsed_strict = Settings::parse(json_strict).unwrap();
+        assert_eq!(
+            parsed_strict.protection_profile(),
+            ProtectionProfile::Strict
+        );
+
+        // 4. Roundtrip serialization preserves strict profile
+        let bytes = serde_json::to_vec(&parsed_strict.record()).unwrap();
+        let restored = Settings::parse(&bytes).unwrap();
+        assert_eq!(restored.protection_profile(), ProtectionProfile::Strict);
+
+        // 5. PolicyAuthority reflects profile and supports dynamic update
+        let authority = restored.new_authority().unwrap();
+        let initial_policy = authority.wire_policy().unwrap();
+        assert_eq!(initial_policy.protection_profile, ProtectionProfile::Strict);
+        let initial_settings_version = initial_policy.settings;
+
+        // Switch dynamically to standard
+        let updated_version = authority
+            .set_protection_profile(ProtectionProfile::Standard)
+            .unwrap();
+        assert_eq!(updated_version.settings, initial_settings_version + 1);
+        let updated_policy = authority.wire_policy().unwrap();
+        assert_eq!(
+            updated_policy.protection_profile,
+            ProtectionProfile::Standard
+        );
+
+        // Setting same profile does not advance settings version
+        let noop_version = authority
+            .set_protection_profile(ProtectionProfile::Standard)
+            .unwrap();
+        assert_eq!(noop_version.settings, updated_version.settings);
     }
 
     #[test]

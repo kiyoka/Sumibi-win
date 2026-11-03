@@ -340,6 +340,7 @@ mod tests {
             settings: 2,
             authorization: 3,
             allowed: true,
+            protection_profile: ProtectionProfile::Standard,
         }
     }
 

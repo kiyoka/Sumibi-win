@@ -967,10 +967,28 @@ Issue #4とPR #10は引き続き未完了・draftとして扱う。
     - `crates/sumibi-setup/src/native_edit_host.rs`:
       - `exercise_native_edit_standard_profile` を新設し、Windows 実 RichEdit（`Msftedit.dll`）における Standard プロファイル変換（`"plain-text"`, `"default-scope"` でのテキスト置換 `"nihongo"` → `"日本語"` 成功）およびパスワード（`ES_PASSWORD` / `TF_E_EMPTYCONTEXT`）と ReadOnly（`EM_SETREADONLY` / `TS_SD_READONLY`）の絶対的拒絶を完全実証。
       - RichEdit の TextStoreACP におけるネイティブ Undo 挙動（Win32 メッセージ Undo キューとの分離）を精密に文書化・アサーション。
-14. 全体検証:
+14. [ADR 0096](adr/0096-protection-profile-configuration-and-dynamic-propagation.md) に基づき、`settings.json` および Host 政策への `protection_profile` オプション追加と TIP セッションへの動的同期・適用を実装した。
+    - `crates/sumibi-protocol/src/message.rs` & `lib.rs`:
+      - `ProtectionProfile`（`Standard`, `Strict`）列挙型をプロトコル層へ配置（`#[derive(Serialize, Deserialize)]`, `#[serde(rename_all = "kebab-case")]`）。
+      - `Policy` 構造体に `#[serde(default)] pub protection_profile: ProtectionProfile` を追加。
+    - `crates/sumibi-host/src/settings.rs`:
+      - `Record` 構造体に `#[serde(default)] pub protection_profile: ProtectionProfile` を追加（`deny_unknown_fields` を維持しつつ、フィールド省略時は後方互換で `Standard` にフォールバック）。
+      - `Settings` 構造体に `pub protection_profile: ProtectionProfile` を追加。
+      - `Settings::new`, `with_protection_profile`, `protection_profile`, `set_protection_profile`, `save_and_apply`, `save_and_apply_if_unchanged` を拡張。
+      - 設定単体テスト `settings_protection_profile_default_and_explicit_options` を追加（省略時 Standard、明示 Standard / Strict の双方向ラウンドトリップ、不正値の serde 拒絶、PolicyAuthority 動的更新の検証）。
+    - `crates/sumibi-host/src/manual.rs` & `policy.rs`:
+      - `PolicySnapshot` に `pub protection_profile: ProtectionProfile` を保持。
+      - `PolicyAuthority::new_with_profile` および動的更新メソッド `set_protection_profile` を実装（設定版 `settings` をインクリメントし `changed.notify_all()` でブローカーへ通知）。
+      - `wire_policy` で公開 IPC ポリシーへ `protection_profile` を設定。
+    - `crates/sumibi-tip/src/session.rs`:
+      - `SharedSessionState` に `protection_profile: AtomicU8`（0 = Standard, 1 = Strict）を追加。
+      - `worker_loop` における `Worker::prepared_policy()` 受信時に `state.set_protection_profile(policy.protection_profile)` を実行し、Host 政策を TIP 側へアトミック同期。
+      - `on_preserved_key`（Ctrl+J 押下時）で `self.state.protection_profile()` を `EditPolicy` に動的設定。
+      - 単体テスト `shared_session_state_protection_profile_roundtrip` を追加・検証。
+15. 全体検証:
     - `powershell -ExecutionPolicy Bypass -File .\dev.ps1 test-all`: **全件合格**（Exit Code: 0）。
-      - standard workspace tests: 533 passed, 0 failed, 4 ignored。
-      - workspace tests with sumibi-host/spike: 533 passed, 0 failed, 4 ignored。
+      - standard workspace tests: 534 passed, 0 failed, 4 ignored。
+      - workspace tests with sumibi-host/spike: 534 passed, 0 failed, 4 ignored。
       - `Test-HostImage.ps1`: 全 37 テスト合格。
       - `Test-SuspendedImageProbe.ps1`: 全 6 テスト合格。
       - `session-key-test`: 全 5 シナリオ完全合格（自律発見・非同期ドレイン変換・1-step Undo・失効 Fail-Closed・クリーンアップ）。

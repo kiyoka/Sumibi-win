@@ -11,6 +11,7 @@ fn policy() -> Policy {
         settings: 1,
         authorization: 1,
         allowed: true,
+        protection_profile: ProtectionProfile::Standard,
     }
 }
 

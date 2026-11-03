@@ -888,6 +888,7 @@ mod tests {
                 settings: 1,
                 authorization: 1,
                 allowed: true,
+                protection_profile: sumibi_protocol::ProtectionProfile::Standard,
             }))),
         };
         let locked = preparation.result.lock().unwrap();
@@ -1071,6 +1072,7 @@ mod tests {
                             settings: 1,
                             authorization: 1,
                             allowed: true,
+                            protection_profile: sumibi_protocol::ProtectionProfile::Standard,
                         },
                     },
                 ),

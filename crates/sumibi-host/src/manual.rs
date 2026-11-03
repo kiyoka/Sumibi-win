@@ -144,6 +144,7 @@ pub struct PolicySnapshot {
     pub manual_consent: Option<Destination>,
     pub credential: Option<Arc<Credential>>,
     pub allowed: bool,
+    pub protection_profile: sumibi_protocol::ProtectionProfile,
 }
 
 pub trait PolicySource {
@@ -528,6 +529,7 @@ mod tests {
             manual_consent: Some(destination),
             credential: Some(Arc::new(Credential::new("synthetic-key".into()).unwrap())),
             allowed: true,
+            protection_profile: sumibi_protocol::ProtectionProfile::Standard,
         }))
     }
     fn request(destination: &Destination) -> ManualRequest<'_> {

@@ -357,6 +357,7 @@ mod tests {
             settings: 2,
             authorization: 3,
             allowed: true,
+            protection_profile: ProtectionProfile::Standard,
         }
     }
 
@@ -618,6 +619,7 @@ mod tests {
                 settings: 1,
                 authorization: 1,
                 allowed: false,
+                protection_profile: ProtectionProfile::Standard,
             },
         });
         assert!(matches!(deliver(&mut client, reset, now), Event::Ready(_)));
@@ -625,6 +627,7 @@ mod tests {
             settings: 1,
             authorization: 1,
             allowed: true,
+            protection_profile: ProtectionProfile::Standard,
         });
         let bytes = frame(forged_grant, 3);
         assert_eq!(

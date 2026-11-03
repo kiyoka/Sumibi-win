@@ -42,6 +42,7 @@ pub struct SharedSessionState {
     input: AtomicU64,
     settings: AtomicU64,
     authorization: AtomicU64,
+    protection_profile: std::sync::atomic::AtomicU8,
 }
 
 impl SharedSessionState {
@@ -52,6 +53,7 @@ impl SharedSessionState {
             input: AtomicU64::new(1),
             settings: AtomicU64::new(0),
             authorization: AtomicU64::new(0),
+            protection_profile: std::sync::atomic::AtomicU8::new(0),
         }
     }
 
@@ -69,6 +71,21 @@ impl SharedSessionState {
             settings: self.settings.load(Ordering::Acquire),
             authorization: self.authorization.load(Ordering::Acquire),
         }
+    }
+
+    pub fn protection_profile(&self) -> ProtectionProfile {
+        match self.protection_profile.load(Ordering::Acquire) {
+            1 => ProtectionProfile::Strict,
+            _ => ProtectionProfile::Standard,
+        }
+    }
+
+    pub fn set_protection_profile(&self, profile: ProtectionProfile) {
+        let val = match profile {
+            ProtectionProfile::Standard => 0,
+            ProtectionProfile::Strict => 1,
+        };
+        self.protection_profile.store(val, Ordering::Release);
     }
 }
 
@@ -412,7 +429,7 @@ impl TipHostSession {
         let edit_policy = Rc::new(Cell::new(EditPolicy {
             revision: self.state.revision(),
             allowed: true,
-            profile: ProtectionProfile::Standard,
+            profile: self.state.protection_profile(),
         }));
 
         let request_id = self.next_request_id.get().wrapping_add(1).max(1);
@@ -574,6 +591,7 @@ fn worker_loop(
                             .authorization
                             .store(policy.authorization, Ordering::Release);
                         state.allowed.store(policy.allowed, Ordering::Release);
+                        state.set_protection_profile(policy.protection_profile);
                         state.connected.store(true, Ordering::Release);
                         prep_ok = true;
                         break;
@@ -606,6 +624,7 @@ fn worker_loop(
                     .authorization
                     .store(policy.authorization, Ordering::Release);
                 state.allowed.store(policy.allowed, Ordering::Release);
+                state.set_protection_profile(policy.protection_profile);
                 state.connected.store(true, Ordering::Release);
             }
             Ok(None) => {}
@@ -1004,5 +1023,20 @@ mod tests {
         assert!(sink.event_receiver.try_recv().is_err());
 
         window.destroy();
+    }
+
+    #[test]
+    fn shared_session_state_protection_profile_roundtrip() {
+        let state = SharedSessionState::new();
+        // Default must be Standard
+        assert_eq!(state.protection_profile(), ProtectionProfile::Standard);
+
+        // Dynamically switch to Strict
+        state.set_protection_profile(ProtectionProfile::Strict);
+        assert_eq!(state.protection_profile(), ProtectionProfile::Strict);
+
+        // Switch back to Standard
+        state.set_protection_profile(ProtectionProfile::Standard);
+        assert_eq!(state.protection_profile(), ProtectionProfile::Standard);
     }
 }

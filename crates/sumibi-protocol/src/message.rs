@@ -78,12 +78,22 @@ pub struct Ready {
     pub policy: Policy,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProtectionProfile {
+    #[default]
+    Standard,
+    Strict,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
     pub settings: u64,
     pub authorization: u64,
     pub allowed: bool,
+    #[serde(default)]
+    pub protection_profile: ProtectionProfile,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

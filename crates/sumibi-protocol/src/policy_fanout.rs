@@ -455,7 +455,7 @@ impl PolicyFanout {
 mod tests {
     use super::*;
     use crate::broker_session::Event;
-    use crate::message::{Convert, Hello, VERSION};
+    use crate::message::{Convert, Hello, ProtectionProfile, VERSION};
     use crate::session::{ClientSession, Event as ClientEvent, Outcome};
     use crate::Decoder;
 
@@ -467,6 +467,7 @@ mod tests {
             settings: 1,
             authorization: 1,
             allowed: true,
+            protection_profile: ProtectionProfile::Standard,
         }
     }
     fn hello(client: u128) -> Envelope {

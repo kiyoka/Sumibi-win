@@ -303,6 +303,7 @@ pub(super) fn run() -> Result<()> {
                 settings: 1,
                 authorization: 1,
                 allowed: true,
+                protection_profile: sumibi_protocol::ProtectionProfile::Standard,
             },
         });
         write_message(&mut pipe, &hello, &stop)?;

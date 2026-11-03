@@ -359,12 +359,14 @@ mod tests {
                 settings: 1,
                 authorization: 1,
                 allowed: true,
+                protection_profile: sumibi_protocol::ProtectionProfile::Standard,
             },
         }));
         let revoked = frame(Message::PolicyChanged(Policy {
             settings: 1,
             authorization: 2,
             allowed: false,
+            protection_profile: sumibi_protocol::ProtectionProfile::Standard,
         }));
         let mut inbox = Inbox {
             bytes: ready[..3].to_vec(),

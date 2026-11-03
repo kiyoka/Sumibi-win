@@ -125,6 +125,7 @@ pub fn serve_once(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> 
         settings: 1,
         authorization: 1,
         allowed,
+        protection_profile: sumibi_protocol::ProtectionProfile::Standard,
     };
     let mut order = BrokerSession::new(bootstrap.boot.id(), policy).map_err(map_broker_error)?;
     let BrokerEvent::Ready(ready) = order
@@ -218,6 +219,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         settings: 1,
         authorization: 1,
         allowed,
+        protection_profile: sumibi_protocol::ProtectionProfile::Standard,
     };
     let gate = BrokerPolicyGate::new(policy)?;
     let mut order = PolicyFanout::new(bootstrap.boot.id(), policy).map_err(map_fanout_error)?;
@@ -239,6 +241,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
             settings: policy.settings,
             authorization: policy.authorization + 1,
             allowed: false,
+            ..policy
         };
         if !gate.publish(&mut order, next)?.is_empty() {
             return Err(Error::InvalidMessage);
@@ -270,6 +273,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                 settings: policy.settings,
                 authorization: policy.authorization + 1,
                 allowed: false,
+                ..policy
             };
             if !gate.publish(&mut order, next)?.is_empty() {
                 return Err(Error::InvalidMessage);
@@ -312,6 +316,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                     settings: policy.settings,
                     authorization: policy.authorization + 1,
                     allowed: false,
+                    ..policy
                 };
                 gate.update(revoked)?;
                 let latest = if bootstrap.mode == Mode::DiagnosticRegrantAtAccept {
@@ -319,6 +324,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                         settings: policy.settings,
                         authorization: policy.authorization + 2,
                         allowed: true,
+                        ..policy
                     };
                     gate.update(regranted)?;
                     regranted
@@ -404,6 +410,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                                 1
                             },
                         allowed: bootstrap.mode == Mode::DiagnosticRegrantAfterResult,
+                        ..policy
                     }
                 };
                 if !gate.publish(&mut order, next)?.is_empty() {
@@ -428,6 +435,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                     settings: policy.settings,
                     authorization: policy.authorization + 1,
                     allowed: false,
+                    ..policy
                 };
                 if !gate.publish(&mut order, revoked)?.is_empty() {
                     return Err(Error::InvalidMessage);
@@ -574,6 +582,7 @@ mod tests {
             settings: 1,
             authorization: 1,
             allowed: true,
+            protection_profile: sumibi_protocol::ProtectionProfile::Standard,
         }
     }
     fn request(id: u64) -> Convert {
@@ -636,6 +645,7 @@ mod tests {
             settings: 1,
             authorization: 2,
             allowed: false,
+            ..policy()
         };
         assert_eq!(gate.update(revoked), Ok(()));
         assert_eq!(
@@ -649,6 +659,7 @@ mod tests {
                 settings: 1,
                 authorization: 2,
                 allowed: true,
+                ..policy()
             }),
             Err(Error::PolicyDenied)
         );
@@ -656,6 +667,7 @@ mod tests {
             settings: 1,
             authorization: 3,
             allowed: true,
+            ..policy()
         };
         assert_eq!(gate.update(regranted), Ok(()));
         assert_eq!(
@@ -675,6 +687,7 @@ mod tests {
             settings: 2,
             authorization: 1,
             allowed: true,
+            ..policy()
         };
         assert_eq!(gate.update(updated), Ok(()));
         let mut last = 0;
@@ -708,6 +721,7 @@ mod tests {
             settings: 1,
             authorization: 2,
             allowed: false,
+            ..policy()
         })
         .unwrap();
         assert!(matches!(

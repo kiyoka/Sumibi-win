@@ -52,6 +52,13 @@ pub struct PolicyAuthority {
 
 impl PolicyAuthority {
     pub fn new(destination: Destination) -> Self {
+        Self::new_with_profile(destination, sumibi_protocol::ProtectionProfile::Standard)
+    }
+
+    pub fn new_with_profile(
+        destination: Destination,
+        protection_profile: sumibi_protocol::ProtectionProfile,
+    ) -> Self {
         Self {
             state: Mutex::new(PolicySnapshot {
                 settings: 1,
@@ -61,6 +68,7 @@ impl PolicyAuthority {
                 manual_consent: None,
                 credential: None,
                 allowed: false,
+                protection_profile,
             }),
             changed: Condvar::new(),
             #[cfg(windows)]
@@ -226,6 +234,27 @@ impl PolicyAuthority {
         Ok(published)
     }
 
+    /// Dynamically update the app protection profile in policy authority.
+    pub fn set_protection_profile(
+        &self,
+        profile: sumibi_protocol::ProtectionProfile,
+    ) -> Result<PolicyVersion, ChangeError> {
+        let mut state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        if state.protection_profile == profile {
+            return Ok(version(&state));
+        }
+        let settings = state
+            .settings
+            .checked_add(1)
+            .ok_or(ChangeError::Exhausted)?;
+        state.protection_profile = profile;
+        state.settings = settings;
+        let published = version(&state);
+        drop(state);
+        self.changed.notify_all();
+        Ok(published)
+    }
+
     /// Persist and publish the validated destination and model under one
     /// authority lock. An I/O error leaves the in-memory policy unchanged.
     /// This blocking operation is for a settings worker, never a TSF callback.
@@ -233,6 +262,7 @@ impl PolicyAuthority {
         &self,
         destination: Destination,
         model: String,
+        protection_profile: sumibi_protocol::ProtectionProfile,
         persist: impl FnOnce() -> Result<(), crate::settings::SettingsError>,
     ) -> Result<PolicyVersion, crate::settings::SettingsError> {
         use crate::settings::SettingsError;
@@ -256,6 +286,7 @@ impl PolicyAuthority {
         persist()?;
         state.destination = destination;
         state.model = Some(model);
+        state.protection_profile = protection_profile;
         state.settings = settings;
         state.authorization = authorization;
         if changed_destination {
@@ -413,6 +444,7 @@ fn wire_policy(state: &PolicySnapshot) -> Policy {
         settings: state.settings,
         authorization: state.authorization,
         allowed: state.allowed,
+        protection_profile: state.protection_profile,
     }
 }
 

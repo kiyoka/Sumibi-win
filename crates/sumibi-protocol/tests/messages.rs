@@ -22,6 +22,7 @@ fn policy() -> Policy {
         settings: 2,
         authorization: 3,
         allowed: true,
+        protection_profile: ProtectionProfile::Standard,
     }
 }
 
@@ -50,6 +51,7 @@ fn shared_policy_transition_accepts_settings_only_and_requires_new_authority_for
                 settings: 3,
                 authorization: 4,
                 allowed: false,
+                protection_profile: ProtectionProfile::Standard,
             },
             true,
         ),

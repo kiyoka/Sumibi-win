@@ -9,13 +9,7 @@ use windows::Win32::UI::TextServices::*;
 
 const MAX_SCOPES: usize = 16;
 
-/// Protection profile specifying strictness for general applications vs restricted test stores.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum ProtectionProfile {
-    #[default]
-    Standard,
-    Strict,
-}
+pub use sumibi_protocol::ProtectionProfile;
 
 /// Fixed metadata-only diagnostic codes. These carry no document text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

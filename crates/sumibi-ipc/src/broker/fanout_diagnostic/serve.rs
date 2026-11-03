@@ -39,6 +39,7 @@ pub(crate) fn serve_fanout(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Re
         settings: 1,
         authorization: 1,
         allowed: true,
+        protection_profile: sumibi_protocol::ProtectionProfile::Standard,
     };
     let gate = BrokerPolicyGate::new(policy)?;
     let mut order = PolicyFanout::new(bootstrap.boot.id(), policy).map_err(map_fanout_error)?;

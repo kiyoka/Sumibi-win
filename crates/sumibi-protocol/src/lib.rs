@@ -10,6 +10,8 @@ pub mod message;
 pub mod policy_fanout;
 pub mod session;
 
+pub use message::ProtectionProfile;
+
 /// Maximum body length in bytes, independent of input and candidate limits.
 pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 
