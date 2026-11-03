@@ -19,14 +19,14 @@ Mac技術解説自身の実装照合基準 `d2b96fc` と区別する。Macの機
 
 | 領域 | 現在の記録範囲での状態 |
 | --- | --- |
-| Coreの応答適用判定・入力追跡 | 単一要求の照合と、所有ホストの実入力範囲の記録を実装。製品の通常入力全体の状態機械ではない |
-| TIPのCOM・キー・表示属性・編集 | 専用ホストで実装済み。通常アプリへの常設登録なし |
-| 入力保護 | scope/status/compartmentと取得・送信前・適用時の検査を実装。専用ACPで39ケース。status診断と標準RichEditの拒否7構成を確認（[ADR 0019](adr/0019-native-richedit-status-diagnostics.md)）。一般アプリの全機密欄の識別は未検証 |
-| 入力・プレビュー・固定変換・Undo/Redo | 専用デモで実装済み。`nihongo`→F7→待機入力や救済画面の実打鍵を一部確認。一般アプリの実打鍵と標準Undoは未確認 |
-| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮/初回選択46・選択composition 18・他サービス拒否16・同期入力取引174（選択Delete20・記録内移動/前方Delete26・内部挿入20・Shift選択27・記録内選択編集33・文書端移動/選択26を含む）・書記素Backspace 55（内部caret18を含む）ケースを確認。所有editorの救済48ケースとEXE共有4枠、window境界を含む通知30ケースも確認。専用ホストの書記素移動/削除22ケースも確認。一般アプリの行端移動・待機・製品統合・候補UIは未実装 |
-| Protocol / IPC | 有限フレーム・版付きJSON・Client/Broker状態、最大8接続・各1通知の配信状態、固定process相互検査・overlapped pipe。接続keyと同じclientの要求番号を再利用せず、Readyと政策通知の書込完了前に次要求を受けない。実DLLのキー・Core・所有TSFから診断用EXE bridge経由で再利用Brokerへ接続。診断用の配信状態を実子Channelの1接続と、同じ親processから開く2本の実pipeで検査した。異なるTIP processの製品接続と一般アプリは未接続（[ADR 0059](adr/0059-bounded-broker-policy-fanout.md)、[ADR 0061](adr/0061-two-client-broker-pipe-diagnostic.md)） |
-| Host・HTTP・キー保存・設定UI | 単発/有限連続要求の診断Host EXEを実装。既定では変換拒否。Host内に送信前/返却前の手動認可ゲート、一貫したメモリー政策と期限付き変更待機を追加。Hostの政策版をBrokerの受付ゲートと接続通知へ渡すRelayを追加したが、実pipe配送は未接続（[ADR 0047](adr/0047-host-manual-send-gate.md)、[ADR 0049](adr/0049-host-in-memory-policy-authority.md)、[ADR 0060](adr/0060-host-to-broker-policy-relay.md)）。常駐Host・製品HTTP・キー保存・設定UIは未実装 |
-| Decisions・辞書・署名付き配布 | 未実装。後続段階 |
+| Coreの応答適用判定・Unicode・入力追跡 | Unicode 17.0.0 書記素クラスタ境界判定（`CONVERSION_UNICODE_VERSION: (17, 0, 0)`）、原文・現在結果・辞書総合 1,000 書記素上限（`MAX_TOTAL_GRAPHEMES`）、UTF-16 1,024 単位・4,096 バイト制限、制御文字排除、要求ID・対象・世代の完全照合を実装（[ADR 0098](adr/0098-manual-conversion-end-to-end-integration.md)） |
+| TIPのCOM・キー・表示属性・編集 | 実機 TSF COM DLL 実装。ホットキー（Ctrl+J / Ctrl+Z）、STA 非同期ドレイン（`DrainWindow` / `WM_SUMIBI_DRAIN`）、1-step Undo、自律セッション管理（`TipHostSession`）を実装（[ADR 0087](adr/0087-tip-host-session-lifecycle.md)〜[ADR 0089](adr/0089-end-to-end-session-key-conversion.md)） |
+| 入力保護 | 二層保護プロファイル（Standard: 既定・Notepad等一般アプリ対応 / Strict: 高機密監査環境）を実装（[ADR 0095](adr/0095-app-protection-profiles-and-acceptance-criteria.md)）。パスワード・ReadOnly・一時コンテキスト等の絶対的防御境界（Inviolable Guards）による Fail-Closed 判定を実装。非機密 TSF 診断ログ出力（[ADR 0091](adr/0091-manual-app-verification-and-diagnostics.md)） |
+| 入力・プレビュー・手動変換・Undo | 専用ハーネスおよび実機 Live デモ（`live-demo`）で実証完了。Ctrl+J での OpenAI API（`gpt-4o-mini`）変換、自動テキスト置換、および Ctrl+Z による 1-step Undo の完全動作を確認 |
+| 追跡入力・composition・候補UI | 所有ホストの入力範囲25・実DLLのcomposition伸縮/初回選択46・選択composition 18・他サービス拒否16・同期入力取引174（選択Delete20・記録内移動/前方Delete26・内部挿入20・Shift選択27・記録内選択編集33・文書端移動/選択26を含む）・書記素Backspace 55（内部caret18を含む）ケースを確認。所有editorの救済48ケースとEXE共有4枠、window境界を含む通知30ケースも確認。追加候補UIは後続段階（Issue #6） |
+| Protocol / IPC | ログオン限定ブートストラップ名前付きパイプ（`\\.\pipe\Sumibi.Bootstrap.v1.<SID>`）による自律発見、相互プロセス Peer 認証（ログオンSID・PID・トークン検証）、非対称ハンドオフ、多重接続・自律再接続（Self-Healing Reconnection）を実装（[ADR 0087](adr/0087-tip-host-session-lifecycle.md), [ADR 0094](adr/0094-host-self-healing-and-app-protection-diagnostics.md)） |
+| Host・HTTP・キー保存・設定UI | 常駐 Host サービス（`HostService`）、WinHTTP による安全な HTTPS 通信（OpenAI API / `chat/completions`）、Windows 資格情報マネージャー（暗号化 API キー保持）、送信同意管理画面（`ConsentWindow`）、設定画面（`SettingsWindow`、保護プロファイル切替対応）、システムトレイ最小化・常駐待機を実装（[ADR 0090](adr/0090-default-gui-host-entry.md)〜[ADR 0098](adr/0098-manual-conversion-end-to-end-integration.md)） |
+| Decisions・辞書・署名付き配布 | ユーザー辞書の `<user_dictionary>` タグ動的展開を実装。追加候補・ローカル辞書は Issue #6、Decisions 自動変換は Issue #7、本番署名・配布は Issue #8 にて順次対応 |
 
 ## 2. 目的と不変条件
 
@@ -43,61 +43,64 @@ Windows 11 x64の通常デスクトップ入力先から検証し、アプリ別
 5. 本文・候補・秘密キーを通常ログへ残さない。送信先と同意を送信直前にも検査する。
 6. キーを消費した場合の保持先と容量を確保する。別入力欄へ遅延キーを再生しない。
 
-## 3. 現在の実行時構成
+## 3. 現在の実行時構成（実装済みアーキテクチャ）
 
-現在は開発ツール `sumibi-setup` が専用プロセス内でCOMクラスとTSFプロファイルを登録する。
-このEXEは将来の通信Brokerではない。設定や実APIを扱わず、既定IMEを変更しない。
+Issue #4 および Issue #5 により、製品用の実機実行時アーキテクチャ（`sumibi_tip.dll` と常駐 `sumibi-host.exe`）が縦断実装・検証完了した。
 
 ```mermaid
 flowchart TB
-    subgraph process["sumibi-setup：専用検証プロセス"]
-        probe["probe：COM STA・DLLロード・プロセス内登録"]
-        tsf["Windows TSF：ThreadMgr・DocumentMgr・Context"]
-        subgraph dll["sumibi_tip.dll：spike有効"]
-            tip["Tip・キーsink・検証用Controller"]
-            edit["選択取得・全文照合・一度だけ置換"]
-            preview["Preview・点線表示属性"]
-            observer["本文・選択・フォーカス通知"]
+    subgraph app["アプリプロセス / TSF STA スレッド"]
+        tsf["Windows TSF: ThreadMgr / DocumentMgr / Context"]
+        subgraph dll["sumibi_tip.dll (COM Inproc Server)"]
+            keys["KeySink: Ctrl+J / Ctrl+Z"]
+            session["TipHostSession: 自律発見・相互Peer認証・政策保持"]
+            guard["TargetGuard / 二層保護判定 (Standard / Strict)"]
+            drain["DrainSink: STA非同期テキスト置換・1-step Undo"]
         end
-        store["TextStore：専用本文・選択・Undo/Redo"]
-        window["Window・Editor：入力メッセージと表示"]
-        live["Binding・Scene・Frame：自動描画更新"]
+        store["ITextStoreACP: 本文・選択・Undo履歴"]
+        drainwin["DrainWindow: 非同期メッセージ窓 (WM_SUMIBI_DRAIN)"]
     end
-    probe --> tsf
-    probe --> tip
-    window -->|"TestKeyDown / KeyDown"| tsf
-    tsf --> tip
-    tip --> edit
-    tip --> preview
-    edit <-->|"編集セッション"| tsf
-    preview <--> tsf
-    tsf <-->|"ITextStoreACP"| store
-    store -->|"変更通知"| tsf
-    tsf --> observer
-    observer --> tip
-    tsf -->|"OnEndEdit"| live
-    live -->|"WM_APPで読取・バッファ更新"| window
-    window -->|"未消費の文字・ホスト編集"| store
+
+    subgraph host["sumibi-host.exe (ユーザーログオンセッション常駐)"]
+        bootstrap["BootstrapServer: \\\\.\\pipe\\Sumibi.Bootstrap.v1.<SID>"]
+        service["HostService / HostControl: 要求管理・自律再接続"]
+        policy["PolicyAuthority: 設定・動的政策・同意状態"]
+        winhttp["WinHTTP: OpenAI API (chat/completions) HTTPS通信"]
+        cred["Windows Credential Manager: 暗号化 API キー保持"]
+        gui["GUIマネージャー: ConsentWindow / SettingsWindow / システムトレイ"]
+    end
+
+    tsf --> keys
+    keys --> session
+    session <-->|"ログオン限定名前付きパイプ (Overlapped IPC)"| bootstrap
+    bootstrap --> service
+    service <--> policy
+    policy <--> gui
+    service --> winhttp
+    service <--> cred
+    winhttp <-->|"HTTPS"| openai["OpenAI API (gpt-4o-mini)"]
+    session --> guard
+    guard -->|"安全確認"| session
+    session -->|"結果ポスト"| drainwin
+    drainwin -->|"STAメッセージループ"| drain
+    drain <-->|"編集セッション"| tsf
+    tsf <--> store
 ```
 
-Coreの `ManualConversion` は上図の従来demoの固定変換経路には統合されていない。
-別のbroker-testでは、setup所有STAにリンクしたManualEditがCoreを通し、別Hostからの固定結果を適用する。
-この単発経路と寿命図は[ADR 0004](adr/0004-one-shot-broker-and-owner-edit.md)に分ける。
-続いて実DLLのキーから診断用EXE bridgeを経由する経路を追加した
-（[ADR 0005](adr/0005-dll-key-broker-bridge.md)）。この図の従来demoや、ネットワーク経路と区別する。
+### クレート別の責務と実装ファイル
 
-| モジュール | 現在の責務・コード |
+| クレート | 責務と主要実装ファイル |
 | --- | --- |
-| sumibi-core | [lib.rs](../crates/sumibi-core/src/lib.rs)：要求ID、対象、世代の完全照合。[input.rs](../crates/sumibi-core/src/input.rs)：実入力範囲の有限追跡。unsafe禁止 |
-| sumibi-tip COM | [com.rs](../crates/sumibi-tip/src/com.rs)：factory、Activate/Deactivate、寿命計数、所有スレッド |
-| キー・検証制御 | [keys.rs](../crates/sumibi-tip/src/keys.rs)、[spike.rs](../crates/sumibi-tip/src/spike.rs)：明示許可context限定、固定変換 |
-| 編集・下線 | [edit.rs](../crates/sumibi-tip/src/edit.rs)、[preview.rs](../crates/sumibi-tip/src/preview.rs)、[display.rs](../crates/sumibi-tip/src/display.rs) |
-| 変更通知 | [notifications.rs](../crates/sumibi-tip/src/notifications.rs)：本文・選択・フォーカス変更で失効 |
-| 登録検証 | [probe.rs](../crates/sumibi-setup/src/probe.rs)：ローカル登録、障害注入、逆順解除 |
-| 入力先・操作 | [edit_host.rs](../crates/sumibi-setup/src/edit_host.rs)、[input_host.rs](../crates/sumibi-setup/src/input_host.rs)：検証用TextStoreと1行Editor |
-| 表示 | [live_render.rs](../crates/sumibi-setup/src/live_render.rs)、[render.rs](../crates/sumibi-setup/src/render.rs)、[window_host.rs](../crates/sumibi-setup/src/window_host.rs) |
+| `sumibi-core` | [first_conversion.rs](../crates/sumibi-host/src/first_conversion.rs): Unicode 17.0.0 書記素境界、1,000書記素上限、4,096バイト制限、制御文字排除。[input.rs](../crates/sumibi-core/src/input.rs): 実入力範囲の有限追跡。[lib.rs](../crates/sumibi-core/src/lib.rs): 要求ID・対象・世代の完全照合 |
+| `sumibi-protocol` | [lib.rs](../crates/sumibi-protocol/src/lib.rs): 型付きIPCフレーム、JSON直列化、要求・応答・失効・通知メッセージ定義 |
+| `sumibi-ipc` | [pipe.rs](../crates/sumibi-ipc/src/pipe.rs): 名前付きパイプ、相互Peer認証（ログオンSID・PID・トークン検証）、非対称ハンドオフ。[discovery.rs](../crates/sumibi-ipc/src/discovery.rs): ブートストラップ発見 |
+| `sumibi-winhttp` | [lib.rs](../crates/sumibi-winhttp/src/lib.rs): 安全な WinHTTP ラッパー。HTTPS 通信、タイムアウト60秒、リダイレクト拒否 |
+| `sumibi-credentials`| [lib.rs](../crates/sumibi-credentials/src/lib.rs): Windows 資格情報マネージャー（`Sumibi-win/API-key/v1`）暗号化キー読み書き |
+| `sumibi-host` | [host_service.rs](../crates/sumibi-host/src/host_service.rs): 常駐サービス。[consent_window.rs](../crates/sumibi-host/src/consent_window.rs): 同意管理UI。[settings_window.rs](../crates/sumibi-host/src/settings_window.rs): 設定UI。[tray.rs](../crates/sumibi-host/src/tray.rs): システムトレイ |
+| `sumibi-tip` | [tip_host_session.rs](../crates/sumibi-tip/src/tip_host_session.rs): 自律セッション。[drain_window.rs](../crates/sumibi-tip/src/drain_window.rs): STA非同期置換。[keys.rs](../crates/sumibi-tip/src/keys.rs): ホットキー。[protection.rs](../crates/sumibi-tip/src/protection.rs): 二層保護判定 |
+| `sumibi-setup` | [session_keys.rs](../crates/sumibi-setup/src/session_keys.rs): 実機 TSF E2E ハーネス、実機 Live 変換テスト（`live-conversion-test`）、対話型 Live デモ（`live-demo`）。[registration.rs](../crates/sumibi-setup/src/registration.rs): 安全な HKCU COM 登録・解除 |
 
-## 4. 製品構成と責務の分離（設計案）
+## 4. 製品構成と責務の分離
 
 TSF DLLは入力先アプリのプロセスで動く。通信・保存・設定UIを別のユーザープロセスへ分離し、
 入力先の停止やDLL更新の影響を抑える。これはMacの単一アプリ・単一プロセス構成からの意図的な変更である。
