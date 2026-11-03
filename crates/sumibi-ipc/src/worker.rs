@@ -1017,8 +1017,23 @@ mod tests {
         assert!(matches!(completion.outcome(), Err(Error::Cancelled)));
     }
 
+    fn supported() -> bool {
+        match PinnedProcess::current() {
+            Ok(_) => true,
+            Err(
+                Error::UnsupportedElevation
+                | Error::UnsupportedAppContainer
+                | Error::UnsupportedIntegrity,
+            ) => false,
+            Err(error) => panic!("cannot inspect fixture identity: {error:?}"),
+        }
+    }
+
     #[test]
     fn worker_prepares_discovery_over_bootstrap_pipe() {
+        if !supported() {
+            return;
+        }
         use std::thread;
         let deadline = Instant::now() + Duration::from_secs(5);
         let stop = Stop::new().unwrap();

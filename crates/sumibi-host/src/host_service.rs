@@ -159,9 +159,24 @@ mod tests {
         authority
     }
 
+    fn supported() -> bool {
+        match sumibi_ipc::PinnedProcess::current() {
+            Ok(_) => true,
+            Err(
+                sumibi_ipc::Error::UnsupportedAppContainer
+                | sumibi_ipc::Error::UnsupportedElevation
+                | sumibi_ipc::Error::UnsupportedIntegrity,
+            ) => false,
+            Err(error) => panic!("cannot inspect fixture identity: {error:?}"),
+        }
+    }
+
     #[test]
     fn host_service_starts_accepts_discovery_and_shuts_down() {
         let _lock = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
         let authority = configured_authority();
         let control =
             Arc::new(HostControl::start_diagnostic(move || Ok((authority, false))).unwrap());
@@ -254,6 +269,9 @@ mod tests {
     #[test]
     fn host_service_starts_with_invalid_settings_path_reports_failed() {
         let _lock = crate::HOST_PIPE_TEST_LOCK.lock().unwrap();
+        if !supported() {
+            return;
+        }
         let invalid_path = PathBuf::from("Z:\\nonexistent\\sumibi-settings.json");
         let mut service = HostService::start(invalid_path).expect("service should start control");
 

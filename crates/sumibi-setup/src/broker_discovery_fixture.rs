@@ -162,8 +162,23 @@ mod tests {
     use sumibi_ipc::job::Request;
     use sumibi_protocol::message::Revision;
 
+    fn supported() -> bool {
+        match sumibi_ipc::PinnedProcess::current() {
+            Ok(_) => true,
+            Err(
+                sumibi_ipc::Error::UnsupportedAppContainer
+                | sumibi_ipc::Error::UnsupportedElevation
+                | sumibi_ipc::Error::UnsupportedIntegrity,
+            ) => false,
+            Err(error) => panic!("cannot inspect fixture identity: {error:?}"),
+        }
+    }
+
     #[test]
     fn discovery_fixture_serves_discovery_and_converts() {
+        if !supported() {
+            return;
+        }
         let (fixture, mut worker) = DiscoveryFixture::start().expect("fixture start");
         let policy = worker
             .prepared_policy()

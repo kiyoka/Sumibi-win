@@ -38,11 +38,27 @@ pub fn serve_offer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Error;
     use std::thread;
     use std::time::Duration;
 
+    fn supported() -> bool {
+        match PinnedProcess::current() {
+            Ok(_) => true,
+            Err(
+                Error::UnsupportedElevation
+                | Error::UnsupportedAppContainer
+                | Error::UnsupportedIntegrity,
+            ) => false,
+            Err(error) => panic!("cannot inspect fixture identity: {error:?}"),
+        }
+    }
+
     #[test]
     fn discovery_client_and_server_transfer_offer() {
+        if !supported() {
+            return;
+        }
         let stop = Stop::new().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         let test_nonce = Nonce::random().unwrap();

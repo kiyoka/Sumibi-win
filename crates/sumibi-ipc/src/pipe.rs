@@ -1308,7 +1308,11 @@ mod tests {
     fn native_pipe_tests_supported() -> bool {
         match PinnedProcess::current() {
             Ok(_) => true,
-            Err(Error::UnsupportedElevation | Error::UnsupportedAppContainer) => {
+            Err(
+                Error::UnsupportedElevation
+                | Error::UnsupportedAppContainer
+                | Error::UnsupportedIntegrity,
+            ) => {
                 eprintln!("native pipe test requires an ordinary desktop process");
                 false
             }

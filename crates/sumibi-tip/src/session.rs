@@ -772,8 +772,23 @@ mod tests {
         assert!(!state.is_ready());
     }
 
+    fn supported() -> bool {
+        match sumibi_ipc::PinnedProcess::current() {
+            Ok(_) => true,
+            Err(
+                sumibi_ipc::Error::UnsupportedAppContainer
+                | sumibi_ipc::Error::UnsupportedElevation
+                | sumibi_ipc::Error::UnsupportedIntegrity,
+            ) => false,
+            Err(error) => panic!("cannot inspect fixture identity: {error:?}"),
+        }
+    }
+
     #[test]
     fn session_on_preserved_key_denies_when_not_ready() {
+        if !supported() {
+            return;
+        }
         let manager = crate::mock::new_manager().to_interface::<ITfThreadMgr>();
         let session = TipHostSession::start(&manager, 7).expect("start session");
 
@@ -788,6 +803,9 @@ mod tests {
 
     #[test]
     fn session_autonomously_discovers_host_and_updates_policy() {
+        if !supported() {
+            return;
+        }
         let _lock = HOST_TEST_LOCK.lock().unwrap();
 
         let authority = configured_authority();
@@ -860,6 +878,9 @@ mod tests {
 
     #[test]
     fn session_reconnects_after_host_restart_and_recovers_ready() {
+        if !supported() {
+            return;
+        }
         let _lock = HOST_TEST_LOCK.lock().unwrap();
 
         // 1. Start Host #1

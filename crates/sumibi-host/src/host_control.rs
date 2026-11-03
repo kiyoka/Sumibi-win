@@ -540,7 +540,8 @@ mod tests {
             Ok(_) => true,
             Err(
                 sumibi_ipc::Error::UnsupportedAppContainer
-                | sumibi_ipc::Error::UnsupportedElevation,
+                | sumibi_ipc::Error::UnsupportedElevation
+                | sumibi_ipc::Error::UnsupportedIntegrity,
             ) => false,
             Err(error) => panic!("cannot inspect fixture identity: {error:?}"),
         }

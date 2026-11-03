@@ -1446,7 +1446,11 @@ mod tests {
     fn supported() -> bool {
         match PinnedProcess::current() {
             Ok(_) => true,
-            Err(IpcError::UnsupportedElevation | IpcError::UnsupportedAppContainer) => false,
+            Err(
+                IpcError::UnsupportedElevation
+                | IpcError::UnsupportedAppContainer
+                | IpcError::UnsupportedIntegrity,
+            ) => false,
             Err(error) => panic!("current process identity failed: {error:?}"),
         }
     }
