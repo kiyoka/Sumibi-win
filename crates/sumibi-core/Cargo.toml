@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 unicode-segmentation = "=1.13.3"
+serde = { version = "=1.0.229", features = ["derive"] }

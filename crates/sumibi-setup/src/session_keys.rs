@@ -141,6 +141,9 @@ pub(crate) fn exercise_session_keys(
     }
     scope_fixture::initialise_context(&context, client)?;
     let mut association = crate::window_host::Association::new(manager, &window, &document.0)?;
+    window
+        .focus()
+        .map_err(|error| format!("window focus: {error}"))?;
     unsafe {
         manager.SetFocus(&document.0)?;
     }
@@ -413,7 +416,68 @@ pub(crate) fn exercise_session_keys(
     println!("Scenario 7: Missing credential fail-closed: OK");
 
     // =========================================================================
-    // Scenario 8: Teardown and Cleanup
+    // Scenario 8: Candidate list keyboard navigation, selection and 1-step Undo
+    // =========================================================================
+    // ADR 0099, ADR 0100, ADR 0101: Test candidate session keyboard navigation,
+    // digit selection, annotation stripping from document text, and 1-step undo.
+    use sumibi_core::candidate::{CandidateItem, CandidateSource};
+    use sumibi_tip::candidate_session::CandidateSession;
+
+    // Simulate candidates returned from host (LLM + Mozc + Sudachi + Nakaguro)
+    let candidates = vec![
+        CandidateItem::new("更新", CandidateSource::CurrentResult),
+        CandidateItem::new("交信", CandidateSource::Llm),
+        CandidateItem::new("行進", CandidateSource::SudachiHomophone),
+        CandidateItem::with_annotation("⇒", CandidateSource::MozcSymbol, "記号"),
+    ];
+
+    let mut candidate_session =
+        CandidateSession::new("koushin".to_string(), "更新".to_string(), candidates, 1);
+
+    assert!(candidate_session.is_active());
+    assert_eq!(candidate_session.selected_index, 0);
+
+    // Navigation: Down arrow wraps
+    candidate_session.next();
+    assert_eq!(candidate_session.selected_index, 1);
+    candidate_session.next();
+    assert_eq!(candidate_session.selected_index, 2);
+
+    // Digit key direct selection: '4' selects Index 3 ("⇒", annotated with "記号")
+    let selected_item = candidate_session.select_digit('4').expect("item 4 exists");
+    assert_eq!(selected_item.text, "⇒");
+    assert_eq!(selected_item.annotation.as_deref(), Some("記号"));
+
+    // Confirm: pure text without annotation is extracted
+    let confirmed_text = candidate_session.confirm().expect("confirmed text");
+    assert_eq!(confirmed_text, "⇒");
+    assert!(!candidate_session.is_active());
+
+    // Replace text in store and verify 1-step undo
+    let new_store_text: Vec<u16> = format!("prefix {} suffix", confirmed_text)
+        .encode_utf16()
+        .collect();
+    // Record current text in undo before replacing
+    store.get().undo.borrow_mut().push((
+        store.get().text.borrow().clone(),
+        store.get().selection.get(),
+    ));
+    *store.get().text.borrow_mut() = new_store_text;
+    assert_eq!(
+        *store.get().text.borrow(),
+        "prefix ⇒ suffix".encode_utf16().collect::<Vec<_>>()
+    );
+
+    // 1-step undo restores to before candidate replacement
+    store.get().undo_once()?;
+    assert_eq!(
+        *store.get().text.borrow(),
+        "prefix nihongo suffix".encode_utf16().collect::<Vec<_>>()
+    );
+    println!("Scenario 8: Candidate session navigation, pure confirmation and 1-step Undo: OK");
+
+    // =========================================================================
+    // Scenario 9: Teardown and Cleanup
     // =========================================================================
     server_running.store(false, Ordering::Relaxed);
     association.close()?;
@@ -422,7 +486,7 @@ pub(crate) fn exercise_session_keys(
     }
     pump_tsf_messages(&messages)?;
     service.stop().map_err(|e| format!("service stop: {e:?}"))?;
-    println!("Scenario 8: Teardown and cleanup: OK");
+    println!("Scenario 9: Teardown and cleanup: OK");
 
     Ok(())
 }
@@ -606,6 +670,12 @@ pub(crate) fn exercise_live_demo(
     let store_for_undo = store.clone();
     let sink_for_key = sink.clone();
     let context_for_key = context.clone();
+    let candidate_session = std::rc::Rc::new(std::cell::RefCell::new(
+        None::<sumibi_tip::candidate_session::CandidateSession>,
+    ));
+
+    let candidate_for_key = candidate_session.clone();
+    let store_for_key = store.clone();
     window.set_input(std::rc::Rc::new(move |msg, wparam, _lparam| {
         if msg == windows::Win32::UI::WindowsAndMessaging::WM_KEYDOWN {
             let ctrl_down = unsafe {
@@ -613,21 +683,100 @@ pub(crate) fn exercise_live_demo(
                     windows::Win32::UI::Input::KeyboardAndMouse::VK_CONTROL.0 as i32,
                 ) < 0
             };
+
+            // 1. Ctrl+J: Initial conversion
             if ctrl_down && (wparam.0 == 'J' as usize || wparam.0 == 'j' as usize) {
                 println!(">>> Ctrl+J 検知: OpenAI 変換リクエストを送信中...");
                 let admitted =
                     unsafe { sink_for_key.OnPreservedKey(&context_for_key, &COMMAND_CONVERT) };
                 match admitted {
-                    Ok(b) if b.as_bool() => println!("    リクエスト送信完了。応答を待機中..."),
+                    Ok(b) if b.as_bool() => {
+                        println!("    リクエスト送信完了。応答を待機中...");
+                        // Build integrated candidate list for demonstration
+                        let demo_candidates = sumibi_host::local_dictionary::build_complete_candidates(
+                            "nihongo",
+                            Some("日本語"),
+                            &["にほんご".to_string(), "ニホンゴ".to_string()],
+                            10,
+                        );
+                        let session = sumibi_tip::candidate_session::CandidateSession::new(
+                            "nihongo".to_string(),
+                            "日本語".to_string(),
+                            demo_candidates,
+                            1,
+                        );
+                        println!();
+                        println!(">>> 候補リスト (数字キー 1-9 で直接確定、上下キーで選択、Enterで確定、Escで取消):");
+                        for (idx, item) in session.candidates.iter().enumerate() {
+                            let mark = if idx == session.selected_index { ">" } else { " " };
+                            let tag = item.annotation.as_deref().unwrap_or(item.source.label());
+                            println!("   {mark} [{}] {}  [{tag}]", idx + 1, item.text);
+                        }
+                        println!();
+                        *candidate_for_key.borrow_mut() = Some(session);
+                    }
                     Ok(_) => println!("    Host がまだ準備中か拒絶されました。"),
                     Err(e) => println!("    エラー: {e:?}"),
                 }
                 return Ok(true);
             }
+
+            // 2. Ctrl+Z: 1-step Undo
             if ctrl_down && (wparam.0 == 'Z' as usize || wparam.0 == 'z' as usize) {
                 println!(">>> Ctrl+Z 検知: 元に戻す (Undo) を実行しました。");
                 let _ = store_for_undo.get().undo_once();
+                candidate_for_key.borrow_mut().take();
                 return Ok(true);
+            }
+
+            // 3. Navigation while candidate session is active
+            if let Some(session) = candidate_for_key.borrow_mut().as_mut() {
+                if session.is_active() {
+                    let vk_down = windows::Win32::UI::Input::KeyboardAndMouse::VK_DOWN.0 as usize;
+                    let vk_up = windows::Win32::UI::Input::KeyboardAndMouse::VK_UP.0 as usize;
+                    let vk_return = windows::Win32::UI::Input::KeyboardAndMouse::VK_RETURN.0 as usize;
+                    let vk_escape = windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize;
+
+                    if wparam.0 == vk_down {
+                        session.next();
+                        let cur = session.selected_candidate().unwrap();
+                        println!("  -> フォーカス: [{}] {} [{}]", session.selected_index + 1, cur.text, cur.source.label());
+                        return Ok(true);
+                    } else if wparam.0 == vk_up {
+                        session.prev();
+                        let cur = session.selected_candidate().unwrap();
+                        println!("  -> フォーカス: [{}] {} [{}]", session.selected_index + 1, cur.text, cur.source.label());
+                        return Ok(true);
+                    } else if wparam.0 >= '1' as usize && wparam.0 <= '9' as usize {
+                        let digit = char::from_u32(wparam.0 as u32).unwrap();
+                        if let Some(item) = session.select_digit(digit) {
+                            let text = item.text.clone();
+                            println!(">>> 数字キー [{digit}] 選択確定: \"{text}\" で置換します (出所注釈は本文に含みません)");
+                            let _ = session.confirm();
+                            // Push current state into undo and replace
+                            store_for_key.get().undo.borrow_mut().push((
+                                store_for_key.get().text.borrow().clone(),
+                                store_for_key.get().selection.get(),
+                            ));
+                            *store_for_key.get().text.borrow_mut() = format!("prefix {text} suffix").encode_utf16().collect();
+                            return Ok(true);
+                        }
+                    } else if wparam.0 == vk_return {
+                        if let Some(text) = session.confirm() {
+                            println!(">>> Enter 確定: \"{text}\" で置換します");
+                            store_for_key.get().undo.borrow_mut().push((
+                                store_for_key.get().text.borrow().clone(),
+                                store_for_key.get().selection.get(),
+                            ));
+                            *store_for_key.get().text.borrow_mut() = format!("prefix {text} suffix").encode_utf16().collect();
+                            return Ok(true);
+                        }
+                    } else if wparam.0 == vk_escape {
+                        println!(">>> Esc 取消: 候補選択をキャンセルしました。");
+                        session.cancel();
+                        return Ok(true);
+                    }
+                }
             }
         }
         Ok(false)
@@ -637,10 +786,10 @@ pub(crate) fn exercise_live_demo(
     println!("===================================================================");
     println!("  Sumibi Live Demo ウィンドウが起動しました！");
     println!("  1. 表示されたウィンドウをクリックしてアクティブにします。");
-    println!("  2. キーボードで [Ctrl + J] を押すと、OpenAI API に送信され、");
-    println!("     リアルタイムに \"日本語\" へ変換されます。");
-    println!("  3. [Ctrl + Z] を押すと、元の \"nihongo\" に Undo されます。");
-    println!("  4. ウィンドウの [×] をクリックすると終了します。");
+    println!("  2. キーボードで [Ctrl + J] を押すと変換され、候補リストが表示されます。");
+    println!("  3. [1 〜 9] の数字キー または [上下キー + Enter] で候補を選択・確定置換できます。");
+    println!("  4. [Ctrl + Z] を押すと、1回で直前の状態に Undo されます。");
+    println!("  5. [Esc] で候補選択をキャンセル、ウィンドウの [×] で終了します。");
     println!("===================================================================");
     println!();
 

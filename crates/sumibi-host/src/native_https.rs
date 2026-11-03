@@ -5,6 +5,7 @@ use crate::manual::{
 };
 use crate::policy::PolicyAuthority;
 use std::time::Instant;
+use sumibi_core::candidate::CandidateItem;
 use sumibi_winhttp::{Error, PreparedRequest};
 
 /// Resolve the model from the requested policy revision. The same authority
@@ -16,6 +17,88 @@ pub fn convert_chat_with_policy(
     admission: &impl SendAdmission,
 ) -> Result<String, SendError> {
     convert_with_exchange(request, authority, admission, &NativeExchange { admission })
+}
+
+/// Additional chat conversion with local dictionary completions (ADR 0099, ADR 0100).
+/// Requests additional candidates from remote LLM and integrates Nakaguro, Mozc and Sudachi.
+/// Fail-closed: remote LLM failure does not perform silent local fallback substitution.
+pub fn convert_additional_chat_with_policy(
+    request: ManualRequest<'_>,
+    current_result: &str,
+    authority: &PolicyAuthority,
+    admission: &impl SendAdmission,
+) -> Result<Vec<CandidateItem>, SendError> {
+    convert_additional_with_exchange(
+        request,
+        current_result,
+        authority,
+        admission,
+        &NativeExchange { admission },
+    )
+}
+
+fn convert_additional_with_exchange(
+    request: ManualRequest<'_>,
+    current_result: &str,
+    authority: &PolicyAuthority,
+    admission: &impl SendAdmission,
+    exchange: &dyn Exchange,
+) -> Result<Vec<CandidateItem>, SendError> {
+    if request.destination.scheme() != Scheme::Https {
+        return Err(SendError::InvalidRequest);
+    }
+    let snapshot = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    if snapshot.settings != request.revision.settings
+        || snapshot.authorization != request.revision.authorization
+    {
+        return Err(SendError::PolicyDenied);
+    }
+    let model = snapshot.model.as_deref().ok_or(SendError::PolicyDenied)?;
+    let transport = AdditionalChatTransport {
+        model,
+        current_result,
+        exchange,
+    };
+    let json = crate::manual::convert_ordered(request, authority, admission, &transport)?;
+    serde_json::from_str::<Vec<CandidateItem>>(&json).map_err(|_| SendError::InvalidResponse)
+}
+
+struct AdditionalChatTransport<'a> {
+    model: &'a str,
+    current_result: &'a str,
+    exchange: &'a dyn Exchange,
+}
+
+impl OrderedConversionTransport for AdditionalChatTransport<'_> {
+    fn convert_ordered(
+        &self,
+        destination: &Destination,
+        credential: &str,
+        source: &str,
+        deadline: Instant,
+        gate: &mut dyn SendGate,
+    ) -> Result<String, SendError> {
+        let input = crate::first_conversion::ConversionInput::with_context(
+            source,
+            Some(self.current_result),
+            None,
+        );
+        let body = crate::first_conversion::request_body_additional(self.model, &input)
+            .map_err(|_| SendError::InvalidRequest)?;
+        let bytes = self
+            .exchange
+            .exchange(destination, credential, body, deadline, gate)?;
+        let llm_candidates =
+            crate::first_conversion::response_candidates(&bytes, Some(self.current_result))
+                .map_err(|_| SendError::InvalidResponse)?;
+        let complete = crate::local_dictionary::build_complete_candidates(
+            source,
+            Some(self.current_result),
+            &llm_candidates,
+            crate::first_conversion::MAX_ADDITIONAL_CANDIDATES,
+        );
+        serde_json::to_string(&complete).map_err(|_| SendError::InvalidResponse)
+    }
 }
 
 // Injection is private: product callers cannot substitute plaintext or skip
@@ -576,5 +659,77 @@ mod tests {
             ),
             Err(SendError::InvalidResponse)
         ));
+    }
+
+    #[test]
+    fn native_chat_additional_candidates_integration_and_fail_closed() {
+        use sumibi_core::candidate::CandidateSource;
+
+        let (authority, destination) = ready();
+        let admission = Admission::default();
+
+        // 1. Success integration
+        let valid_json = serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": r#"{"candidates":["炭火","澄火","墨美"]}"#
+                }
+            }]
+        });
+        let exchange = ScriptedExchange {
+            response: Ok(serde_json::to_vec(&valid_json).unwrap()),
+            ..Default::default()
+        };
+        let request = ManualRequest {
+            revision: revision(&authority),
+            destination: &destination,
+            source: "koushin",
+            deadline: Instant::now() + Duration::from_secs(2),
+        };
+        let candidates =
+            convert_additional_with_exchange(request, "更新", &authority, &admission, &exchange)
+                .expect("additional conversion must succeed");
+
+        // Index 0 must be current result
+        assert_eq!(candidates[0].text, "更新");
+        assert_eq!(candidates[0].source, CandidateSource::CurrentResult);
+
+        // Next items should contain LLM candidates
+        assert!(candidates
+            .iter()
+            .any(|c| c.text == "澄火" && c.source == CandidateSource::Llm));
+        assert!(candidates
+            .iter()
+            .any(|c| c.text == "墨美" && c.source == CandidateSource::Llm));
+
+        // And Sudachi homophone items should be present
+        assert!(candidates
+            .iter()
+            .any(|c| c.source == CandidateSource::SudachiHomophone));
+
+        // 2. Fail-closed: remote LLM failure must NOT perform offline substitution
+        let failure_exchange = ScriptedExchange {
+            response: Err(SendError::Transport(TransportError::Connection)),
+            ..Default::default()
+        };
+        let req_fail = ManualRequest {
+            revision: revision(&authority),
+            destination: &destination,
+            source: "sumibi",
+            deadline: Instant::now() + Duration::from_secs(2),
+        };
+        let fail_result = convert_additional_with_exchange(
+            req_fail,
+            "炭火",
+            &authority,
+            &admission,
+            &failure_exchange,
+        );
+        assert_eq!(
+            fail_result,
+            Err(SendError::Transport(TransportError::Connection))
+        );
     }
 }
