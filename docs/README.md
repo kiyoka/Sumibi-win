@@ -75,6 +75,7 @@
 - [ADR 0095](adr/0095-app-protection-profiles-and-acceptance-criteria.md)：一般アプリ向け二層保護プロファイル（Strict / Standard）とTSF許容基準。
 - [ADR 0096](adr/0096-protection-profile-configuration-and-dynamic-propagation.md)：保護プロファイル設定（`settings.json`）とHost/TIP政策動的同期。
 - [ADR 0097](adr/0097-settings-window-protection-profile-ui.md)：設定画面（`settings_window`）への保護プロファイル選択UIの追加。
+- [ADR 0098](adr/0098-manual-conversion-end-to-end-integration.md)：手動変換の縦断統合と受入条件の達成（Unicode 17.0.0、1,000書記素上限、WinHTTP、資格情報管理、送信同意、実機Live API変換・Undo検証）。
 
 ## 更新の規則
 

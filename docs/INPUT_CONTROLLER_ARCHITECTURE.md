@@ -1,7 +1,8 @@
 # Windows入力経路の責務と状態の寿命
 
-2026-10-21。実装基準 `91552b0`。[全体設計](TECHNICAL_OVERVIEW.md)の所有関係を詳述する。
-現行の検証用Controllerと、未実装の製品InputSessionを区別する。
+2026-10-21作成、2026-11-03改訂（Issue #4 / Issue #5 の実装完了および ADR 0087〜0098 の成果を反映）。
+[全体設計](TECHNICAL_OVERVIEW.md)の所有関係を詳述する。
+製品の `TipHostSession` / `DrainWindow` / `HostService` と、検証用Controllerの所有構造を包含する。
 
 ## 1. 所有者と終了条件（現在の実装）
 
@@ -26,6 +27,10 @@
 | bridge InputCheck | 次のStartに限定する原文・範囲・保護状態の検査closure | 同期呼出し中に消費・解放。失敗時は予約も失効。F7終了・shutdownでも解除 |
 | DLL Input Control / Tracker | 弱Controllerと独立lease、InputWatch、Core記録、自己所有composition、下線、1件の入力前状態とReady | 所有STAと再入ガード。Cancelで失効、cleanup拒否は最大1件保持。Readyはsource検査で一度だけ消費 |
 | Input Monitor / EXE Signal | DLL側はwake先、EXE側はmanual-reset eventとactive/ownerだけ | 通知はsignalだけ。所有ループがPollし、終了時にsignalを無効化。本文・target・DLL callbackをeventへ持たせない |
+| TipHostSession (製品セッション) | ログオンブートストラップ発見、非同期workerスレッド、相互Peer認証、最新政策スナップショット | TIP Deactivate または Host 切断で自動失効。自律再接続（Self-Healing）待機へ移行 |
+| DrainWindow / DrainSink (製品STAドレイン) | 所有STA非同期通知用隠しHWND、保留中置換チケット、1-step Undo履歴 | 文書変更・失効・Deactivateでチケット安全取消。ウィンドウ破棄でクリーンアップ |
+| HostService / HostControl (製品Host常駐) | ログオン排他ブートストラップ名前付きパイプ、クライアント多重接続管理、政策伝播 | ログオフ・Host終了時に安全停止（すべてのクライアント接続切断・パイプ解放） |
+| PolicyAuthority (製品政策権能) | 設定・同意・保護プロファイル（Standard / Strict）の一貫したスナップショット | 設定保存・同意付与/取消時にアトミックに版（revision）を更新し全クライアントへ伝播 |
 
 ## 2. 強参照と弱参照
 

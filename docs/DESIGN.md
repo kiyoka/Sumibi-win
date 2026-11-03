@@ -1,39 +1,49 @@
-# Windows版 初期設計
+# Windows版 設計書
 
-現行コードに照合した全体説明は[全体設計](TECHNICAL_OVERVIEW.md)を参照。
-本書は2026-10-20の初期判断を保存する。以下の「未実装」「未確認」は当時の状態である。
+現行コードに照合した全体説明は[全体設計](TECHNICAL_OVERVIEW.md)および[入力コントローラ設計](INPUT_CONTROLLER_ARCHITECTURE.md)を参照。
+本書は 2026-10-20 の初期判断を保存しつつ、[Issue #4](https://github.com/kiyoka/Sumibi-win/issues/4)（Core・認証付きIPC・TSF入力基盤 / [PR #10](https://github.com/kiyoka/Sumibi-win/pull/10)）および [Issue #5](https://github.com/kiyoka/Sumibi-win/issues/5)（手動変換の縦断統合 / [PR #11](https://github.com/kiyoka/Sumibi-win/pull/11)）の成果を反映して最新化された全体設計書である。
 
-2026-10-20 / 状態: 提案・未実装 / [Issue #1](https://github.com/kiyoka/Sumibi-win/issues/1)
-言語はRustを採用（メモリ安全性・長期保守を優先）。Windows 11 x64＋Visual Studioが利用可能。
-言語の比較は[ADR 0001](adr/0001-language-and-ime.md)、参照範囲は[移植表](MAC_PARITY.md)。
+言語はRustを採用（メモリ安全性・長期保守を優先）。Windows 11 x64＋Visual Studio／Rustツールチェーンで検証完了。
+言語の比較は[ADR 0001](adr/0001-language-and-ime.md)、参照範囲は[移植表](MAC_PARITY.md)。手動変換の縦断統合仕様は[ADR 0098](adr/0098-manual-conversion-end-to-end-integration.md)。
 
 ## 構成と責務
 
 ```text
-入力先アプリ（それぞれのプロセス／TSFスレッド）
-  SumibiTIP.dll
-    TSF adapter → InputSession（状態と効果）
-                → TargetGuard（入力先・範囲・原文の検査）
-                → CandidatePresenter（非アクティブ表示）
-                → BrokerClient（非同期IPC）
-                         │ 要求／取消／結果。秘密キーとCOM参照は渡さない
+入力先アプリ（それぞれのプロセス／TSF STAスレッド）
+  sumibi_tip.dll (COM Inproc Server)
+    TSF KeyEventSink (Ctrl+J, Ctrl+Z)
+    → TipHostSession (ログオン排他ブートストラップパイプ自律発見・相互Peer認証)
+    → TargetGuard / ProtectionProfile (Standard / Strict 二層保護判定)
+    → TextStore / Context (原文取得・選択範囲検査)
+    → DrainWindow (非同期STAメッセージ通知: WM_SUMIBI_DRAIN)
+    → DrainSink (テキスト自動置換・1-step Undo履歴管理)
+             │ 要求／取消／結果（名前付きパイプ IPC）。秘密キーとCOM参照は渡さない
 ユーザーのログオンセッション
-  SumibiHost.exe
-    通信・辞書検索・同意／設定・資格情報・累積回数
-    設定ウィンドウ・トレイ・固定エラー・保留文字の明示コピー
+  sumibi-host.exe (常駐バックグラウンドサービス)
+    HostService (ログオン限定 BootstrapServer: \\.\pipe\Sumibi.Bootstrap.v1.<SID>)
+    → HostControl / PolicyAuthority (設定・認可版管理・動的政策同期)
+    → WinHTTP Client (OpenAI API / chat completions HTTPS 通信)
+    → Windows Credential Manager ("Sumibi-win/API-key/v1" 暗号化キー管理)
+    → GUIマネージャー (ConsentWindow 送信同意管理 / SettingsWindow 設定管理 / System Tray)
 ```
 
-Cargo workspaceを用い、sumibi-core / sumibi-protocol / sumibi-tip / sumibi-hostへ分割する。
+Cargo workspaceを用い、以下のクレートに分割・実装済み：
+- `sumibi-core`: OS非依存。Unicode 17.0.0書記素クラスタ境界判定、1,000書記素上限、要求/世代/対象照合。unsafe禁止。
+- `sumibi-protocol`: バージョン管理された型付きIPCフレーム、JSON直列化、要求・応答・失効メッセージ。unsafe禁止。
+- `sumibi-ipc`: Windows名前付きパイプ、相互プロセスPeer認証（ログオンSID・PID・トークン検証）、非対称ハンドオフ、Overlapped I/O。
+- `sumibi-winhttp`: 安全なWinHTTPラッパー。TLS/HTTPS通信、localhost限定平文例外、リダイレクト拒否、60秒タイムアウト。
+- `sumibi-credentials`: Windows 資格情報マネージャー（`CredReadW`/`CredWriteW`）の安全な暗号化キー読み書き。
+- `sumibi-host`: 常駐Hostサービス、送信同意UI、設定UI、システムトレイ、外部API通信ブローカー。
+- `sumibi-tip`: TSF TIP COM DLL、ホットキー（Ctrl+J/Ctrl+Z）、STA非同期ドレイン、二層保護プロファイル、1-step Undo。
+- `sumibi-setup`: 開発・診断・TSFテストハーネス、HKCU COM登録、E2Eセッションテスト、実機Live API変換診断。
+
 CoreとProtocolはunsafeを禁止し、TSF/COM・OS APIをアダプターへ隔離する。
 CoreはOSオブジェクトを保持せず、意味上のText/Enter/Backspace/Convert/Cancelと効果で接続する。
-Macのプロセス共有Runtimeをコピーせず、TSF thread/contextごとに状態を持つ案。
-別入力欄・文書の状態を混ぜず、ホスト全体の終了でCore状態と候補を破棄する。
+TSF thread/contextごとに状態を持ち、別入力欄・文書の状態を混在させない。
 Brokerが複数アプリから要求を受けるため、セッションIDと要求IDはプロセス横断で衝突しないものを用いる。
 
-TSF呼出しとCOMオブジェクト操作は所有スレッドで行う。IPCの完了をそのスレッドへ通知し、
-新しい編集セッションで読取・書込する。編集cookieや生の範囲参照を通信待ちの権限として使い回さない。
+TSF呼出しとCOMオブジェクト操作は所有スレッド（STA）で行う。IPCの完了を隠しウィンドウ（`DrainWindow`）へのメッセージポスト（`WM_SUMIBI_DRAIN`）でそのスレッドへ通知し、新しい編集セッションで安全に読取・書込する。編集cookieや生の範囲参照を通信待ちの権限として使い回さない。
 RequestEditSessionの延期・拒否も通常の失敗／待機として扱い、ロック待ちでホストを止めない。
-候補表示はTSFのUIElement対応を調べ、UIlessホストの指示に従う。独自窓だけを全ホストへ強制しない。
 
 ## 非同期の適用条件
 
@@ -108,26 +118,31 @@ API認証情報を別ホストへ転送しない。プロンプトはMac固定�
 
 ## Unicode・安全な入力先
 
-送信文字数は拡張書記素クラスタで原文＋現在結果＋辞書を合算1,000文字の案。
-TSFの範囲・取得文字列とは別の尺度とする。RustのString::len()やUTF-16単位数を文字数上限に使わない。
-分割ライブラリとUnicode版は後続ADRで固定する（Rustで利用できる実装を後続選定）。不正UTF-16は送信・置換を拒否。
-対象照合はUTF-16コード単位の完全一致を初期案とし、大小文字や空白を変えず、正規化もしない。
-Swift比較の正準等価性と一致しない場合は安全に見送る差として記録する。
+送信文字数は拡張書記素クラスタで原文＋現在結果＋辞書を合算して最大 1,000 書記素（`MAX_TOTAL_GRAPHEMES = 1,000`）に制限される。
+Unicode 版は Mac 版と完全に一致する **Unicode 17.0.0**（`CONVERSION_UNICODE_VERSION: (17, 0, 0)`、[ADR 0098](adr/0098-manual-conversion-end-to-end-integration.md)）を採用。
+さらに、UTF-16 1,024 単位上限、4,096 バイト制限、および制御文字の排除（安全な空白類を除く `\u{0000}..\u{001F}`, `\u{007F}..\u{009F}` の拒絶）を実装済み。不正 UTF-16 は送信・置換を拒絶する。
+対象照合は UTF-16 コード単位の完全一致を適用し、大小文字や空白を変えず、正規化もしない。
 
-パスワード・セキュアデスクトップ・読取専用・無効contextでは追跡・収集・送信を開始しない。
-TSFの入力スコープ、状態通知と実アプリ検証で判断する。独自の機密欄を全検出できるとは保証しない。
-判別不能な保護条件では変換を見送る。資格情報・同意の確認だけでは保護入力を許可しない。
+### 二層保護プロファイルと絶対的防御境界（[ADR 0095](adr/0095-app-protection-profiles-and-acceptance-criteria.md) 〜 [ADR 0097](adr/0097-settings-window-protection-profile-ui.md)）
 
-## 実装順序と完了条件
+1. **Standard プロファイル（既定）**:
+   - `TS_SS_REGIONS`、`IS_DEFAULT`、`IS_TEXT` 等を持つ Notepad（Windows 11 メモ帳）や RichEdit アプリ等の一般エディタでの変換を許可。
+2. **Strict プロファイル**:
+   - `TS_SS_NOHIDDENTEXT` を必須とし、高機密監査環境向けに `HiddenTextPossible`（0x80070005）で安全に遮断。
+3. **絶対的防御境界（Inviolable Guards）**:
+   - パスワード・PIN・Private（`IS_PASSWORD`, `ES_PASSWORD`, `EM_GETPASSWORDCHAR` 等）、読み取り専用（`TS_SD_READONLY`, `ES_READONLY`）、複数選択（`TS_SS_DISJOINTSEL`）、一時コンテキスト（`TS_SS_TRANSITORY`）、空選択、送信未同意時は、プロファイル設定に関わらず**無条件で即座に拒絶（Fail-Closed）**し、本文テキストの取得・送信は一切行わない。
 
-| 段階 | 成果と確認 |
-| --- | --- |
-| 0: この設計 | 言語比較・移植表・未決事項・Issue登録。実機未検証と明記 |
-| 1: TSFスパイク | 登録／解除、下線、Enter／Esc、固定結果で置換、Undo、別欄への非適用。実APIなし |
-| 2: Core＋IPC | 純粋状態機械、模擬ホスト、プロトコル、切断・重複・超過・世代拒否 |
-| 3: 手動変換 | キー・同意・保存・実通信経路、追加候補、選択、ユーザー辞書とローカル候補 |
-| 4: 自動変換 | API契約再確認、固定窓・回数制限・取消・手動との競合 |
-| 5: 公開準備 | x86等の互換表、署名、登録／更新／解除、LICENSE、実機導入と回帰結果 |
+## 実装順序と達成状況
+
+| 段階 | 成果と確認 | 状態 |
+| --- | --- | --- |
+| 0: 基本設計 | 言語比較・移植表・Issue登録・アーキテクチャ境界策定（[ADR 0001](adr/0001-language-and-ime.md)） | **完了** (PR #2, #9) |
+| 1: TSFスパイク | 登録／解除、点線下線、Enter／Esc、固定結果置換、Undo、別欄非適用（[ADR 0002](adr/0002-tsf-spike-scope.md)） | **完了** (PR #2) |
+| 2: Core＋IPC | 型付きProtocol、ログオン限定ブートストラップ、相互Peer認証、STA非同期ドレイン（[ADR 0003](adr/0003-host-process-architecture.md)〜[0097](adr/0097-settings-window-protection-profile-ui.md)） | **完了** (PR #10 / Issue #4) |
+| 3: 手動変換 | WinHTTP製品通信、資格情報管理、送信同意GUI、Unicode 17.0.0、1,000書記素、実機Live API変換・Undo実証（[ADR 0098](adr/0098-manual-conversion-end-to-end-integration.md)） | **完了** (PR #11 / Issue #5) |
+| 4: 追加候補・辞書 | 追加候補取得・表示、ユーザー辞書（`<user_dictionary>`タグ動的展開実装済み）、ローカル辞書補完 | 次期段階 (Issue #6) |
+| 5: 自動変換 | Decisions自動変換、固定窓・回数制限・独立同意・手動優先 | 後続段階 (Issue #7) |
+| 6: 公開準備 | 互換表、署名、本番登録／更新／解除、公開パッケージング | 最終段階 (Issue #8) |
 
 テストは偽キー・専用設定・模擬HTTP。CoreテストはMacでも実行可能な構成を目指すが、
 Windows SDK依存部はWindows CIと実機で検証する。Windows 11 x64とVisual Studioは利用者から利用可能と確認済み。
