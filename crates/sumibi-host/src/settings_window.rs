@@ -2,7 +2,7 @@
 use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc};
 use sumibi_host::{
     credential_store::CredentialTask,
-    settings::Settings,
+    settings::{ProtectionProfile, Settings},
     settings_task::{SaveTaskError, SettingsSaveTask},
 };
 use windows::core::{w, Result as WinResult, PCWSTR};
@@ -12,6 +12,11 @@ use windows::Win32::{
     System::LibraryLoader::GetModuleHandleW,
     UI::{Input::KeyboardAndMouse::EnableWindow, WindowsAndMessaging::*},
 };
+
+const BS_AUTORADIOBUTTON: WINDOW_STYLE = WINDOW_STYLE(0x00000009);
+const BST_CHECKED: usize = 1;
+const BM_GETCHECK: u32 = 0x00F0;
+const BM_SETCHECK: u32 = 0x00F1;
 
 #[derive(Default)]
 struct Actions {
@@ -25,6 +30,8 @@ struct View {
     host: HWND,
     model: HWND,
     path: HWND,
+    profile_standard: HWND,
+    profile_strict: HWND,
     save: HWND,
     secret: HWND,
     key_save: HWND,
@@ -125,8 +132,8 @@ impl View {
                 lpszClassName: class,
                 ..Default::default()
             };
-            // One window per command; test processes also construct one view.
-            if RegisterClassW(&wc) == 0 {
+            // One window per command; allow existing class registration across tests.
+            if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
                 return Err(windows::core::Error::from_thread());
             }
             let hwnd = CreateWindowExW(
@@ -137,7 +144,7 @@ impl View {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 600,
-                445,
+                485,
                 None,
                 None,
                 Some(instance.into()),
@@ -149,6 +156,8 @@ impl View {
                 host: HWND::default(),
                 model: HWND::default(),
                 path: HWND::default(),
+                profile_standard: HWND::default(),
+                profile_strict: HWND::default(),
                 save: HWND::default(),
                 secret: HWND::default(),
                 key_save: HWND::default(),
@@ -226,13 +235,62 @@ impl View {
             view.host = fields[0];
             view.model = fields[1];
             view.path = fields[2];
-            view.save = child(w!("BUTTON"), "設定を保存", WS_TABSTOP, 430, 180, 130, 30, 1)?;
+
+            child(
+                w!("STATIC"),
+                "保護設定",
+                WINDOW_STYLE(0),
+                18,
+                175 + 2,
+                90,
+                24,
+                0,
+            )?;
+            view.profile_standard = child(
+                w!("BUTTON"),
+                "標準 (Standard: Notepad等一般アプリ対応)",
+                BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,
+                115,
+                175,
+                270,
+                24,
+                21,
+            )?;
+            view.profile_strict = child(
+                w!("BUTTON"),
+                "厳格 (Strict: 高機密監査環境)",
+                BS_AUTORADIOBUTTON,
+                395,
+                175,
+                165,
+                24,
+                22,
+            )?;
+
+            let (std_check, strict_check) = match settings.protection_profile() {
+                ProtectionProfile::Standard => (BST_CHECKED, 0),
+                ProtectionProfile::Strict => (0, BST_CHECKED),
+            };
+            SendMessageW(
+                view.profile_standard,
+                BM_SETCHECK,
+                Some(WPARAM(std_check)),
+                None,
+            );
+            SendMessageW(
+                view.profile_strict,
+                BM_SETCHECK,
+                Some(WPARAM(strict_check)),
+                None,
+            );
+
+            view.save = child(w!("BUTTON"), "設定を保存", WS_TABSTOP, 430, 215, 130, 30, 1)?;
             child(
                 w!("STATIC"),
                 "API キー",
                 WINDOW_STYLE(0),
                 18,
-                235,
+                265,
                 90,
                 24,
                 0,
@@ -242,20 +300,20 @@ impl View {
                 "",
                 WS_BORDER | WS_TABSTOP | WINDOW_STYLE(0xa0),
                 115,
-                230,
+                260,
                 445,
                 28,
                 13,
             )?; // ES_PASSWORD | ES_AUTOHSCROLL
             SendMessageW(view.secret, 0x00c5, Some(WPARAM(2560)), Some(LPARAM(0)));
-            view.key_save = child(w!("BUTTON"), "キーを保存", WS_TABSTOP, 430, 270, 130, 30, 3)?;
-            view.key_delete = child(w!("BUTTON"), "キーを削除", WS_TABSTOP, 275, 270, 130, 30, 4)?;
+            view.key_save = child(w!("BUTTON"), "キーを保存", WS_TABSTOP, 430, 300, 130, 30, 3)?;
+            view.key_delete = child(w!("BUTTON"), "キーを削除", WS_TABSTOP, 275, 300, 130, 30, 4)?;
             child(
                 w!("STATIC"),
                 "この PC の現在ユーザーのキーを置き換えます。",
                 WINDOW_STYLE(0),
                 18,
-                310,
+                340,
                 545,
                 24,
                 0,
@@ -265,7 +323,7 @@ impl View {
                 "キーの保存だけでは送信は許可されません。",
                 WINDOW_STYLE(0),
                 18,
-                350,
+                380,
                 545,
                 40,
                 0,
@@ -315,6 +373,13 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
             }
         }
         if view.actions.save.replace(false) && pending.is_none() && key_pending.is_none() {
+            let profile = if unsafe { SendMessageW(view.profile_strict, BM_GETCHECK, None, None).0 }
+                == BST_CHECKED as isize
+            {
+                ProtectionProfile::Strict
+            } else {
+                ProtectionProfile::Standard
+            };
             let settings = text(view.host).and_then(|host| {
                 text(view.model).and_then(|model| {
                     text(view.path).and_then(|base| {
@@ -325,6 +390,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                             &base,
                             &model,
                         )
+                        .map(|s| s.with_protection_profile(profile))
                         .map_err(|_| "invalid settings")
                     })
                 })
@@ -442,6 +508,8 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
             let _ = EnableWindow(view.key_save, idle);
             let _ = EnableWindow(view.key_delete, idle);
             let _ = EnableWindow(view.secret, idle);
+            let _ = EnableWindow(view.profile_standard, idle);
+            let _ = EnableWindow(view.profile_strict, idle);
             let _ = EnableWindow(
                 view.save,
                 idle && !settings_conflict && !view.actions.close.get(),
@@ -469,5 +537,76 @@ mod tests {
         assert!(secret_value(&vec![b'a' as u16; 2561]).is_err());
         assert!(secret_value(&vec![b'a' as u16; 2560]).is_ok());
         assert!(secret_value(&"synthetic-key".encode_utf16().collect::<Vec<_>>()).is_ok());
+    }
+
+    #[test]
+    fn view_initializes_and_reads_protection_profile_radio_buttons() {
+        use sumibi_host::manual::Scheme;
+
+        // 1. Standard profile initialization
+        let standard_settings =
+            Settings::new(Scheme::Https, "api.example.test", 443, "/v1", "gpt-4o").unwrap();
+        assert_eq!(
+            standard_settings.protection_profile(),
+            ProtectionProfile::Standard
+        );
+
+        let view_standard = View::new(&standard_settings, false).expect("create standard view");
+        unsafe {
+            assert_eq!(
+                SendMessageW(view_standard.profile_standard, BM_GETCHECK, None, None).0,
+                BST_CHECKED as isize
+            );
+            assert_eq!(
+                SendMessageW(view_standard.profile_strict, BM_GETCHECK, None, None).0,
+                0
+            );
+        }
+        drop(view_standard);
+
+        // 2. Strict profile initialization
+        let strict_settings = standard_settings
+            .clone()
+            .with_protection_profile(ProtectionProfile::Strict);
+        assert_eq!(
+            strict_settings.protection_profile(),
+            ProtectionProfile::Strict
+        );
+
+        let view_strict = View::new(&strict_settings, false).expect("create strict view");
+        unsafe {
+            assert_eq!(
+                SendMessageW(view_strict.profile_strict, BM_GETCHECK, None, None).0,
+                BST_CHECKED as isize
+            );
+            assert_eq!(
+                SendMessageW(view_strict.profile_standard, BM_GETCHECK, None, None).0,
+                0
+            );
+
+            // 3. Simulate switching from Strict to Standard via radio button check
+            let _ = SendMessageW(
+                view_strict.profile_standard,
+                BM_SETCHECK,
+                Some(WPARAM(BST_CHECKED)),
+                None,
+            );
+            let _ = SendMessageW(
+                view_strict.profile_strict,
+                BM_SETCHECK,
+                Some(WPARAM(0)),
+                None,
+            );
+
+            assert_eq!(
+                SendMessageW(view_strict.profile_standard, BM_GETCHECK, None, None).0,
+                BST_CHECKED as isize
+            );
+            assert_eq!(
+                SendMessageW(view_strict.profile_strict, BM_GETCHECK, None, None).0,
+                0
+            );
+        }
+        drop(view_strict);
     }
 }

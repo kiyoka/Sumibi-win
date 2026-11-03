@@ -985,10 +985,18 @@ Issue #4とPR #10は引き続き未完了・draftとして扱う。
       - `worker_loop` における `Worker::prepared_policy()` 受信時に `state.set_protection_profile(policy.protection_profile)` を実行し、Host 政策を TIP 側へアトミック同期。
       - `on_preserved_key`（Ctrl+J 押下時）で `self.state.protection_profile()` を `EditPolicy` に動的設定。
       - 単体テスト `shared_session_state_protection_profile_roundtrip` を追加・検証。
-15. 全体検証:
+15. [ADR 0097](adr/0097-settings-window-protection-profile-ui.md) に基づき、設定画面（`settings_window`）GUI への保護プロファイル選択ラジオボタンを追加した。
+    - `crates/sumibi-host/src/settings_window.rs`:
+      - `View` 構造体に `profile_standard: HWND`、`profile_strict: HWND` を追加。
+      - ウィンドウ高さを 445 から 485 に拡張し、パス入力欄と設定保存ボタンの間に「保護設定」STATIC ラベルと、2 つのラジオボタン「標準 (Standard: Notepad等一般アプリ対応)」「厳格 (Strict: 高機密監査環境)」（`BS_AUTORADIOBUTTON`）を配置。
+      - ロード時に `settings.protection_profile()` に応じて該当するラジオボタンを `BM_SETCHECK` で初期選択。
+      - 保存時に `profile_strict` のチェック状態を判定し、`Settings::new` に対して `with_protection_profile(profile)` で選択値を反映して安全に保存・適用。
+      - 保存処理中（`pending`）のコントロール無効化対象にラジオボタンを追加し、競合や二重保存を抑止。
+      - 単体テスト `view_initializes_and_reads_protection_profile_radio_buttons` を追加・検証（標準 / 厳格それぞれの初期チェック状態、および動的切り替え後の値読み取りを実証）。
+16. 全体検証:
     - `powershell -ExecutionPolicy Bypass -File .\dev.ps1 test-all`: **全件合格**（Exit Code: 0）。
-      - standard workspace tests: 534 passed, 0 failed, 4 ignored。
-      - workspace tests with sumibi-host/spike: 534 passed, 0 failed, 4 ignored。
+      - standard workspace tests: 535 passed, 0 failed, 4 ignored。
+      - workspace tests with sumibi-host/spike: 535 passed, 0 failed, 4 ignored。
       - `Test-HostImage.ps1`: 全 37 テスト合格。
       - `Test-SuspendedImageProbe.ps1`: 全 6 テスト合格。
       - `session-key-test`: 全 5 シナリオ完全合格（自律発見・非同期ドレイン変換・1-step Undo・失効 Fail-Closed・クリーンアップ）。
