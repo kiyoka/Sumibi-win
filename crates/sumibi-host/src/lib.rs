@@ -22,6 +22,7 @@ pub mod first_conversion;
 pub mod host_control;
 #[cfg(windows)]
 pub mod host_service;
+pub mod local_dictionary;
 pub mod manual;
 #[cfg(windows)]
 pub mod native_https;
