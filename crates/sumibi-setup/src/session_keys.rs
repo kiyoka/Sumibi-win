@@ -2,11 +2,12 @@
 //! preserved key conversion, async STA drain window text replacement, and Undo.
 use super::*;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use sumibi_host::host_control::HostControl;
 use sumibi_host::host_service::HostService;
-use sumibi_host::manual::{Credential, Destination, Scheme};
+use sumibi_host::manual::{Credential, Destination, PolicySource, Scheme};
 use sumibi_host::policy::PolicyAuthority;
 use sumibi_tip::spike::COMMAND_CONVERT;
 use windows::core::{ComObject, Interface};
@@ -20,8 +21,10 @@ pub(crate) fn exercise_session_keys(
 ) -> std::result::Result<(), Failure> {
     let messages: ITfMessagePump = manager.cast()?;
 
-    // 0. Setup local diagnostic HTTP server for chat completions mock
-    let response_body = serde_json::json!({
+    // 0. Setup local diagnostic HTTP server with switchable response modes:
+    //    0: 200 OK ("日本語")
+    //    1: 500 Internal Server Error
+    let response_body_200 = serde_json::json!({
         "choices": [{
             "finish_reason": "stop",
             "message": {
@@ -31,39 +34,65 @@ pub(crate) fn exercise_session_keys(
         }]
     })
     .to_string();
-    let response_bytes = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
-        response_body.len()
+    let response_bytes_200 = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body_200}",
+        response_body_200.len()
     )
     .into_bytes();
 
+    let response_body_500 = r#"{"error":{"message":"internal simulated failure"}}"#;
+    let response_bytes_500 = format!(
+        "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body_500}",
+        response_body_500.len()
+    )
+    .into_bytes();
+
+    let server_mode = Arc::new(AtomicU8::new(0)); // 0: 200 OK, 1: 500 Error
+    let thread_mode = server_mode.clone();
+    let server_running = Arc::new(AtomicBool::new(true));
+    let thread_running = server_running.clone();
+
     let listener =
         std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| format!("bind listener: {e:?}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("set nonblocking: {e:?}"))?;
     let port = listener
         .local_addr()
         .map_err(|e| format!("local addr: {e:?}"))?
         .port();
 
     let _server_thread = std::thread::spawn(move || {
-        let (mut stream, _) = match listener.accept() {
-            Ok(res) => res,
-            Err(_) => return,
-        };
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(4)));
-        let mut request = Vec::new();
-        let mut chunk = [0u8; 1024];
-        loop {
-            match stream.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    request.extend_from_slice(&chunk[..n]);
-                    if request.windows(4).any(|w| w == b"\r\n\r\n") {
-                        break;
+        while thread_running.load(Ordering::Relaxed) {
+            let (mut stream, _) = match listener.accept() {
+                Ok(res) => res,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(_) => break,
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(4)));
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        request.extend_from_slice(&chunk[..n]);
+                        if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
                     }
                 }
             }
+            let mode = thread_mode.load(Ordering::Relaxed);
+            if mode == 0 {
+                let _ = stream.write_all(&response_bytes_200);
+            } else if mode == 1 {
+                let _ = stream.write_all(&response_bytes_500);
+            }
         }
-        let _ = stream.write_all(&response_bytes);
     });
 
     // 1. Setup diagnostic HostService (unconsented initially)
@@ -239,7 +268,82 @@ pub(crate) fn exercise_session_keys(
     println!("Scenario 3: TextStore 1-step Undo: OK");
 
     // =========================================================================
-    // Scenario 4: Consent Revocation Fail-Closed
+    // Scenario 4: Communication Failure Preserves Original Text
+    // =========================================================================
+    // Configure mock server to return HTTP 500 error.
+    server_mode.store(1, Ordering::Release);
+
+    // Reset selection to "nihongo"
+    let mut selected_retry = store.get().selection.get();
+    selected_retry.acpStart = 7;
+    selected_retry.acpEnd = 14;
+    store.get().selection.set(selected_retry);
+
+    let res_fail = unsafe { sink.OnPreservedKey(&context, &COMMAND_CONVERT)? };
+    assert!(
+        res_fail.as_bool(),
+        "hotkey while ready must be admitted for dispatch even if upstream server subsequently fails"
+    );
+
+    // Pump messages until worker receives 500, delivers Failed event, and cancels ticket
+    let fail_deadline = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < fail_deadline {
+        pump_tsf_messages(&messages)?;
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // Original text must remain completely unchanged, and no corrupt undo state created
+    assert_eq!(
+        *store.get().text.borrow(),
+        "prefix nihongo suffix".encode_utf16().collect::<Vec<_>>(),
+        "text must remain original upon conversion failure"
+    );
+    assert!(
+        store.get().undo.borrow().is_empty(),
+        "undo history must remain empty on conversion failure"
+    );
+    println!("Scenario 4: Communication failure preserves original text: OK");
+
+    // =========================================================================
+    // Scenario 5: Immediate Retry Without Error Dismissal Succeeds
+    // =========================================================================
+    // No error modal dismissal or reset operation needed.
+    // Switch server back to 200 OK.
+    server_mode.store(0, Ordering::Release);
+
+    // Immediately trigger conversion on the same selection
+    let res_retry = unsafe { sink.OnPreservedKey(&context, &COMMAND_CONVERT)? };
+    assert!(
+        res_retry.as_bool(),
+        "immediate retry must be admitted without manual error dismissal"
+    );
+
+    let retry_drain_deadline = Instant::now() + Duration::from_secs(6);
+    let mut retry_replaced = false;
+    while Instant::now() < retry_drain_deadline {
+        pump_tsf_messages(&messages)?;
+        if *store.get().text.borrow() == expected_replaced {
+            retry_replaced = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        retry_replaced,
+        "immediate retry must successfully replace text with 'prefix 日本語 suffix'"
+    );
+    assert_eq!(store.get().undo.borrow().len(), 1);
+
+    // Revert text back via Undo for remaining scenarios
+    store.get().undo_once()?;
+    assert_eq!(
+        *store.get().text.borrow(),
+        "prefix nihongo suffix".encode_utf16().collect::<Vec<_>>()
+    );
+    println!("Scenario 5: Immediate retry without error dismissal succeeds: OK");
+
+    // =========================================================================
+    // Scenario 6: Consent Revocation Fail-Closed
     // =========================================================================
     // Revoke consent from the host.
     service
@@ -282,18 +386,43 @@ pub(crate) fn exercise_session_keys(
         *store.get().text.borrow(),
         "prefix nihongo suffix".encode_utf16().collect::<Vec<_>>()
     );
-    println!("Scenario 4: Revocation fail-closed: OK");
+    println!("Scenario 6: Revocation fail-closed: OK");
 
     // =========================================================================
-    // Scenario 5: Teardown and Cleanup
+    // Scenario 7: Missing Credential Fail-Closed
     // =========================================================================
+    // Clear credential in the authority. With no credential, consent cannot be granted.
+    authority
+        .replace_credential(None)
+        .map_err(|_| "credential remove")?;
+    assert!(authority.snapshot().unwrap().credential.is_none());
+    assert!(!authority.snapshot().unwrap().allowed);
+
+    // TipHostSession must remain un-ready and hotkey must be denied without text access
+    let body_reads_missing_cred = store.get().body_reads.get();
+    let res_no_cred = unsafe { sink.OnPreservedKey(&context, &COMMAND_CONVERT)? };
+    assert!(
+        !res_no_cred.as_bool(),
+        "hotkey with missing credential must be denied"
+    );
+    assert_eq!(
+        store.get().body_reads.get(),
+        body_reads_missing_cred,
+        "missing credential must never read document text"
+    );
+    println!("Scenario 7: Missing credential fail-closed: OK");
+
+    // =========================================================================
+    // Scenario 8: Teardown and Cleanup
+    // =========================================================================
+    server_running.store(false, Ordering::Relaxed);
     association.close()?;
     unsafe {
         manager.SetFocus(None)?;
     }
     pump_tsf_messages(&messages)?;
     service.stop().map_err(|e| format!("service stop: {e:?}"))?;
-    println!("Scenario 5: Teardown and cleanup: OK");
+    println!("Scenario 8: Teardown and cleanup: OK");
 
     Ok(())
 }
