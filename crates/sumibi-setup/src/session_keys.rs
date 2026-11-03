@@ -426,3 +426,236 @@ pub(crate) fn exercise_session_keys(
 
     Ok(())
 }
+
+pub(crate) fn exercise_live_conversion(
+    manager: &ITfThreadMgr,
+    client: u32,
+) -> std::result::Result<(), Failure> {
+    let messages: ITfMessagePump = manager.cast()?;
+
+    // 1. Setup window, TextStore, document and context
+    let window = crate::window_host::Window::new(manager)?;
+    let store = ComObject::new(TextStore::new("prefix nihongo suffix"));
+    let mut selected = store.get().selection.get();
+    selected.acpStart = 7;
+    selected.acpEnd = 14;
+    store.get().selection.set(selected);
+    store.get().window.set(window.hwnd());
+
+    let document = Document(unsafe { manager.CreateDocumentMgr()? });
+    let mut context = None;
+    let mut cookie = 0;
+    unsafe {
+        document.0.CreateContext(
+            client,
+            0,
+            &store.to_interface::<IUnknown>(),
+            &mut context,
+            &mut cookie,
+        )?;
+    }
+    let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
+    unsafe {
+        document.0.Push(&context)?;
+    }
+    scope_fixture::initialise_context(&context, client)?;
+    let mut association = crate::window_host::Association::new(manager, &window, &document.0)?;
+    unsafe {
+        manager.SetFocus(&document.0)?;
+    }
+    pump_tsf_messages(&messages)?;
+
+    let provider = unsafe { manager.GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)? };
+    let sink: ITfKeyEventSink = unsafe {
+        provider
+            .GetFunction(
+                &sumibi_tip::spike::FUNCTION_TEST_KEY_SINK,
+                &ITfKeyEventSink::IID,
+            )?
+            .cast()?
+    };
+
+    println!("Connecting to active Sumibi Host...");
+    // 2. Wait for TipHostSession to discover running Host and become ready
+    let ready_deadline = Instant::now() + Duration::from_secs(10);
+    let mut key_admitted = false;
+    while Instant::now() < ready_deadline {
+        unsafe {
+            manager.SetFocus(&document.0)?;
+        }
+        pump_tsf_messages(&messages)?;
+        let res = unsafe { sink.OnPreservedKey(&context, &COMMAND_CONVERT)? };
+        if res.as_bool() {
+            key_admitted = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if !key_admitted {
+        return Err("timed out waiting for active Host connection. Is sumibi-host running with consent granted?".into());
+    }
+    println!("Hot-key (Ctrl+J) admitted by Host! Waiting for OpenAI API response...");
+
+    // 3. Wait for OpenAI API conversion result via DrainWindow
+    let drain_deadline = Instant::now() + Duration::from_secs(20);
+    let initial_text: Vec<u16> = "prefix nihongo suffix".encode_utf16().collect();
+    let mut replaced_text = String::new();
+    let mut replaced = false;
+    while Instant::now() < drain_deadline {
+        pump_tsf_messages(&messages)?;
+        let current_u16 = store.get().text.borrow().clone();
+        if current_u16 != initial_text {
+            replaced_text = String::from_utf16_lossy(&current_u16);
+            replaced = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !replaced {
+        return Err("timed out waiting for OpenAI conversion response".into());
+    }
+    println!(">>> Live Conversion Success! Result: \"{replaced_text}\"");
+    assert_eq!(
+        store.get().undo.borrow().len(),
+        1,
+        "undo record must be created"
+    );
+
+    // 4. Test 1-step Undo
+    println!("Testing 1-step Undo (Ctrl+Z)...");
+    store.get().undo_once()?;
+    let restored = String::from_utf16_lossy(&store.get().text.borrow());
+    println!(">>> Undo Restored: \"{restored}\"");
+    assert_eq!(
+        restored, "prefix nihongo suffix",
+        "text must be restored to original"
+    );
+
+    association.close()?;
+    unsafe {
+        manager.SetFocus(None)?;
+    }
+    pump_tsf_messages(&messages)?;
+    println!("Live API verification completed successfully!");
+
+    Ok(())
+}
+
+pub(crate) fn exercise_live_demo(
+    manager: &ITfThreadMgr,
+    client: u32,
+) -> std::result::Result<(), Failure> {
+    let messages: ITfMessagePump = manager.cast()?;
+    let window = crate::window_host::Window::new(manager)?;
+    window.set_title("Sumibi Live Demo | Ctrl+J: 変換 | Ctrl+Z: 元に戻す | 閉じるで終了")?;
+
+    let store = ComObject::new(TextStore::new("prefix nihongo suffix"));
+    let mut selected = store.get().selection.get();
+    selected.acpStart = 7;
+    selected.acpEnd = 14;
+    store.get().selection.set(selected);
+    store.get().window.set(window.hwnd());
+
+    let document = Document(unsafe { manager.CreateDocumentMgr()? });
+    let mut context = None;
+    let mut cookie = 0;
+    unsafe {
+        document.0.CreateContext(
+            client,
+            0,
+            &store.to_interface::<IUnknown>(),
+            &mut context,
+            &mut cookie,
+        )?;
+    }
+    let context = context.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
+    unsafe {
+        document.0.Push(&context)?;
+    }
+    scope_fixture::initialise_context(&context, client)?;
+    let mut association = crate::window_host::Association::new(manager, &window, &document.0)?;
+    window
+        .focus()
+        .map_err(|error| format!("window focus: {error}"))?;
+    unsafe {
+        manager.SetFocus(&document.0)?;
+    }
+
+    let _live = crate::live_render::Binding::attach(&window, &context, client)?;
+
+    let provider = unsafe { manager.GetFunctionProvider(&sumibi_tip::CLSID_SUMIBI_TIP)? };
+    let sink: ITfKeyEventSink = unsafe {
+        provider
+            .GetFunction(
+                &sumibi_tip::spike::FUNCTION_TEST_KEY_SINK,
+                &ITfKeyEventSink::IID,
+            )?
+            .cast()?
+    };
+
+    println!("Connecting to active Sumibi Host...");
+    let ready_deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < ready_deadline {
+        unsafe {
+            manager.SetFocus(&document.0)?;
+        }
+        pump_tsf_messages(&messages)?;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let store_for_undo = store.clone();
+    let sink_for_key = sink.clone();
+    let context_for_key = context.clone();
+    window.set_input(std::rc::Rc::new(move |msg, wparam, _lparam| {
+        if msg == windows::Win32::UI::WindowsAndMessaging::WM_KEYDOWN {
+            let ctrl_down = unsafe {
+                windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(
+                    windows::Win32::UI::Input::KeyboardAndMouse::VK_CONTROL.0 as i32,
+                ) < 0
+            };
+            if ctrl_down && (wparam.0 == 'J' as usize || wparam.0 == 'j' as usize) {
+                println!(">>> Ctrl+J 検知: OpenAI 変換リクエストを送信中...");
+                let admitted =
+                    unsafe { sink_for_key.OnPreservedKey(&context_for_key, &COMMAND_CONVERT) };
+                match admitted {
+                    Ok(b) if b.as_bool() => println!("    リクエスト送信完了。応答を待機中..."),
+                    Ok(_) => println!("    Host がまだ準備中か拒絶されました。"),
+                    Err(e) => println!("    エラー: {e:?}"),
+                }
+                return Ok(true);
+            }
+            if ctrl_down && (wparam.0 == 'Z' as usize || wparam.0 == 'z' as usize) {
+                println!(">>> Ctrl+Z 検知: 元に戻す (Undo) を実行しました。");
+                let _ = store_for_undo.get().undo_once();
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }))?;
+
+    println!();
+    println!("===================================================================");
+    println!("  Sumibi Live Demo ウィンドウが起動しました！");
+    println!("  1. 表示されたウィンドウをクリックしてアクティブにします。");
+    println!("  2. キーボードで [Ctrl + J] を押すと、OpenAI API に送信され、");
+    println!("     リアルタイムに \"日本語\" へ変換されます。");
+    println!("  3. [Ctrl + Z] を押すと、元の \"nihongo\" に Undo されます。");
+    println!("  4. ウィンドウの [×] をクリックすると終了します。");
+    println!("===================================================================");
+    println!();
+
+    let mut message = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+    while window.is_open() {
+        if !window.get_message(&mut message)? {
+            break;
+        }
+        window.route_message(&message)?;
+    }
+
+    association.close()?;
+    unsafe {
+        manager.SetFocus(None)?;
+    }
+    println!("Live Demo 終了しました。");
+    Ok(())
+}
