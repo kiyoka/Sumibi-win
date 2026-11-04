@@ -103,12 +103,15 @@ enum WorkerEvent {
     Failed { request_id: u64 },
 }
 
-fn debug_log(msg: &str) {
-    let wide: Vec<u16> = format!("[Sumibi-TIP] {msg}\0").encode_utf16().collect();
-    unsafe {
-        windows::Win32::System::Diagnostics::Debug::OutputDebugStringW(windows::core::PCWSTR(
-            wide.as_ptr(),
-        ));
+#[inline]
+pub(crate) fn debug_log(msg: &str) {
+    if cfg!(debug_assertions) {
+        let wide: Vec<u16> = format!("[Sumibi-TIP] {msg}\0").encode_utf16().collect();
+        unsafe {
+            windows::Win32::System::Diagnostics::Debug::OutputDebugStringW(windows::core::PCWSTR(
+                wide.as_ptr(),
+            ));
+        }
     }
 }
 
@@ -324,9 +327,14 @@ pub struct TipHostSession {
     run: RefCell<crate::run_record::RunRecord>,
 }
 
-/// Identity token of a TSF context. Never dereferenced.
+/// Identity token of a TSF context: the IUnknown identity of the object, so
+/// every interface/proxy of the same context maps to one value. Never
+/// dereferenced.
 fn context_token(context: &ITfContext) -> usize {
-    context.as_raw() as usize
+    context
+        .cast::<windows::core::IUnknown>()
+        .map(|unknown| unknown.as_raw() as usize)
+        .unwrap_or(0)
 }
 
 impl TipHostSession {
@@ -455,11 +463,18 @@ impl TipHostSession {
                 })
                 .unwrap_or(false);
         if !gated {
+            debug_log("Key observed: gated=false (not ready or context status denied)");
             self.run.borrow_mut().clear();
             return;
         }
         let action = crate::run_record::classify(vk, translate_key(vk, flags), command_modifier());
-        self.run.borrow_mut().apply(token, action);
+        let mut record = self.run.borrow_mut();
+        record.apply(token, action);
+        debug_log(&format!(
+            "Key observed: gated=true, action={}, run_units={}",
+            action.label(),
+            record.len()
+        ));
     }
 
     /// Handle preserved hotkey event safely. Returns Ok(TRUE) if conversion is admitted and dispatched.
@@ -514,6 +529,9 @@ impl TipHostSession {
         // selection. An explicit selection always wins and discards the record.
         // The record is consumed here whatever happens next (ADR 0104).
         let recorded = self.run.borrow_mut().take(context_token(context));
+        if recorded.is_none() {
+            debug_log("Preserved key run: no recorded run for this context");
+        }
         if let Some(units) = recorded {
             let length = units.len();
             match crate::edit::select_preceding_run(

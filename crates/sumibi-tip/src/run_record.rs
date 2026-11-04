@@ -20,6 +20,18 @@ pub(crate) enum KeyAction {
 
 const VK_BACK: u32 = 0x08;
 
+impl KeyAction {
+    /// Fixed label for diagnostics. Never contains the typed character.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Push(_) => "push",
+            Self::Backspace => "backspace",
+            Self::Clear => "clear",
+            Self::Ignore => "ignore",
+        }
+    }
+}
+
 /// Modifier keys pressed on their own never change the document. Ctrl in
 /// particular must not clear the record: it precedes the Ctrl+J hotkey.
 fn is_pure_modifier(vk: u32) -> bool {
@@ -58,6 +70,10 @@ pub(crate) struct RunRecord {
 }
 
 impl RunRecord {
+    pub(crate) fn len(&self) -> usize {
+        self.units.len()
+    }
+
     pub(crate) fn clear(&mut self) {
         self.units.iter_mut().for_each(|unit| *unit = 0);
         self.units.clear();

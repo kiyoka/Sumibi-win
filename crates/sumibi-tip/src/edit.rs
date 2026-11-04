@@ -434,6 +434,9 @@ pub fn select_preceding_run(
             // halt condition is null so only a document edge stops the shift.
             unsafe { expanded.ShiftStart(cookie, wanted, &mut shifted, std::ptr::null())? };
             if shifted != wanted {
+                crate::session::debug_log(&format!(
+                    "select_preceding_run: ShiftStart shifted={shifted} != wanted={wanted}"
+                ));
                 return Err(E_ABORT.into());
             }
             let text = read_all_with_profile(&expanded, cookie, profile)?;
@@ -441,6 +444,11 @@ pub fn select_preceding_run(
                 &target, &expanded, cookie, protection, profile,
             )?;
             if text != expected {
+                let exp_str = String::from_utf16_lossy(&expected);
+                let got_str = String::from_utf16_lossy(&text);
+                crate::session::debug_log(&format!(
+                    "select_preceding_run: text mismatch! got='{got_str}', expected='{exp_str}'"
+                ));
                 return Err(E_ABORT.into());
             }
             ensure_target(&manager, &target)?;

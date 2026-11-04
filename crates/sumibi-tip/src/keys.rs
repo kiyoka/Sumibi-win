@@ -11,6 +11,7 @@ use crate::session::COMMAND_CONVERT;
 #[cfg(feature = "spike")]
 use crate::spike::{Controller, COMMAND_CONVERT};
 use std::{
+    cell::Cell,
     rc::Weak,
     thread::{self, ThreadId},
 };
@@ -21,6 +22,7 @@ pub(super) struct KeySink {
     controller: Weak<Controller>,
     session: Weak<crate::session::TipHostSession>,
     owner: ThreadId,
+    last_test_key: Cell<Option<(u32, isize, u32)>>,
     // A manager can retain this sink even after releasing the TIP.
     // Keep the DLL loaded until its last reference has been released.
     _lease: ObjectLease,
@@ -31,14 +33,17 @@ impl KeySink {
     /// OnTestKeyDown, which TSF issues for every key even when it is not eaten.
     fn observe(&self, context: &Ref<ITfContext>, key: WPARAM, flags: LPARAM) {
         if self.owner != thread::current().id() {
+            crate::session::debug_log("observe: wrong thread");
             return;
         }
-        if let Some(session) = self.session.upgrade() {
-            let _ = crate::com::boundary(|| {
-                session.observe_key(context.as_ref(), key.0 as u32, flags.0);
-                Ok(())
-            });
-        }
+        let Some(session) = self.session.upgrade() else {
+            crate::session::debug_log("observe: session is None (dropped or not set)");
+            return;
+        };
+        let _ = crate::com::boundary(|| {
+            session.observe_key(context.as_ref(), key.0 as u32, flags.0);
+            Ok(())
+        });
     }
 
     #[cfg(feature = "spike")]
@@ -94,6 +99,7 @@ impl KeySink {
             controller: Weak::new(),
             session,
             owner: thread::current().id(),
+            last_test_key: Cell::new(None),
             _lease: ObjectLease::new(),
         }
         .into()
@@ -112,6 +118,7 @@ impl KeySink {
             controller,
             session,
             owner: thread::current().id(),
+            last_test_key: Cell::new(None),
             _lease: ObjectLease::new(),
         }
         .into()
@@ -120,6 +127,7 @@ impl KeySink {
 
 impl ITfKeyEventSink_Impl for KeySink_Impl {
     fn OnSetFocus(&self, _foreground: BOOL) -> Result<()> {
+        crate::session::debug_log(&format!("KeySink::OnSetFocus(foreground={})", _foreground.as_bool()));
         if self.owner == thread::current().id() {
             if let Some(session) = self.session.upgrade() {
                 session.clear_run();
@@ -140,6 +148,16 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         _key: WPARAM,
         _flags: LPARAM,
     ) -> Result<BOOL> {
+        let vk = _key.0 as u32;
+        let flags = _flags.0;
+        let time = unsafe { windows::Win32::UI::WindowsAndMessaging::GetMessageTime() } as u32;
+        self.last_test_key.set(Some((vk, flags, time)));
+        crate::session::debug_log(&format!(
+            "KeySink::OnTestKeyDown(key=0x{:x}, flags=0x{:x}, has_context={})",
+            _key.0,
+            _flags.0,
+            _context.as_ref().is_some()
+        ));
         self.observe(&_context, _key, _flags);
         #[cfg(feature = "spike")]
         return Ok(self.preview_key(_context, _key, _flags, true).into());
@@ -152,6 +170,22 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
     }
 
     fn OnKeyDown(&self, _context: Ref<ITfContext>, _key: WPARAM, _flags: LPARAM) -> Result<BOOL> {
+        let vk = _key.0 as u32;
+        let flags = _flags.0;
+        let time = unsafe { windows::Win32::UI::WindowsAndMessaging::GetMessageTime() } as u32;
+        let already_observed = self
+            .last_test_key
+            .get()
+            .map(|(k, f, t)| k == vk && f == flags && t == time)
+            .unwrap_or(false);
+        self.last_test_key.set(None);
+        crate::session::debug_log(&format!(
+            "KeySink::OnKeyDown(key=0x{:x}, flags=0x{:x}, already_observed={already_observed})",
+            _key.0, _flags.0
+        ));
+        if !already_observed {
+            self.observe(&_context, _key, _flags);
+        }
         #[cfg(feature = "spike")]
         return Ok(self.preview_key(_context, _key, _flags, false).into());
         #[cfg(not(feature = "spike"))]
@@ -163,6 +197,7 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
     }
 
     fn OnPreservedKey(&self, _context: Ref<ITfContext>, _key: *const GUID) -> Result<BOOL> {
+        crate::session::debug_log("KeySink::OnPreservedKey called");
         if self.owner != thread::current().id() || _key.is_null() {
             return Ok(false.into());
         }
