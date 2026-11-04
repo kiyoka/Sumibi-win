@@ -8,7 +8,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+    [string]$TargetDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,19 +22,28 @@ try {
     if ($Configuration -eq 'Release') {
         $buildArgs += '--release'
     }
+    if (-not [string]::IsNullOrWhiteSpace($TargetDir)) {
+        $buildArgs += @('--target-dir', $TargetDir)
+    }
     & cargo @buildArgs
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to build sumibi-tip DLL ($LASTEXITCODE)"
     }
 
     $targetSubdir = if ($Configuration -eq 'Release') { 'release' } else { 'debug' }
-    $dllPath = Join-Path $repository "target\$targetSubdir\sumibi_tip.dll"
+    $baseTarget = if (-not [string]::IsNullOrWhiteSpace($TargetDir)) { $TargetDir } else { Join-Path $repository "target" }
+    $dllPath = Join-Path $baseTarget "$targetSubdir\sumibi_tip.dll"
     if (-not (Test-Path -LiteralPath $dllPath)) {
         throw "Built DLL not found at: $dllPath"
     }
 
     Write-Host "==> Verifying passive fail-closed properties with sumibi-setup plan-system-dev..." -ForegroundColor Cyan
-    & cargo run -p sumibi-setup -- plan-system-dev --dll $dllPath
+    $planArgs = @('run', '-p', 'sumibi-setup')
+    if (-not [string]::IsNullOrWhiteSpace($TargetDir)) {
+        $planArgs += @('--target-dir', $TargetDir)
+    }
+    $planArgs += @('--', 'plan-system-dev', '--dll', $dllPath)
+    & cargo @planArgs
     if ($LASTEXITCODE -ne 0) {
         throw "Passive DLL preflight failed! Dll may contain development spike APIs or invalid exports."
     }

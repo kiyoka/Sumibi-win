@@ -8,7 +8,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('session-test', 'native-edit', 'build', 'build-tip', 'build-passive', 'test', 'test-all', 'test-lifecycle', 'check', 'fmt', 'verify', 'ci', 'register-dev', 'unregister-dev', 'verify-com', 'install-ime', 'uninstall-ime', 'status-ime', 'help')]
+    [ValidateSet('session-test', 'native-edit', 'build', 'build-tip', 'build-passive', 'package', 'test', 'test-all', 'test-lifecycle', 'check', 'fmt', 'verify', 'ci', 'register-dev', 'unregister-dev', 'verify-com', 'install-ime', 'uninstall-ime', 'status-ime', 'help')]
     [string]$Task = 'session-test',
 
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -57,6 +57,11 @@ try {
         'build-passive' {
             Invoke-Step 'Build and verify passive release sumibi-tip' {
                 & "$PSScriptRoot/Build-PassiveRelease.ps1" @ExtraArgs
+            }
+        }
+        'package' {
+            Invoke-Step 'Build production distribution package (ZIP and installers)' {
+                & "$PSScriptRoot/New-DistributionPackage.ps1" @ExtraArgs
             }
         }
         'build' {
@@ -178,6 +183,7 @@ try {
             Write-Host "  native-edit    : Build sumibi-tip and run native-edit-test (RichEdit & EDIT rejection)"
             Write-Host "  build-tip      : Build sumibi-tip with spike feature"
             Write-Host "  build-passive  : Build and verify passive release sumibi-tip DLL"
+            Write-Host "  package        : Build production distribution package (ZIP and installers)"
             Write-Host "  build          : Build entire workspace"
             Write-Host "  test           : Run workspace unit/integration tests"
             Write-Host "  test-all       : Run workspace tests, image security checks, session tests, and lifecycle verification"
