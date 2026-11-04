@@ -1,4 +1,5 @@
 //! Initial Chat conversion through ordered native HTTPS I/O.
+use crate::decisions::BudgetManager;
 use crate::manual::{
     Destination, ManualRequest, OrderedConversionTransport, PolicySource, Scheme, SendAdmission,
     SendError, SendGate, TransportError,
@@ -6,6 +7,8 @@ use crate::manual::{
 use crate::policy::PolicyAuthority;
 use std::time::Instant;
 use sumibi_core::candidate::CandidateItem;
+use sumibi_core::decisions::{DecisionResultItem, DecisionState};
+use sumibi_protocol::message::Revision;
 use sumibi_winhttp::{Error, PreparedRequest};
 
 /// Resolve the model from the requested policy revision. The same authority
@@ -35,6 +38,100 @@ pub fn convert_additional_chat_with_policy(
         admission,
         &NativeExchange { admission },
     )
+}
+
+/// Evaluate Decisions auto-conversion under separate consent, cost protection and strict schema validation (ADR 0102).
+pub fn evaluate_decisions_with_policy(
+    destination: &Destination,
+    revision: Revision,
+    states: &[DecisionState],
+    authority: &PolicyAuthority,
+    admission: &impl SendAdmission,
+    budget: &BudgetManager,
+    deadline: Instant,
+) -> Result<Vec<DecisionResultItem>, SendError> {
+    evaluate_decisions_with_exchange(
+        destination,
+        revision,
+        states,
+        authority,
+        admission,
+        budget,
+        deadline,
+        &NativeExchange { admission },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_decisions_with_exchange(
+    destination: &Destination,
+    revision: Revision,
+    states: &[DecisionState],
+    authority: &PolicyAuthority,
+    admission: &impl SendAdmission,
+    budget: &BudgetManager,
+    deadline: Instant,
+    exchange: &dyn Exchange,
+) -> Result<Vec<DecisionResultItem>, SendError> {
+    if destination.scheme() != Scheme::Https {
+        return Err(SendError::InvalidRequest);
+    }
+    // 1. Separate consent check (ADR 0102)
+    if !authority.is_auto_consented() {
+        return Err(SendError::PolicyDenied);
+    }
+    let snapshot = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    if snapshot.settings != revision.settings || snapshot.authorization != revision.authorization {
+        return Err(SendError::PolicyDenied);
+    }
+    let model = snapshot.model.as_deref().ok_or(SendError::PolicyDenied)?;
+
+    // 2. Cost protection pre-allocation (ADR 0102)
+    budget.reserve().map_err(|_| SendError::PolicyDenied)?;
+
+    let expected_ids: Vec<u64> = states.iter().map(|s| s.id).collect();
+    let body = crate::decisions::request_body_decisions(model, states)
+        .map_err(|_| SendError::InvalidRequest)?;
+
+    let transport = DecisionsTransport {
+        expected_ids,
+        body,
+        exchange,
+    };
+
+    let json = crate::manual::evaluate_decisions_ordered(
+        destination,
+        revision,
+        deadline,
+        authority,
+        admission,
+        &transport,
+    )?;
+    serde_json::from_str::<Vec<DecisionResultItem>>(&json).map_err(|_| SendError::InvalidResponse)
+}
+
+struct DecisionsTransport<'a> {
+    expected_ids: Vec<u64>,
+    body: Vec<u8>,
+    exchange: &'a dyn Exchange,
+}
+
+impl OrderedConversionTransport for DecisionsTransport<'_> {
+    fn convert_ordered(
+        &self,
+        destination: &Destination,
+        credential: &str,
+        _source: &str,
+        deadline: Instant,
+        gate: &mut dyn SendGate,
+    ) -> Result<String, SendError> {
+        let bytes =
+            self.exchange
+                .exchange(destination, credential, self.body.clone(), deadline, gate)?;
+        let items = crate::decisions::response_decisions(&bytes, &self.expected_ids)
+            .map_err(|_| SendError::InvalidResponse)?;
+        serde_json::to_string(&items).map_err(|_| SendError::InvalidResponse)
+    }
 }
 
 fn convert_additional_with_exchange(
@@ -517,6 +614,85 @@ mod tests {
             );
             assert_eq!(exchange.writes.borrow().len(), 1);
         }
+    }
+
+    #[test]
+    fn native_decisions_requires_separate_consent_and_cost_protection() {
+        let (authority, destination) = ready();
+        let budget = BudgetManager::new_in_memory(2);
+        let states = vec![DecisionState::new(42, "nihongo", 1000)];
+        let admission = Admission::default();
+        let deadline = Instant::now() + Duration::from_secs(2);
+
+        let decisions_json = serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": r#"{"decisions":[{"id":42,"should_convert":true,"confidence":0.99,"converted_text":"日本語"}]}"#
+                }
+            }]
+        });
+        let exchange = ScriptedExchange {
+            response: Ok(serde_json::to_vec(&decisions_json).unwrap()),
+            ..Default::default()
+        };
+
+        // 1. Only manual consent is granted, auto consent is NOT granted
+        let rev = revision(&authority);
+        let err = evaluate_decisions_with_exchange(
+            &destination,
+            rev,
+            &states,
+            &authority,
+            &admission,
+            &budget,
+            deadline,
+            &exchange,
+        );
+        assert_eq!(err, Err(SendError::PolicyDenied));
+        assert_eq!(budget.consumed(), 0);
+        assert!(exchange.writes.borrow().is_empty());
+
+        // 2. Grant auto consent
+        authority.grant_auto_consent(&destination).unwrap();
+        let rev = revision(&authority);
+        let items = evaluate_decisions_with_exchange(
+            &destination,
+            rev,
+            &states,
+            &authority,
+            &admission,
+            &budget,
+            deadline,
+            &exchange,
+        )
+        .unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, 42);
+        assert!(items[0].should_convert);
+        assert_eq!(items[0].converted_text.as_deref(), Some("日本語"));
+        assert_eq!(budget.consumed(), 1);
+        assert_eq!(exchange.writes.borrow().len(), 1);
+
+        // 3. Exhaust budget (limit is 2)
+        budget.reserve().unwrap();
+        assert_eq!(budget.consumed(), 2);
+
+        // 4. Over-budget fails with PolicyDenied without dispatching to exchange
+        let err = evaluate_decisions_with_exchange(
+            &destination,
+            rev,
+            &states,
+            &authority,
+            &admission,
+            &budget,
+            deadline,
+            &exchange,
+        );
+        assert_eq!(err, Err(SendError::PolicyDenied));
+        assert_eq!(budget.consumed(), 2);
+        assert_eq!(exchange.writes.borrow().len(), 1); // no new write
     }
 
     #[test]

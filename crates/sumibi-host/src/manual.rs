@@ -142,6 +142,7 @@ pub struct PolicySnapshot {
     pub model: Option<String>,
     pub destination: Destination,
     pub manual_consent: Option<Destination>,
+    pub auto_consent: Option<Destination>,
     pub credential: Option<Arc<Credential>>,
     pub allowed: bool,
     pub protection_profile: sumibi_protocol::ProtectionProfile,
@@ -399,6 +400,122 @@ pub fn convert_ordered(
     Ok(result)
 }
 
+struct AuthorityAutoSendGate<'a> {
+    authority: &'a PolicyAuthority,
+    revision: Revision,
+    destination: &'a Destination,
+    credential: &'a Arc<Credential>,
+    admission: &'a dyn SendAdmission,
+    deadline: Instant,
+    used: bool,
+    sent: bool,
+}
+
+impl SendGate for AuthorityAutoSendGate<'_> {
+    fn is_cancelled(&self) -> bool {
+        self.admission.is_cancelled()
+    }
+
+    fn write_authorized(
+        &mut self,
+        write: &mut dyn FnMut() -> Result<(), TransportError>,
+    ) -> Result<(), SendError> {
+        if self.used {
+            return Err(SendError::InvalidRequest);
+        }
+        self.used = true;
+        if Instant::now() >= self.deadline {
+            return Err(SendError::Timeout);
+        }
+        let _guard = self
+            .authority
+            .authorize_auto_send_start(self.revision, self.destination, self.credential)
+            .map_err(|_| SendError::PolicyDenied)?;
+        if Instant::now() >= self.deadline {
+            return Err(SendError::Timeout);
+        }
+        self.admission.write_if_active(write)?;
+        self.sent = true;
+        Ok(())
+    }
+}
+
+/// Decisions auto-conversion send boundary under independent consent and cost protection.
+pub fn evaluate_decisions_ordered(
+    destination: &Destination,
+    revision: Revision,
+    deadline: Instant,
+    authority: &PolicyAuthority,
+    admission: &impl SendAdmission,
+    transport: &impl OrderedConversionTransport,
+) -> Result<String, SendError> {
+    if admission.is_cancelled() {
+        return Err(SendError::PolicyDenied);
+    }
+    if admission
+        .request_deadline()
+        .is_some_and(|accepted| deadline > accepted)
+    {
+        return Err(SendError::InvalidRequest);
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if revision.input == 0
+        || revision.settings == 0
+        || revision.authorization == 0
+        || remaining > Duration::from_secs(60)
+    {
+        return Err(SendError::InvalidRequest);
+    }
+    let before = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    let credential = authorized_auto(&before, revision, destination)?;
+    if Instant::now() >= deadline {
+        return Err(SendError::Timeout);
+    }
+    let mut gate = AuthorityAutoSendGate {
+        authority,
+        revision,
+        destination,
+        credential: &credential,
+        admission,
+        deadline,
+        used: false,
+        sent: false,
+    };
+    let result =
+        transport.convert_ordered(destination, credential.expose(), "", deadline, &mut gate)?;
+    if !gate.sent {
+        return Err(SendError::InvalidResponse);
+    }
+    if admission.is_cancelled() {
+        return Err(SendError::PolicyDenied);
+    }
+    if Instant::now() >= deadline {
+        return Err(SendError::Timeout);
+    }
+    let after = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    let current_credential = authorized_auto(&after, revision, destination)?;
+    if !Arc::ptr_eq(&credential, &current_credential) {
+        return Err(SendError::PolicyDenied);
+    }
+    Ok(result)
+}
+
+fn authorized_auto(
+    snapshot: &PolicySnapshot,
+    revision: Revision,
+    destination: &Destination,
+) -> Result<Arc<Credential>, SendError> {
+    if !snapshot.allowed
+        || snapshot.settings != revision.settings
+        || snapshot.authorization != revision.authorization
+        || snapshot.destination != *destination
+        || snapshot.auto_consent.as_ref() != Some(destination)
+    {
+        return Err(SendError::PolicyDenied);
+    }
+    snapshot.credential.clone().ok_or(SendError::PolicyDenied)
+}
+
 fn authorized(
     snapshot: &PolicySnapshot,
     request: &ManualRequest<'_>,
@@ -527,6 +644,7 @@ mod tests {
             model: None,
             destination: destination.clone(),
             manual_consent: Some(destination),
+            auto_consent: None,
             credential: Some(Arc::new(Credential::new("synthetic-key".into()).unwrap())),
             allowed: true,
             protection_profile: sumibi_protocol::ProtectionProfile::Standard,

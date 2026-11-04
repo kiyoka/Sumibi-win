@@ -98,7 +98,7 @@ pub(crate) fn exercise_session_keys(
     // 1. Setup diagnostic HostService (unconsented initially)
     let destination = Destination::for_chat_completions(Scheme::Https, "127.0.0.1", port, "/")
         .ok_or("invalid fixture destination")?;
-    let authority = Arc::new(PolicyAuthority::new(destination));
+    let authority = Arc::new(PolicyAuthority::new(destination.clone()));
     authority
         .set_model("fixture-model")
         .map_err(|_| "set model")?;
@@ -477,7 +477,85 @@ pub(crate) fn exercise_session_keys(
     println!("Scenario 8: Candidate session navigation, pure confirmation and 1-step Undo: OK");
 
     // =========================================================================
-    // Scenario 9: Teardown and Cleanup
+    // Scenario 9: Decisions Auto-Conversion (ADR 0102)
+    // Separate consent, 200ms fixed window, cost protection, and threshold check
+    // =========================================================================
+    // 1. Separate consent check: unconsented auto conversion fails closed
+    assert!(!authority.is_auto_consented());
+    let budget = sumibi_host::decisions::BudgetManager::new_in_memory(10_000);
+    let mut decisions_buffer = sumibi_core::decisions::DecisionsBuffer::new();
+
+    let state_id = decisions_buffer.push_state("nihon", 1000).expect("pushed");
+    assert_eq!(decisions_buffer.pending_count(), 1);
+
+    // 2. 200ms fixed window debounce
+    assert!(!decisions_buffer.is_window_elapsed(1150));
+    assert!(decisions_buffer.is_window_elapsed(1200));
+
+    let (gen, batch) = decisions_buffer.drain_batch(1200);
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0].id, state_id);
+
+    // 3. Independent grant of auto consent
+    // When credential is missing, auto consent must fail
+    assert!(authority.grant_auto_consent(&destination).is_err());
+
+    // Restore credential and grant independent auto consent
+    authority
+        .replace_credential(Credential::new("session-key-test".into()))
+        .map_err(|_| "credential restore")?;
+    authority
+        .grant_auto_consent(&destination)
+        .map_err(|_| "grant auto consent")?;
+    assert!(authority.is_auto_consented());
+
+    // 4. Cost protection pre-allocation
+    assert_eq!(budget.consumed(), 0);
+    budget.reserve().map_err(|_| "reserve budget")?;
+    assert_eq!(budget.consumed(), 1);
+
+    // 5. Strict schema & threshold evaluation
+    // Confidence >= 0.5 and should_convert: true is accepted
+    let item_convert = sumibi_core::decisions::DecisionResultItem {
+        id: state_id,
+        should_convert: true,
+        confidence: 0.95,
+        converted_text: Some("日本".to_string()),
+    };
+    let replacement = decisions_buffer
+        .evaluate_item(gen, &item_convert)
+        .expect("replacement accepted");
+    assert_eq!(replacement.id, state_id);
+    assert_eq!(replacement.converted_text, "日本");
+
+    // Confidence < 0.5 is rejected
+    let item_low = sumibi_core::decisions::DecisionResultItem {
+        id: state_id,
+        should_convert: true,
+        confidence: 0.45,
+        converted_text: Some("日本".to_string()),
+    };
+    assert!(decisions_buffer.evaluate_item(gen, &item_low).is_none());
+
+    // 6. Manual conversion interrupts & invalidates pending auto decisions
+    decisions_buffer.push_state("auto_pending", 2000);
+    assert_eq!(decisions_buffer.pending_count(), 1);
+    decisions_buffer.invalidate_manual_conversion();
+    assert_eq!(decisions_buffer.pending_count(), 0);
+
+    // Older generation result is rejected after manual invalidation
+    assert!(decisions_buffer.evaluate_item(gen, &item_convert).is_none());
+
+    // 7. Revoke auto consent
+    authority
+        .revoke_auto_consent()
+        .map_err(|_| "revoke auto consent")?;
+    assert!(!authority.is_auto_consented());
+
+    println!("Scenario 9: Decisions auto-conversion (separate consent, fixed window, cost protection): OK");
+
+    // =========================================================================
+    // Scenario 10: Teardown and Cleanup
     // =========================================================================
     server_running.store(false, Ordering::Relaxed);
     association.close()?;
@@ -486,7 +564,7 @@ pub(crate) fn exercise_session_keys(
     }
     pump_tsf_messages(&messages)?;
     service.stop().map_err(|e| format!("service stop: {e:?}"))?;
-    println!("Scenario 9: Teardown and cleanup: OK");
+    println!("Scenario 10: Teardown and cleanup: OK");
 
     Ok(())
 }
