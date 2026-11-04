@@ -8,7 +8,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('session-test', 'native-edit', 'build', 'build-tip', 'build-passive', 'test', 'test-all', 'test-lifecycle', 'check', 'fmt', 'verify', 'ci', 'register-dev', 'unregister-dev', 'verify-com', 'help')]
+    [ValidateSet('session-test', 'native-edit', 'build', 'build-tip', 'build-passive', 'test', 'test-all', 'test-lifecycle', 'check', 'fmt', 'verify', 'ci', 'register-dev', 'unregister-dev', 'verify-com', 'install-ime', 'uninstall-ime', 'status-ime', 'help')]
     [string]$Task = 'session-test',
 
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -156,6 +156,21 @@ try {
                 & cargo run --package sumibi-setup -- verify-com-dev
             }
         }
+        'install-ime' {
+            Invoke-Step 'Install and register Sumibi IME with UAC elevation' {
+                & "$PSScriptRoot/Install-SumibiIme.ps1" @ExtraArgs
+            }
+        }
+        'uninstall-ime' {
+            Invoke-Step 'Unregister Sumibi IME with UAC elevation' {
+                & "$PSScriptRoot/Uninstall-SumibiIme.ps1" @ExtraArgs
+            }
+        }
+        'status-ime' {
+            Invoke-Step 'Query Sumibi IME registration status' {
+                & cargo run --package sumibi-setup -- status
+            }
+        }
         'help' {
             Write-Host "Usage: .\tools\dev.ps1 <task> [extra args...]" -ForegroundColor Yellow
             Write-Host "Available tasks:"
@@ -173,6 +188,9 @@ try {
             Write-Host "  register-dev   : Register development COM class in HKCU for sumibi_tip.dll"
             Write-Host "  unregister-dev : Unregister development COM class from HKCU"
             Write-Host "  verify-com     : Verify development COM registration in HKCU"
+            Write-Host "  install-ime    : Install and register Sumibi TSF IME in Windows (prompts UAC elevation)"
+            Write-Host "  uninstall-ime  : Unregister Sumibi TSF IME from Windows (prompts UAC elevation)"
+            Write-Host "  status-ime     : Show current COM and TSF registration status"
             Write-Host "  help           : Show this message"
         }
     }
