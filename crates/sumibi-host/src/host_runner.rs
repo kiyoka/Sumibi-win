@@ -14,7 +14,7 @@ unsafe extern "system" fn console_ctrl_handler(_ctrl_type: u32) -> BOOL {
     BOOL(1)
 }
 
-pub fn run(path: PathBuf) -> Result<(), &'static str> {
+pub fn run(path: PathBuf, auto_grant: bool) -> Result<(), &'static str> {
     let mut service = HostService::start(path).map_err(|e| match e {
         ControlError::AlreadyRunning => "Host is already running in this logon session",
         _ => "failed to start host service",
@@ -41,6 +41,24 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
             return Err("timed out waiting for host startup");
         }
         std::thread::sleep(Duration::from_millis(10));
+    }
+
+    if auto_grant {
+        if let Ok(Some(status)) = service.try_status() {
+            if let Some(offer) = status.offer {
+                if offer.can_grant() {
+                    let _ = service.control().try_grant(offer);
+                    println!("Manual conversion consent: GRANTED (Sending enabled)");
+                } else {
+                    println!("Manual conversion consent: Unable to grant (check API key)");
+                }
+            }
+        }
+    } else {
+        println!("Note: Manual conversion sending is currently disabled (privacy protection).");
+        println!(
+            "      Use '--grant' flag to enable sending: cargo run -p sumibi-host -- run --grant"
+        );
     }
 
     println!("Sumibi Host service running. Press Ctrl+C to stop.");
