@@ -81,7 +81,7 @@ fn host_run_rejects_extra_arguments() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         String::from_utf8(output.stderr).unwrap().trim(),
-        "usage: sumibi-host run [absolute-settings-path]"
+        "usage: sumibi-host run [--grant] [absolute-settings-path]"
     );
 }
 
