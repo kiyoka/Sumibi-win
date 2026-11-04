@@ -20,11 +20,24 @@ try {
 
     if (-not $isAdmin) {
         Write-Host "Elevated administrator privileges required to unregister TSF IME profile." -ForegroundColor Yellow
-        Write-Host "Requesting elevation via UAC..." -ForegroundColor Cyan
-        $scriptPath = $MyInvocation.MyCommand.Definition
-        $argList = @("-ExecutionPolicy", "Bypass", "-NoExit", "-File", "`"$scriptPath`"")
-        Start-Process powershell -Verb RunAs -ArgumentList $argList
-        return
+        try {
+            Write-Host "Attempting elevation via UAC..." -ForegroundColor Cyan
+            $scriptPath = $MyInvocation.MyCommand.Definition
+            $argList = @("-ExecutionPolicy", "Bypass", "-NoExit", "-File", "`"$scriptPath`"")
+            Start-Process powershell -Verb RunAs -ArgumentList $argList
+            return
+        }
+        catch {
+            Write-Host "`n[!] UAC elevation cannot be started automatically in this terminal environment." -ForegroundColor Red
+            Write-Host "    Please open Windows PowerShell as Administrator:" -ForegroundColor Yellow
+            Write-Host "      1. Press Windows Key, search for 'PowerShell'"
+            Write-Host "      2. Right-click 'Windows PowerShell' and select 'Run as administrator'"
+            Write-Host "      3. In the elevated PowerShell window, run:" -ForegroundColor Cyan
+            Write-Host "           cd c:\dev\Sumibi-win" -ForegroundColor White
+            Write-Host "           .\dev.ps1 uninstall-ime" -ForegroundColor White
+            Write-Host ""
+            return
+        }
     }
 
     $setupExe = Join-Path $repository "target\debug\sumibi-setup.exe"
