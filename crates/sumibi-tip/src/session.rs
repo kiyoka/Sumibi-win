@@ -269,6 +269,45 @@ unsafe extern "system" fn drain_window_proc(
     }
 }
 
+/// Layout translation of a key press using the current shift/caps state and
+/// without consuming dead-key state (flag 0x4). `None` for non-character keys.
+fn translate_key(vk: u32, flags: isize) -> Option<u16> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyState, GetKeyboardLayout, ToUnicodeEx, VK_CAPITAL, VK_CONTROL, VK_MENU, VK_SHIFT,
+    };
+    let mut state = [0u8; 256];
+    for key in [VK_SHIFT, VK_CONTROL, VK_MENU, VK_CAPITAL] {
+        // SAFETY: reads the calling thread's keyboard state only.
+        state[key.0 as usize] = unsafe { GetKeyState(key.0 as i32) } as u8;
+    }
+    let scan = ((flags >> 16) & 0xff) as u32;
+    let mut buffer = [0u16; 4];
+    // SAFETY: all buffers are live for the call; flag 0x4 leaves the
+    // thread's keyboard (dead-key) state unchanged.
+    let count = unsafe {
+        ToUnicodeEx(
+            vk,
+            scan,
+            &state,
+            &mut buffer,
+            0x4,
+            Some(GetKeyboardLayout(0)),
+        )
+    };
+    (count == 1).then_some(buffer[0])
+}
+
+/// Ctrl, Alt or Windows key held: a command, not text.
+fn command_modifier() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN,
+    };
+    // SAFETY: reads the calling thread's keyboard state only.
+    [VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN]
+        .iter()
+        .any(|key| unsafe { GetKeyState(key.0 as i32) } < 0)
+}
+
 pub struct TipHostSession {
     owner: ThreadId,
     manager: ITfThreadMgr,
@@ -281,6 +320,13 @@ pub struct TipHostSession {
     preserved_registered: Cell<bool>,
     next_request_id: Cell<u64>,
     drain_window: RefCell<Option<DrainWindow>>,
+    /// Passive romaji run for caret conversion (ADR 0104); owner thread only.
+    run: RefCell<crate::run_record::RunRecord>,
+}
+
+/// Identity token of a TSF context. Never dereferenced.
+fn context_token(context: &ITfContext) -> usize {
+    context.as_raw() as usize
 }
 
 impl TipHostSession {
@@ -325,6 +371,7 @@ impl TipHostSession {
             preserved_registered: Cell::new(false),
             next_request_id: Cell::new(0),
             drain_window: RefCell::new(drain_window),
+            run: RefCell::new(crate::run_record::RunRecord::default()),
         };
 
         // Register preserved key (Ctrl+J)
@@ -378,6 +425,43 @@ impl TipHostSession {
         Ok(())
     }
 
+    /// Discard the passive romaji run (focus loss, deactivation, boundaries).
+    pub fn clear_run(&self) {
+        if self.owner == thread::current().id() {
+            self.run.borrow_mut().clear();
+        }
+    }
+
+    /// Observe one key press without ever consuming it. Records only romaji
+    /// units, and only while the Host session is ready and the context passes
+    /// the metadata-only status gate; every other key is a boundary.
+    pub fn observe_key(&self, context: Option<&ITfContext>, vk: u32, flags: isize) {
+        if self.owner != thread::current().id() {
+            return;
+        }
+        let Some(context) = context else {
+            self.run.borrow_mut().clear();
+            return;
+        };
+        let token = context_token(context);
+        let gated = self.state.is_ready()
+            && unsafe { context.GetStatus() }
+                .map(|status| {
+                    crate::protection::input_status_denial_with_profile(
+                        status,
+                        self.state.protection_profile(),
+                    )
+                    .is_none()
+                })
+                .unwrap_or(false);
+        if !gated {
+            self.run.borrow_mut().clear();
+            return;
+        }
+        let action = crate::run_record::classify(vk, translate_key(vk, flags), command_modifier());
+        self.run.borrow_mut().apply(token, action);
+    }
+
     /// Handle preserved hotkey event safely. Returns Ok(TRUE) if conversion is admitted and dispatched.
     pub fn on_preserved_key(&self, context: Option<&ITfContext>, key: &GUID) -> Result<BOOL> {
         if self.owner != thread::current().id() {
@@ -424,6 +508,32 @@ impl TipHostSession {
             debug_log(&format!(
                 "Preserved key compartments: kbd_disabled={kbd_disabled}, empty_ctx={empty_ctx}"
             ));
+        }
+
+        // 1b. Collapsed caret: promote the verified, just-typed romaji run to the
+        // selection. An explicit selection always wins and discards the record.
+        // The record is consumed here whatever happens next (ADR 0104).
+        let recorded = self.run.borrow_mut().take(context_token(context));
+        if let Some(units) = recorded {
+            let length = units.len();
+            match crate::edit::select_preceding_run(
+                &self.manager,
+                context,
+                self.client,
+                self.state.protection_profile(),
+                units,
+            ) {
+                Ok(outcome) => debug_log(&format!(
+                    "Preserved key run: {outcome:?}, run_units={length}"
+                )),
+                Err(error) => {
+                    debug_log(&format!(
+                        "Preserved key run rejected: HRESULT 0x{:08x}, run_units={length}",
+                        error.code().0 as u32
+                    ));
+                    return Ok(false.into());
+                }
+            }
         }
 
         // 2. Capture selection and check protection inside an edit session
@@ -500,6 +610,7 @@ impl TipHostSession {
 
     /// Stop the session gracefully.
     pub fn close(&self) -> Result<()> {
+        self.run.borrow_mut().clear();
         let _ = self.unregister_preserved_key();
         if let Some(mut window) = self.drain_window.borrow_mut().take() {
             window.destroy();

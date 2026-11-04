@@ -27,6 +27,20 @@ pub(super) struct KeySink {
 }
 
 impl KeySink {
+    /// Passive observation only: the key is never consumed here. Recorded at
+    /// OnTestKeyDown, which TSF issues for every key even when it is not eaten.
+    fn observe(&self, context: &Ref<ITfContext>, key: WPARAM, flags: LPARAM) {
+        if self.owner != thread::current().id() {
+            return;
+        }
+        if let Some(session) = self.session.upgrade() {
+            let _ = crate::com::boundary(|| {
+                session.observe_key(context.as_ref(), key.0 as u32, flags.0);
+                Ok(())
+            });
+        }
+    }
+
     #[cfg(feature = "spike")]
     fn preview_key(
         &self,
@@ -106,6 +120,11 @@ impl KeySink {
 
 impl ITfKeyEventSink_Impl for KeySink_Impl {
     fn OnSetFocus(&self, _foreground: BOOL) -> Result<()> {
+        if self.owner == thread::current().id() {
+            if let Some(session) = self.session.upgrade() {
+                session.clear_run();
+            }
+        }
         #[cfg(feature = "spike")]
         if self.owner == thread::current().id() && !_foreground.as_bool() {
             if let Some(controller) = self.controller.upgrade() {
@@ -121,6 +140,7 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         _key: WPARAM,
         _flags: LPARAM,
     ) -> Result<BOOL> {
+        self.observe(&_context, _key, _flags);
         #[cfg(feature = "spike")]
         return Ok(self.preview_key(_context, _key, _flags, true).into());
         #[cfg(not(feature = "spike"))]
