@@ -66,6 +66,7 @@ impl PolicyAuthority {
                 model: None,
                 destination,
                 manual_consent: None,
+                auto_consent: None,
                 credential: None,
                 allowed: false,
                 protection_profile,
@@ -159,6 +160,28 @@ impl PolicyAuthority {
         Ok(SendStartGuard { _state: state })
     }
 
+    pub fn authorize_auto_send_start(
+        &self,
+        revision: Revision,
+        destination: &Destination,
+        credential: &Arc<Credential>,
+    ) -> Result<SendStartGuard<'_>, ChangeError> {
+        let state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        if !state.allowed
+            || revision.settings != state.settings
+            || revision.authorization != state.authorization
+            || state.destination != *destination
+            || state.auto_consent.as_ref() != Some(destination)
+            || !state
+                .credential
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, credential))
+        {
+            return Err(ChangeError::StalePolicy);
+        }
+        Ok(SendStartGuard { _state: state })
+    }
+
     /// A bounded publisher can keep just one cursor and coalesce changes into
     /// the latest policy. It must send this value before accepting another
     /// request; failure to publish requires disconnecting that client.
@@ -208,6 +231,7 @@ impl PolicyAuthority {
         state.settings = settings;
         state.authorization = authorization;
         state.manual_consent = None;
+        state.auto_consent = None;
         state.allowed = false;
         let published = version(&state);
         drop(state);
@@ -291,6 +315,7 @@ impl PolicyAuthority {
         state.authorization = authorization;
         if changed_destination {
             state.manual_consent = None;
+            state.auto_consent = None;
             state.allowed = false;
         }
         let published = version(&state);
@@ -313,6 +338,7 @@ impl PolicyAuthority {
         state.credential = credential.map(Arc::new);
         state.authorization = authorization;
         state.manual_consent = None;
+        state.auto_consent = None;
         state.allowed = false;
         let published = version(&state);
         drop(state);
@@ -337,6 +363,7 @@ impl PolicyAuthority {
         state.authorization = authorization;
         state.credential = None;
         state.manual_consent = None;
+        state.auto_consent = None;
         state.allowed = false;
         let outcome = match operation() {
             Ok(credential) => {
@@ -410,6 +437,52 @@ impl PolicyAuthority {
         drop(state);
         self.changed.notify_all();
         Ok(published)
+    }
+
+    /// Grant independent consent for Decisions auto-conversion (ADR 0102).
+    /// Kept strictly separate from manual conversion consent.
+    pub fn grant_auto_consent(
+        &self,
+        destination: &Destination,
+    ) -> Result<PolicyVersion, ChangeError> {
+        let mut state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        if state.model.is_none() || state.credential.is_none() || &state.destination != destination
+        {
+            return Err(ChangeError::InvalidConsent);
+        }
+        let authorization = state
+            .authorization
+            .checked_add(1)
+            .ok_or(ChangeError::Exhausted)?;
+        state.authorization = authorization;
+        state.auto_consent = Some(destination.clone());
+        let published = version(&state);
+        drop(state);
+        self.changed.notify_all();
+        Ok(published)
+    }
+
+    /// Revoke independent consent for Decisions auto-conversion (ADR 0102).
+    pub fn revoke_auto_consent(&self) -> Result<PolicyVersion, ChangeError> {
+        let mut state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        let authorization = state
+            .authorization
+            .checked_add(1)
+            .ok_or(ChangeError::Exhausted)?;
+        state.authorization = authorization;
+        state.auto_consent = None;
+        let published = version(&state);
+        drop(state);
+        self.changed.notify_all();
+        Ok(published)
+    }
+
+    /// Check whether auto-conversion is currently consented for the active destination.
+    pub fn is_auto_consented(&self) -> bool {
+        let Ok(state) = self.state.lock() else {
+            return false;
+        };
+        state.auto_consent.as_ref() == Some(&state.destination)
     }
 }
 

@@ -16,6 +16,7 @@ pub(crate) static HOST_PIPE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::
 pub mod consent_task;
 #[cfg(windows)]
 pub mod credential_store;
+pub mod decisions;
 pub mod diagnostic_http;
 pub mod first_conversion;
 #[cfg(windows)]

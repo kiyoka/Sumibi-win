@@ -73,6 +73,88 @@ pub fn convert_additional_chat_with_policy(
     serde_json::from_str::<Vec<CandidateItem>>(&json).map_err(|_| SendError::InvalidResponse)
 }
 
+/// Diagnostic Decisions auto-conversion under separate consent, cost protection and strict schema validation (ADR 0102).
+pub fn evaluate_decisions_with_policy(
+    destination: &Destination,
+    revision: sumibi_protocol::message::Revision,
+    deadline: Instant,
+    states: &[sumibi_core::decisions::DecisionState],
+    authority: &crate::policy::PolicyAuthority,
+    admission: &impl SendAdmission,
+    budget: &crate::decisions::BudgetManager,
+) -> Result<Vec<sumibi_core::decisions::DecisionResultItem>, SendError> {
+    if destination.scheme() != Scheme::HttpLoopback {
+        return Err(SendError::InvalidRequest);
+    }
+    // 1. Separate consent check (ADR 0102)
+    if !authority.is_auto_consented() {
+        return Err(SendError::PolicyDenied);
+    }
+    let snapshot = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    if snapshot.settings != revision.settings || snapshot.authorization != revision.authorization {
+        return Err(SendError::PolicyDenied);
+    }
+    let model = snapshot.model.as_deref().ok_or(SendError::PolicyDenied)?;
+
+    // 2. Cost protection pre-allocation (ADR 0102)
+    budget.reserve().map_err(|_| SendError::PolicyDenied)?;
+
+    let expected_ids: Vec<u64> = states.iter().map(|s| s.id).collect();
+    let body = crate::decisions::request_body_decisions(model, states)
+        .map_err(|_| SendError::InvalidRequest)?;
+
+    let adapter = DiagnosticDecisionsLoopback { expected_ids, body };
+    let json = crate::manual::evaluate_decisions_ordered(
+        destination,
+        revision,
+        deadline,
+        authority,
+        admission,
+        &adapter,
+    )?;
+    serde_json::from_str::<Vec<sumibi_core::decisions::DecisionResultItem>>(&json)
+        .map_err(|_| SendError::InvalidResponse)
+}
+
+struct DiagnosticDecisionsLoopback {
+    expected_ids: Vec<u64>,
+    body: Vec<u8>,
+}
+
+impl OrderedConversionTransport for DiagnosticDecisionsLoopback {
+    fn convert_ordered(
+        &self,
+        destination: &Destination,
+        credential: &str,
+        _source: &str,
+        deadline: Instant,
+        gate: &mut dyn SendGate,
+    ) -> Result<String, SendError> {
+        let (address, headers, body) = prepare_body(destination, credential, self.body.clone())
+            .map_err(SendError::Transport)?;
+        if gate.is_cancelled() {
+            return Err(SendError::PolicyDenied);
+        }
+        let mut stream = TcpStream::connect_timeout(
+            &address,
+            remaining(deadline).map_err(SendError::Transport)?,
+        )
+        .map_err(classify_io)
+        .map_err(SendError::Transport)?;
+        if gate.is_cancelled() {
+            return Err(SendError::PolicyDenied);
+        }
+        gate.write_authorized(&mut || {
+            send_request(&mut stream, headers.as_bytes(), &body, deadline)
+        })?;
+        let response = read_response_bytes(&mut stream, deadline, &|| gate.is_cancelled())
+            .map_err(SendError::Transport)?;
+        let items = crate::decisions::response_decisions(&response, &self.expected_ids)
+            .map_err(|_| SendError::InvalidResponse)?;
+        serde_json::to_string(&items).map_err(|_| SendError::InvalidResponse)
+    }
+}
+
 struct DiagnosticAdditionalChatLoopback {
     model: String,
     current_result: String,
@@ -1084,5 +1166,107 @@ mod tests {
             ),
             Err(TransportError::InvalidRequest)
         );
+    }
+
+    #[test]
+    fn decisions_requires_separate_consent_and_cost_protection() {
+        let budget = crate::decisions::BudgetManager::new_in_memory(2);
+
+        let response_body = serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": r#"{"decisions":[{"id":10,"should_convert":true,"confidence":0.95,"converted_text":"日本語"}]}"#
+                }
+            }]
+        }).to_string();
+
+        let (base, server) = serve_once(response("200 OK", &response_body), Duration::ZERO);
+        let destination = Destination::for_chat_completions(
+            Scheme::HttpLoopback,
+            base.host(),
+            base.port(),
+            base.base_path(),
+        )
+        .unwrap();
+
+        let authority = PolicyAuthority::new(destination.clone());
+        authority
+            .replace_credential(Credential::new("synthetic-key".into()))
+            .unwrap();
+        authority.set_model("gpt-4o-mini").unwrap();
+
+        let states = vec![sumibi_core::decisions::DecisionState::new(
+            10, "nihongo", 1000,
+        )];
+
+        // 1. Only manual consent is granted, auto consent is NOT granted
+        let version = authority.grant_manual_consent(&destination).unwrap();
+        let revision = Revision {
+            input: 1,
+            settings: version.settings,
+            authorization: version.authorization,
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+
+        let err = evaluate_decisions_with_policy(
+            &destination,
+            revision,
+            deadline,
+            &states,
+            &authority,
+            &Active,
+            &budget,
+        );
+        assert_eq!(err, Err(SendError::PolicyDenied));
+        assert_eq!(budget.consumed(), 0);
+
+        // 2. Grant auto consent
+        let version = authority.grant_auto_consent(&destination).unwrap();
+        let revision = Revision {
+            input: 1,
+            settings: version.settings,
+            authorization: version.authorization,
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+
+        let items = evaluate_decisions_with_policy(
+            &destination,
+            revision,
+            deadline,
+            &states,
+            &authority,
+            &Active,
+            &budget,
+        )
+        .unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, 10);
+        assert!(items[0].should_convert);
+        assert_eq!(items[0].converted_text.as_deref(), Some("日本語"));
+        assert_eq!(budget.consumed(), 1);
+
+        server.join().unwrap();
+
+        // 3. Consume budget up to limit (limit is 2)
+        budget.reserve().unwrap();
+        assert_eq!(budget.consumed(), 2);
+
+        // 4. Next evaluate_decisions_with_policy fails immediately with PolicyDenied (budget exceeded)
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let err = evaluate_decisions_with_policy(
+            &destination,
+            revision,
+            deadline,
+            &states,
+            &authority,
+            &Active,
+            &budget,
+        );
+        assert_eq!(err, Err(SendError::PolicyDenied));
+        assert_eq!(budget.consumed(), 2);
+        assert_eq!(err, Err(SendError::PolicyDenied));
+        assert_eq!(budget.consumed(), 2);
     }
 }

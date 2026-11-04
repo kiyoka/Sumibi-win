@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod candidate;
+pub mod decisions;
 pub mod grapheme;
 pub mod input;
 pub mod recovery;
