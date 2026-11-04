@@ -45,7 +45,8 @@ try {
         & cargo build -p sumibi-setup
     }
 
-    Write-Host "==> Unregistering Sumibi TIP (TSF IME)..." -ForegroundColor Cyan
+    Write-Host "==> Unregistering Sumibi TIP (TSF IME, System & User scopes)..." -ForegroundColor Cyan
+    & $setupExe uninstall --scope system
     & $setupExe uninstall
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to unregister Sumibi TIP"

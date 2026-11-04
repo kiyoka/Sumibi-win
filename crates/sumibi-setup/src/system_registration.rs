@@ -296,6 +296,17 @@ pub(super) fn install(args: &[OsString]) -> Result<(), Failure> {
     set_string_val(server_key.0, None, path_str)?;
     set_string_val(server_key.0, Some("ThreadingModel"), "Apartment")?;
 
+    if use_system {
+        // Also register in HKCU so both system-wide and current user merged views are immediately consistent
+        if let Ok(user_class_key) = create_key(HKEY_CURRENT_USER, CLASS_SUBKEY) {
+            let _ = set_string_val(user_class_key.0, None, DESCRIPTION_TEXT);
+        }
+        if let Ok(user_server_key) = create_key(HKEY_CURRENT_USER, &server_key_path) {
+            let _ = set_string_val(user_server_key.0, None, path_str);
+            let _ = set_string_val(user_server_key.0, Some("ThreadingModel"), "Apartment");
+        }
+    }
+
     // 2. TSF Registration
     let _apartment = Apartment::new()?;
     let profiles: ITfInputProcessorProfileMgr =
@@ -315,8 +326,8 @@ pub(super) fn install(args: &[OsString]) -> Result<(), Failure> {
             0,
             HKL::default(),
             0,
-            false.into(), // bEnabledByDefault: false (ADR 0103: do not force default IME)
-            0,            // flags: 0 (Product mode, not process-local)
+            true.into(), // bEnabledByDefault: true (available for selection in language list)
+            0,           // flags: 0 (Product mode, not process-local)
         )
     };
     if hr_profile != S_OK {
@@ -328,6 +339,21 @@ pub(super) fn install(args: &[OsString]) -> Result<(), Failure> {
             hr_profile.0 as u32
         )
         .into());
+    }
+
+    // Explicitly enable language profile for the current user session
+    let legacy_profiles: windows::core::Result<ITfInputProcessorProfiles> =
+        unsafe { CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER) };
+    if let Ok(legacy) = legacy_profiles {
+        unsafe {
+            let _ = (Interface::vtable(&legacy).EnableLanguageProfile)(
+                Interface::as_raw(&legacy),
+                &CLSID_SUMIBI_TIP,
+                JAPANESE_LANGID,
+                &PROFILE_SUMIBI,
+                true.into(),
+            );
+        }
     }
 
     let categories: ITfCategoryMgr =
@@ -414,6 +440,21 @@ pub(super) fn uninstall(args: &[OsString]) -> Result<(), Failure> {
     let profiles: windows::core::Result<ITfInputProcessorProfileMgr> =
         unsafe { CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER) };
     if let Ok(profiles) = profiles {
+        let legacy_profiles: windows::core::Result<ITfInputProcessorProfiles> = unsafe {
+            CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)
+        };
+        if let Ok(legacy) = legacy_profiles {
+            unsafe {
+                let _ = (Interface::vtable(&legacy).EnableLanguageProfile)(
+                    Interface::as_raw(&legacy),
+                    &CLSID_SUMIBI_TIP,
+                    JAPANESE_LANGID,
+                    &PROFILE_SUMIBI,
+                    false.into(),
+                );
+            }
+        }
+
         let _ = unsafe {
             (Interface::vtable(&profiles).UnregisterProfile)(
                 Interface::as_raw(&profiles),
@@ -435,6 +476,23 @@ pub(super) fn uninstall(args: &[OsString]) -> Result<(), Failure> {
     let name_class = wide(CLASS_SUBKEY);
     unsafe {
         let _ = RegDeleteKeyExW(root, PCWSTR(name_class.as_ptr()), KEY_WOW64_64KEY.0, None);
+    }
+
+    if use_system {
+        unsafe {
+            let _ = RegDeleteKeyExW(
+                HKEY_CURRENT_USER,
+                PCWSTR(name_server.as_ptr()),
+                KEY_WOW64_64KEY.0,
+                None,
+            );
+            let _ = RegDeleteKeyExW(
+                HKEY_CURRENT_USER,
+                PCWSTR(name_class.as_ptr()),
+                KEY_WOW64_64KEY.0,
+                None,
+            );
+        }
     }
 
     println!("Sumibi TIP Uninstallation: SUCCESS");
@@ -486,7 +544,26 @@ pub(super) fn status() -> Result<(), Failure> {
         };
         if hr == S_OK && !raw_desc.is_null() {
             let desc = unsafe { windows::core::BSTR::from_raw(raw_desc.cast()) };
-            println!("  TSF Profile: Registered ({desc})");
+            let mut is_enabled = windows::core::BOOL::default();
+            let hr_enabled = unsafe {
+                (Interface::vtable(&profiles).IsEnabledLanguageProfile)(
+                    Interface::as_raw(&profiles),
+                    &CLSID_SUMIBI_TIP,
+                    JAPANESE_LANGID,
+                    &PROFILE_SUMIBI,
+                    &mut is_enabled,
+                )
+            };
+            let status_text = if hr_enabled == S_OK {
+                if is_enabled.as_bool() {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                }
+            } else {
+                "Unknown"
+            };
+            println!("  TSF Profile: Registered ({desc}, Status: {status_text})");
         } else {
             println!("  TSF Profile: None (Not registered)");
         }

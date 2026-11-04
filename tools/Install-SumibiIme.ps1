@@ -62,8 +62,12 @@ try {
         & cargo build -p sumibi-setup
     }
 
-    Write-Host "==> Registering Sumibi TIP (TSF IME)..." -ForegroundColor Cyan
-    & $setupExe install --dll $DllPath
+    Write-Host "==> Ensuring DLL has read/execute permissions for AppContainer (Windows 11 Notepad, etc.)..." -ForegroundColor Cyan
+    # S-1-15-2-1 = ALL APPLICATION PACKAGES
+    & icacls $DllPath /grant "*S-1-15-2-1:(RX)" | Out-Null
+
+    Write-Host "==> Registering Sumibi TIP (TSF IME, System scope)..." -ForegroundColor Cyan
+    & $setupExe install --dll $DllPath --scope system
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to register Sumibi TIP"
     }
