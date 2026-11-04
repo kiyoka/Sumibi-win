@@ -52,7 +52,7 @@ fn main() {
         println!();
         println!("Commands:");
         println!("  (none)                    Launch GUI (host-window, or settings-window if unconfigured)");
-        println!("  run [settings-path]       Run continuous Host service in console mode");
+        println!("  run [--grant] [settings-path] Run continuous Host service in console mode (--grant enables manual sending)");
         println!("  host-window [path]        Open GUI consent manager and run background service");
         println!("  settings-window [path]    Open GUI settings and API key manager");
         println!("  settings-init <host> <model> [base-path] Initialize settings file");
@@ -70,14 +70,20 @@ fn main() {
         .first()
         .is_some_and(|arg| **arg == "run" || **arg == "host-run")
     {
-        let path = match non_flag_args.len() {
-            1 => host_paths::settings_path().ok(),
-            2 => Some(std::path::PathBuf::from(non_flag_args[1])),
+        let auto_grant = args.iter().any(|arg| arg == "--grant" || arg == "-g");
+        let remaining: Vec<_> = non_flag_args
+            .iter()
+            .skip(1)
+            .filter(|arg| ***arg != "--grant" && ***arg != "-g")
+            .collect();
+        let path = match remaining.len() {
+            0 => host_paths::settings_path().ok(),
+            1 => Some(std::path::PathBuf::from(remaining[0])),
             _ => None,
         };
         if let Err(message) = path
-            .ok_or("usage: sumibi-host run [absolute-settings-path]")
-            .and_then(host_runner::run)
+            .ok_or("usage: sumibi-host run [--grant] [absolute-settings-path]")
+            .and_then(|p| host_runner::run(p, auto_grant))
         {
             eprintln!("{message}");
             std::process::exit(1);

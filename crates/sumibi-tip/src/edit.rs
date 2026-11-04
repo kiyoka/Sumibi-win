@@ -380,6 +380,102 @@ pub fn replace_selection(
     )
 }
 
+/// Outcome of [`select_preceding_run`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunSelection {
+    /// The user already has an explicit selection; it is left untouched.
+    ExplicitSelection,
+    /// The recorded run was verified and is now the selection.
+    Selected,
+}
+
+/// Turn a collapsed caret plus a passively recorded romaji run into an
+/// ordinary selection (ADR 0104). Protection is checked on the caret before
+/// anything is read. The document is then read back for exactly the recorded
+/// length and must equal the record; nothing is inferred or searched. Any
+/// mismatch, protection denial or short shift fails closed without a write.
+pub fn select_preceding_run(
+    manager: &ITfThreadMgr,
+    context: &ITfContext,
+    client: u32,
+    profile: ProtectionProfile,
+    expected: Vec<u16>,
+) -> Result<RunSelection> {
+    if expected.is_empty()
+        || expected.len() > crate::run_record::MAX_RUN_UNITS
+        || expected.contains(&0xfffc)
+    {
+        return Err(E_INVALIDARG.into());
+    }
+    let manager = manager.clone();
+    let target = context.clone();
+    let output = Rc::new(Cell::new(None));
+    let result = output.clone();
+    run(
+        context,
+        client,
+        true,
+        Box::new(move |cookie| {
+            ensure_target(&manager, &target)?;
+            let (caret, style) = selection(&target, cookie)?;
+            if !same_context(&unsafe { caret.GetContext()? }, &target)? {
+                return Err(E_ABORT.into());
+            }
+            if !unsafe { caret.IsEmpty(cookie)? }.as_bool() {
+                result.set(Some(RunSelection::ExplicitSelection));
+                return Ok(());
+            }
+            let protection =
+                crate::protection::check_with_profile(&target, &caret, cookie, profile)?;
+            let wanted = -(expected.len() as i32);
+            let expanded = unsafe { caret.Clone()? };
+            let mut shifted = 0i32;
+            // SAFETY: cloned range and fresh edit cookie of this session; the
+            // halt condition is null so only a document edge stops the shift.
+            unsafe { expanded.ShiftStart(cookie, wanted, &mut shifted, std::ptr::null())? };
+            if shifted != wanted {
+                crate::session::debug_log(&format!(
+                    "select_preceding_run: ShiftStart shifted={shifted} != wanted={wanted}"
+                ));
+                return Err(E_ABORT.into());
+            }
+            let text = read_all_with_profile(&expanded, cookie, profile)?;
+            crate::protection::validate_with_profile(
+                &target, &expanded, cookie, protection, profile,
+            )?;
+            if text != expected {
+                let exp_str = String::from_utf16_lossy(&expected);
+                let got_str = String::from_utf16_lossy(&text);
+                crate::session::debug_log(&format!(
+                    "select_preceding_run: text mismatch! got='{got_str}', expected='{exp_str}'"
+                ));
+                return Err(E_ABORT.into());
+            }
+            ensure_target(&manager, &target)?;
+            // The caret must not have moved while the range was read.
+            let (again, again_style) = selection(&target, cookie)?;
+            if again_style != style
+                || !unsafe { again.IsEqualStart(cookie, &caret, TF_ANCHOR_START)? }.as_bool()
+                || !unsafe { again.IsEqualEnd(cookie, &caret, TF_ANCHOR_END)? }.as_bool()
+            {
+                return Err(E_ABORT.into());
+            }
+            let chosen = RawSelection(TF_SELECTION {
+                range: ManuallyDrop::new(Some(expanded)),
+                style: TF_SELECTIONSTYLE {
+                    ase: TF_AE_NONE,
+                    fInterimChar: false.into(),
+                },
+            });
+            // SAFETY: one fresh range of this context inside a write session.
+            unsafe { target.SetSelection(cookie, std::slice::from_ref(&chosen.0))? };
+            result.set(Some(RunSelection::Selected));
+            Ok(())
+        }),
+    )?;
+    output.take().ok_or_else(|| E_FAIL.into())
+}
+
 /// Metadata-only selection revalidation. Generic TSF endpoints/direction, no
 /// ACP query or body read; the retained native range stays on this thread.
 fn checked_selection(
