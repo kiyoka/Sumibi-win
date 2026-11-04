@@ -127,7 +127,10 @@ impl KeySink {
 
 impl ITfKeyEventSink_Impl for KeySink_Impl {
     fn OnSetFocus(&self, _foreground: BOOL) -> Result<()> {
-        crate::session::debug_log(&format!("KeySink::OnSetFocus(foreground={})", _foreground.as_bool()));
+        crate::session::debug_log(&format!(
+            "KeySink::OnSetFocus(foreground={})",
+            _foreground.as_bool()
+        ));
         if self.owner == thread::current().id() {
             if let Some(session) = self.session.upgrade() {
                 session.clear_run();
