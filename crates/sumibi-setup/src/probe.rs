@@ -216,6 +216,24 @@ pub(super) fn run() -> Result<(), Failure> {
     if args.first().is_some_and(|arg| arg == "plan-system-dev") {
         return crate::system_registration::plan(&args[1..]);
     }
+    if args
+        .first()
+        .is_some_and(|arg| arg == "install" || arg == "install-system-dev")
+    {
+        return crate::system_registration::install(&args[1..]);
+    }
+    if args
+        .first()
+        .is_some_and(|arg| arg == "uninstall" || arg == "uninstall-system-dev")
+    {
+        return crate::system_registration::uninstall(&args[1..]);
+    }
+    if args
+        .first()
+        .is_some_and(|arg| arg == "status" || arg == "status-system-dev")
+    {
+        return crate::system_registration::status();
+    }
     if args.len() == 1 && args[0] == "broker-worker-test" {
         crate::worker_probe::run()?;
         return Ok(());
