@@ -5851,9 +5851,10 @@ mod tests {
             ));
         }
         assert_eq!(owner.active_count(), MAX_SESSIONS);
+        let overflow_request = (MAX_SESSIONS + 1) as u64;
         client
             .write_all(
-                message::encode(&convert(1, 1, 9, policy)).unwrap(),
+                message::encode(&convert(1, 1, overflow_request, policy)).unwrap(),
                 &stop,
                 deadline,
             )
@@ -5864,22 +5865,23 @@ mod tests {
             }),
             Ok(OwnerStep::Rejected {
                 key: 1,
-                request: 9,
+                request,
                 cause: WorkerPoolError::Full,
                 delivered: true
-            })
+            }) if request == overflow_request
         ));
         assert!(matches!(
             read_frame(&mut client, &stop, deadline).message,
             message::Message::Error(error)
-                if error.request == 9 && error.code == ErrorCode::Unavailable
+                if error.request == overflow_request && error.code == ErrorCode::Unavailable
         ));
-        assert!(runtime.job_ticket(1, 9).is_none());
+        assert!(runtime.job_ticket(1, overflow_request).is_none());
         release.store(true, Ordering::Release);
         assert!(owner.stop_and_reap(deadline));
+        let resume_request = overflow_request + 1;
         client
             .write_all(
-                message::encode(&convert(1, 1, 10, policy)).unwrap(),
+                message::encode(&convert(1, 1, resume_request, policy)).unwrap(),
                 &stop,
                 deadline,
             )
@@ -5890,8 +5892,8 @@ mod tests {
             }),
             Ok(OwnerStep::Submitted {
                 key: 1,
-                request: 10
-            })
+                request
+            }) if request == resume_request
         ));
         loop {
             match owner
@@ -5902,10 +5904,10 @@ mod tests {
             {
                 OwnerStep::Completed {
                     key: 1,
-                    request: 10,
+                    request,
                     delivered: true,
                     succeeded: true,
-                } => break,
+                } if request == resume_request => break,
                 OwnerStep::Broker(PollStep::Idle) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(1));
                 }
@@ -5914,7 +5916,7 @@ mod tests {
         }
         assert!(matches!(
             read_frame(&mut client, &stop, deadline).message,
-            message::Message::Result(result) if result.request == 10 && result.text == "再開"
+            message::Message::Result(result) if result.request == resume_request && result.text == "再開"
         ));
     }
 

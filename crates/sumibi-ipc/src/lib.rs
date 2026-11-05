@@ -54,3 +54,14 @@ pub use pipe::{
 };
 #[cfg(windows)]
 pub use support::{Error, Nonce, Result};
+
+#[cfg(windows)]
+#[inline]
+pub(crate) fn debug_log_ipc(msg: &str) {
+    let wide: Vec<u16> = format!("[Sumibi-IPC] {msg}\0").encode_utf16().collect();
+    unsafe {
+        windows::Win32::System::Diagnostics::Debug::OutputDebugStringW(windows::core::PCWSTR(
+            wide.as_ptr(),
+        ));
+    }
+}

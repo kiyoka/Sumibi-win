@@ -105,13 +105,11 @@ enum WorkerEvent {
 
 #[inline]
 pub(crate) fn debug_log(msg: &str) {
-    if cfg!(debug_assertions) {
-        let wide: Vec<u16> = format!("[Sumibi-TIP] {msg}\0").encode_utf16().collect();
-        unsafe {
-            windows::Win32::System::Diagnostics::Debug::OutputDebugStringW(windows::core::PCWSTR(
-                wide.as_ptr(),
-            ));
-        }
+    let wide: Vec<u16> = format!("[Sumibi-TIP] {msg}\0").encode_utf16().collect();
+    unsafe {
+        windows::Win32::System::Diagnostics::Debug::OutputDebugStringW(windows::core::PCWSTR(
+            wide.as_ptr(),
+        ));
     }
 }
 
@@ -452,18 +450,25 @@ impl TipHostSession {
             return;
         };
         let token = context_token(context);
-        let gated = self.state.is_ready()
-            && unsafe { context.GetStatus() }
-                .map(|status| {
-                    crate::protection::input_status_denial_with_profile(
-                        status,
-                        self.state.protection_profile(),
-                    )
-                    .is_none()
-                })
-                .unwrap_or(false);
+        let is_ready = self.state.is_ready();
+        let status_res = unsafe { context.GetStatus() };
+        let status_ok = status_res
+            .as_ref()
+            .map(|status| {
+                crate::protection::input_status_denial_with_profile(
+                    *status,
+                    self.state.protection_profile(),
+                )
+                .is_none()
+            })
+            .unwrap_or(false);
+        let gated = is_ready && status_ok;
         if !gated {
-            debug_log("Key observed: gated=false (not ready or context status denied)");
+            debug_log(&format!(
+                "Key observed: gated=false (is_ready={is_ready} [connected={}, allowed={}], status_ok={status_ok})",
+                self.state.is_connected(),
+                self.state.allowed.load(Ordering::Acquire)
+            ));
             self.run.borrow_mut().clear();
             return;
         }
@@ -687,13 +692,31 @@ fn worker_loop(
                 }
             }
 
-            if let Ok(pipe_name) = current_bootstrap_pipe_name() {
-                if let Ok(reservation) = Reservation::acquire() {
-                    let deadline = Instant::now() + Duration::from_secs(3);
-                    if let Ok(worker) = Worker::prepare_discovery(reservation, pipe_name, deadline)
-                    {
-                        current_worker = Some(worker);
+            match current_bootstrap_pipe_name() {
+                Ok(pipe_name) => {
+                    debug_log(&format!("bootstrap pipe name resolved: {pipe_name}"));
+                    match Reservation::acquire() {
+                        Ok(reservation) => {
+                            let deadline = Instant::now() + Duration::from_secs(3);
+                            match Worker::prepare_discovery(reservation, pipe_name, deadline) {
+                                Ok(worker) => {
+                                    debug_log("Worker::prepare_discovery succeeded");
+                                    current_worker = Some(worker);
+                                }
+                                Err(err) => {
+                                    debug_log(&format!(
+                                        "Worker::prepare_discovery failed: {err:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            debug_log(&format!("Reservation::acquire failed: {err:?}"));
+                        }
                     }
+                }
+                Err(err) => {
+                    debug_log(&format!("current_bootstrap_pipe_name failed: {err:?}"));
                 }
             }
 
@@ -716,6 +739,10 @@ fn worker_loop(
                 }
                 match current_worker.as_ref().unwrap().prepared_policy() {
                     Ok(Some(policy)) => {
+                        debug_log(&format!(
+                            "Policy received: allowed={}, settings={}, auth={}",
+                            policy.allowed, policy.settings, policy.authorization
+                        ));
                         state.settings.store(policy.settings, Ordering::Release);
                         state
                             .authorization
@@ -729,8 +756,8 @@ fn worker_loop(
                     Ok(None) => {
                         thread::sleep(Duration::from_millis(10));
                     }
-                    Err(_) => {
-                        // Handshake failed or PolicyDenied (e.g. unconsented)
+                    Err(err) => {
+                        debug_log(&format!("prepared_policy failed: {err:?}"));
                         break;
                     }
                 }

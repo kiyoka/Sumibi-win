@@ -20,10 +20,19 @@ pub(crate) struct Identity {
 }
 impl Identity {
     fn supported(&self) -> bool {
-        !self.app_container && !self.elevated && self.integrity == 0x2000
+        !self.elevated
+            && (self.integrity == 0x2000
+                || (self.integrity == 0x1000 && self.app_container)
+                || self.integrity == 0x2100)
     }
     fn same_desktop(&self, other: &Self) -> bool {
-        self.supported() && other.supported() && self == other
+        self.supported()
+            && other.supported()
+            && self.user == other.user
+            && self.logon == other.logon
+            && self.session == other.session
+            && !self.elevated
+            && !other.elevated
     }
 }
 
@@ -93,13 +102,13 @@ impl PinnedProcess {
     fn owned(handle: OwnedHandle) -> Result<Self> {
         let stamp = stamp(raw(&handle))?;
         let identity = identity(raw(&handle))?;
-        if identity.app_container {
-            return Err(Error::UnsupportedAppContainer);
-        }
         if identity.elevated {
             return Err(Error::UnsupportedElevation);
         }
-        if identity.integrity != 0x2000 {
+        if !identity.supported() {
+            if identity.app_container {
+                return Err(Error::UnsupportedAppContainer);
+            }
             return Err(Error::UnsupportedIntegrity);
         }
         let peer = Self {
@@ -379,7 +388,11 @@ mod tests {
                 1 => other.logon[0] += 1,
                 2 => other.session += 1,
                 3 => other.integrity = 0x3000,
-                4 => other.app_container = true,
+                4 => {
+                    // app_container without low integrity (0x1000) is invalid
+                    other.app_container = true;
+                    other.integrity = 0x3000;
+                }
                 _ => other.elevated = true,
             }
             assert!(!expected.same_desktop(&other));

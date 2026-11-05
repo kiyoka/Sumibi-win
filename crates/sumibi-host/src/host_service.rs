@@ -7,7 +7,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use sumibi_ipc::{current_bootstrap_pipe_name, handoff, BootstrapServer, Stop};
 
-const DISCOVERY_MAX_INSTANCES: u32 = 8;
+const DISCOVERY_MAX_INSTANCES: u32 = 64;
 const DISCOVERY_ACCEPT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Long-running Host service integrating HostControl with continuous
@@ -66,13 +66,21 @@ impl HostService {
 
                     match server.accept(&thread_stop, deadline) {
                         Ok((pipe, client_peer)) => {
+                            println!(
+                                "[Host] Accepted connection from client PID {}",
+                                client_peer
+                                    .observed_image_path()
+                                    .map(|p| p.display().to_string())
+                                    .unwrap_or_else(|_| "unknown".into())
+                            );
                             // Hand off private pipe coordinates through HostControl
                             match thread_control.try_accept_private_peer(
                                 client_peer.try_clone().map_err(|e| format!("{e:?}"))?,
                             ) {
                                 Ok(accept) => {
+                                    println!("[Host] Handing off private pipe to client...");
                                     let handoff_deadline = Instant::now() + Duration::from_secs(5);
-                                    let _ = handoff::send(
+                                    let send_res = handoff::send(
                                         pipe,
                                         &client_peer,
                                         &accept.name,
@@ -80,20 +88,21 @@ impl HostService {
                                         &thread_stop,
                                         handoff_deadline,
                                     );
+                                    println!("[Host] Handoff send result: {send_res:?}");
                                 }
                                 Err(ControlError::Closed) => break,
                                 Err(ControlError::Busy) => {
-                                    // Peer queue full; client will retry or timeout safely
+                                    println!("[Host] Peer queue busy");
                                 }
-                                Err(_) => {}
+                                Err(e) => {
+                                    println!("[Host] try_accept_private_peer failed: {e:?}");
+                                }
                             }
                         }
+                        Err(sumibi_ipc::Error::Timeout) => {}
                         Err(sumibi_ipc::Error::Cancelled) => break,
-                        Err(sumibi_ipc::Error::Timeout) => {
-                            // Timed out waiting for incoming connection; continue loop
-                        }
-                        Err(_) => {
-                            // Client dropped or invalid handshake; continue listening
+                        Err(err) => {
+                            println!("[Host] server.accept failed: {err:?}");
                         }
                     }
                 }

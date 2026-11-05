@@ -15,7 +15,7 @@ use windows::Win32::System::Pipes::*;
 use windows::Win32::System::Threading::*;
 use windows::Win32::System::IO::*;
 
-pub const MAX_ENDPOINTS: usize = 8;
+pub const MAX_ENDPOINTS: usize = 64;
 const CHUNK: usize = 4096;
 const MAX_IO: usize = sumibi_protocol::MAX_FRAME_BYTES + 4;
 static ENDPOINTS: AtomicUsize = AtomicUsize::new(0);
@@ -144,10 +144,13 @@ impl Server {
     fn create_instance(name: &Nonce, first: bool, max_instances: u32) -> Result<Self> {
         let permit = Permit::acquire()?;
         let local = PinnedProcess::current()?;
-        let descriptor: Vec<u16> = format!("D:P(A;;GA;;;{})", local.identity().logon_text)
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
+        let descriptor: Vec<u16> = format!(
+            "D:P(A;;GA;;;{})(A;;GA;;;S-1-15-2-1)",
+            local.identity().logon_text
+        )
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
         let mut security = PSECURITY_DESCRIPTOR::default();
         // SAFETY: descriptor is a kernel-derived SID only; no caller SDDL. API
         // allocations outlive creation and are freed once afterward.
@@ -248,10 +251,13 @@ impl BootstrapServer {
         }
         let permit = Permit::acquire()?;
         let local = PinnedProcess::current()?;
-        let descriptor: Vec<u16> = format!("D:P(A;;GA;;;{})", local.identity().logon_text)
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
+        let descriptor: Vec<u16> = format!(
+            "D:P(A;;GA;;;{})(A;;GA;;;S-1-15-2-1)",
+            local.identity().logon_text
+        )
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
         let mut security = PSECURITY_DESCRIPTOR::default();
         // SAFETY: descriptor is kernel-derived SID only; allocations outlive creation.
         unsafe {
