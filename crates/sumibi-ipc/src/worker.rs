@@ -704,23 +704,50 @@ fn run(
                         )
                     })
             }
-            Some(Target::Discovery { pipe_name }) => Pipe::connect_bootstrap(
-                &pipe_name,
-                &state.stop,
-                deadline,
-            )
-            .and_then(|(pipe, host_peer)| {
-                crate::handoff::receive(pipe, &host_peer, &state.stop, deadline).and_then(|offer| {
-                    Channel::connect_pinned_reserved(
-                        &offer.name,
-                        offer.broker,
-                        host_peer,
-                        &state.stop,
-                        deadline,
-                        reservation.clone(),
-                    )
-                })
-            }),
+            Some(Target::Discovery { pipe_name }) => {
+                crate::debug_log_ipc(&format!("connect_bootstrap to {pipe_name}"));
+                let (pipe, host_peer) =
+                    match Pipe::connect_bootstrap(&pipe_name, &state.stop, deadline) {
+                        Ok(res) => {
+                            crate::debug_log_ipc("connect_bootstrap OK");
+                            res
+                        }
+                        Err(err) => {
+                            crate::debug_log_ipc(&format!("connect_bootstrap FAILED: {err:?}"));
+                            return;
+                        }
+                    };
+                let offer = match crate::handoff::receive(pipe, &host_peer, &state.stop, deadline) {
+                    Ok(offer) => {
+                        crate::debug_log_ipc(&format!(
+                            "handoff::receive OK: pipe={}",
+                            String::from_utf16_lossy(&offer.name.pipe_name())
+                        ));
+                        offer
+                    }
+                    Err(err) => {
+                        crate::debug_log_ipc(&format!("handoff::receive FAILED: {err:?}"));
+                        return;
+                    }
+                };
+                match Channel::connect_pinned_reserved(
+                    &offer.name,
+                    offer.broker,
+                    host_peer,
+                    &state.stop,
+                    deadline,
+                    reservation.clone(),
+                ) {
+                    Ok(chan) => {
+                        crate::debug_log_ipc("connect_pinned_reserved OK");
+                        Ok(chan)
+                    }
+                    Err(err) => {
+                        crate::debug_log_ipc(&format!("connect_pinned_reserved FAILED: {err:?}"));
+                        Err(err)
+                    }
+                }
+            }
             _ => Err(Error::InvalidArgument),
         };
         match opened.and_then(|mut opened| {
@@ -733,11 +760,13 @@ fn run(
             Ok((opened, pinned, policy))
         }) {
             Ok((opened, pinned, policy)) => {
+                crate::debug_log_ipc(&format!("preparation OK: allowed={}", policy.allowed));
                 peer = Some(pinned);
                 channel = Some(opened);
                 preparation.finish(Ok(policy));
             }
             Err(error) => {
+                crate::debug_log_ipc(&format!("preparation FAILED: {error:?}"));
                 preparation.finish(Err(error));
                 return;
             }
