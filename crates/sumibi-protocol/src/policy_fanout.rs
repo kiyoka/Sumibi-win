@@ -4,10 +4,10 @@ use crate::broker_session::{BrokerError, BrokerSession, Event, PolicyNotice};
 use crate::message::{Envelope, ErrorCode, Id, Message, Policy, Revision};
 use std::time::Instant;
 
-pub const MAX_SESSIONS: usize = 8;
+pub const MAX_SESSIONS: usize = 64;
 /// Provisional per-Broker lifetime cap; restart with a fresh boot ID at this
 /// boundary rather than evicting the replay history.
-pub const MAX_ATTACHMENTS: usize = 64;
+pub const MAX_ATTACHMENTS: usize = 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FanoutError {
@@ -568,7 +568,11 @@ mod tests {
         }
         assert_eq!(fanout.active_count(), MAX_SESSIONS);
         assert!(matches!(
-            fanout.attach(9, hello(9), now),
+            fanout.attach(
+                MAX_SESSIONS as u64 + 1,
+                hello((MAX_SESSIONS as u64 + 1).into()),
+                now
+            ),
             Err(FanoutError::Full)
         ));
         let first = Policy {
@@ -581,7 +585,10 @@ mod tests {
             settings: 3,
             ..policy()
         };
-        assert_eq!(fanout.publish(second).unwrap(), (2..=8).collect::<Vec<_>>());
+        assert_eq!(
+            fanout.publish(second).unwrap(),
+            (2..=MAX_SESSIONS as u64).collect::<Vec<_>>()
+        );
         assert_eq!(fanout.active_count(), 1);
         let writes = fanout.pending_writes();
         assert_eq!(writes.len(), 1);
@@ -590,7 +597,8 @@ mod tests {
             fanout.notice_delivered(2, second),
             Err(FanoutError::Unknown)
         );
-        let ready = attach_ready(&mut fanout, 10, 9, now);
+        let next_key = MAX_SESSIONS as u64 + 2;
+        let ready = attach_ready(&mut fanout, next_key, next_key.into(), now);
         assert!(matches!(ready.message, Message::Ready(ready) if ready.policy.settings == 3));
     }
 
@@ -611,10 +619,13 @@ mod tests {
             fanout.attach(1, hello(3), now),
             Err(FanoutError::Duplicate)
         ));
-        for key in 3..=8 {
+        for key in 3..=MAX_SESSIONS as u64 {
             assert_eq!(fanout.reserve_key(key), Ok(()));
         }
-        assert_eq!(fanout.reserve_key(9), Err(FanoutError::Full));
+        assert_eq!(
+            fanout.reserve_key(MAX_SESSIONS as u64 + 1),
+            Err(FanoutError::Full)
+        );
         assert!(fanout.abandon_key(3));
         assert!(!fanout.abandon_key(3));
         assert!(fanout.session_id(3).is_none());
@@ -622,8 +633,9 @@ mod tests {
             fanout.attach(3, hello(3), now),
             Err(FanoutError::StaleKey)
         ));
-        assert_eq!(fanout.reserve_key(10), Ok(()));
-        attach_ready(&mut fanout, 10, 10, now);
+        let new_key = MAX_SESSIONS as u64 + 2;
+        assert_eq!(fanout.reserve_key(new_key), Ok(()));
+        attach_ready(&mut fanout, new_key, new_key.into(), now);
         assert_eq!(fanout.active_count(), 3);
     }
 
@@ -658,8 +670,9 @@ mod tests {
             assert!(fanout.detach(key));
         }
         assert_eq!(fanout.active_count(), 0);
+        let over_key = MAX_ATTACHMENTS as u64 + 1;
         assert!(matches!(
-            fanout.attach(65, hello(65), now),
+            fanout.attach(over_key, hello(over_key.into()), now),
             Err(FanoutError::Exhausted)
         ));
     }

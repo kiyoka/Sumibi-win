@@ -145,9 +145,15 @@ impl Channel {
         )?;
         let Event::Ready(policy) = read_event(&mut pipe, &mut client, &mut inbox, stop, deadline)?
         else {
+            crate::debug_log_ipc("establish: expected Event::Ready, but got other message");
             return Err(Error::InvalidMessage);
         };
+        crate::debug_log_ipc(&format!(
+            "establish: Event::Ready received, policy.allowed={}",
+            policy.allowed
+        ));
         if !policy.allowed {
+            crate::debug_log_ipc("establish: policy.allowed is FALSE, returning PolicyDenied");
             return Err(Error::PolicyDenied);
         }
         Ok(Self {

@@ -335,7 +335,7 @@ fn run(
 ) -> Result<(), ControlError> {
     let (authority, credential_error) = load()?;
     let stop = Stop::new().map_err(|_| ControlError::Broker)?;
-    let mut boot = BrokerBoot::start(&authority, 8, Instant::now() + Duration::from_secs(2))
+    let mut boot = BrokerBoot::start(&authority, 64, Instant::now() + Duration::from_secs(2))
         .map_err(|_| ControlError::Broker)?;
     let mut pending: Option<ConsentTask> = None;
     let mut update: Option<ConsentUpdate> = None;
