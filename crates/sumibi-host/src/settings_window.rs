@@ -2,6 +2,7 @@
 use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc};
 use sumibi_host::{
     credential_store::CredentialTask,
+    provider::Provider,
     settings::{ProtectionProfile, Settings},
     settings_task::{SaveTaskError, SettingsSaveTask},
 };
@@ -21,12 +22,14 @@ const BM_SETCHECK: u32 = 0x00F1;
 #[derive(Default)]
 struct Actions {
     save: Cell<bool>,
+    provider: Cell<bool>,
     key_save: Cell<bool>,
     key_delete: Cell<bool>,
     close: Cell<bool>,
 }
 struct View {
     hwnd: HWND,
+    provider: HWND,
     host: HWND,
     model: HWND,
     path: HWND,
@@ -60,6 +63,13 @@ unsafe extern "system" fn procedure(
             }
             if message == WM_CLOSE {
                 (*pointer).close.set(true);
+                return LRESULT(0);
+            }
+            if message == WM_COMMAND
+                && key.0 & 0xffff == 30
+                && key.0 >> 16 == CBN_SELCHANGE as usize
+            {
+                (*pointer).provider.set(true);
                 return LRESULT(0);
             }
             if message == WM_COMMAND && key.0 & 0xffff == 1 && key.0 >> 16 == 0 {
@@ -120,6 +130,28 @@ fn text(hwnd: HWND) -> Result<String, &'static str> {
     String::from_utf16(&buffer[..count as usize]).map_err(|_| "invalid field")
 }
 impl View {
+    fn scheme_and_port(&self, baseline: &Settings) -> (sumibi_host::manual::Scheme, u16) {
+        let selection = unsafe { SendMessageW(self.provider, CB_GETCURSEL, None, None).0 };
+        if selection == 0 || selection == 1 {
+            (sumibi_host::manual::Scheme::Https, 443)
+        } else {
+            (
+                baseline.destination().scheme(),
+                baseline.destination().port(),
+            )
+        }
+    }
+    fn matches_destination(&self, saved: &Settings) -> bool {
+        let (scheme, port) = self.scheme_and_port(saved);
+        let Ok(host) = text(self.host) else {
+            return false;
+        };
+        let Ok(path) = text(self.path) else {
+            return false;
+        };
+        sumibi_host::manual::Destination::for_chat_completions(scheme, &host, port, &path)
+            .is_some_and(|destination| destination == *saved.destination())
+    }
     fn new(settings: Option<&Settings>, visible: bool) -> WinResult<Self> {
         unsafe {
             let instance = GetModuleHandleW(None)?;
@@ -144,7 +176,7 @@ impl View {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 600,
-                485,
+                535,
                 None,
                 None,
                 Some(instance.into()),
@@ -153,6 +185,7 @@ impl View {
             let actions = Rc::new(Actions::default());
             let mut view = Self {
                 hwnd,
+                provider: HWND::default(),
                 host: HWND::default(),
                 model: HWND::default(),
                 path: HWND::default(),
@@ -208,6 +241,41 @@ impl View {
                 24,
                 0,
             )?;
+            child(
+                w!("STATIC"),
+                "プロバイダー",
+                WINDOW_STYLE(0),
+                18,
+                59,
+                90,
+                24,
+                0,
+            )?;
+            view.provider = child(
+                w!("COMBOBOX"),
+                "",
+                WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(3),
+                115,
+                55,
+                445,
+                160,
+                30,
+            )?;
+            for label in ["OpenAI", "Google Gemini", "その他（互換 API）"] {
+                let label = wide(label);
+                SendMessageW(
+                    view.provider,
+                    CB_ADDSTRING,
+                    None,
+                    Some(LPARAM(label.as_ptr() as isize)),
+                );
+            }
+            let selected = match settings.map(|s| Provider::from_destination(s.destination())) {
+                Some(Provider::OpenAi) => 0,
+                Some(Provider::Google) => 1,
+                _ => 2,
+            };
+            SendMessageW(view.provider, CB_SETCURSEL, Some(WPARAM(selected)), None);
             let mut fields = Vec::new();
             for (i, (label, value)) in [
                 (
@@ -225,7 +293,7 @@ impl View {
             .iter()
             .enumerate()
             {
-                let y = 55 + i as i32 * 40;
+                let y = 105 + i as i32 * 40;
                 child(w!("STATIC"), label, WINDOW_STYLE(0), 18, y + 4, 90, 24, 0)?;
                 let edit = child(
                     w!("EDIT"),
@@ -249,7 +317,7 @@ impl View {
                 "保護設定",
                 WINDOW_STYLE(0),
                 18,
-                175 + 2,
+                225 + 2,
                 90,
                 24,
                 0,
@@ -259,7 +327,7 @@ impl View {
                 "標準 (Standard: Notepad等一般アプリ対応)",
                 BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,
                 115,
-                175,
+                225,
                 270,
                 24,
                 21,
@@ -269,7 +337,7 @@ impl View {
                 "厳格 (Strict: 高機密監査環境)",
                 BS_AUTORADIOBUTTON,
                 395,
-                175,
+                225,
                 165,
                 24,
                 22,
@@ -295,13 +363,13 @@ impl View {
                 None,
             );
 
-            view.save = child(w!("BUTTON"), "設定を保存", WS_TABSTOP, 430, 215, 130, 30, 1)?;
+            view.save = child(w!("BUTTON"), "設定を保存", WS_TABSTOP, 430, 265, 130, 30, 1)?;
             child(
                 w!("STATIC"),
                 "API キー",
                 WINDOW_STYLE(0),
                 18,
-                265,
+                315,
                 90,
                 24,
                 0,
@@ -311,20 +379,20 @@ impl View {
                 "",
                 WS_BORDER | WS_TABSTOP | WINDOW_STYLE(0xa0),
                 115,
-                260,
+                310,
                 445,
                 28,
                 13,
             )?; // ES_PASSWORD | ES_AUTOHSCROLL
             SendMessageW(view.secret, 0x00c5, Some(WPARAM(2560)), Some(LPARAM(0)));
-            view.key_save = child(w!("BUTTON"), "キーを保存", WS_TABSTOP, 430, 300, 130, 30, 3)?;
-            view.key_delete = child(w!("BUTTON"), "キーを削除", WS_TABSTOP, 275, 300, 130, 30, 4)?;
+            view.key_save = child(w!("BUTTON"), "キーを保存", WS_TABSTOP, 430, 350, 130, 30, 3)?;
+            view.key_delete = child(w!("BUTTON"), "キーを削除", WS_TABSTOP, 275, 350, 130, 30, 4)?;
             child(
                 w!("STATIC"),
-                "この PC の現在ユーザーのキーを置き換えます。",
+                "接続先を保存してから、その接続先のキーを入力してください。",
                 WINDOW_STYLE(0),
                 18,
-                340,
+                390,
                 545,
                 24,
                 0,
@@ -334,7 +402,7 @@ impl View {
                 "キーの保存だけでは送信は許可されません。",
                 WINDOW_STYLE(0),
                 18,
-                380,
+                430,
                 545,
                 40,
                 0,
@@ -367,6 +435,11 @@ enum KeyOperation {
 
 pub fn run(path: PathBuf) -> Result<(), &'static str> {
     let mut baseline = load_for_editor(&path)?;
+    if baseline.is_some() {
+        Settings::upgrade_credentials(&path)
+            .map_err(|_| "credential migration failed; settings not changed")?;
+        baseline = load_for_editor(&path)?;
+    }
     // In-memory placeholder only, never displayed or saved. The first save
     // replaces it with user-entered settings; key controls stay disabled until then.
     let draft = Settings::new(
@@ -403,6 +476,30 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                 DispatchMessageW(&message);
             }
         }
+        if view.actions.provider.replace(false) && pending.is_none() && key_pending.is_none() {
+            let selection = unsafe { SendMessageW(view.provider, CB_GETCURSEL, None, None).0 };
+            let provider = match selection {
+                0 => Provider::OpenAi,
+                1 => Provider::Google,
+                _ => Provider::Other,
+            };
+            if let Some((host, path, model)) = provider.preset() {
+                set_text(view.host, host);
+                set_text(view.path, path);
+                set_text(view.model, model);
+            }
+            set_text(view.secret, "");
+            set_text(
+                view.status,
+                "接続先とモデルを確認して、先に設定を保存してください。",
+            );
+        }
+        let key_destination_saved = baseline
+            .as_ref()
+            .is_some_and(|saved| view.matches_destination(saved));
+        if !key_destination_saved {
+            set_text(view.secret, "");
+        }
         if view.actions.save.replace(false) && pending.is_none() && key_pending.is_none() {
             let profile = if unsafe { SendMessageW(view.profile_strict, BM_GETCHECK, None, None).0 }
                 == BST_CHECKED as isize
@@ -415,9 +512,9 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                 text(view.model).and_then(|model| {
                     text(view.path).and_then(|base| {
                         Settings::new(
-                            baseline.as_ref().unwrap_or(&draft).destination().scheme(),
+                            view.scheme_and_port(baseline.as_ref().unwrap_or(&draft)).0,
                             &host,
-                            baseline.as_ref().unwrap_or(&draft).destination().port(),
+                            view.scheme_and_port(baseline.as_ref().unwrap_or(&draft)).1,
                             &base,
                             &model,
                         )
@@ -455,7 +552,8 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
         if view.actions.key_save.replace(false)
             && pending.is_none()
             && key_pending.is_none()
-            && baseline.is_some()
+            && key_destination_saved
+            && !settings_conflict
         {
             match read_secret(view.secret) {
                 Ok(secret) => match CredentialTask::save(authority.clone(), secret) {
@@ -475,11 +573,12 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
         if view.actions.key_delete.replace(false)
             && pending.is_none()
             && key_pending.is_none()
-            && baseline.is_some()
+            && key_destination_saved
+            && !settings_conflict
         {
             // Default to No. Only this explicit confirmation can start deletion.
             let confirmed = unsafe {
-                MessageBoxW(Some(view.hwnd), w!("この PC の現在ユーザーの Sumibi API キーを削除します。\n接続先とモデルの設定は残ります。削除しますか？"), w!("API キーの削除"), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2)
+                MessageBoxW(Some(view.hwnd), w!("保存済みの接続先の Sumibi API キーを削除します。\n接続先とモデルの設定は残ります。削除しますか？"), w!("API キーの削除"), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2)
             } == IDYES;
             if confirmed {
                 match CredentialTask::delete(authority.clone()) {
@@ -552,9 +651,21 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
         }
         unsafe {
             let idle = pending.is_none() && key_pending.is_none();
-            let _ = EnableWindow(view.key_save, idle && baseline.is_some());
-            let _ = EnableWindow(view.key_delete, idle && baseline.is_some());
-            let _ = EnableWindow(view.secret, idle && baseline.is_some());
+            let _ = EnableWindow(
+                view.key_save,
+                idle && key_destination_saved && !settings_conflict,
+            );
+            let _ = EnableWindow(
+                view.key_delete,
+                idle && key_destination_saved && !settings_conflict,
+            );
+            let _ = EnableWindow(
+                view.secret,
+                idle && key_destination_saved && !settings_conflict,
+            );
+            for field in [view.provider, view.host, view.path, view.model] {
+                let _ = EnableWindow(field, idle);
+            }
             let _ = EnableWindow(view.profile_standard, idle);
             let _ = EnableWindow(view.profile_strict, idle);
             let _ = EnableWindow(
@@ -588,6 +699,28 @@ fn load_for_editor(path: &std::path::Path) -> Result<Option<Settings>, &'static 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gemini_view_restores_provider_and_disables_key_binding_for_unsaved_host() {
+        let settings = Settings::new(
+            sumibi_host::manual::Scheme::Https,
+            "generativelanguage.googleapis.com",
+            443,
+            "/v1beta/openai",
+            "custom-gemini",
+        )
+        .unwrap();
+        let view = View::new(Some(&settings), false).unwrap();
+        assert_eq!(
+            unsafe { SendMessageW(view.provider, CB_GETCURSEL, None, None).0 },
+            1
+        );
+        assert_eq!(text(view.model).unwrap(), "custom-gemini");
+        assert!(view.matches_destination(&settings));
+        set_text(view.path, "/v1beta/openai/");
+        assert!(view.matches_destination(&settings));
+        set_text(view.host, "other.test");
+        assert!(!view.matches_destination(&settings));
+    }
     #[test]
     fn first_run_view_has_empty_destination_and_disabled_key_controls() {
         use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;

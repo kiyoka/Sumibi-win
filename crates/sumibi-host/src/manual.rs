@@ -64,7 +64,7 @@ impl Destination {
         let path = base.base_path.trim_end_matches('/');
         let resolved = if path.ends_with("/chat/completions") {
             path.to_owned()
-        } else if path.ends_with("/v1") {
+        } else if path.ends_with("/v1") || path == "/v1beta/openai" {
             format!("{path}/chat/completions")
         } else {
             format!("{path}/v1/chat/completions")

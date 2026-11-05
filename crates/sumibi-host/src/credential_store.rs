@@ -1,5 +1,5 @@
 //! Host-only bridge to Windows Credential Manager. Consent remains separate.
-use crate::manual::Credential;
+use crate::manual::{Credential, Destination, Scheme};
 use crate::policy::{ChangeError, PolicyAuthority, PolicyVersion};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -49,17 +49,19 @@ impl CredentialTask {
         authority: Arc<PolicyAuthority>,
         secret: String,
     ) -> Result<Self, CredentialTaskError> {
-        Self::start_with(authority, move || save_credential(secret))
+        Self::start_with(authority, move |destination| {
+            save_credential(destination, secret)
+        })
     }
 
-    /// Explicitly remove the fixed key on the settings worker.
+    /// Explicitly remove this destination's key on the settings worker.
     pub fn delete(authority: Arc<PolicyAuthority>) -> Result<Self, CredentialTaskError> {
         Self::start_with(authority, delete_credential)
     }
 
     fn start_with(
         authority: Arc<PolicyAuthority>,
-        operation: impl FnOnce() -> Result<Option<Credential>, StoreError> + Send + 'static,
+        operation: impl FnOnce(&Destination) -> Result<Option<Credential>, StoreError> + Send + 'static,
     ) -> Result<Self, CredentialTaskError> {
         if !authority.reserve_configuration_task() {
             return Err(CredentialTaskError::Busy);
@@ -113,7 +115,7 @@ impl CredentialTask {
     pub(crate) fn start_fixture(
         authority: Arc<PolicyAuthority>,
     ) -> Result<Self, CredentialTaskError> {
-        Self::start_with(authority, || Err(StoreError::Unavailable))
+        Self::start_with(authority, |_| Err(StoreError::Unavailable))
     }
 }
 
@@ -147,7 +149,9 @@ pub fn save(
     authority: &PolicyAuthority,
     secret: String,
 ) -> Result<CredentialUpdate<'_>, ChangeError> {
-    apply(authority, || save_credential(secret))
+    apply(authority, |destination| {
+        save_credential(destination, secret)
+    })
 }
 
 /// Remove the stored key and revoke old consent even when deletion fails.
@@ -155,21 +159,24 @@ pub fn delete(authority: &PolicyAuthority) -> Result<CredentialUpdate<'_>, Chang
     apply(authority, delete_credential)
 }
 
-fn save_credential(secret: String) -> Result<Option<Credential>, StoreError> {
-    sumibi_credentials::save(&secret)?;
+fn save_credential(
+    destination: &Destination,
+    secret: String,
+) -> Result<Option<Credential>, StoreError> {
+    sumibi_credentials::save_scoped(&credential_scope(destination), &secret)?;
     Credential::new(secret)
         .map(Some)
         .ok_or(StoreError::InvalidSecret)
 }
 
-fn delete_credential() -> Result<Option<Credential>, StoreError> {
-    sumibi_credentials::delete()?;
+fn delete_credential(destination: &Destination) -> Result<Option<Credential>, StoreError> {
+    sumibi_credentials::delete_scoped(&credential_scope(destination))?;
     Ok(None)
 }
 
 fn apply(
     authority: &PolicyAuthority,
-    operation: impl FnOnce() -> Result<Option<Credential>, StoreError>,
+    operation: impl FnOnce(&Destination) -> Result<Option<Credential>, StoreError>,
 ) -> Result<CredentialUpdate<'_>, ChangeError> {
     let (version, outcome) = authority.update_stored_credential(operation)?;
     Ok(CredentialUpdate {
@@ -184,14 +191,14 @@ pub(crate) fn synthetic_update(
     authority: &PolicyAuthority,
     outcome: Result<Option<Credential>, StoreError>,
 ) -> Result<CredentialUpdate<'_>, ChangeError> {
-    apply(authority, || outcome)
+    apply(authority, |_| outcome)
 }
 
 /// Load a key as a Host credential. The caller must replace the policy key
 /// through PolicyAuthority so existing consent is invalidated and new consent
 /// is explicitly requested. Storage errors must not preserve old authority.
-pub fn load_credential() -> Result<Option<Credential>, StoreError> {
-    match sumibi_credentials::load()? {
+pub fn load_credential(destination: &Destination) -> Result<Option<Credential>, StoreError> {
+    match sumibi_credentials::load_scoped(&credential_scope(destination))? {
         Some(secret) => Credential::new(secret)
             .map(Some)
             .ok_or(StoreError::InvalidRecord),
@@ -199,10 +206,46 @@ pub fn load_credential() -> Result<Option<Credential>, StoreError> {
     }
 }
 
+/// Canonical full destination, excluding the model so models at one endpoint
+/// can share a key. The scheme and port prevent HTTP/HTTPS or proxy collisions.
+pub fn credential_scope(destination: &Destination) -> String {
+    let scheme = match destination.scheme() {
+        Scheme::Https => "https",
+        Scheme::HttpLoopback => "http",
+    };
+    format!(
+        "{scheme}://{}:{}{}",
+        destination.host(),
+        destination.port(),
+        destination.base_path()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::manual::{Destination, PolicySource, Scheme};
+
+    #[test]
+    fn credential_identity_separates_providers_ports_paths_and_schemes() {
+        let mut scopes = std::collections::HashSet::new();
+        for (scheme, host, port, path) in [
+            (Scheme::Https, "api.openai.com", 443, "/v1"),
+            (
+                Scheme::Https,
+                "generativelanguage.googleapis.com",
+                443,
+                "/v1beta/openai",
+            ),
+            (Scheme::Https, "localhost", 443, "/v1"),
+            (Scheme::HttpLoopback, "localhost", 443, "/v1"),
+            (Scheme::Https, "localhost", 444, "/v1"),
+            (Scheme::Https, "localhost", 443, "/proxy"),
+        ] {
+            let destination = Destination::for_chat_completions(scheme, host, port, path).unwrap();
+            assert!(scopes.insert(credential_scope(&destination)));
+        }
+    }
 
     #[test]
     fn reload_worker_is_bounded_and_returns_an_owned_failure_receipt() {
@@ -216,7 +259,7 @@ mod tests {
         let old = authority.grant_manual_consent(&destination).unwrap();
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
-        let mut task = CredentialTask::start_with(authority.clone(), move || {
+        let mut task = CredentialTask::start_with(authority.clone(), move |_| {
             entered_tx.send(()).unwrap();
             release_rx.recv().unwrap();
             Err(StoreError::Unavailable)
@@ -246,7 +289,7 @@ mod tests {
         assert!(update.belongs_to(&authority));
         assert!(!authority.snapshot().unwrap().allowed);
         assert!(task.try_take().is_none());
-        let mut next = CredentialTask::start_with(authority.clone(), || Ok(None)).unwrap();
+        let mut next = CredentialTask::start_with(authority.clone(), |_| Ok(None)).unwrap();
         loop {
             if let Some(result) = next.try_take() {
                 assert!(result.unwrap().outcome().is_ok());
@@ -289,7 +332,7 @@ mod tests {
             .replace_credential(Credential::new("old-key".into()))
             .unwrap();
         let prior = authority.grant_manual_consent(&destination).unwrap();
-        let update = apply(&authority, || Err(StoreError::Unavailable)).unwrap();
+        let update = apply(&authority, |_| Err(StoreError::Unavailable)).unwrap();
         assert_eq!(update.outcome, Err(StoreError::Unavailable));
         assert_eq!(update.version.authorization, prior.authorization + 1);
         let snapshot = authority.snapshot().unwrap();
@@ -303,7 +346,7 @@ mod tests {
             authority.grant_manual_consent(&destination),
             Err(ChangeError::InvalidConsent)
         );
-        let loaded = apply(&authority, || Ok(Credential::new("new-key".into()))).unwrap();
+        let loaded = apply(&authority, |_| Ok(Credential::new("new-key".into()))).unwrap();
         assert_eq!(loaded.outcome, Ok(()));
         assert!(!authority.snapshot().unwrap().allowed);
         assert!(authority.grant_manual_consent(&destination).is_ok());
@@ -336,7 +379,7 @@ mod tests {
         let other = authority.clone();
         let worker = std::thread::spawn(move || {
             started_tx.send(()).unwrap();
-            apply(&other, || {
+            apply(&other, |_| {
                 store_tx.send(()).unwrap();
                 Ok(None)
             })

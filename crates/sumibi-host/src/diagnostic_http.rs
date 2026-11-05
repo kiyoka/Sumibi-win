@@ -940,7 +940,13 @@ mod tests {
         received_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         let changed = authority.set_model("new-model").unwrap();
         assert_eq!(changed.settings, version.settings + 1);
-        assert_eq!(changed.authorization, version.authorization);
+        assert_eq!(changed.authorization, version.authorization + 1);
+        let snapshot = authority.snapshot().unwrap();
+        assert!(
+            !snapshot.allowed
+                && snapshot.manual_consent.is_none()
+                && snapshot.auto_consent.is_none()
+        );
         release_tx.send(()).unwrap();
         assert_eq!(worker.join().unwrap(), Err(SendError::PolicyDenied));
         server.join().unwrap();
