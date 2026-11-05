@@ -24,8 +24,9 @@
 | :--- | :---: | :---: | :---: | :--- |
 | **Windows メモ帳 (Notepad)** | Standard | ✅ 正常動作 | ✅ 1-step Undo | `TS_SS_REGIONS` 許容により自然な範囲変換が可能 |
 | **RichEdit コントロール** | Standard | ✅ 正常動作 | ✅ 1-step Undo | WordPad、各種インストーラー、ダイアログ内エディタ等 |
-| **Visual Studio Code** | Standard | ✅ 正常動作 | ✅ 1-step Undo | エディタ内での通常打鍵即時反映、選択テキスト置換 |
-| **Google Chrome / Microsoft Edge** | Standard | ✅ 正常動作 | ✅ 1-step Undo | Web フォーム、検索バー、アドレスバーでの安全な変換 |
+| **Antigravity チャット入力欄** | Standard | ⚠️ 修正版の実機確認待ち | 未確認 | 2026-11-06: 修正前は `dyn=0x40`, `stat=0x0c` を `TransitoryContext` として拒否。DLLロード・接続・送信許可・Ctrl+J到達は確認済み |
+| **Visual Studio Code** | Standard | 未確認 | 未確認 | Issue #16でエディタ・チャット欄ごとに検証する |
+| **Google Chrome / Microsoft Edge** | Standard | 未確認 | 未確認 | Issue #16でWebフォーム・検索バー・アドレスバーごとに検証する |
 | **Windows Terminal / PowerShell** | Standard | ✅ 打鍵反映 | ⚠️ アプリ依存 | コンソール側のバッファ管理に基づく通常打鍵反映 |
 | **Windows エクスプローラー** | Standard | ✅ 正常動作 | ✅ 1-step Undo | ファイル名変更、アドレスバー入力 |
 
@@ -39,7 +40,7 @@ Sumibi は、ユーザーのプライバシーと機密情報の漏洩を完全�
 | :--- | :--- | :--- |
 | **パスワード / PIN 入力欄** | `TS_SS_PASSWORD`, `ES_PASSWORD`, `EM_GETPASSWORDCHAR` | **完全遮断**: 変換キーは無視され、通常打鍵のみを直接ドキュメントへ通します。本文の取得や外部送信は一切行いません。 |
 | **読取専用 (ReadOnly)** | `TS_SD_READONLY`, `EM_SETREADONLY` | **完全遮断**: 変換置換を試みません。 |
-| **一時入力コンテキスト** | `TS_SS_TRANSITORY` | **完全遮断**: 一時的な入力中のキャプチャや変換を禁止します。 |
+| **短命の入力コンテキスト** | `TS_SS_TRANSITORY` | Strictでは拒否。Standardでは `TS_SS_NOHIDDENTEXT` も存在する場合のみ通常の保護検査へ進む。スコープ・合成中・フォーカス・原文一致・範囲の再検証は省略しない。 |
 | **複数・不連続選択** | `TS_SS_DISJOINTSEL` | **完全遮断**: 不連続な選択範囲に対する誤置換を防止します。 |
 | **他社製 IME の合成中** | 他 IME のアクティブな Composition 存在 | **完全遮断**: 他 IME の入力を横取り・破壊しません。 |
 

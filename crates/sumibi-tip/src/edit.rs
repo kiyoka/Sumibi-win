@@ -444,11 +444,7 @@ pub fn select_preceding_run(
                 &target, &expanded, cookie, protection, profile,
             )?;
             if text != expected {
-                let exp_str = String::from_utf16_lossy(&expected);
-                let got_str = String::from_utf16_lossy(&text);
-                crate::session::debug_log(&format!(
-                    "select_preceding_run: text mismatch! got='{got_str}', expected='{exp_str}'"
-                ));
+                crate::session::debug_log("select_preceding_run: recorded text mismatch");
                 return Err(E_ABORT.into());
             }
             ensure_target(&manager, &target)?;

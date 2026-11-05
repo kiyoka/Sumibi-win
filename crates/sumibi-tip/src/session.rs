@@ -506,7 +506,10 @@ impl TipHostSession {
 
         // Log non-confidential TSF protection diagnostics for manual app verification
         if let Ok(status) = unsafe { context.GetStatus() } {
-            let denial = crate::protection::input_status_denial(status);
+            let denial = crate::protection::input_status_denial_with_profile(
+                status,
+                self.state.protection_profile(),
+            );
             debug_log(&format!(
                 "Preserved key status: dyn=0x{:08x}, stat=0x{:08x}, denial={:?}",
                 status.dwDynamicFlags, status.dwStaticFlags, denial
