@@ -132,6 +132,30 @@ impl Settings {
         Ok(SettingsUpdate { authority, version })
     }
 
+    /// First-run creation only. An existing valid or invalid file is never
+    /// replaced, and neither a key nor sending consent is created here.
+    pub(crate) fn create_and_apply(
+        &self,
+        path: &Path,
+        authority: &PolicyAuthority,
+    ) -> Result<PolicyVersion, SettingsError> {
+        let parent = path.parent().ok_or(SettingsError::Invalid)?;
+        if !path.is_absolute() {
+            return Err(SettingsError::Invalid);
+        }
+        match fs::create_dir(parent) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && parent.is_dir() => {}
+            Err(_) => return Err(SettingsError::Io),
+        }
+        authority.save_settings(
+            self.destination.clone(),
+            self.model.clone(),
+            self.protection_profile,
+            || self.create(path),
+        )
+    }
+
     /// Settings-editor save with a loaded baseline. Conflicts leave the live
     /// authority unchanged and require the caller to reload before retrying.
     pub fn save_and_apply_if_unchanged<'a>(

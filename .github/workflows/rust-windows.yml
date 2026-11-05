@@ -21,6 +21,11 @@ jobs:
           components: rustfmt, clippy
       - name: Format
         run: cargo fmt --all --check
+      - name: Installer regression fixtures (PowerShell 7)
+        run: .\tools\Test-Installer.ps1
+      - name: Installer regression fixtures (Windows PowerShell 5.1)
+        shell: powershell
+        run: .\tools\Test-Installer.ps1
       - name: Protected staging ACL policy (in-memory fixtures)
         run: .\tools\Test-SystemRegistrationDevAcl.ps1
       - name: Test default build
@@ -39,3 +44,5 @@ jobs:
         run: .\tools\Test-NativeRegistrationBackend.ps1
       - name: DLL load and mock TSF lifecycle
         run: cargo run -p sumibi-tip --features spike --example load_smoke --locked -- target/debug/sumibi_tip.dll
+      - name: Build and verify distribution ZIP
+        run: .\tools\New-DistributionPackage.ps1

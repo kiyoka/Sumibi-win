@@ -41,6 +41,24 @@ impl SettingsSaveTask {
         expected: Settings,
         replacement: Settings,
     ) -> Result<Self, SaveTaskError> {
+        Self::start_with_baseline(authority, path, Some(expected), replacement)
+    }
+
+    /// First-run editor save; never overwrite another editor's initial file.
+    pub fn create(
+        authority: Arc<PolicyAuthority>,
+        path: PathBuf,
+        replacement: Settings,
+    ) -> Result<Self, SaveTaskError> {
+        Self::start_with_baseline(authority, path, None, replacement)
+    }
+
+    fn start_with_baseline(
+        authority: Arc<PolicyAuthority>,
+        path: PathBuf,
+        expected: Option<Settings>,
+        replacement: Settings,
+    ) -> Result<Self, SaveTaskError> {
         if !authority.reserve_configuration_task() {
             return Err(SaveTaskError::Busy);
         }
@@ -55,10 +73,13 @@ impl SettingsSaveTask {
                     }
                 }
                 let _reservation = Reservation(worker_authority.clone());
-                let version = replacement
-                    .save_and_apply_if_unchanged(&path, &expected, &worker_authority)
-                    .map_err(SaveTaskError::Save)?
-                    .version();
+                let version = match expected {
+                    Some(expected) => replacement
+                        .save_and_apply_if_unchanged(&path, &expected, &worker_authority)
+                        .map(|update| update.version()),
+                    None => replacement.create_and_apply(&path, &worker_authority),
+                }
+                .map_err(SaveTaskError::Save)?;
                 Ok(SavedSettings {
                     authority: worker_authority,
                     version,
@@ -187,5 +208,40 @@ mod tests {
         ));
         assert!(authority.wire_policy().unwrap() == before);
         assert_eq!(Settings::load(&path).unwrap().model(), "new");
+    }
+
+    #[test]
+    fn initial_save_creates_settings_without_consent_and_never_overwrites() {
+        let root = std::env::temp_dir().join(format!("sumibi-initial-save-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let dir = root.join("Sumibi");
+        let path = dir.join("settings.json");
+        let authority = Arc::new(settings("draft").new_authority().unwrap());
+        let mut task =
+            SettingsSaveTask::create(authority.clone(), path.clone(), settings("first")).unwrap();
+        let _saved = take(&mut task).unwrap();
+        assert_eq!(Settings::load(&path).unwrap().model(), "first");
+        assert!(!authority.wire_policy().unwrap().allowed);
+        let before = authority.wire_policy().unwrap();
+        let mut task =
+            SettingsSaveTask::create(authority.clone(), path.clone(), settings("second")).unwrap();
+        assert!(matches!(
+            take(&mut task),
+            Err(SaveTaskError::Save(SettingsError::AlreadyExists))
+        ));
+        assert_eq!(Settings::load(&path).unwrap().model(), "first");
+        assert!(authority.wire_policy().unwrap() == before);
+        std::fs::write(&path, b"broken fixture").unwrap();
+        let mut task =
+            SettingsSaveTask::create(authority, path.clone(), settings("third")).unwrap();
+        assert!(matches!(
+            take(&mut task),
+            Err(SaveTaskError::Save(SettingsError::AlreadyExists))
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), b"broken fixture");
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(dir.join(".settings.json.lock")).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 }

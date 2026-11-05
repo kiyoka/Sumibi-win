@@ -1,79 +1,78 @@
-# ADR 0105: Windows 向けワンクリックインストーラーと配布パッケージ設計
+# ADR 0105: Windows用インストーラーと配布パッケージ
 
-- **日付**: 2026-11-05
-- **状態**: 採択 (Accepted)
-- **対象**: Windows 向け配布インストーラーの作成
-- **関連 ADR**:
-  - [ADR 0045: マシン登録前にDLL配置と更新境界を確定する](0045-machine-registration-boundary.md)
-  - [ADR 0103: Windows版の互換性マトリクス・配置・登録ライフサイクルと公開準備](0103-windows-compatibility-and-lifecycle.md)
-  - [ADR 0104: キャレット直前打鍵記録による手動変換（方式B）とTSFキーイベント統合](0104-preceding-run-record-manual-conversion.md)
+- 日付: 2026-11-05
+- 関連: [Issue #17](https://github.com/kiyoka/Sumibi-win/issues/17)、[PR #17](https://github.com/kiyoka/Sumibi-win/pull/17)
+- 状態: 実装・検証中
 
----
+## 配布と起動
 
-## 1. 背景と課題
+Windows PowerShell 5.1以上で動くZIP形式を採用する。
+`Install.cmd` / `Uninstall.cmd` は対応するPowerShellスクリプトを起動する。
+スクリプト側で管理者権限を判定し、必要ならUAC昇格を待ち、子の終了コードを返す。
+cmdからPowerShellへ、さらにcmdへ戻す多重の文字列展開は行わない。
 
-Issue #8 において、TSF COM 登録、パッシブ打鍵記録による直前変換（`Ctrl+J`）、二層保護プロファイル、および `sumibi-setup.exe` による CLI 登録管理が成立した。
+ZIPには次の11ファイルを含める。
 
-しかし、一般のエンドユーザーが GitHub Releases 等からダウンロードして直感的にインストール・利用開始するためには、手動でのコマンドライン操作や開発スクリプト実行を必要とせず、Windows 標準の操作性（ダブルクリックで UAC 昇格し自動完了する）を備えた配布用インストーラーパッケージが必要である。
+- `Install.cmd`, `Install.ps1`
+- `Uninstall.cmd`, `Uninstall.ps1`
+- `Installer.Common.ps1`, `README.txt`, `LICENSE`, `package.json`
+- `bin/sumibi-host.exe`, `bin/sumibi-setup.exe`, `bin/sumibi_tip.dll`
 
----
+`package.json` は形式版、製品名、版番号、ファイルごとのSHA-256を記録する。
+ZIPのSHA-256は外部の `SHA256SUMS.txt` に記録する。
+チェックサムは破損検出であり、発行者認証やコード署名を代替しない。
 
-## 2. 決定事項
+## 配置と更新
 
-### 2.1 配布形態（ポータブル・ワンクリック自己完結パッケージ）
+配置先を64-bit WindowsのProgram Files内の `Sumibi` に限定する。
+版番号とGUIDから毎回新しい `versions/<version>-<guid>/` を作り、
+Host・Setup・TIPをまとめて配置する。同じ版の再インストールでも上書きしない。
+祖先と管理対象パスのjunction/symbolic linkを拒否する。
 
-外部の重厚なインストーラーフレームワーク（WiX や Inno Setup 等）に依存せず、Windows 標準環境（PowerShell 5.1+ / cmd.exe）のみで完結する自己完結型パッケージ（ZIP）を採用する。
+新規ディレクトリのACLはSIDで設定する。
+AdministratorsとSYSTEMにFullControl、UsersとALL APPLICATION PACKAGESにReadAndExecuteを付与する。
+複数の導入・削除は同じ名前付きmutexで排他する。
 
-- **アーカイブ名**: `Sumibi-v<Version>-windows-x64.zip`
-- **チェックサム**: `SHA256SUMS.txt` による改ざん防止
-- **パッケージ内部構造**:
-  ```
-  Sumibi-v0.1.0-windows-x64/
-  ├── Install.cmd        (ダブルクリックで UAC 昇格し Install.ps1 を実行)
-  ├── Install.ps1        (インストーラー本体: 配置・権限・登録・スタートアップ)
-  ├── Uninstall.cmd      (ダブルクリックで UAC 昇格し Uninstall.ps1 を実行)
-  ├── Uninstall.ps1      (アンインストーラー本体: 登録解除・停止・ファイル削除)
-  ├── README.txt         (インストール・使い方・アンインストールガイド)
-  └── bin/
-      ├── sumibi_tip.dll (パッシブ本番リリース DLL / spike API 排除)
-      ├── sumibi-host.exe(常駐サービス・GUI 設定マネージャー)
-      └── sumibi-setup.exe(管理 CLI / TSF & COM 登録エンジン)
-  ```
+配置後のハッシュと本番DLLのエクスポート検査が成功したら、復旧用の
+`installation.json` とアンインストーラーを保存する。
+その後、インストール先配下にあるHostだけを停止し、SetupでCOM/TSFを登録する。
+終了コードに加えてHKLM/HKCUのCOM参照先とTSFプロファイルの存在も確認する。
+スタートアップとショートカットの更新後に完了状態を記録する。
 
-### 2.2 インストール処理フロー (`Install.ps1`)
+レジストリ変更全体が原子的になるわけではない。途中で失敗したらエラーとして終了し、
+旧版・新しい配置・復旧記録を残す。再インストールまたはアンインストールで復旧する。
+既存アプリは古いDLLを保持し得るため、更新後に利用者が再起動する。
+アプリの強制終了、旧版の自動削除、送信への自動同意は行わない。
 
-1. **管理者権限の自動検証**: 非昇格時は `Install.cmd` 経由で UAC ダイアログを自動ポップアップ。
-2. **実行中プロセスの安全停止**: `sumibi-host` が起動中の場合は安全に終了。
-3. **配置と厳格なアクセス制御 (ACL)**:
-   - 配置先: `C:\Program Files\Sumibi\bin\` および `versions\0.1.0\`
-   - `Administrators` / `SYSTEM`: フルコントロール
-   - `Users`: 読み取り・実行 (RX) のみ
-   - `ALL APPLICATION PACKAGES` (`*S-1-15-2-1`): 読み取り・実行 (RX) を付与し、Windows 11 メモ帳等の AppContainer アプリからの安全なロードを保証。
-4. **TSF / COM 登録**:
-   - `sumibi-setup.exe install --dll <targetDll> --scope system` を実行。
-   - `HKLM` COM クラス登録、TSF カテゴリ登録、および日本語プロファイル（`0x0411`）の自動有効化。
-5. **スタートアップ自動常駐の登録**:
-   - `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` に `"C:\Program Files\Sumibi\bin\sumibi-host.exe" host-window --minimized` を登録。
-6. **スタートメニューのショートカット作成**:
-   - `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Sumibi` に作成：
-     - `Sumibi Settings` (API キー・モデル設定画面を開く)
-     - `Sumibi Background Host` (トレイ常駐サービスを開く)
-     - `Uninstall Sumibi` (アンインストーラーを起動)
-7. **初回設定への誘導**:
-   - インストール完了時、API キー設定画面（`settings-window`）の起動を選択可能。
+## 利用開始
 
-### 2.3 ビルド順序と安全境界の保証 (`New-DistributionPackage.ps1`)
+スタートメニューとHKLMのRun値は、新しい版のHostを指す。
+未設定時にも起動できるよう、常駐起動は `sumibi-host.exe --minimized` を使う。
+初回は空のホスト名・モデルと `/v1` のパスを示す設定画面を開く。
+最初の保存はworkerから新規作成のみを行い、既存の正常・破損ファイルを置き換えない。
+設定保存後にキー操作を有効にし、設定・APIキー・送信への同意を分けて扱う。
+昇格したインストーラーから個人設定画面を起動しない。
 
-ワークスペース内の依存関係解決によって `sumibi-setup`（開発依存に `features = ["spike"]` を含む）が `sumibi_tip.dll` を上書きするリスクを完全に排除するため、以下のビルド順序を厳格に強制する：
+## 削除
 
-1. **Step 1**: 先に `sumibi-host` および `sumibi-setup` を `--release` でビルド。
-2. **Step 2**: その**後**に `sumibi-tip` を `--no-default-features --release` でビルド（パッシブ DLL を確定）。
-3. **Step 3**: パッケージステージング直後に `sumibi-setup plan-system-dev --dll ...` を実行し、開発用エクスポートが存在しないことを自動検証。
+配置記録とSetupがなければファイル削除へ進まない。
+登録解除の終了コードと、COM参照・TSFプロファイルが消えたことを確認する。
+別配置先を指すCOM登録や起動設定は削除しない。
+配置記録にある版の既知ファイルだけを削除し、無関係なファイルは保持する。
+ディレクトリの再帰的な全削除や、レジストリ直接削除へのフォールバックは行わない。
 
----
+DLLがロックされていれば非ゼロで終了し、Setupと復旧記録を残す。
+アプリ終了後に再実行できる。再起動時削除は予約しない。
+LocalAppDataの設定と資格情報ストアのAPIキーは保持する。
+従来の手動配置ファイルは所有を証明できないため、自動削除しない。
 
-## 3. 利点と効果
+## 検証
 
-- **ユーザーフレンドリー**: `Install.cmd` をダブルクリックするだけで、管理者昇格・配置・IME 登録・スタートアップ設定が数秒で完了。
-- **Fail-Closed 安全性の保証**: パッシブ性自動検査により、本番パッケージに開発用バックドアが混入する可能性を排除。
-- **クリーンな削除**: `Uninstall.cmd` により、TSF 登録・スタートアップ・ショートカット・ファイルが完全にクリーンアップされ、個人設定（API キー）は保護。
+`tools/Test-Installer.ps1` は一時フォルダーで初回導入、同じ版の更新、
+ファイルロック、登録失敗、削除失敗、復旧、設定外ファイルの保持を検査する。
+実ファイルと実ロックを使い、レジストリ・プロセス終了・ACL書込・ショートカット変更は置換する。
+PowerShell 5.1と7をCIで実行する。
+
+パッケージ生成ではHost/Setupと本番TIPのビルド先を分け、検査時の再ビルドで
+spike DLLに置き換わらないようにする。検証はZIPを展開したファイルにも実施する。
+全体のHKLM導入・UAC・ログオン起動の実機試験は、上記の非破壊テストとは別の受入項目である。

@@ -1,117 +1,57 @@
-<#
-.SYNOPSIS
-    Builds the complete production distribution package (ZIP) for Sumibi IME for Windows x64.
-.DESCRIPTION
-    1. Builds passive release DLL (spike-free, verified with plan-system-dev).
-    2. Builds production release binaries for sumibi-host and sumibi-setup.
-    3. Assembles files into dist\Sumibi-v<version>-windows-x64.
-    4. Creates standalone release ZIP and SHA-256 checksums.
-#>
+#Requires -Version 5.1
 [CmdletBinding()]
-param(
-    [string]$Version = "0.1.0",
-    [string]$OutputDir = ""
-)
-
+param([string]$Version = '', [string]$OutputDir = '')
 $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
+. (Join-Path $repository 'installer\Installer.Common.ps1')
 Push-Location -LiteralPath $repository
-
 try {
-    if ([string]::IsNullOrWhiteSpace($Version)) {
-        $cargoToml = Get-Content (Join-Path $repository "Cargo.toml") -Raw
-        if ($cargoToml -match '\[workspace\.package\][\s\S]*?version\s*=\s*"([^"]+)"') {
-            $Version = $matches[1]
-        } else {
-            $Version = "0.1.0"
-        }
+    if (-not $Version) {
+        $toml = Get-Content -LiteralPath (Join-Path $repository 'Cargo.toml') -Raw
+        if ($toml -notmatch '(?s)\[workspace\.package\]\s*version\s*=\s*"([^"]+)"') { throw 'Workspace package version not found.' }
+        $Version = $matches[1]
     }
-
-    if ([string]::IsNullOrWhiteSpace($OutputDir)) {
-        $OutputDir = Join-Path $repository "dist"
-    }
-
+    Assert-SumibiVersion $Version
+    if (-not $OutputDir) { $OutputDir = Join-Path $repository 'dist' }
+    $OutputDir = [IO.Path]::GetFullPath($OutputDir)
+    Assert-SumibiPlainPath -Path $OutputDir -StopAt $OutputDir
+    $null = New-Item -ItemType Directory -Path $OutputDir -Force
     $packageName = "Sumibi-v$Version-windows-x64"
-    $stageDir = Join-Path $OutputDir $packageName
-    $zipPath = Join-Path $OutputDir "$packageName.zip"
-
-    Write-Host "========================================================" -ForegroundColor Cyan
-    Write-Host "   Creating Sumibi Distribution Package ($packageName)" -ForegroundColor Cyan
-    Write-Host "========================================================" -ForegroundColor Cyan
-
-    # 1. Clean previous dist staging
-    if (Test-Path $stageDir) {
-        Remove-Item -Path $stageDir -Recurse -Force
+    $zipPath = Get-SumibiChildPath $OutputDir "$packageName.zip"
+    if (Test-Path -LiteralPath $zipPath) { throw 'Package ZIP already exists. Use a new output directory or remove that ZIP explicitly.' }
+    $stage = Get-SumibiChildPath $OutputDir ($packageName + '-' + [guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path (Join-Path $stage 'bin') -Force
+    $toolsTarget = Join-Path $repository 'target\dist-tools'
+    $tipTarget = Join-Path $repository 'target\dist-tip'
+    & cargo build --release -p sumibi-host -p sumibi-setup --locked --offline --target-dir $toolsTarget
+    if ($LASTEXITCODE -ne 0) { throw 'Release Host/Setup build failed.' }
+    $setup = Join-Path $toolsTarget 'release\sumibi-setup.exe'
+    & (Join-Path $PSScriptRoot 'Build-PassiveRelease.ps1') -TargetDir $tipTarget -SetupExe $setup
+    Copy-Item -LiteralPath (Join-Path $tipTarget 'release\sumibi_tip.dll') -Destination (Join-Path $stage 'bin')
+    foreach ($name in @('sumibi-host.exe', 'sumibi-setup.exe')) {
+        Copy-Item -LiteralPath (Join-Path $toolsTarget "release\$name") -Destination (Join-Path $stage 'bin')
     }
-    if (Test-Path $zipPath) {
-        Remove-Item -Path $zipPath -Force
+    foreach ($name in @('Install.cmd', 'Install.ps1', 'Uninstall.cmd', 'Uninstall.ps1', 'Installer.Common.ps1', 'README.txt')) {
+        Copy-Item -LiteralPath (Join-Path $repository "installer\$name") -Destination $stage
     }
-    New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
-
-    $distTarget = Join-Path $repository "target\dist-build"
-
-    # 1. Build Release Host and Setup binaries FIRST
-    Write-Host "`n==> Step 1: Building release sumibi-host and sumibi-setup..." -ForegroundColor Cyan
-    & cargo build --release -p sumibi-host -p sumibi-setup --target-dir $distTarget
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to build release binaries ($LASTEXITCODE)"
+    Copy-Item -LiteralPath (Join-Path $repository 'LICENSE') -Destination $stage
+    $files = [ordered]@{}
+    foreach ($relative in @(Get-SumibiPackageFiles)) {
+        $files[$relative] = (Get-FileHash -LiteralPath (Get-SumibiChildPath $stage $relative) -Algorithm SHA256).Hash.ToLowerInvariant()
     }
-    $releaseHost = Join-Path $distTarget "release\sumibi-host.exe"
-    $releaseSetup = Join-Path $distTarget "release\sumibi-setup.exe"
-
-    # 2. Build Passive Production DLL SECOND (so workspace dependency resolution cannot overwrite it)
-    Write-Host "`n==> Step 2: Building and validating passive release DLL (spike-free)..." -ForegroundColor Cyan
-    & "$PSScriptRoot\Build-PassiveRelease.ps1" -Configuration Release -TargetDir $distTarget
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to build passive release DLL"
-    }
-    $releaseDll = Join-Path $distTarget "release\sumibi_tip.dll"
-
-    # 4. Assemble package layout
-    Write-Host "`n==> Step 3: Assembling package files..." -ForegroundColor Cyan
-    $binDir = Join-Path $stageDir "bin"
-    New-Item -ItemType Directory -Path $binDir -Force | Out-Null
-
-    Copy-Item -Path $releaseDll -Destination $binDir -Force
-    Copy-Item -Path $releaseHost -Destination $binDir -Force
-    Copy-Item -Path $releaseSetup -Destination $binDir -Force
-
-    # Double check staged DLL is passive
-    $stagedDll = Join-Path $binDir "sumibi_tip.dll"
-    & cargo run -p sumibi-setup --target-dir $distTarget -- plan-system-dev --dll $stagedDll
-    if ($LASTEXITCODE -ne 0) {
-        throw "Staged DLL in package failed passive fail-closed verification!"
-    }
-
-    # Copy installer scripts and docs to package root
-    $installerSource = Join-Path $repository "installer"
-    Copy-Item -Path (Join-Path $installerSource "Install.cmd") -Destination $stageDir -Force
-    Copy-Item -Path (Join-Path $installerSource "Install.ps1") -Destination $stageDir -Force
-    Copy-Item -Path (Join-Path $installerSource "Uninstall.cmd") -Destination $stageDir -Force
-    Copy-Item -Path (Join-Path $installerSource "Uninstall.ps1") -Destination $stageDir -Force
-    Copy-Item -Path (Join-Path $installerSource "README.txt") -Destination $stageDir -Force
-
-    # 5. Create ZIP archive
-    Write-Host "`n==> Step 4: Compressing into $zipPath..." -ForegroundColor Cyan
-    Compress-Archive -Path "$stageDir\*" -DestinationPath $zipPath -Force
-
-    # 6. Generate SHA-256 checksums
-    Write-Host "`n==> Step 5: Generating SHA-256 checksums..." -ForegroundColor Cyan
-    $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $checksumFile = Join-Path $OutputDir "SHA256SUMS.txt"
-    $checksumEntry = "$hash  $packageName.zip"
-    Set-Content -Path $checksumFile -Value $checksumEntry -Encoding UTF8
-
-    Write-Host ""
-    Write-Host "========================================================" -ForegroundColor Green
-    Write-Host "  Distribution package successfully created!" -ForegroundColor Green
-    Write-Host "========================================================" -ForegroundColor Green
-    Write-Host "  Package Folder: $stageDir"
-    Write-Host "  ZIP Archive:    $zipPath"
-    Write-Host "  SHA-256 Hash:   $hash"
-    Write-Host "  Checksum File:  $checksumFile"
-    Write-Host "========================================================" -ForegroundColor Green
-}
-finally {
-    Pop-Location
-}
+    [ordered]@{ schema = 1; product = 'Sumibi'; version = $Version; files = $files } |
+        ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'package.json') -Encoding UTF8
+    $null = Read-SumibiPackage $stage
+    Invoke-SumibiSetup $setup @('plan-system-dev', '--dll', (Join-Path $stage 'bin\sumibi_tip.dll'))
+    # Use a literal directory wildcard constructed from a checked path; a source
+    # directory with [] must not be interpreted as a wildcard by Compress-Archive.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::CreateFromDirectory($stage, $zipPath)
+    $checksum = Get-SumibiChildPath $OutputDir 'SHA256SUMS.txt'
+    $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $entries = @(if (Test-Path -LiteralPath $checksum) { Get-Content -LiteralPath $checksum })
+    @($entries | Where-Object { $_ -notmatch ('\s' + [regex]::Escape("$packageName.zip") + '$') }) + @("$hash  $packageName.zip") |
+        Set-Content -LiteralPath $checksum -Encoding UTF8
+    & (Join-Path $PSScriptRoot 'Test-DistributionPackage.ps1') -DistDir $OutputDir -Version $Version
+    Write-Host "Package created and verified: $zipPath"
+} finally { Pop-Location }

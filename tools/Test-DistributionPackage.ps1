@@ -1,71 +1,38 @@
-<#
-.SYNOPSIS
-    Verifies that the distribution package structure, checksums, and files are valid.
-#>
+#Requires -Version 5.1
 [CmdletBinding()]
-param(
-    [string]$DistDir = "dist",
-    [string]$Version = "0.1.0"
-)
-
+param([string]$DistDir = 'dist', [string]$Version = '')
 $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
-Push-Location -LiteralPath $repository
-
+. (Join-Path $repository 'installer\Installer.Common.ps1')
+if (-not $Version) {
+    $toml = Get-Content -LiteralPath (Join-Path $repository 'Cargo.toml') -Raw
+    if ($toml -notmatch '(?s)\[workspace\.package\]\s*version\s*=\s*"([^"]+)"') { throw 'Workspace version not found.' }
+    $Version = $matches[1]
+}
+Assert-SumibiVersion $Version
+if (-not [IO.Path]::IsPathRooted($DistDir)) { $DistDir = Join-Path $repository $DistDir }
+$name = "Sumibi-v$Version-windows-x64.zip"
+$zipPath = Get-SumibiChildPath $DistDir $name
+$checksumPath = Get-SumibiChildPath $DistDir 'SHA256SUMS.txt'
+$entry = @(Get-Content -LiteralPath $checksumPath | Where-Object { $_ -match ('^[0-9a-fA-F]{64}\s+' + [regex]::Escape($name) + '$') })
+if ($entry.Count -ne 1) { throw 'Expected one checksum entry for this ZIP.' }
+$hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash
+if (($entry[0] -split '\s+')[0] -ne $hash) { throw 'ZIP checksum mismatch.' }
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
 try {
-    $targetDist = Join-Path $repository $DistDir
-    $packageName = "Sumibi-v$Version-windows-x64"
-    $stageDir = Join-Path $targetDist $packageName
-    $zipPath = Join-Path $targetDist "$packageName.zip"
-    $checksumFile = Join-Path $targetDist "SHA256SUMS.txt"
-
-    Write-Host "==> Verifying distribution package: $packageName..." -ForegroundColor Cyan
-
-    if (-not (Test-Path $zipPath)) {
-        throw "ZIP archive not found at: $zipPath"
+    $expected = @((Get-SumibiPackageFiles)) + @('package.json')
+    $actual = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
+    if ($actual.Count -ne $expected.Count -or @(Compare-Object ($actual | Sort-Object) ($expected | Sort-Object)).Count) {
+        throw 'Unexpected, duplicate or missing entries in ZIP.'
     }
-    if (-not (Test-Path $checksumFile)) {
-        throw "Checksum file not found at: $checksumFile"
-    }
-
-    # Verify SHA-256 match
-    $expectedHash = (Get-Content $checksumFile).Split(' ')[0].Trim()
-    $actualHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($expectedHash -ne $actualHash) {
-        throw "SHA-256 checksum mismatch! Expected: $expectedHash, Actual: $actualHash"
-    }
-    Write-Host "  [OK] SHA-256 checksum verified: $actualHash" -ForegroundColor Green
-
-    # Verify required files in package folder
-    $requiredFiles = @(
-        "Install.cmd",
-        "Install.ps1",
-        "Uninstall.cmd",
-        "Uninstall.ps1",
-        "README.txt",
-        "bin\sumibi-host.exe",
-        "bin\sumibi-setup.exe",
-        "bin\sumibi_tip.dll"
-    )
-
-    foreach ($file in $requiredFiles) {
-        $filePath = Join-Path $stageDir $file
-        if (-not (Test-Path $filePath)) {
-            throw "Missing required package file: $file"
-        }
-    }
-    Write-Host "  [OK] All $( $requiredFiles.Count ) required package files present." -ForegroundColor Green
-
-    # Verify passive fail-closed properties of packaged DLL
-    $packagedDll = Join-Path $stageDir "bin\sumibi_tip.dll"
-    & cargo run -p sumibi-setup --target-dir target\dist-build -- plan-system-dev --dll $packagedDll
-    if ($LASTEXITCODE -ne 0) {
-        throw "Packaged DLL failed passive fail-closed preflight inspection!"
-    }
-    Write-Host "  [OK] Packaged DLL verified as passive production build." -ForegroundColor Green
-
-    Write-Host "==> Distribution package validation SUCCESS!" -ForegroundColor Green
-}
-finally {
-    Pop-Location
-}
+} finally { $archive.Dispose() }
+# Inspect the delivered archive, not a separate staging directory.
+$verifyRoot = Join-Path $repository 'target\package-verification'
+$null = New-Item -ItemType Directory -Path $verifyRoot -Force
+$extract = Get-SumibiChildPath $verifyRoot ([guid]::NewGuid().ToString('N'))
+[IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $extract)
+$manifest = Read-SumibiPackage $extract
+if ($manifest.version -ne $Version) { throw 'Manifest version differs from package version.' }
+Invoke-SumibiSetup (Join-Path $extract 'bin\sumibi-setup.exe') @('plan-system-dev', '--dll', (Join-Path $extract 'bin\sumibi_tip.dll'))
+Write-Host "ZIP checksum, $($expected.Count) files, manifest and production DLL verified: $zipPath"

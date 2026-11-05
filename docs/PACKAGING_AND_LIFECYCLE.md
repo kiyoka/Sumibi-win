@@ -1,99 +1,75 @@
-# Sumibi-win パッケージング・導入・更新・削除ガイド
+# Sumibi-winの配布・導入・更新・削除
 
-本ドキュメントは、[Issue #8](https://github.com/kiyoka/Sumibi-win/issues/8) および [ADR 0103](adr/0103-windows-compatibility-and-lifecycle.md) に基づき、Windows版 Sumibi の製品ビルド、安全な配置、登録、更新、アンインストール手順を説明します。
+[Issue #17](https://github.com/kiyoka/Sumibi-win/issues/17) のZIP配布を説明します。
+実装判断は [ADR 0105](adr/0105-windows-installer-and-distribution-package.md)、
+利用者向け手順は [installer/README.txt](../installer/README.txt) を参照してください。
 
----
+## 配布ZIPの生成と検証
 
-## 1. ビルド方針（製品パッシブ DLL の生成）
-
-本番配布用の `sumibi_tip.dll` は、開発用バックドア API（`spike`）を**完全にコンパイル除外**した「パッシブ DLL」としてビルドします。
-
-```powershell
-# 1. 製品版 パッシブ DLL のビルド (spike 除外)
-cargo build --release -p sumibi-tip --no-default-features
-
-# 2. 製品版 Host サービス / 管理 CLI のビルド
-cargo build --release -p sumibi-host
-cargo build --release -p sumibi-setup
-```
-
-### 事前検証 (Preflight Check)
-インストーラーは、DLL に開発用エクスポート（`SumibiSpikeBodyReadCount` 等）が存在しないこと、および必要な COM エクスポート（`DllGetClassObject`, `DllCanUnloadNow`）が存在することを厳格に検査します。
-
----
-
-## 2. ディレクトリ配置とアクセス制御 (ACL)
-
-配置先ディレクトリは、管理者以外の一般ユーザーによる改ざんを完全に防ぐため、保護ディレクトリに配置します。
-
-- **配置基準パス**: `C:\Program Files\Sumibi`
-- **バージョン別配置構造**:
-  ```
-  C:\Program Files\Sumibi\
-  ├── versions\
-  │   └── 0.1.0\
-  │       ├── sumibi_tip.dll       (パッシブ製品 DLL)
-  │       └── receipt.json         (配置検証メタデータ)
-  ├── bin\
-  │   ├── sumibi-host.exe          (Host 常駐プロセス)
-  │   └── sumibi-setup.exe         (管理 CLI)
-  ```
-- **アクセス権限**:
-  - `Administrators` / `SYSTEM`: フルコントロール (F)
-  - `Users`: 読み取り・実行 (RX) のみ（書き込み・変更禁止）
-
----
-
-## 3. インストール手順 (Installation)
-
-管理者権限で実行します。
+Rust依存を取得済みのWindows x64開発環境で実行します。
+ビルドは `--locked --offline` を使います。
 
 ```powershell
-# 管理者 PowerShell で実行
-.\target\release\sumibi-setup.exe install --dll .\target\release\sumibi_tip.dll --version 0.1.0
+.\dev.ps1 package
+.\tools\Test-DistributionPackage.ps1
 ```
 
-### 実行内容
-1. `C:\Program Files\Sumibi\versions\0.1.0` ディレクトリを作成し、厳格な ACL を設定。
-2. DLL をコピーし、SHA-256 チェックサムを記録。
-3. `install_journal`（先行書き込みジャーナル）を開始。
-4. COM クラス登録（`HKLM\Software\Classes\CLSID\{E927D4AB-2EC9-4DD3-A921-A4620B95A410}`）。
-5. TSF 言語プロファイル登録（日本語 `0x0411`、`bEnabledByDefault: false`）。
-6. TSF カテゴリ登録（Keyboard, Display Attribute）。
-7. ジャーナルにコミット記録。
-
-> [!NOTE]
-> **既定 IME 非強制**: インストールを行っても Windows の既定 IME は変更されません。言語バーや `Win + Space` から「Sumibi」を選択して利用を開始します。
-
----
-
-## 4. Side-by-Side 更新手順 (Update Without Lock Interruption)
-
-既存のプロセスが旧バージョンの `sumibi_tip.dll` をロードしていても、プロセスを強制終了することなく安全に更新できます。
+既定ではCargo.tomlのworkspace版を使用します。
+`dist/Sumibi-v<version>-windows-x64.zip` と `dist/SHA256SUMS.txt` を生成します。
+同名ZIPがある場合は上書きせず停止します。別の出力先を指定できます。
 
 ```powershell
-# 新バージョン 0.1.1 への更新
-.\target\release\sumibi-setup.exe update --dll .\new_artifacts\sumibi_tip.dll --version 0.1.1
+.\tools\New-DistributionPackage.ps1 -OutputDir .\target\package-trial
+.\tools\Test-DistributionPackage.ps1 -DistDir .\target\package-trial
 ```
 
-### 実行内容
-1. 新ディレクトリ `versions\0.1.1` に新 DLL を配置。
-2. レジストリ（`InprocServer32` および TSF Profile）の参照先をアトミックに `0.1.1` に切り替え。
-3. 新規に起動するアプリケーションは即座に新バージョンを使用します。
-4. 既に起動しているアプリケーションはそのまま旧バージョンの DLL で安全に動作を継続し、プロセス終了時に解放されます。
+本番TIPとHost/Setupは別のtargetディレクトリでビルドします。
+ステージング時とZIP展開後に、ハッシュ・必須11ファイル・本番DLLのエクスポートを検査します。
+エクスポート検査はDLLをロードします。署名や全依存DLLの信頼を保証する検査ではありません。
+パッケージ作成だけではIME登録や設定変更を行いません。
 
----
+## インストールと初期設定
 
-## 5. アンインストール手順 (Uninstallation)
+ZIPをすべて展開し、`Install.cmd` を実行します。
+管理者権限がなければUAC昇格を要求し、完了まで待ちます。
+Program Files内のSumibiに配置し、COM/TSF・ログオン時起動・ショートカットを登録します。
+既定IMEは変更しません。
+
+通常ユーザーでスタートメニューの「Sumibi Settings」を開き、
+ホスト名・モデル・パスを保存してからAPIキーを保存します。
+初回設定はGUIから作成できます。破損した既存設定は上書きしません。
+「Sumibi Background Host」で接続先を確認して送信に同意し、対象アプリでWin+SpaceからSumibiを選びます。
+Hostの再起動後は再度送信への同意が必要です。
+
+## 更新と復旧
+
+新しいZIPの `Install.cmd` を実行します。
+毎回 `versions/<version>-<guid>/` にHost・Setup・DLLを配置します。
+同じ版の再導入でも使用中のDLLを上書きしません。
+インストール先のHostだけを停止し、新しい配置へ登録と起動先を切り替えます。
+利用していたアプリとHostは更新後に開き直してください。
+
+途中で失敗した場合は非ゼロで終了し、旧版・新配置・`installation.json` を残します。
+問題を解消して再インストールするか、インストール先の `Uninstall.cmd` で登録を解除します。
+レジストリ更新全体の自動ロールバックは実装していません。
+
+## アンインストール
+
+スタートメニューの「Uninstall Sumibi」またはインストール先の `Uninstall.cmd` を実行します。
+登録解除を確認した後、管理対象の起動設定・ショートカット・ファイルを削除します。
+無関係なファイルと従来の手動配置は自動削除しません。
+使用中のDLLが残った場合はエラーで知らせ、Setupと復旧記録を保持します。
+アプリを終了して再実行してください。再起動時削除は予約しません。
+設定とAPIキーは保持します。
+
+## 開発時の回帰テスト
 
 ```powershell
-.\target\release\sumibi-setup.exe uninstall
+.\tools\Test-Installer.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Installer.ps1
+cargo test -p sumibi-host --locked --offline
 ```
 
-### 実行内容
-1. TSF カテゴリおよび言語プロファイルの登録解除。
-2. COM クラス登録の解除。
-3. ジャーナルの完了記録。
-4. ファイル・ディレクトリの削除。
-   - 使用中でロックされている DLL がある場合は、再起動時削除（`MoveFileExW`）をスケジュール。
-5. **ユーザー設定の保護**: `%LOCALAPPDATA%\Sumibi\settings.json` および資格情報ストアの API キーは保持されます（明示的な `--purge` オプション指定時のみ全削除）。
+インストーラーの回帰テストは一時ファイルとAPIの置換を使い、マシン登録を変更しません。
+UAC、実際のHKLM導入・削除、ログオン起動は専用の実機受入項目です。
+Antigravityなどの変換互換性は [Issue #16](https://github.com/kiyoka/Sumibi-win/issues/16) で扱います。

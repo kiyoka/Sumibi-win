@@ -120,7 +120,7 @@ fn text(hwnd: HWND) -> Result<String, &'static str> {
     String::from_utf16(&buffer[..count as usize]).map_err(|_| "invalid field")
 }
 impl View {
-    fn new(settings: &Settings, visible: bool) -> WinResult<Self> {
+    fn new(settings: Option<&Settings>, visible: bool) -> WinResult<Self> {
         unsafe {
             let instance = GetModuleHandleW(None)?;
             let class = w!("SumibiHostSettings");
@@ -210,9 +210,17 @@ impl View {
             )?;
             let mut fields = Vec::new();
             for (i, (label, value)) in [
-                ("ホスト名", settings.destination().host()),
-                ("モデル", settings.model()),
-                ("パス", settings.destination().base_path()),
+                (
+                    "ホスト名",
+                    settings.map(|s| s.destination().host()).unwrap_or(""),
+                ),
+                ("モデル", settings.map(|s| s.model()).unwrap_or("")),
+                (
+                    "パス",
+                    settings
+                        .map(|s| s.destination().base_path())
+                        .unwrap_or("/v1"),
+                ),
             ]
             .iter()
             .enumerate()
@@ -267,7 +275,10 @@ impl View {
                 22,
             )?;
 
-            let (std_check, strict_check) = match settings.protection_profile() {
+            let (std_check, strict_check) = match settings
+                .map(Settings::protection_profile)
+                .unwrap_or(ProtectionProfile::Standard)
+            {
                 ProtectionProfile::Standard => (BST_CHECKED, 0),
                 ProtectionProfile::Strict => (0, BST_CHECKED),
             };
@@ -328,6 +339,15 @@ impl View {
                 40,
                 0,
             )?;
+            if settings.is_none() {
+                set_text(
+                    view.status,
+                    "ホスト名・モデル・パスを入力して設定を保存してください。",
+                );
+                let _ = EnableWindow(view.key_save, false);
+                let _ = EnableWindow(view.key_delete, false);
+                let _ = EnableWindow(view.secret, false);
+            }
             if SetTimer(Some(hwnd), 1, 50, None) == 0 {
                 return Err(windows::core::Error::from_thread());
             }
@@ -346,14 +366,25 @@ enum KeyOperation {
 }
 
 pub fn run(path: PathBuf) -> Result<(), &'static str> {
-    let mut baseline =
-        Settings::load(&path).map_err(|_| "settings unavailable; run settings-init first")?;
+    let mut baseline = load_for_editor(&path)?;
+    // In-memory placeholder only, never displayed or saved. The first save
+    // replaces it with user-entered settings; key controls stay disabled until then.
+    let draft = Settings::new(
+        sumibi_host::manual::Scheme::Https,
+        "setup.invalid",
+        443,
+        "/v1",
+        "configure-model",
+    )
+    .map_err(|_| "settings unavailable")?;
     let authority = Arc::new(
         baseline
+            .as_ref()
+            .unwrap_or(&draft)
             .new_authority()
             .map_err(|_| "settings unavailable")?,
     );
-    let view = View::new(&baseline, true).map_err(|_| "settings window unavailable")?;
+    let view = View::new(baseline.as_ref(), true).map_err(|_| "settings window unavailable")?;
     let mut pending: Option<(SettingsSaveTask, Settings)> = None;
     let mut key_pending: Option<(CredentialTask, KeyOperation)> = None;
     let mut settings_conflict = false;
@@ -384,9 +415,9 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                 text(view.model).and_then(|model| {
                     text(view.path).and_then(|base| {
                         Settings::new(
-                            baseline.destination().scheme(),
+                            baseline.as_ref().unwrap_or(&draft).destination().scheme(),
                             &host,
-                            baseline.destination().port(),
+                            baseline.as_ref().unwrap_or(&draft).destination().port(),
                             &base,
                             &model,
                         )
@@ -396,12 +427,19 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                 })
             });
             match settings {
-                Ok(replacement) => match SettingsSaveTask::start(
-                    authority.clone(),
-                    path.clone(),
-                    baseline.clone(),
-                    replacement.clone(),
-                ) {
+                Ok(replacement) => match match baseline.clone() {
+                    Some(expected) => SettingsSaveTask::start(
+                        authority.clone(),
+                        path.clone(),
+                        expected,
+                        replacement.clone(),
+                    ),
+                    None => SettingsSaveTask::create(
+                        authority.clone(),
+                        path.clone(),
+                        replacement.clone(),
+                    ),
+                } {
                     Ok(task) => {
                         pending = Some((task, replacement));
                         unsafe {
@@ -414,7 +452,11 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                 Err(_) => set_text(view.status, "ホスト名・モデル・パスを確認してください。"),
             }
         }
-        if view.actions.key_save.replace(false) && pending.is_none() && key_pending.is_none() {
+        if view.actions.key_save.replace(false)
+            && pending.is_none()
+            && key_pending.is_none()
+            && baseline.is_some()
+        {
             match read_secret(view.secret) {
                 Ok(secret) => match CredentialTask::save(authority.clone(), secret) {
                     Ok(task) => {
@@ -430,7 +472,11 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                 ),
             }
         }
-        if view.actions.key_delete.replace(false) && pending.is_none() && key_pending.is_none() {
+        if view.actions.key_delete.replace(false)
+            && pending.is_none()
+            && key_pending.is_none()
+            && baseline.is_some()
+        {
             // Default to No. Only this explicit confirmation can start deletion.
             let confirmed = unsafe {
                 MessageBoxW(Some(view.hwnd), w!("この PC の現在ユーザーの Sumibi API キーを削除します。\n接続先とモデルの設定は残ります。削除しますか？"), w!("API キーの削除"), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2)
@@ -453,6 +499,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                     result,
                     Err(SaveTaskError::Save(
                         sumibi_host::settings::SettingsError::Conflict
+                            | sumibi_host::settings::SettingsError::AlreadyExists
                     ))
                 );
                 settings_conflict |= conflict;
@@ -461,7 +508,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                         // This editor owns a fresh, never-advertised authority
                         // with no Broker or subscribers. The file is for the next launch.
                         let _version = saved.version();
-                        baseline = replacement;
+                        baseline = Some(replacement);
                         set_text(view.status, "保存しました。次回起動時に適用されます。");
                     }
                     Err(_) if conflict => set_text(
@@ -505,9 +552,9 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
         }
         unsafe {
             let idle = pending.is_none() && key_pending.is_none();
-            let _ = EnableWindow(view.key_save, idle);
-            let _ = EnableWindow(view.key_delete, idle);
-            let _ = EnableWindow(view.secret, idle);
+            let _ = EnableWindow(view.key_save, idle && baseline.is_some());
+            let _ = EnableWindow(view.key_delete, idle && baseline.is_some());
+            let _ = EnableWindow(view.secret, idle && baseline.is_some());
             let _ = EnableWindow(view.profile_standard, idle);
             let _ = EnableWindow(view.profile_strict, idle);
             let _ = EnableWindow(
@@ -525,9 +572,50 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
     Ok(())
 }
 
+fn load_for_editor(path: &std::path::Path) -> Result<Option<Settings>, &'static str> {
+    if !path.is_absolute() {
+        return Err("settings path must be absolute");
+    }
+    match path.try_exists() {
+        Ok(false) => Ok(None),
+        Ok(true) => Settings::load(path)
+            .map(Some)
+            .map_err(|_| "settings unavailable; existing file was not changed"),
+        Err(_) => Err("settings unavailable"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn first_run_view_has_empty_destination_and_disabled_key_controls() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+        let view = View::new(None, false).expect("create first-run view");
+        assert_eq!(text(view.host).unwrap(), "");
+        assert_eq!(text(view.model).unwrap(), "");
+        assert_eq!(text(view.path).unwrap(), "/v1");
+        unsafe {
+            assert!(!IsWindowEnabled(view.key_save).as_bool());
+            assert!(!IsWindowEnabled(view.key_delete).as_bool());
+            assert!(!IsWindowEnabled(view.secret).as_bool());
+        }
+    }
+
+    #[test]
+    fn missing_settings_open_first_run_but_corrupt_settings_are_preserved() {
+        let dir = std::env::temp_dir().join(format!("sumibi-first-run-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("settings.json");
+        assert!(load_for_editor(&path).unwrap().is_none());
+        assert!(!path.exists());
+        std::fs::write(&path, b"broken fixture").unwrap();
+        assert!(load_for_editor(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"broken fixture");
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
     #[test]
     fn secret_input_rejects_invalid_text_without_accessing_the_store() {
         assert!(secret_value(&[]).is_err());
@@ -551,7 +639,8 @@ mod tests {
             ProtectionProfile::Standard
         );
 
-        let view_standard = View::new(&standard_settings, false).expect("create standard view");
+        let view_standard =
+            View::new(Some(&standard_settings), false).expect("create standard view");
         unsafe {
             assert_eq!(
                 SendMessageW(view_standard.profile_standard, BM_GETCHECK, None, None).0,
@@ -573,7 +662,7 @@ mod tests {
             ProtectionProfile::Strict
         );
 
-        let view_strict = View::new(&strict_settings, false).expect("create strict view");
+        let view_strict = View::new(Some(&strict_settings), false).expect("create strict view");
         unsafe {
             assert_eq!(
                 SendMessageW(view_strict.profile_strict, BM_GETCHECK, None, None).0,
