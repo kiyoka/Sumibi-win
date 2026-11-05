@@ -499,8 +499,10 @@ impl Worker {
             return Err(Error::Closed);
         }
         if let Some(preparation) = &self.preparation {
-            if preparation.snapshot()?.is_none() {
-                return Err(Error::Capacity);
+            match preparation.snapshot()? {
+                None => return Err(Error::Capacity),
+                Some(policy) if !policy.allowed => return Err(Error::PolicyDenied),
+                Some(_) => {}
             }
         }
         self.state.requests.reserve(id)?;
