@@ -286,6 +286,22 @@ impl ManualEdit {
         identity: u128,
         deadline: Instant,
     ) -> Result<Self> {
+        Self::capture_with_run(
+            manager, context, client, policy, request, identity, deadline, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_with_run(
+        manager: &ITfThreadMgr,
+        context: &ITfContext,
+        client: u32,
+        policy: Rc<Cell<EditPolicy>>,
+        request: RequestId,
+        identity: u128,
+        deadline: Instant,
+        expected_run: Option<Vec<u16>>,
+    ) -> Result<Self> {
         if request.0 == 0 || identity == 0 {
             return Err(E_INVALIDARG.into());
         }
@@ -297,7 +313,7 @@ impl ManualEdit {
             return Err(E_ACCESSDENIED.into());
         }
         let guard = Guard::new(manager, context)?;
-        let snapshot = capture_selection(manager, context, client, policy)?;
+        let snapshot = capture_selection_or_run(manager, context, client, policy, expected_run)?;
         let output = Rc::new(RefCell::new(None));
         let result = output.clone();
         let manager = manager.clone();
@@ -349,6 +365,7 @@ impl ManualEdit {
         let manager = self.manager.clone();
         let context = self.snapshot.context.clone();
         let target = context.clone();
+        let selected = self.snapshot.selection_range.clone();
         let range = self.snapshot.range.clone();
         let style = self.snapshot.style;
         let expected = self.snapshot.protection;
@@ -360,9 +377,9 @@ impl ManualEdit {
             false,
             Box::new(move |cookie| {
                 ensure_target(&manager, &target)?;
-                let current = checked_selection(&target, &range, style, cookie)?;
+                checked_selection(&target, &selected, style, cookie)?;
                 crate::protection::validate_with_profile(
-                    &target, &current, cookie, expected, profile,
+                    &target, &range, cookie, expected, profile,
                 )?;
                 ensure_target(&manager, &target)?;
                 if observation.invalid.get() {

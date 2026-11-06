@@ -44,5 +44,10 @@ jobs:
         run: .\tools\Test-NativeRegistrationBackend.ps1
       - name: DLL load and mock TSF lifecycle
         run: cargo run -p sumibi-tip --features spike --example load_smoke --locked -- target/debug/sumibi_tip.dll
+      - name: Native TSF range replacement regression
+        run: |
+          cargo build -p sumibi-tip --features spike --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo run -p sumibi-setup --locked -- edit-test --dll target/debug/sumibi_tip.dll
       - name: Build and verify distribution ZIP
         run: .\tools\New-DistributionPackage.ps1

@@ -533,35 +533,9 @@ impl TipHostSession {
             ));
         }
 
-        // 1b. Collapsed caret: promote the verified, just-typed romaji run to the
-        // selection. An explicit selection always wins and discards the record.
-        // The record is consumed here whatever happens next (ADR 0104).
+        // Retain the verified run without changing the application's caret.
+        // An explicit selection takes precedence; the record is single-use.
         let recorded = self.run.borrow_mut().take(context_token(context));
-        if recorded.is_none() {
-            debug_log("Preserved key run: no recorded run for this context");
-        }
-        if let Some(units) = recorded {
-            let length = units.len();
-            match crate::edit::select_preceding_run(
-                &self.manager,
-                context,
-                self.client,
-                self.state.protection_profile(),
-                units,
-            ) {
-                Ok(outcome) => debug_log(&format!(
-                    "Preserved key run: {outcome:?}, run_units={length}"
-                )),
-                Err(error) => {
-                    debug_log(&format!(
-                        "Preserved key run rejected: HRESULT 0x{:08x}, run_units={length}",
-                        error.code().0 as u32
-                    ));
-                    return Ok(false.into());
-                }
-            }
-        }
-
         // 2. Capture selection and check protection inside an edit session
         let edit_policy = Rc::new(Cell::new(EditPolicy {
             revision: self.state.revision(),
@@ -573,7 +547,7 @@ impl TipHostSession {
         self.next_request_id.set(request_id);
 
         let deadline = Instant::now() + Duration::from_secs(5);
-        let ticket = match ManualEdit::capture(
+        let ticket = match ManualEdit::capture_with_run(
             &self.manager,
             context,
             self.client,
@@ -581,6 +555,7 @@ impl TipHostSession {
             RequestId(request_id.into()),
             request_id.into(),
             deadline,
+            recorded,
         ) {
             Ok(ticket) => ticket,
             Err(error) => {

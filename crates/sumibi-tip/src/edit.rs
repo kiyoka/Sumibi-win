@@ -48,6 +48,7 @@ pub struct EditPolicy {
 pub struct SelectionSnapshot {
     context: ITfContext,
     range: ITfRange,
+    selection_range: ITfRange,
     style: TF_SELECTIONSTYLE,
     original: Vec<u16>,
     policy: Rc<Cell<EditPolicy>>,
@@ -288,6 +289,19 @@ pub fn capture_selection(
     client: u32,
     policy: Rc<Cell<EditPolicy>>,
 ) -> Result<SelectionSnapshot> {
+    capture_selection_or_run(manager, context, client, policy, None)
+}
+
+/// Capture the explicit selection, or an exactly verified recorded run before
+/// a collapsed caret. Never change the application selection while awaiting
+/// a reply: Chromium does not forward an IME's SetSelection to the renderer.
+pub fn capture_selection_or_run(
+    manager: &ITfThreadMgr,
+    context: &ITfContext,
+    client: u32,
+    policy: Rc<Cell<EditPolicy>>,
+    expected_run: Option<Vec<u16>>,
+) -> Result<SelectionSnapshot> {
     let captured_policy = policy.get();
     if !captured_policy.allowed {
         return Err(E_ACCESSDENIED.into());
@@ -316,7 +330,29 @@ pub fn capture_selection(
                 cookie,
                 captured_policy.profile,
             )?;
+            let selection_range = unsafe { range.Clone()? };
+            let expected = if unsafe { range.IsEmpty(cookie)? }.as_bool() {
+                let expected = expected_run.ok_or(E_ABORT)?;
+                if expected.is_empty() || expected.len() > crate::run_record::MAX_RUN_UNITS {
+                    return Err(E_INVALIDARG.into());
+                }
+                let wanted = -(expected.len() as i32);
+                let mut shifted = 0;
+                unsafe { range.ShiftStart(cookie, wanted, &mut shifted, std::ptr::null())? };
+                if shifted != wanted {
+                    return Err(E_ABORT.into());
+                }
+                Some(expected)
+            } else {
+                None
+            };
             let original = read_all_with_profile(&range, cookie, captured_policy.profile)?;
+            if expected
+                .as_ref()
+                .is_some_and(|expected| *expected != original)
+            {
+                return Err(E_ABORT.into());
+            }
             crate::protection::validate_with_profile(
                 &target,
                 &range,
@@ -327,9 +363,12 @@ pub fn capture_selection(
             if policy.get() != captured_policy {
                 return Err(E_ABORT.into());
             }
+            checked_selection(&target, &selection_range, style, cookie)?;
+            ensure_target(&manager, &target)?;
             *result.borrow_mut() = Some(SelectionSnapshot {
                 context: target,
                 range,
+                selection_range,
                 style,
                 original,
                 policy,
@@ -504,7 +543,13 @@ fn validate_snapshot(
         return Err(E_ABORT.into());
     }
     ensure_target(manager, &snapshot.context)?;
-    let range = checked_selection(&snapshot.context, &snapshot.range, snapshot.style, cookie)?;
+    checked_selection(
+        &snapshot.context,
+        &snapshot.selection_range,
+        snapshot.style,
+        cookie,
+    )?;
+    let range = unsafe { snapshot.range.Clone()? };
     crate::protection::validate_with_profile(
         &snapshot.context,
         &range,
