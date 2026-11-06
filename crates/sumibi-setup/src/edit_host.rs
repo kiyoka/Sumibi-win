@@ -1782,3 +1782,41 @@ fn pump_tsf_messages(pump: &ITfMessagePump) -> Result<()> {
     }
     Err(E_FAIL.into())
 }
+
+#[cfg(test)]
+mod range_regression_tests {
+    use super::*;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+
+    #[test]
+    fn real_tsf_ranges_without_foreground_profile_activation() {
+        // Only owned synthetic stores. No DLL/profile registration or desktop
+        // foreground service is needed to exercise the native range adapter.
+        unsafe {
+            CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap();
+            struct Apartment;
+            impl Drop for Apartment {
+                fn drop(&mut self) {
+                    unsafe {
+                        CoUninitialize();
+                    }
+                }
+            }
+            let _apartment = Apartment;
+            let manager: ITfThreadMgr =
+                CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER).unwrap();
+            let client = manager.Activate().unwrap();
+            struct Activated(ITfThreadMgr);
+            impl Drop for Activated {
+                fn drop(&mut self) {
+                    let _ = unsafe { self.0.Deactivate() };
+                }
+            }
+            let active = Activated(manager);
+            exercise(&active.0, client).unwrap();
+        }
+    }
+}
