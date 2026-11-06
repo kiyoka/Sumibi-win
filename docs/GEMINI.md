@@ -18,10 +18,13 @@ Issue #22。macOS 版と同じ Google の OpenAI 互換 API を利用する。
 | ホスト名 | `generativelanguage.googleapis.com` |
 | パス | `/v1beta/openai` |
 | 保存後の完全パス | `/v1beta/openai/chat/completions` |
-| モデル初期値 | `gemini-3.8-flash`（編集可能） |
+| モデル初期値 | `gemini-3.6-flash`（編集可能） |
 | 接続 | HTTPS、443 番ポート |
 
 モデルの利用可否・制限は Google 側のアカウントと提供状況による。
+[Sumibi のベンチマーク記事](https://zenn.dev/kiyoka/articles/japanese-input-method-sumibi-35)
+で報告された 3.8 Flash の説明・候補列挙の付加と応答時間を考慮し、
+初期値には 3.6 Flash を採用する。保存済みのモデルは自動変更しない。
 手動変換、選択範囲の変換、追加候補は既存の Chat Completions 経路を利用する。
 Decisions 自動変換の送信許可と予算は手動変換と独立しており、
 Google を選ぶだけで自動変換を許可することはない。
@@ -54,7 +57,8 @@ version 2 を読めない旧ビルドへ戻す場合は、旧形式の設定と�
 タイムアウトを検証する。CI に実 API キーは不要。
 
 2026-11-06、実機で Google Gemini の接続先と API キーを保存し、Host を
-起動して手動送信を許可した。ユーザー操作により、メモ帳で `nihongo` →
+起動して手動送信を許可した（初期値を 3.6 Flash に変更する前の確認）。
+ユーザー操作により、メモ帳で `nihongo` →
 Ctrl + J が「日本語」だけになることを確認した。
 Antigravity の空のチャット入力欄でも、同じ操作で変換できることを
 ユーザー操作により確認した。

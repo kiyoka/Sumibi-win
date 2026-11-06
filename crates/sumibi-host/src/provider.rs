@@ -28,7 +28,7 @@ impl Provider {
             Self::Google => Some((
                 "generativelanguage.googleapis.com",
                 "/v1beta/openai",
-                "gemini-3.8-flash",
+                "gemini-3.6-flash",
             )),
             Self::Other => None,
         }
