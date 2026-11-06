@@ -40,6 +40,7 @@ struct View {
     key_save: HWND,
     key_delete: HWND,
     status: HWND,
+    key_hint: HWND,
     actions: Rc<Actions>,
 }
 impl Drop for View {
@@ -130,6 +131,28 @@ fn text(hwnd: HWND) -> Result<String, &'static str> {
     String::from_utf16(&buffer[..count as usize]).map_err(|_| "invalid field")
 }
 impl View {
+    fn update_key_labels(&self) {
+        let host = text(self.host).unwrap_or_default().to_ascii_lowercase();
+        let (button, hint) = match host.as_str() {
+            "generativelanguage.googleapis.com" => (
+                "Gemini API キーをこのPCに保存",
+                "保存した API キーは、Gemini での変換に使用します。",
+            ),
+            "api.openai.com" => (
+                "OpenAI API キーをこのPCに保存",
+                "保存した API キーは、OpenAI での変換に使用します。",
+            ),
+            _ => (
+                "API キーをこのPCに保存",
+                "保存した API キーは、この接続先での変換に使用します。",
+            ),
+        };
+        for (control, label) in [(self.key_save, button), (self.key_hint, hint)] {
+            if text(control).as_deref() != Ok(label) {
+                set_text(control, label);
+            }
+        }
+    }
     fn scheme_and_port(&self, baseline: &Settings) -> (sumibi_host::manual::Scheme, u16) {
         let selection = unsafe { SendMessageW(self.provider, CB_GETCURSEL, None, None).0 };
         if selection == 0 || selection == 1 {
@@ -196,6 +219,7 @@ impl View {
                 key_save: HWND::default(),
                 key_delete: HWND::default(),
                 status: HWND::default(),
+                key_hint: HWND::default(),
                 actions,
             };
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Rc::as_ptr(&view.actions) as isize);
@@ -363,7 +387,16 @@ impl View {
                 None,
             );
 
-            view.save = child(w!("BUTTON"), "設定を保存", WS_TABSTOP, 430, 265, 130, 30, 1)?;
+            view.save = child(
+                w!("BUTTON"),
+                "接続先とモデルを保存",
+                WS_TABSTOP,
+                320,
+                265,
+                240,
+                30,
+                1,
+            )?;
             child(
                 w!("STATIC"),
                 "API キー",
@@ -385,11 +418,29 @@ impl View {
                 13,
             )?; // ES_PASSWORD | ES_AUTOHSCROLL
             SendMessageW(view.secret, 0x00c5, Some(WPARAM(2560)), Some(LPARAM(0)));
-            view.key_save = child(w!("BUTTON"), "キーを保存", WS_TABSTOP, 430, 350, 130, 30, 3)?;
-            view.key_delete = child(w!("BUTTON"), "キーを削除", WS_TABSTOP, 275, 350, 130, 30, 4)?;
-            child(
+            view.key_save = child(
+                w!("BUTTON"),
+                "API キーをこのPCに保存",
+                WS_TABSTOP,
+                250,
+                350,
+                310,
+                30,
+                3,
+            )?;
+            view.key_delete = child(
+                w!("BUTTON"),
+                "API キーを削除",
+                WS_TABSTOP,
+                115,
+                350,
+                120,
+                30,
+                4,
+            )?;
+            view.key_hint = child(
                 w!("STATIC"),
-                "接続先を保存してから、その接続先のキーを入力してください。",
+                "保存した API キーは、この接続先での変換に使用します。",
                 WINDOW_STYLE(0),
                 18,
                 390,
@@ -407,10 +458,11 @@ impl View {
                 40,
                 0,
             )?;
+            view.update_key_labels();
             if settings.is_none() {
                 set_text(
                     view.status,
-                    "ホスト名・モデル・パスを入力して設定を保存してください。",
+                    "ホスト名・モデル・パスを入力し、先に「接続先とモデルを保存」を押してください。",
                 );
                 let _ = EnableWindow(view.key_save, false);
                 let _ = EnableWindow(view.key_delete, false);
@@ -491,9 +543,10 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
             set_text(view.secret, "");
             set_text(
                 view.status,
-                "接続先とモデルを確認して、先に設定を保存してください。",
+                "先に「接続先とモデルを保存」を押すと、API キーを入力できます。",
             );
         }
+        view.update_key_labels();
         let key_destination_saved = baseline
             .as_ref()
             .is_some_and(|saved| view.matches_destination(saved));
