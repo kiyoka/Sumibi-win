@@ -40,8 +40,11 @@ pub fn input_status_denial_with_profile(
         | TS_SD_INPUTPANEMANUALDISPLAYENABLE
         | TS_SD_EMBEDDEDHANDWRITINGVIEW_ENABLED
         | TS_SD_EMBEDDEDHANDWRITINGVIEW_VISIBLE;
-    let supported_static =
-        TS_SS_NOHIDDENTEXT | TS_SS_TKBAUTOCORRECTENABLE | TS_SS_TKBPREDICTIONENABLE | TS_SS_REGIONS;
+    let supported_static = TS_SS_NOHIDDENTEXT
+        | TS_SS_TKBAUTOCORRECTENABLE
+        | TS_SS_TKBPREDICTIONENABLE
+        | TS_SS_REGIONS
+        | TS_SS_TRANSITORY;
     if status.dwDynamicFlags & TS_SD_READONLY != 0 {
         Some(ReadOnly)
     } else if status.dwDynamicFlags & TS_SD_LOADING != 0 {
@@ -52,7 +55,12 @@ pub fn input_status_denial_with_profile(
         Some(UnknownDynamicFlags)
     } else if status.dwStaticFlags & TS_SS_DISJOINTSEL != 0 {
         Some(MultipleSelections)
-    } else if status.dwStaticFlags & TS_SS_TRANSITORY != 0 {
+    } else if status.dwStaticFlags & TS_SS_TRANSITORY != 0
+        && (profile == ProtectionProfile::Strict || status.dwStaticFlags & TS_SS_NOHIDDENTEXT == 0)
+    {
+        // Chromium marks ordinary editable stores TRANSITORY | NOHIDDENTEXT.
+        // A short-lived store is not itself an active composition. Standard
+        // still requires the ordinary scope, composition and range checks.
         Some(TransitoryContext)
     } else if profile == ProtectionProfile::Strict && status.dwStaticFlags & TS_SS_NOHIDDENTEXT == 0
     {
@@ -449,12 +457,56 @@ mod tests {
                 .is_err()
         );
 
-        // Transitory is ALWAYS denied
+        // Transitory without a positive no-hidden-text guarantee stays denied.
         standard_status.dwDynamicFlags = 0;
         standard_status.dwStaticFlags |= TS_SS_TRANSITORY;
         assert_eq!(
             input_status_denial_with_profile(standard_status, ProtectionProfile::Standard),
             Some(InputStatusDenial::TransitoryContext)
         );
+    }
+
+    #[test]
+    fn chromium_transitory_status_preserves_profile_and_protected_field_guards() {
+        let chromium = TS_STATUS {
+            dwDynamicFlags: TS_SD_INPUTPANEMANUALDISPLAYENABLE,
+            dwStaticFlags: TS_SS_TRANSITORY | TS_SS_NOHIDDENTEXT,
+        };
+        for scope in [IS_DEFAULT, IS_TEXT, IS_CHAT, IS_CHAT_WITHOUT_EMOJI] {
+            assert!(classify_with_profile(chromium, &[scope], ProtectionProfile::Standard).is_ok());
+            assert!(classify_with_profile(chromium, &[scope], ProtectionProfile::Strict).is_err());
+        }
+        for scope in [IS_PASSWORD, IS_NUMERIC_PIN, IS_NUMERIC_PASSWORD, IS_PRIVATE] {
+            assert!(classify_with_profile(
+                chromium,
+                &[IS_DEFAULT, scope],
+                ProtectionProfile::Standard
+            )
+            .is_err());
+        }
+        for flag in [TS_SD_READONLY, TS_SD_LOADING, TS_SD_RESERVED, 1 << 31] {
+            let mut changed = chromium;
+            changed.dwDynamicFlags |= flag;
+            assert!(
+                classify_with_profile(changed, &[IS_TEXT], ProtectionProfile::Standard).is_err()
+            );
+        }
+        for flag in [TS_SS_DISJOINTSEL, 1 << 31] {
+            let mut changed = chromium;
+            changed.dwStaticFlags |= flag;
+            assert!(
+                classify_with_profile(changed, &[IS_TEXT], ProtectionProfile::Standard).is_err()
+            );
+        }
+        let mut changed = chromium;
+        changed.dwStaticFlags &= !TS_SS_NOHIDDENTEXT;
+        assert!(classify_with_profile(changed, &[IS_TEXT], ProtectionProfile::Standard).is_err());
+        let before =
+            classify_with_profile(chromium, &[IS_TEXT], ProtectionProfile::Standard).unwrap();
+        let mut persistent = chromium;
+        persistent.dwStaticFlags &= !TS_SS_TRANSITORY;
+        let after =
+            classify_with_profile(persistent, &[IS_TEXT], ProtectionProfile::Standard).unwrap();
+        assert!(before != after);
     }
 }

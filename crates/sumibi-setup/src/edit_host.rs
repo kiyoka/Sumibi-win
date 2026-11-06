@@ -693,6 +693,9 @@ pub(super) fn exercise(
         for case in [
             "replace",
             "subrange",
+            "preceding-run",
+            "preceding-run-mismatch",
+            "preceding-run-caret-change",
             "same-length-change",
             "selection-change",
             "focus-change",
@@ -719,7 +722,10 @@ pub(super) fn exercise(
         ] {
             let initial = match case {
                 "limit" => "a".repeat(MAX_SELECTION_UNITS),
-                "subrange" => "prefix nihongo suffix".to_owned(),
+                "subrange"
+                | "preceding-run"
+                | "preceding-run-mismatch"
+                | "preceding-run-caret-change" => "prefix nihongo suffix".to_owned(),
                 "over-limit" => "a".repeat(MAX_SELECTION_UNITS + 1),
                 "unicode" | "unicode-partial" | "split-surrogate" => "a😀e\u{301}".to_owned(),
                 "object-marker" => "a\u{fffc}b".to_owned(),
@@ -727,6 +733,12 @@ pub(super) fn exercise(
                 _ => "nihongo".to_owned(),
             };
             let store = ComObject::new(TextStore::new(&initial));
+            if case.starts_with("preceding-run") {
+                let mut selected = store.get().selection.get();
+                selected.acpStart = 14;
+                selected.acpEnd = 14;
+                store.get().selection.set(selected);
+            }
             if case == "subrange" {
                 let mut selection = store.get().selection.get();
                 selection.acpStart = 7;
@@ -808,16 +820,58 @@ pub(super) fn exercise(
                 println!("Edit guard {case}: OK");
                 continue;
             }
-            let snapshot = capture_selection(manager, &context, client, policy.clone())?;
+            let snapshot = if case.starts_with("preceding-run") {
+                let expected = if case == "preceding-run-mismatch" {
+                    "wrongxx"
+                } else {
+                    "nihongo"
+                };
+                let captured = sumibi_tip::edit::capture_selection_or_run(
+                    manager,
+                    &context,
+                    client,
+                    policy.clone(),
+                    Some(expected.encode_utf16().collect()),
+                );
+                assert_eq!(
+                    store.get().selection.get().acpStart,
+                    14,
+                    "capture must preserve caret"
+                );
+                assert_eq!(
+                    store.get().selection.get().acpEnd,
+                    14,
+                    "capture must not select renderer text"
+                );
+                if case == "preceding-run-mismatch" {
+                    assert!(captured.is_err());
+                    assert_eq!(
+                        String::from_utf16(&store.get().text.borrow()).unwrap(),
+                        initial
+                    );
+                    assert!(store.get().undo.borrow().is_empty());
+                    manager.SetFocus(None)?;
+                    println!("Edit guard {case}: OK");
+                    continue;
+                }
+                captured?
+            } else {
+                capture_selection(manager, &context, client, policy.clone())?
+            };
             let mut other_document = None;
             let mut other_store = None;
             match case {
                 "same-length-change" => store
                     .get()
                     .external_text("NIHONGO".encode_utf16().collect())?,
-                "selection-change" => {
+                "selection-change" | "preceding-run-caret-change" => {
                     let mut selection = store.get().selection.get();
-                    selection.acpEnd = 3;
+                    if case == "preceding-run-caret-change" {
+                        selection.acpStart = 13;
+                        selection.acpEnd = 13;
+                    } else {
+                        selection.acpEnd = 3;
+                    }
                     store.get().selection.set(selection);
                     let sink = store.get().sink.borrow().clone().unwrap();
                     sink.OnSelectionChange()?;
@@ -862,9 +916,12 @@ pub(super) fn exercise(
                 "日本語"
             };
             let result = replace_selection(manager, client, snapshot, replacement);
-            if matches!(case, "replace" | "subrange" | "limit" | "unicode") {
+            if matches!(
+                case,
+                "replace" | "subrange" | "preceding-run" | "limit" | "unicode"
+            ) {
                 result?;
-                let expected = if case == "subrange" {
+                let expected = if case == "subrange" || case == "preceding-run" {
                     "prefix 日本語 suffix"
                 } else {
                     "日本語"
@@ -893,7 +950,7 @@ pub(super) fn exercise(
     }
     exercise_attributes(manager, client)?;
     exercise_previews(manager, client)?;
-    println!("Real TSF edit-session scenarios: 25 passed, plus 3 attribute scenarios");
+    println!("Real TSF edit-session scenarios: 28 passed, plus 3 attribute scenarios");
     Ok(())
 }
 
@@ -1724,4 +1781,42 @@ fn pump_tsf_messages(pump: &ITfMessagePump) -> Result<()> {
         }
     }
     Err(E_FAIL.into())
+}
+
+#[cfg(test)]
+mod range_regression_tests {
+    use super::*;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+
+    #[test]
+    fn real_tsf_ranges_without_foreground_profile_activation() {
+        // Only owned synthetic stores. No DLL/profile registration or desktop
+        // foreground service is needed to exercise the native range adapter.
+        unsafe {
+            CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap();
+            struct Apartment;
+            impl Drop for Apartment {
+                fn drop(&mut self) {
+                    unsafe {
+                        CoUninitialize();
+                    }
+                }
+            }
+            let _apartment = Apartment;
+            let manager: ITfThreadMgr =
+                CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER).unwrap();
+            let client = manager.Activate().unwrap();
+            struct Activated(ITfThreadMgr);
+            impl Drop for Activated {
+                fn drop(&mut self) {
+                    let _ = unsafe { self.0.Deactivate() };
+                }
+            }
+            let active = Activated(manager);
+            exercise(&active.0, client).unwrap();
+        }
+    }
 }
