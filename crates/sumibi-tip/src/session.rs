@@ -674,23 +674,26 @@ fn worker_loop(
     drain_hwnd: Option<isize>,
 ) {
     let mut current_worker: Option<Worker> = None;
+    let mut attempted = false;
 
     while !stop.is_cancelled().unwrap_or(true) {
         // 1. Ensure worker connection
         if current_worker.is_none() || current_worker.as_ref().is_some_and(|w| w.is_closed()) {
-            let was_reconnect = current_worker.is_some();
             state.connected.store(false, Ordering::Release);
             state.allowed.store(false, Ordering::Release);
             current_worker = None;
 
-            if was_reconnect {
-                for _ in 0..6 {
+            // Preparation failures also clear current_worker. Throttle every
+            // retry, including failures before the first policy arrives.
+            if attempted {
+                for _ in 0..10 {
                     if stop.is_cancelled().unwrap_or(true) {
                         return;
                     }
                     thread::sleep(Duration::from_millis(50));
                 }
             }
+            attempted = true;
 
             match current_bootstrap_pipe_name() {
                 Ok(pipe_name) => {

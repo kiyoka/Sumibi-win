@@ -800,7 +800,7 @@ mod tests {
         let ready = until(&control, |status| status.phase == Phase::Ready);
         let current = sumibi_ipc::PinnedProcess::current().unwrap();
 
-        // 1. Before consent: accept and connect, preparation fails with PolicyDenied
+        // 1. Before consent: remain connected, but never admit source input.
         let accept_unconsented = control
             .try_accept_private_peer(current.try_clone().unwrap())
             .unwrap();
@@ -813,18 +813,27 @@ mod tests {
             deadline,
         )
         .unwrap();
-        assert!(matches!(
-            wait_prepared_outcome(&worker_unconsented, deadline),
-            Err(sumibi_ipc::Error::PolicyDenied)
-        ));
+        assert!(
+            !wait_prepared_outcome(&worker_unconsented, deadline)
+                .unwrap()
+                .allowed
+        );
         assert!(worker_unconsented.reserve(1).is_err());
-        worker_unconsented.shutdown(Duration::from_secs(1)).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(!worker_unconsented.is_closed());
 
         // 2. Grant consent
         control.try_grant(ready.offer.unwrap()).unwrap();
         until(&control, |status| {
             status.offer.as_ref().is_some_and(ConsentOffer::allowed)
         });
+        // A grant invalidates the idle snapshot. Only a new authenticated
+        // connection may use the new authorization revision.
+        while !worker_unconsented.is_closed() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        worker_unconsented.shutdown(Duration::from_secs(1)).unwrap();
 
         // 3. After consent: accept and connect, preparation succeeds with allowed policy
         let accept_consented = control

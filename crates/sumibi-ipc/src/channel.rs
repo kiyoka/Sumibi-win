@@ -81,6 +81,8 @@ impl Channel {
     /// Connect to an already-running Host using a process handle obtained
     /// through a trusted bootstrap. Pipe name and boot ID do not authenticate
     /// the Host. Closing this channel never stops the shared Host process.
+    /// An unconsented Ready keeps the connection idle; `convert` still rejects
+    /// it before framing source text. Policy changes retire the old channel.
     pub fn connect_pinned(
         name: &Nonce,
         boot: Nonce,
@@ -152,7 +154,10 @@ impl Channel {
             "establish: Event::Ready received, policy.allowed={}",
             policy.allowed
         ));
-        if !policy.allowed {
+        // A shared Host starts without consent. Keep its authenticated channel
+        // idle until a policy notice retires it; reconnect once on that notice.
+        // A launched one-shot diagnostic retains its denial semantics.
+        if !policy.allowed && child.is_some() {
             crate::debug_log_ipc("establish: policy.allowed is FALSE, returning PolicyDenied");
             return Err(Error::PolicyDenied);
         }
@@ -273,7 +278,8 @@ impl Channel {
             return Err(Error::Timeout);
         }
         let connected = self.connected.as_mut().ok_or(Error::Closed)?;
-        if connected.policy.settings != revision.settings
+        if !connected.policy.allowed
+            || connected.policy.settings != revision.settings
             || connected.policy.authorization != revision.authorization
         {
             return Err(Error::PolicyDenied);

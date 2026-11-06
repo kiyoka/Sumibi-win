@@ -180,7 +180,7 @@ fn preparing_worker_reports_a_missing_endpoint_without_input() {
 }
 
 #[test]
-fn preparing_worker_reports_ready_denial_without_accepting_input() {
+fn unconsented_worker_stays_connected_without_accepting_input_or_consuming_history() {
     let _guard = PIPE_TEST_LOCK.lock().unwrap();
     if matches!(
         PinnedProcess::current(),
@@ -225,12 +225,20 @@ fn preparing_worker_reports_ready_denial_without_accepting_input() {
         unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), 3000) },
         WAIT_OBJECT_0
     );
-    assert!(worker.reserve(1).is_err());
+    let policy = wait_prepared_policy(&worker, deadline);
+    assert!(!policy.allowed);
+    let remaining = boot.remaining_attachment_budget();
+    for _ in 0..5 {
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(!worker.is_closed());
+        assert!(!wait_prepared_policy(&worker, deadline).allowed);
+        assert!(matches!(
+            worker.reserve(1),
+            Err(sumibi_ipc::Error::PolicyDenied)
+        ));
+    }
+    assert_eq!(boot.remaining_attachment_budget(), remaining);
     worker.shutdown(Duration::from_secs(1)).unwrap();
-    assert!(matches!(
-        worker.prepared_policy(),
-        Err(sumibi_ipc::Error::PolicyDenied)
-    ));
     assert!(boot
         .shutdown(Instant::now() + Duration::from_secs(1))
         .is_ok());
