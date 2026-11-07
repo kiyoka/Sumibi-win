@@ -90,10 +90,13 @@ pub struct HostControl {
 }
 impl HostControl {
     pub fn start(path: PathBuf) -> Result<Self, ControlError> {
+        let consent_path = path.clone();
         Self::start_scoped(
             move || {
                 let host =
                     crate::startup::PreparedHost::load(&path).map_err(|_| ControlError::Startup)?;
+                host.restore_manual_consent()
+                    .map_err(|_| ControlError::Startup)?;
                 Ok((host.authority().clone(), host.credential_outcome().is_err()))
             },
             || {
@@ -102,6 +105,7 @@ impl HostControl {
                     .ok_or(ControlError::AlreadyRunning)
             },
             DispatchMode::NativeChat,
+            Some(consent_path),
         )
     }
     #[cfg(test)]
@@ -111,18 +115,19 @@ impl HostControl {
         // Lifecycle tests use an isolated lease. The native fixed-name lease
         // is tested with private random names in sumibi-ipc, so test runs never
         // contend with a user's actual running Host.
-        Self::start_scoped(load, || Ok(()), DispatchMode::NativeChat)
+        Self::start_scoped(load, || Ok(()), DispatchMode::NativeChat, None)
     }
     #[cfg(any(test, feature = "spike"))]
     pub fn start_diagnostic(
         load: impl FnOnce() -> Result<(Arc<PolicyAuthority>, bool), ControlError> + Send + 'static,
     ) -> Result<Self, ControlError> {
-        Self::start_scoped(load, || Ok(()), DispatchMode::DiagnosticChat)
+        Self::start_scoped(load, || Ok(()), DispatchMode::DiagnosticChat, None)
     }
     fn start_scoped<L: 'static>(
         load: impl FnOnce() -> Result<(Arc<PolicyAuthority>, bool), ControlError> + Send + 'static,
         acquire: impl FnOnce() -> Result<L, ControlError> + Send + 'static,
         mode: DispatchMode,
+        consent_path: Option<PathBuf>,
     ) -> Result<Self, ControlError> {
         let (send, receive) = mpsc::sync_channel(1);
         let (peer_send, peer_receive) = mpsc::sync_channel(8);
@@ -142,7 +147,11 @@ impl HostControl {
             .spawn(move || {
                 let result = match acquire() {
                     Ok(_lease) => run(
-                        load,
+                        || {
+                            load().map(|(authority, credential_error)| {
+                                (authority, credential_error, consent_path)
+                            })
+                        },
                         receive,
                         peer_receive,
                         &worker_closing,
@@ -325,7 +334,7 @@ fn classify(error: ConsentTaskError) -> ControlError {
 }
 
 fn run(
-    load: impl FnOnce() -> Result<(Arc<PolicyAuthority>, bool), ControlError>,
+    load: impl FnOnce() -> Result<(Arc<PolicyAuthority>, bool, Option<PathBuf>), ControlError>,
     commands: Receiver<Command>,
     peer_requests: Receiver<PeerRequest>,
     closing: &AtomicBool,
@@ -333,7 +342,7 @@ fn run(
     status: &Mutex<HostStatus>,
     mode: DispatchMode,
 ) -> Result<(), ControlError> {
-    let (authority, credential_error) = load()?;
+    let (authority, credential_error, consent_path) = load()?;
     let stop = Stop::new().map_err(|_| ControlError::Broker)?;
     let mut boot = BrokerBoot::start(&authority, 64, Instant::now() + Duration::from_secs(2))
         .map_err(|_| ControlError::Broker)?;
@@ -427,10 +436,15 @@ fn run(
                             Command::Grant(offer) if !offer.belongs_to(&authority) => {
                                 Err(ControlError::ForeignOffer)
                             }
-                            Command::Grant(offer) => ConsentTask::grant(offer).map_err(classify),
-                            Command::Revoke => {
-                                ConsentTask::revoke(authority.clone()).map_err(classify)
+                            Command::Grant(offer) => {
+                                ConsentTask::grant_remembered(offer, consent_path.clone())
+                                    .map_err(classify)
                             }
+                            Command::Revoke => ConsentTask::revoke_remembered(
+                                authority.clone(),
+                                consent_path.clone(),
+                            )
+                            .map_err(classify),
                         };
                         match started {
                             Ok(task) => pending = Some(task),
@@ -726,6 +740,7 @@ mod tests {
                     Ok(Lease(held))
                 },
                 DispatchMode::NativeChat,
+                None,
             )
             .unwrap()
         };

@@ -401,7 +401,7 @@ impl PolicyAuthority {
         &self,
         destination: &Destination,
     ) -> Result<PolicyVersion, ChangeError> {
-        self.grant_consent(destination, None)
+        self.grant_consent(destination, None, || Ok(()))
     }
 
     #[cfg(windows)]
@@ -410,14 +410,16 @@ impl PolicyAuthority {
         destination: &Destination,
         model: &str,
         expected: PolicyVersion,
+        persist: impl FnOnce() -> Result<(), ChangeError>,
     ) -> Result<PolicyVersion, ChangeError> {
-        self.grant_consent(destination, Some((expected, model)))
+        self.grant_consent(destination, Some((expected, model)), persist)
     }
 
     fn grant_consent(
         &self,
         destination: &Destination,
         expected: Option<(PolicyVersion, &str)>,
+        persist: impl FnOnce() -> Result<(), ChangeError>,
     ) -> Result<PolicyVersion, ChangeError> {
         let mut state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
         if expected.is_some_and(|(expected, model)| {
@@ -432,6 +434,7 @@ impl PolicyAuthority {
             .authorization
             .checked_add(1)
             .ok_or(ChangeError::Exhausted)?;
+        persist()?;
         state.authorization = authorization;
         state.manual_consent = Some(destination.clone());
         state.allowed = true;
@@ -442,11 +445,19 @@ impl PolicyAuthority {
     }
 
     pub fn revoke_manual_consent(&self) -> Result<PolicyVersion, ChangeError> {
+        self.revoke_manual_consent_with(|| Ok(()))
+    }
+
+    pub(crate) fn revoke_manual_consent_with(
+        &self,
+        persist: impl FnOnce() -> Result<(), ChangeError>,
+    ) -> Result<PolicyVersion, ChangeError> {
         let mut state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
         let authorization = state
             .authorization
             .checked_add(1)
             .ok_or(ChangeError::Exhausted)?;
+        persist()?;
         state.authorization = authorization;
         state.manual_consent = None;
         state.allowed = false;

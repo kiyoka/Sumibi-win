@@ -259,7 +259,7 @@ impl View {
             };
             child(
                 w!("STATIC"),
-                "この起動中だけ、手動変換の送信を許可できます。\r\n起動中は一般アプリ内の Sumibi からの変換接続を受け付けます。",
+                "手動変換の送信許可は、接続先とモデルごとに保存されます。\r\n起動中は一般アプリ内の Sumibi からの変換接続を受け付けます。",
                 WINDOW_STYLE(0),
                 18,
                 16,
@@ -364,7 +364,7 @@ pub fn run(path: PathBuf, start_minimized: bool) -> Result<(), &'static str> {
                     .take()
                     .filter(|offer| offer.can_grant() && !offer.allowed())
                 {
-                    let prompt = wide(&format!("手動変換の入力本文と API キーを、次の接続先へ送信することを許可しますか？\n\n{}\nモデル：{}\n\nこの Host を終了すると許可を取り消します。", endpoint(&offer), offer.model().unwrap_or("未設定")));
+                    let prompt = wide(&format!("手動変換の入力本文と API キーを、次の接続先へ送信することを許可しますか？\n\n{}\nモデル：{}\n\n許可はこの PC に保存されます。送信管理画面から取り消せます。", endpoint(&offer), offer.model().unwrap_or("未設定")));
                     let confirmed = unsafe {
                         MessageBoxW(
                             Some(view.hwnd),

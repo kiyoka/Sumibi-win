@@ -1,4 +1,5 @@
 //! Explicitly launched broker entry. Default builds never enable a converter.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 #[cfg(windows)]
 mod consent_window;
 #[cfg(windows)]
@@ -19,6 +20,26 @@ fn main() {
         |arg: &std::ffi::OsString| arg == "--minimized" || arg == "--tray" || arg == "-m";
     let start_minimized = args.iter().any(is_minimized_flag);
     let non_flag_args: Vec<_> = args.iter().filter(|arg| !is_minimized_flag(arg)).collect();
+
+    // Shell and logon launches need no console. Explicit CLI invocations can
+    // reuse their parent's console without opening a new window. Preserve
+    // inherited pipes when stdout or stderr has been redirected.
+    if non_flag_args
+        .first()
+        .is_some_and(|arg| **arg != "host-window" && **arg != "settings-window")
+    {
+        use windows::Win32::System::Console::{
+            AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+        };
+        unsafe {
+            if [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE]
+                .into_iter()
+                .all(|id| GetStdHandle(id).map_or(true, |handle| handle.is_invalid()))
+            {
+                let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+            }
+        }
+    }
 
     if non_flag_args.is_empty() {
         if consent_window::open_existing(!start_minimized) {

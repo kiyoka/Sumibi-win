@@ -1,6 +1,8 @@
 //! Version-bound consent for an explicit UI action, with nonblocking polling.
 use crate::manual::{Destination, Scheme};
 use crate::policy::{ChangeError, PolicyAuthority, PolicyVersion};
+use crate::settings::Settings;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
@@ -96,6 +98,13 @@ pub struct ConsentTask {
 }
 impl ConsentTask {
     pub fn grant(offer: ConsentOffer) -> Result<Self, ConsentTaskError> {
+        Self::grant_remembered(offer, None)
+    }
+
+    pub(crate) fn grant_remembered(
+        offer: ConsentOffer,
+        path: Option<PathBuf>,
+    ) -> Result<Self, ConsentTaskError> {
         if !offer.can_grant() {
             return Err(ConsentTaskError::Policy(ChangeError::InvalidConsent));
         }
@@ -105,6 +114,13 @@ impl ConsentTask {
                 &offer.destination,
                 offer.model.as_deref().unwrap(),
                 offer.version,
+                || match path {
+                    Some(path) => Settings::write_manual_consent(
+                        &path,
+                        Some((&offer.destination, offer.model.as_deref().unwrap())),
+                    ),
+                    None => Ok(()),
+                },
             )
         })
     }
@@ -113,6 +129,18 @@ impl ConsentTask {
     /// current policy once it obtains the lock, including after settings change.
     pub fn revoke(authority: Arc<PolicyAuthority>) -> Result<Self, ConsentTaskError> {
         Self::start(authority, PolicyAuthority::revoke_manual_consent)
+    }
+
+    pub(crate) fn revoke_remembered(
+        authority: Arc<PolicyAuthority>,
+        path: Option<PathBuf>,
+    ) -> Result<Self, ConsentTaskError> {
+        Self::start(authority, move |authority| {
+            authority.revoke_manual_consent_with(|| match path {
+                Some(path) => Settings::write_manual_consent(&path, None),
+                None => Ok(()),
+            })
+        })
     }
 
     fn start(
