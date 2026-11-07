@@ -25,6 +25,7 @@ struct Actions {
     provider: Cell<bool>,
     key_save: Cell<bool>,
     key_delete: Cell<bool>,
+    continue_setup: Cell<bool>,
     close: Cell<bool>,
 }
 struct View {
@@ -41,6 +42,7 @@ struct View {
     key_delete: HWND,
     status: HWND,
     key_hint: HWND,
+    continue_setup: Option<HWND>,
     actions: Rc<Actions>,
 }
 impl Drop for View {
@@ -87,6 +89,10 @@ unsafe extern "system" fn procedure(
             }
             if message == WM_COMMAND && key.0 & 0xffff == 4 && key.0 >> 16 == 0 {
                 (*pointer).key_delete.set(true);
+                return LRESULT(0);
+            }
+            if message == WM_COMMAND && key.0 & 0xffff == 5 && key.0 >> 16 == 0 {
+                (*pointer).continue_setup.set(true);
                 return LRESULT(0);
             }
         }
@@ -176,6 +182,14 @@ impl View {
             .is_some_and(|destination| destination == *saved.destination())
     }
     fn new(settings: Option<&Settings>, visible: bool) -> WinResult<Self> {
+        Self::with_setup(settings, visible, false)
+    }
+
+    fn with_setup(
+        settings: Option<&Settings>,
+        visible: bool,
+        initial_setup: bool,
+    ) -> WinResult<Self> {
         unsafe {
             let instance = GetModuleHandleW(None)?;
             let class = w!("SumibiHostSettings");
@@ -199,7 +213,7 @@ impl View {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 600,
-                535,
+                if initial_setup { 570 } else { 535 },
                 None,
                 None,
                 Some(instance.into()),
@@ -220,6 +234,7 @@ impl View {
                 key_delete: HWND::default(),
                 status: HWND::default(),
                 key_hint: HWND::default(),
+                continue_setup: None,
                 actions,
             };
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Rc::as_ptr(&view.actions) as isize);
@@ -257,7 +272,11 @@ impl View {
             };
             child(
                 w!("STATIC"),
-                "保存した設定は次回起動時に使用します。",
+                if initial_setup {
+                    "プロバイダーを選び、接続先とモデル、API キーを保存してください。"
+                } else {
+                    "保存した設定は次回起動時に使用します。"
+                },
                 WINDOW_STYLE(0),
                 18,
                 16,
@@ -459,10 +478,24 @@ impl View {
                 0,
             )?;
             view.update_key_labels();
+            if initial_setup {
+                let button = child(
+                    w!("BUTTON"),
+                    "送信の確認へ進む",
+                    WS_TABSTOP,
+                    345,
+                    478,
+                    215,
+                    32,
+                    5,
+                )?;
+                let _ = EnableWindow(button, false);
+                view.continue_setup = Some(button);
+            }
             if settings.is_none() {
                 set_text(
                     view.status,
-                    "ホスト名・モデル・パスを入力し、先に「接続先とモデルを保存」を押してください。",
+                    "先に「接続先とモデルを保存」を押すと、API キーを入力できます。",
                 );
                 let _ = EnableWindow(view.key_save, false);
                 let _ = EnableWindow(view.key_delete, false);
@@ -486,6 +519,14 @@ enum KeyOperation {
 }
 
 pub fn run(path: PathBuf) -> Result<(), &'static str> {
+    edit(path, false).map(|_| ())
+}
+
+pub fn run_initial_setup(path: PathBuf) -> Result<bool, &'static str> {
+    edit(path, true)
+}
+
+fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
     let mut baseline = load_for_editor(&path)?;
     if baseline.is_some() {
         Settings::upgrade_credentials(&path)
@@ -509,7 +550,13 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
             .new_authority()
             .map_err(|_| "settings unavailable")?,
     );
-    let view = View::new(baseline.as_ref(), true).map_err(|_| "settings window unavailable")?;
+    let view = if initial_setup {
+        View::with_setup(baseline.as_ref(), true, true)
+    } else {
+        View::new(baseline.as_ref(), true)
+    }
+    .map_err(|_| "settings window unavailable")?;
+    let mut key_saved = false;
     let mut pending: Option<(SettingsSaveTask, Settings)> = None;
     let mut key_pending: Option<(CredentialTask, KeyOperation)> = None;
     let mut settings_conflict = false;
@@ -661,6 +708,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                         // with no Broker or subscribers. The file is for the next launch.
                         let _version = saved.version();
                         baseline = Some(replacement);
+                        key_saved = false;
                         set_text(view.status, "保存しました。次回起動時に適用されます。");
                     }
                     Err(_) if conflict => set_text(
@@ -683,11 +731,19 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                 let operation = *operation;
                 key_pending = None;
                 match (operation, result) {
-                    (KeyOperation::Save, Ok(update)) if update.outcome().is_ok() => set_text(
-                        view.status,
-                        "キーを保存しました。送信への同意は別途必要です。",
-                    ),
+                    (KeyOperation::Save, Ok(update)) if update.outcome().is_ok() => {
+                        key_saved = true;
+                        set_text(
+                            view.status,
+                            if initial_setup {
+                                "キーを保存しました。「送信の確認へ進む」を押してください。"
+                            } else {
+                                "キーを保存しました。送信への同意は別途必要です。"
+                            },
+                        );
+                    }
                     (KeyOperation::Delete, Ok(update)) if update.outcome().is_ok() => {
+                        key_saved = false;
                         set_text(view.status, "キーを削除しました。設定は残っています。")
                     }
                     (KeyOperation::Save, Ok(_)) => set_text(
@@ -702,8 +758,20 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
                 }
             }
         }
+        let idle = pending.is_none() && key_pending.is_none();
+        let can_continue = initial_setup
+            && idle
+            && key_saved
+            && key_destination_saved
+            && !settings_conflict
+            && !view.actions.close.get();
+        if view.actions.continue_setup.replace(false) && can_continue {
+            return Ok(true);
+        }
         unsafe {
-            let idle = pending.is_none() && key_pending.is_none();
+            if let Some(button) = view.continue_setup {
+                let _ = EnableWindow(button, can_continue);
+            }
             let _ = EnableWindow(
                 view.key_save,
                 idle && key_destination_saved && !settings_conflict,
@@ -733,7 +801,7 @@ pub fn run(path: PathBuf) -> Result<(), &'static str> {
             set_text(view.status, "保存の完了を待ってから閉じます…");
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 fn load_for_editor(path: &std::path::Path) -> Result<Option<Settings>, &'static str> {
@@ -777,7 +845,7 @@ mod tests {
     #[test]
     fn first_run_view_has_empty_destination_and_disabled_key_controls() {
         use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
-        let view = View::new(None, false).expect("create first-run view");
+        let view = View::with_setup(None, false, true).expect("create first-run view");
         assert_eq!(text(view.host).unwrap(), "");
         assert_eq!(text(view.model).unwrap(), "");
         assert_eq!(text(view.path).unwrap(), "/v1");
@@ -785,6 +853,7 @@ mod tests {
             assert!(!IsWindowEnabled(view.key_save).as_bool());
             assert!(!IsWindowEnabled(view.key_delete).as_bool());
             assert!(!IsWindowEnabled(view.secret).as_bool());
+            assert!(!IsWindowEnabled(view.continue_setup.unwrap()).as_bool());
         }
     }
 

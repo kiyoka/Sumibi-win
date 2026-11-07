@@ -16,6 +16,21 @@ use windows::Win32::{
     UI::{Input::KeyboardAndMouse::EnableWindow, WindowsAndMessaging::*},
 };
 
+const WINDOW_CLASS: PCWSTR = w!("SumibiHostConsent");
+
+pub fn open_existing(show: bool) -> bool {
+    unsafe {
+        let Ok(hwnd) = FindWindowW(WINDOW_CLASS, PCWSTR::null()) else {
+            return false;
+        };
+        if show {
+            let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+            let _ = SetForegroundWindow(hwnd);
+        }
+        true
+    }
+}
+
 #[derive(Default)]
 struct Actions {
     grant: Cell<bool>,
@@ -81,6 +96,7 @@ unsafe extern "system" fn procedure(
                     1 => ctx.actions.grant.set(true),
                     2 => ctx.actions.revoke.set(true),
                     3 => ctx.actions.close.set(true),
+                    4 => ctx.actions.open_settings.set(true),
                     TRAY_CMD_OPEN => {
                         let _ = ShowWindow(hwnd, SW_SHOW);
                         let _ = ShowWindow(hwnd, SW_RESTORE);
@@ -159,7 +175,7 @@ fn status_text(status: &HostStatus) -> &'static str {
                 "キーを読み取れません。設定画面で確認し、Host を開き直してください。"
             }
             None if status.offer.as_ref().is_some_and(ConsentOffer::allowed) => {
-                "この Host の起動中は、手動変換の送信を許可しています。"
+                "手動変換の送信を許可しています。\r\n入力先で Win + Space → Sumibi を選び、nihongo → Ctrl + J を試してください。"
             }
             None if status
                 .offer
@@ -177,7 +193,7 @@ impl View {
     fn new(start_minimized: bool) -> WinResult<Self> {
         unsafe {
             let instance = GetModuleHandleW(None)?;
-            let class = w!("SumibiHostConsent");
+            let class = WINDOW_CLASS;
             if RegisterClassW(&WNDCLASSW {
                 lpfnWndProc: Some(procedure),
                 hInstance: instance.into(),
@@ -282,6 +298,7 @@ impl View {
                 32,
                 2,
             )?;
+            child(w!("BUTTON"), "設定", WS_TABSTOP, 385, 280, 60, 32, 4)?;
             child(
                 w!("BUTTON"),
                 "Host を終了",
