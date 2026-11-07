@@ -244,6 +244,7 @@ function Set-SumibiShortcuts {
             $shortcut = $shell.CreateShortcut($path)
             $shortcut.TargetPath = $entry[1]
             $shortcut.Arguments = $entry[2]
+            if ($entry[1] -eq $HostExe) { $shortcut.IconLocation = "$HostExe,0" }
             $shortcut.WorkingDirectory = Split-Path -Parent $entry[1]
             $shortcut.Save()
         }

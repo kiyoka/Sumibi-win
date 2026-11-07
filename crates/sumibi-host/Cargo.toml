@@ -16,6 +16,9 @@ unicode-segmentation = "=1.13.3"
 
 [dev-dependencies]
 
+[build-dependencies]
+embed-resource = "=3.0.12"
+
 [target.'cfg(windows)'.dependencies]
 sumibi-ipc = { path = "../sumibi-ipc" }
 sumibi-credentials = { path = "../sumibi-credentials" }

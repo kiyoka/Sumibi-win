@@ -1,6 +1,6 @@
 //! System tray notification icon for Sumibi Host.
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
@@ -18,12 +18,13 @@ pub const TRAY_CMD_SETTINGS: usize = 2002;
 pub const TRAY_CMD_EXIT: usize = 2003;
 
 pub struct TrayIcon {
+    _icon: Option<crate::app_icon::Icon>,
     hwnd: HWND,
     added: bool,
 }
 
 impl TrayIcon {
-    pub fn new(hwnd: HWND) -> Self {
+    pub fn new(hwnd: HWND, instance: HINSTANCE) -> Self {
         let mut nid = NOTIFYICONDATAW {
             cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
             hWnd: hwnd,
@@ -33,8 +34,13 @@ impl TrayIcon {
             ..Default::default()
         };
 
-        if let Ok(icon) = unsafe { LoadIconW(None, IDI_APPLICATION) } {
-            nid.hIcon = icon;
+        let icon = crate::app_icon::small(instance);
+        if let Some(handle) = icon
+            .as_ref()
+            .map(|icon| icon.0)
+            .or_else(|| unsafe { LoadIconW(None, IDI_APPLICATION).ok() })
+        {
+            nid.hIcon = handle;
         }
 
         let tip = "Sumibi Host (待受中)";
@@ -44,7 +50,11 @@ impl TrayIcon {
         nid.szTip[len] = 0;
 
         let added = unsafe { Shell_NotifyIconW(NIM_ADD, &nid).as_bool() };
-        Self { hwnd, added }
+        Self {
+            _icon: icon,
+            hwnd,
+            added,
+        }
     }
 
     pub fn handle_message(&self, lparam: LPARAM) -> bool {
@@ -140,6 +150,7 @@ mod tests {
     #[test]
     fn tray_handle_message_ignores_unrelated() {
         let tray = TrayIcon {
+            _icon: None,
             hwnd: HWND::default(),
             added: false,
         };

@@ -132,6 +132,7 @@ try {
     Set-SumibiShortcuts -Root $shortcutRoot -HostExe $shortcutHost
     $link = $shell.CreateShortcut((Join-Path $shortcutFolder 'Sumibi.lnk'))
     Assert-Case ($link.TargetPath -eq $shortcutHost -and $link.Arguments -eq '') 'Start menu must open Sumibi in the foreground.'
+    Assert-Case ($link.IconLocation -eq "$shortcutHost,0") 'Start menu must use the icon embedded in Sumibi Host.'
     Assert-Case (-not (Test-Path -LiteralPath $legacy)) 'Legacy background shortcut was retained.'
     Set-SumibiShortcuts -Root $shortcutRoot -Remove
     Assert-Case (-not (Test-Path -LiteralPath $shortcutFolder)) 'Uninstall retained owned shortcuts.'

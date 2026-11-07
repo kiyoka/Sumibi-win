@@ -29,6 +29,7 @@ struct Actions {
     close: Cell<bool>,
 }
 struct View {
+    _icons: [Option<crate::app_icon::Icon>; 2],
     hwnd: HWND,
     provider: HWND,
     host: HWND,
@@ -221,6 +222,7 @@ impl View {
             )?;
             let actions = Rc::new(Actions::default());
             let mut view = Self {
+                _icons: crate::app_icon::set_window_icons(hwnd, instance.into()),
                 hwnd,
                 provider: HWND::default(),
                 host: HWND::default(),
