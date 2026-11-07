@@ -22,12 +22,26 @@ Issue #22。macOS 版と同じ Google の OpenAI 互換 API を利用する。
 | 接続 | HTTPS、443 番ポート |
 
 モデルの利用可否・制限は Google 側のアカウントと提供状況による。
+Google Gemini を選ぶと、モデル欄の一覧に `gemini-4-argon`、
+`gemini-3.6-flash` の順で表示される。Argon は精度重視で有料枠が必要。
+3.6 Flash は速度と費用を重視した既定値。モデル欄には任意の ID も入力できる。
 [Sumibi のベンチマーク記事](https://zenn.dev/kiyoka/articles/japanese-input-method-sumibi-35)
 で報告された 3.8 Flash の説明・候補列挙の付加と応答時間を考慮し、
 初期値には 3.6 Flash を採用する。保存済みのモデルは自動変更しない。
 手動変換、選択範囲の変換、追加候補は既存の Chat Completions 経路を利用する。
 Decisions 自動変換の送信許可と予算は手動変換と独立しており、
 Google を選ぶだけで自動変換を許可することはない。
+
+Google の標準有料枠の料金（2026-11-07 確認、USD／100万トークン）。
+
+| モデル | 現行の入力／出力 | 改定日 | 改定後の入力／出力 |
+| --- | --- | --- | --- |
+| Gemini 4 Argon | $2.00／$10.00 | 2026-12-01 | $4.00／$20.00 |
+| Gemini 3.6 Flash | $0.75／$3.75 | 2027-01-01 | $1.50／$7.50 |
+
+出力料金には思考トークンが含まれる。Windows 版の Decisions 予算は送信件数を
+数える方式で、トークン単価を使った費用計算は行わない。実際の請求条件は
+[Google Gemini API の公式料金表](https://ai.google.dev/gemini-api/docs/pricing)を参照。
 
 ## キーと既存設定
 

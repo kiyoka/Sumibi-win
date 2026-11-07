@@ -1,6 +1,9 @@
 //! Provider presets only; the saved destination and editable model are authoritative.
 use crate::manual::{Destination, Scheme};
 
+pub const GEMINI_MODELS: [&str; 2] = ["gemini-4-argon", "gemini-3.6-flash"];
+const DEFAULT_GEMINI_MODEL: &str = GEMINI_MODELS[1];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Provider {
     OpenAi,
@@ -28,7 +31,7 @@ impl Provider {
             Self::Google => Some((
                 "generativelanguage.googleapis.com",
                 "/v1beta/openai",
-                "gemini-3.6-flash",
+                DEFAULT_GEMINI_MODEL,
             )),
             Self::Other => None,
         }

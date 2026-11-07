@@ -2,7 +2,7 @@
 use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc};
 use sumibi_host::{
     credential_store::CredentialTask,
-    provider::Provider,
+    provider::{Provider, GEMINI_MODELS},
     settings::{ProtectionProfile, Settings},
     settings_task::{SaveTaskError, SettingsSaveTask},
 };
@@ -34,6 +34,7 @@ struct View {
     provider: HWND,
     host: HWND,
     model: HWND,
+    model_hint: HWND,
     path: HWND,
     profile_standard: HWND,
     profile_strict: HWND,
@@ -138,6 +139,32 @@ fn text(hwnd: HWND) -> Result<String, &'static str> {
     String::from_utf16(&buffer[..count as usize]).map_err(|_| "invalid field")
 }
 impl View {
+    fn configure_model(&self, provider: Provider, value: &str) {
+        unsafe {
+            SendMessageW(self.model, CB_RESETCONTENT, None, None);
+            if provider == Provider::Google {
+                for model in GEMINI_MODELS {
+                    let model = wide(model);
+                    SendMessageW(
+                        self.model,
+                        CB_ADDSTRING,
+                        None,
+                        Some(LPARAM(model.as_ptr() as isize)),
+                    );
+                }
+            }
+            let _ = ShowWindow(
+                self.model_hint,
+                if provider == Provider::Google {
+                    SW_SHOW
+                } else {
+                    SW_HIDE
+                },
+            );
+        }
+        set_text(self.model, value);
+    }
+
     fn update_key_labels(&self) {
         let host = text(self.host).unwrap_or_default().to_ascii_lowercase();
         let (button, hint) = match host.as_str() {
@@ -214,7 +241,7 @@ impl View {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 600,
-                if initial_setup { 570 } else { 535 },
+                if initial_setup { 600 } else { 565 },
                 None,
                 None,
                 Some(instance.into()),
@@ -227,6 +254,7 @@ impl View {
                 provider: HWND::default(),
                 host: HWND::default(),
                 model: HWND::default(),
+                model_hint: HWND::default(),
                 path: HWND::default(),
                 profile_standard: HWND::default(),
                 profile_strict: HWND::default(),
@@ -315,9 +343,12 @@ impl View {
                     Some(LPARAM(label.as_ptr() as isize)),
                 );
             }
-            let selected = match settings.map(|s| Provider::from_destination(s.destination())) {
-                Some(Provider::OpenAi) => 0,
-                Some(Provider::Google) => 1,
+            let provider = settings.map_or(Provider::Other, |s| {
+                Provider::from_destination(s.destination())
+            });
+            let selected = match provider {
+                Provider::OpenAi => 0,
+                Provider::Google => 1,
                 _ => 2,
             };
             SendMessageW(view.provider, CB_SETCURSEL, Some(WPARAM(selected)), None);
@@ -338,8 +369,23 @@ impl View {
             .iter()
             .enumerate()
             {
-                let y = 105 + i as i32 * 40;
+                let y = 105 + i as i32 * 40 + if i == 2 { 30 } else { 0 };
                 child(w!("STATIC"), label, WINDOW_STYLE(0), 18, y + 4, 90, 24, 0)?;
+                if i == 1 {
+                    let combo = child(
+                        w!("COMBOBOX"),
+                        "",
+                        WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(0x42), // CBS_DROPDOWN | CBS_AUTOHSCROLL
+                        115,
+                        y,
+                        445,
+                        140,
+                        11,
+                    )?;
+                    SendMessageW(combo, CB_LIMITTEXT, Some(WPARAM(2048)), None);
+                    fields.push(combo);
+                    continue;
+                }
                 let edit = child(
                     w!("EDIT"),
                     value,
@@ -356,13 +402,24 @@ impl View {
             view.host = fields[0];
             view.model = fields[1];
             view.path = fields[2];
+            view.model_hint = child(
+                w!("STATIC"),
+                "4 Argon は精度重視（有料枠のみ）、3.6 Flash は速度・費用重視。",
+                WINDOW_STYLE(0),
+                115,
+                178,
+                445,
+                30,
+                0,
+            )?;
+            view.configure_model(provider, settings.map_or("", Settings::model));
 
             child(
                 w!("STATIC"),
                 "保護設定",
                 WINDOW_STYLE(0),
                 18,
-                225 + 2,
+                257,
                 90,
                 24,
                 0,
@@ -372,7 +429,7 @@ impl View {
                 "標準 (Standard: Notepad等一般アプリ対応)",
                 BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,
                 115,
-                225,
+                255,
                 270,
                 24,
                 21,
@@ -382,7 +439,7 @@ impl View {
                 "厳格 (Strict: 高機密監査環境)",
                 BS_AUTORADIOBUTTON,
                 395,
-                225,
+                255,
                 165,
                 24,
                 22,
@@ -413,7 +470,7 @@ impl View {
                 "接続先とモデルを保存",
                 WS_TABSTOP,
                 320,
-                265,
+                295,
                 240,
                 30,
                 1,
@@ -423,7 +480,7 @@ impl View {
                 "API キー",
                 WINDOW_STYLE(0),
                 18,
-                315,
+                345,
                 90,
                 24,
                 0,
@@ -433,7 +490,7 @@ impl View {
                 "",
                 WS_BORDER | WS_TABSTOP | WINDOW_STYLE(0xa0),
                 115,
-                310,
+                340,
                 445,
                 28,
                 13,
@@ -444,7 +501,7 @@ impl View {
                 "API キーをこのPCに保存",
                 WS_TABSTOP,
                 250,
-                350,
+                380,
                 310,
                 30,
                 3,
@@ -454,7 +511,7 @@ impl View {
                 "API キーを削除",
                 WS_TABSTOP,
                 115,
-                350,
+                380,
                 120,
                 30,
                 4,
@@ -464,7 +521,7 @@ impl View {
                 "保存した API キーは、この接続先での変換に使用します。",
                 WINDOW_STYLE(0),
                 18,
-                390,
+                420,
                 545,
                 24,
                 0,
@@ -474,7 +531,7 @@ impl View {
                 "キーの保存だけでは送信は許可されません。",
                 WINDOW_STYLE(0),
                 18,
-                430,
+                460,
                 545,
                 40,
                 0,
@@ -486,7 +543,7 @@ impl View {
                     "送信の確認へ進む",
                     WS_TABSTOP,
                     345,
-                    478,
+                    508,
                     215,
                     32,
                     5,
@@ -587,7 +644,13 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
             if let Some((host, path, model)) = provider.preset() {
                 set_text(view.host, host);
                 set_text(view.path, path);
-                set_text(view.model, model);
+                let model = baseline
+                    .as_ref()
+                    .filter(|saved| Provider::from_destination(saved.destination()) == provider)
+                    .map_or(model, Settings::model);
+                view.configure_model(provider, model);
+            } else if let Ok(model) = text(view.model) {
+                view.configure_model(provider, &model);
             }
             set_text(view.secret, "");
             set_text(
@@ -837,6 +900,18 @@ mod tests {
             unsafe { SendMessageW(view.provider, CB_GETCURSEL, None, None).0 },
             1
         );
+        assert_eq!(text(view.model).unwrap(), "custom-gemini");
+        assert_eq!(
+            unsafe { SendMessageW(view.model, CB_GETCOUNT, None, None).0 },
+            2
+        );
+        for (index, model) in GEMINI_MODELS.into_iter().enumerate() {
+            unsafe {
+                SendMessageW(view.model, CB_SETCURSEL, Some(WPARAM(index)), None);
+            }
+            assert_eq!(text(view.model).unwrap(), model);
+        }
+        set_text(view.model, "custom-gemini");
         assert_eq!(text(view.model).unwrap(), "custom-gemini");
         assert!(view.matches_destination(&settings));
         set_text(view.path, "/v1beta/openai/");

@@ -438,50 +438,60 @@ mod tests {
             "/v1beta/openai/",
         )
         .unwrap();
-        let authority = PolicyAuthority::new(destination.clone());
-        authority.set_model("gemini-fixture-model").unwrap();
-        authority
-            .replace_credential(Credential::new("synthetic-key".into()))
-            .unwrap();
-        authority.grant_manual_consent(&destination).unwrap();
-        let exchange = ScriptedExchange {
-            host: "generativelanguage.googleapis.com",
-            path: "/v1beta/openai/chat/completions",
-            ..Default::default()
-        };
-        assert_eq!(
-            convert_fixture(
+        for model in crate::provider::GEMINI_MODELS {
+            let authority = PolicyAuthority::new(destination.clone());
+            authority.set_model(model).unwrap();
+            authority
+                .replace_credential(Credential::new("synthetic-key".into()))
+                .unwrap();
+            authority.grant_manual_consent(&destination).unwrap();
+            let exchange = ScriptedExchange {
+                host: "generativelanguage.googleapis.com",
+                path: "/v1beta/openai/chat/completions",
+                response: Ok(serde_json::to_vec(&serde_json::json!({
+                    "choices": [{"finish_reason": "stop", "message": {
+                        "role": "assistant", "content": r#"{"candidates":["日本語"]}"#
+                    }}],
+                    "usage": {"prompt_tokens": 50, "completion_tokens": 30,
+                        "completion_tokens_details": {"reasoning_tokens": 20}}
+                }))
+                .unwrap()),
+                ..Default::default()
+            };
+            assert_eq!(
+                convert_fixture(
+                    &authority,
+                    &destination,
+                    revision(&authority),
+                    &Admission::default(),
+                    &exchange
+                )
+                .unwrap(),
+                "日本語"
+            );
+            let candidates = convert_additional_with_exchange(
+                ManualRequest {
+                    revision: revision(&authority),
+                    destination: &destination,
+                    source: "nihongo",
+                    deadline: Instant::now() + Duration::from_secs(2),
+                },
+                "にほんご",
                 &authority,
-                &destination,
-                revision(&authority),
                 &Admission::default(),
-                &exchange
+                &exchange,
             )
-            .unwrap(),
-            "日本語"
-        );
-        let candidates = convert_additional_with_exchange(
-            ManualRequest {
-                revision: revision(&authority),
-                destination: &destination,
-                source: "nihongo",
-                deadline: Instant::now() + Duration::from_secs(2),
-            },
-            "にほんご",
-            &authority,
-            &Admission::default(),
-            &exchange,
-        )
-        .unwrap();
-        assert!(!candidates.is_empty());
-        let writes = exchange.writes.borrow();
-        assert_eq!(writes.len(), 2);
-        for body in writes.iter() {
-            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-            assert_eq!(body["model"], "gemini-fixture-model");
-            assert_eq!(body["messages"][0]["role"], "system");
-            assert_eq!(body["messages"][1]["role"], "user");
-            assert!(body.get("api_key").is_none());
+            .unwrap();
+            assert!(!candidates.is_empty());
+            let writes = exchange.writes.borrow();
+            assert_eq!(writes.len(), 2);
+            for body in writes.iter() {
+                let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                assert_eq!(body["model"], model);
+                assert_eq!(body["messages"][0]["role"], "system");
+                assert_eq!(body["messages"][1]["role"], "user");
+                assert!(body.get("api_key").is_none());
+            }
         }
     }
 

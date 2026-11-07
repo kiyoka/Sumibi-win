@@ -283,10 +283,16 @@ mod tests {
             DecisionState::new(2, "desu", 1200),
         ];
 
-        let body = request_body_decisions("gpt-4o-mini", &states).unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["model"], "gpt-4o-mini");
-        assert_eq!(json["temperature"], 0.0);
+        for model in ["gpt-4o-mini"]
+            .into_iter()
+            .chain(crate::provider::GEMINI_MODELS)
+        {
+            let body = request_body_decisions(model, &states).unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["model"], model);
+            assert_eq!(json["temperature"], 0.0);
+            assert_eq!(json["response_format"]["type"], "json_object");
+        }
 
         // Rejects empty states
         assert_eq!(
