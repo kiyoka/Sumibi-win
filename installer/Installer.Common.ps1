@@ -1,6 +1,49 @@
 # Shared installer functions. Dot-sourcing performs no machine changes.
 #Requires -Version 5.1
 Set-StrictMode -Version Latest
+$script:SumibiComServerKey = 'CLSID\{E927D4AB-2EC9-4DD3-A921-A4620B95A410}\InprocServer32'
+
+function Get-SumibiPackageIdentityStatus {
+    if (-not ('SumibiInstaller.PackageIdentity' -as [type])) {
+        Add-Type -Namespace SumibiInstaller -Name PackageIdentity -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", ExactSpelling = true)]
+public static extern int GetCurrentPackageFullName(ref uint length, System.IntPtr name);
+'@
+    }
+    [uint32]$length = 0
+    return [SumibiInstaller.PackageIdentity]::GetCurrentPackageFullName([ref]$length, [IntPtr]::Zero)
+}
+
+function Assert-SumibiUnpackagedInstaller {
+    # APPMODEL_ERROR_NO_PACKAGE is the only result that proves this process
+    # is unpackaged. ERROR_INSUFFICIENT_BUFFER indicates a package identity.
+    $status = Get-SumibiPackageIdentityStatus
+    if ($status -eq 122) {
+        throw 'This installer is running inside a Windows app package. Open the installer from File Explorer or a standalone Windows PowerShell window, then retry.'
+    }
+    if ($status -ne 15700) { throw "Cannot verify the installer process package identity (Windows error $status)." }
+    Assert-SumibiUserRegistryView
+}
+
+function Get-SumibiUserRegistration {
+    param([switch]$Native)
+    if ($Native) {
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $key = [Microsoft.Win32.Registry]::Users.OpenSubKey("${sid}_Classes\$script:SumibiComServerKey")
+    } else {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Software\Classes\$script:SumibiComServerKey")
+    }
+    if ($null -eq $key) { return $null }
+    try { return $key.GetValue('') } finally { $key.Dispose() }
+}
+
+function Assert-SumibiUserRegistryView {
+    $current = Get-SumibiUserRegistration
+    $native = Get-SumibiUserRegistration -Native
+    if ($current -ne $native) {
+        throw 'This process sees a different Sumibi user registration than the Windows desktop. Run the installer from File Explorer or a standalone Windows PowerShell window.'
+    }
+}
 
 function Test-SumibiAdministrator {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -110,7 +153,7 @@ function Invoke-SumibiSetup {
 }
 
 function Get-SumibiRegisteredDlls {
-    $key = 'Software\Classes\CLSID\{E927D4AB-2EC9-4DD3-A921-A4620B95A410}\InprocServer32'
+    $key = "Software\Classes\$script:SumibiComServerKey"
     foreach ($hive in @('HKLM', 'HKCU')) {
         $path = "${hive}:\$key"
         if (Test-Path -LiteralPath $path) { [string](Get-Item -LiteralPath $path).GetValue('') }
@@ -119,6 +162,7 @@ function Get-SumibiRegisteredDlls {
 
 function Assert-SumibiRegistration {
     param([string]$Dll, [switch]$Absent)
+    Assert-SumibiUserRegistryView
     $paths = @(Get-SumibiRegisteredDlls)
     $profile = 'HKLM:\Software\Microsoft\CTF\TIP\{E927D4AB-2EC9-4DD3-A921-A4620B95A410}\LanguageProfile\0x00000411\{166150AD-12EF-4F52-A75B-CBB19FF97D27}'
     if ($Absent) {
@@ -232,6 +276,7 @@ function Write-SumibiInstallState {
 
 function Invoke-SumibiInstall {
     param([string]$SourceDir, [string]$InstallDir, [switch]$NoStartup)
+    Assert-SumibiUnpackagedInstaller
     if (-not (Test-SumibiAdministrator)) { throw 'Administrator privileges required.' }
     $root = Get-SumibiInstallRoot $InstallDir
     $manifest = Read-SumibiPackage $SourceDir
@@ -275,6 +320,7 @@ function Invoke-SumibiInstall {
 
 function Invoke-SumibiUninstall {
     param([string]$InstallDir)
+    Assert-SumibiUnpackagedInstaller
     if (-not (Test-SumibiAdministrator)) { throw 'Administrator privileges required.' }
     $root = Get-SumibiInstallRoot $InstallDir
     if (-not (Test-Path -LiteralPath $root)) { Write-Host 'Sumibi is not installed at the managed location.'; return }

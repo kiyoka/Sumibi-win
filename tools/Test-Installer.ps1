@@ -15,6 +15,25 @@ function Assert-Rejected {
 
 Assert-Rejected { Get-SumibiInstallRoot 'C:\' } 'Drive root was admitted.'
 Assert-Rejected { Get-SumibiInstallRoot $repository } 'Workspace was admitted as install root.'
+& {
+    function Get-SumibiPackageIdentityStatus { return $packageStatus }
+    function Get-SumibiUserRegistration {
+        param([switch]$Native)
+        if ($Native) { return 'desktop-dll' }
+        return $visibleRegistration
+    }
+    $visibleRegistration = 'desktop-dll'
+    $packageStatus = 15700
+    Assert-SumibiUnpackagedInstaller
+    $packageStatus = 122
+    Assert-Rejected { Assert-SumibiUnpackagedInstaller } 'Packaged installer was admitted.'
+    $packageStatus = 5
+    Assert-Rejected { Assert-SumibiUnpackagedInstaller } 'Unverifiable package identity was admitted.'
+    $packageStatus = 15700
+    $visibleRegistration = 'app-private-old-dll'
+    Assert-Rejected { Assert-SumibiUnpackagedInstaller } 'Divergent user registration was admitted.'
+    Assert-Rejected { Assert-SumibiRegistration -Dll 'desktop-dll' } 'Registration with a divergent user view was verified.'
+}
 foreach ($version in @('../other', '1.0', '1.0.0/child', '1.0.0"', '')) {
     Assert-Rejected { Assert-SumibiVersion $version } "Invalid version admitted: $version"
 }

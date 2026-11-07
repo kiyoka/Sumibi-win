@@ -8,6 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Installer.Common.ps1')
 try {
+    Assert-SumibiUnpackagedInstaller
     if (-not (Test-SumibiAdministrator)) {
         $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $PSCommandPath), '-InstallDir', ('"{0}"' -f (Get-SumibiInstallRoot $InstallDir)))
         if ($NoStartup) { $arguments += '-NoStartup' }
