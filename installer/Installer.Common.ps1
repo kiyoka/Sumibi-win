@@ -143,7 +143,9 @@ function Stop-SumibiInstalledHosts {
 }
 
 function Get-SumibiStartupCommand {
-    return Get-ItemPropertyValue -LiteralPath 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'SumibiHost' -ErrorAction SilentlyContinue
+    $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run')
+    if ($null -eq $key) { return $null }
+    try { return $key.GetValue('SumibiHost') } finally { $key.Dispose() }
 }
 
 function Assert-SumibiStartupOwner {
