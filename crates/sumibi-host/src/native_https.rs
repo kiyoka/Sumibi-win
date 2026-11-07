@@ -498,10 +498,13 @@ mod tests {
             for body in writes.iter() {
                 let body: serde_json::Value = serde_json::from_slice(body).unwrap();
                 assert_eq!(body["model"], model);
-                assert_eq!(
-                    body["reasoning_effort"].as_str(),
-                    (model == "gemini-4-argon").then_some("low")
-                );
+                if model == "gemini-4-argon" {
+                    assert_eq!(body["reasoning_effort"], "low");
+                    assert!(body.get("temperature").is_none());
+                } else {
+                    assert_eq!(body["reasoning_effort"], "minimal");
+                    assert_eq!(body["temperature"], 1.0);
+                }
                 assert_eq!(body["messages"][0]["role"], "system");
                 assert_eq!(body["messages"][1]["role"], "user");
                 assert!(body.get("api_key").is_none());

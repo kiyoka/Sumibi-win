@@ -143,7 +143,7 @@ pub fn request_body_with_input_and_kind(
     input: &ConversionInput<'_>,
     kind: ConversionKind,
 ) -> Result<Vec<u8>, PayloadError> {
-    build_request_body(model, input, kind, false)
+    build_request_body(model, input, kind, None)
 }
 
 pub(crate) fn request_body_for_destination(
@@ -156,7 +156,7 @@ pub(crate) fn request_body_for_destination(
         model,
         input,
         kind,
-        crate::provider::uses_argon_options(destination, model),
+        crate::provider::gemini_manual_options(destination, model),
     )
 }
 
@@ -164,7 +164,7 @@ fn build_request_body(
     model: &str,
     input: &ConversionInput<'_>,
     kind: ConversionKind,
-    argon_options: bool,
+    gemini_options: Option<(&str, Option<f64>)>,
 ) -> Result<Vec<u8>, PayloadError> {
     if !valid_model(model) {
         return Err(PayloadError::InvalidModel);
@@ -198,8 +198,11 @@ fn build_request_body(
             {"role": "user", "content": user_prompt}
         ]
     });
-    if argon_options {
-        payload["reasoning_effort"] = json!("low");
+    if let Some((reasoning_effort, temperature)) = gemini_options {
+        payload["reasoning_effort"] = json!(reasoning_effort);
+        if let Some(temperature) = temperature {
+            payload["temperature"] = json!(temperature);
+        }
     }
     serde_json::to_vec(&payload).map_err(|_| PayloadError::InvalidSource)
 }

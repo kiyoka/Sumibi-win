@@ -4,8 +4,18 @@ use crate::manual::{Destination, Scheme};
 pub const GEMINI_MODELS: [&str; 2] = ["gemini-4-argon", "gemini-3.6-flash"];
 const DEFAULT_GEMINI_MODEL: &str = GEMINI_MODELS[1];
 
-pub(crate) fn uses_argon_options(destination: &Destination, model: &str) -> bool {
-    model == GEMINI_MODELS[0] && Provider::from_destination(destination) == Provider::Google
+pub(crate) fn gemini_manual_options(
+    destination: &Destination,
+    model: &str,
+) -> Option<(&'static str, Option<f64>)> {
+    if Provider::from_destination(destination) != Provider::Google {
+        return None;
+    }
+    match model {
+        "gemini-4-argon" => Some(("low", None)),
+        "gemini-3.6-flash" => Some(("minimal", Some(1.0))),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

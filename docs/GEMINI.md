@@ -29,7 +29,9 @@ Google Gemini を選ぶと、モデル欄の一覧に `gemini-4-argon`、
 で報告された 3.8 Flash の説明・候補列挙の付加と応答時間を考慮し、
 初期値には 3.6 Flash を採用する。保存済みのモデルは自動変更しない。
 手動変換、選択範囲の変換、追加候補は既存の Chat Completions 経路を利用する。
-Google の Gemini 4 Argon では、通常変換と追加候補の推論設定を `low` にする。
+Google の通常変換と追加候補では、Gemini 4 Argon は `reasoning_effort=low` で
+`temperature` を省略し、Gemini 3.6 Flash は `reasoning_effort=minimal` と
+`temperature=1.0` を指定する。[Sumibi の比較ベンチマーク](https://github.com/kiyoka/Sumibi/blob/main/benchmark/issue205/REPORT.md)と同じモデル設定。
 Ctrl + J の手動変換は最大10秒待ち、期限を過ぎた結果は入力欄に適用しない。
 Decisions 自動変換の送信許可と予算は手動変換と独立しており、
 Google を選ぶだけで自動変換を許可することはない。
