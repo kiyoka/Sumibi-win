@@ -4,6 +4,7 @@ https://github.com/kiyoka/Sumibi-win
 1. インストール
 
 ZIPをすべて展開してから Install.cmd をダブルクリックします。
+アプリ内のターミナルで実行できない場合は、エクスプローラーから Install.cmd を開きます。
 UACの確認後、64-bit Windowsの Program Files\Sumibi に配置・登録します。
 スタートメニューと、次回ログオン時にHostを起動する設定を作成します。
 既定のIMEは変更しません。インストール完了画面で「はい」を選ぶとSumibiが開きます。

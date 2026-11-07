@@ -54,6 +54,25 @@ Program Files内のSumibiに配置し、COM/TSF・ログオン時起動・ショ
 問題を解消して再インストールするか、インストール先の `Uninstall.cmd` で登録を解除します。
 レジストリ更新全体の自動ロールバックは実装していません。
 
+### 更新後にパッケージ版 ChatGPT だけで変換できない場合
+
+メモ帳では変換できるのに ChatGPT で Sumibi の DLL が読み込まれない場合は、
+通常のデスクトップとアプリ側で、Sumibi の COM 登録が参照する DLL を比較します。
+Windows 11 の MSIX レジストリ仮想化により、通常の登録を更新した後も、
+アプリ専用の登録が削除済みの旧 DLL を指す場合があります。
+
+Issue #29 では、アプリ側の旧登録をバックアップし、インストール済みの現行 DLL を
+指すよう修正してから ChatGPT を開き直すと変換が復旧しました。一時キーで、
+通常のデスクトップ側で値を更新してもアプリ側に旧値が残ることも再現しました。
+インストーラーは、Windows アプリのパッケージ内で実行された場合や、Sumibi の
+ユーザー別登録が通常のデスクトップと食い違う場合に、登録を変更する前に停止します。
+エクスプローラーから `Install.cmd` または `Uninstall.cmd` を開き直してください。
+既存のアプリ専用登録は、通常のインストールをやり直しても残る場合があります。
+その場合は対象アプリで DLL の参照先を確認します。旧値を書き込んだプロセスは未特定です。
+
+- [Issue #29](https://github.com/kiyoka/Sumibi-win/issues/29)
+- [Windows 11 の MSIX レジストリ仮想化](https://learn.microsoft.com/windows/msix/desktop/flexible-virtualization)
+
 ## アンインストール
 
 スタートメニューの「Uninstall Sumibi」またはインストール先の `Uninstall.cmd` を実行します。
