@@ -143,6 +143,29 @@ pub fn request_body_with_input_and_kind(
     input: &ConversionInput<'_>,
     kind: ConversionKind,
 ) -> Result<Vec<u8>, PayloadError> {
+    build_request_body(model, input, kind, false)
+}
+
+pub(crate) fn request_body_for_destination(
+    destination: &crate::manual::Destination,
+    model: &str,
+    input: &ConversionInput<'_>,
+    kind: ConversionKind,
+) -> Result<Vec<u8>, PayloadError> {
+    build_request_body(
+        model,
+        input,
+        kind,
+        crate::provider::uses_argon_options(destination, model),
+    )
+}
+
+fn build_request_body(
+    model: &str,
+    input: &ConversionInput<'_>,
+    kind: ConversionKind,
+    argon_options: bool,
+) -> Result<Vec<u8>, PayloadError> {
     if !valid_model(model) {
         return Err(PayloadError::InvalidModel);
     }
@@ -168,14 +191,17 @@ pub fn request_body_with_input_and_kind(
         input.source
     );
 
-    serde_json::to_vec(&json!({
+    let mut payload = json!({
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
-    }))
-    .map_err(|_| PayloadError::InvalidSource)
+    });
+    if argon_options {
+        payload["reasoning_effort"] = json!("low");
+    }
+    serde_json::to_vec(&payload).map_err(|_| PayloadError::InvalidSource)
 }
 
 /// Create Chat Completions request body with structured conversion inputs (initial conversion).

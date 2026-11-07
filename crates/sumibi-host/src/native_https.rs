@@ -180,8 +180,13 @@ impl OrderedConversionTransport for AdditionalChatTransport<'_> {
             Some(self.current_result),
             None,
         );
-        let body = crate::first_conversion::request_body_additional(self.model, &input)
-            .map_err(|_| SendError::InvalidRequest)?;
+        let body = crate::first_conversion::request_body_for_destination(
+            destination,
+            self.model,
+            &input,
+            crate::first_conversion::ConversionKind::Additional,
+        )
+        .map_err(|_| SendError::InvalidRequest)?;
         let bytes = self
             .exchange
             .exchange(destination, credential, body, deadline, gate)?;
@@ -263,8 +268,13 @@ impl OrderedConversionTransport for ChatTransport<'_> {
         deadline: Instant,
         gate: &mut dyn SendGate,
     ) -> Result<String, SendError> {
-        let body = crate::first_conversion::request_body(self.model, source)
-            .map_err(|_| SendError::InvalidRequest)?;
+        let body = crate::first_conversion::request_body_for_destination(
+            destination,
+            self.model,
+            &crate::first_conversion::ConversionInput::new(source),
+            crate::first_conversion::ConversionKind::Initial,
+        )
+        .map_err(|_| SendError::InvalidRequest)?;
         let bytes = self
             .exchange
             .exchange(destination, credential, body, deadline, gate)?;
@@ -488,6 +498,10 @@ mod tests {
             for body in writes.iter() {
                 let body: serde_json::Value = serde_json::from_slice(body).unwrap();
                 assert_eq!(body["model"], model);
+                assert_eq!(
+                    body["reasoning_effort"].as_str(),
+                    (model == "gemini-4-argon").then_some("low")
+                );
                 assert_eq!(body["messages"][0]["role"], "system");
                 assert_eq!(body["messages"][1]["role"], "user");
                 assert!(body.get("api_key").is_none());

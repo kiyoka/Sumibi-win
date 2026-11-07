@@ -34,6 +34,7 @@ pub const CONVERT_KEY: TF_PRESERVEDKEY = TF_PRESERVEDKEY {
 };
 
 const WM_SUMIBI_DRAIN: u32 = WM_APP + 42;
+const MANUAL_CONVERSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Lock-free observable state shared between the background IPC worker and the STA thread.
 pub struct SharedSessionState {
@@ -94,7 +95,7 @@ enum WorkerCommand {
         request_id: u64,
         revision: Revision,
         text: String,
-        timeout: Duration,
+        deadline: Instant,
     },
 }
 
@@ -546,7 +547,7 @@ impl TipHostSession {
         let request_id = self.next_request_id.get().wrapping_add(1).max(1);
         self.next_request_id.set(request_id);
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + MANUAL_CONVERSION_TIMEOUT;
         let ticket = match ManualEdit::capture_with_run(
             &self.manager,
             context,
@@ -582,14 +583,13 @@ impl TipHostSession {
         *self.sink.pending_ticket.borrow_mut() = Some((request_id, revision, ticket));
 
         // 3. Dispatch to background worker
-        let timeout = Duration::from_secs(5);
         if self
             .command_sender
             .try_send(WorkerCommand::Convert {
                 request_id,
                 revision,
                 text,
-                timeout,
+                deadline,
             })
             .is_err()
         {
@@ -781,10 +781,8 @@ fn worker_loop(
                 request_id,
                 revision,
                 text,
-                timeout,
+                deadline,
             }) => {
-                let deadline = Instant::now() + timeout;
-
                 // Reserve permit
                 match worker.reserve(request_id) {
                     Ok(permit) => {
@@ -823,6 +821,7 @@ fn worker_loop(
                                                 notify_drain(drain_hwnd, request_id);
                                             }
                                             Err(_) => {
+                                                debug_log("Preserved key conversion returned no candidate");
                                                 let _ = event_sender
                                                     .send(WorkerEvent::Failed { request_id });
                                                 notify_drain(drain_hwnd, request_id);
@@ -833,6 +832,7 @@ fn worker_loop(
                                 }
                                 Ok(None) => {
                                     if Instant::now() >= deadline {
+                                        debug_log("Preserved key conversion timed out");
                                         let _ = worker.cancel(request_id);
                                         let _ =
                                             event_sender.send(WorkerEvent::Failed { request_id });

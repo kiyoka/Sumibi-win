@@ -4,6 +4,10 @@ use crate::manual::{Destination, Scheme};
 pub const GEMINI_MODELS: [&str; 2] = ["gemini-4-argon", "gemini-3.6-flash"];
 const DEFAULT_GEMINI_MODEL: &str = GEMINI_MODELS[1];
 
+pub(crate) fn uses_argon_options(destination: &Destination, model: &str) -> bool {
+    model == GEMINI_MODELS[0] && Provider::from_destination(destination) == Provider::Google
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Provider {
     OpenAi,
