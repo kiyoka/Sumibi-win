@@ -3,6 +3,39 @@
 use sumibi_ipc::host_image::{inspect_bytes, HostSubsystem, ImportSymbol};
 
 #[test]
+fn windows_shell_can_extract_the_host_icon() {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::ExtractIconExW;
+    use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, HICON};
+
+    let path: Vec<u16> = env!("CARGO_BIN_EXE_sumibi-host")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let (mut large, mut small) = (HICON::default(), HICON::default());
+    let extracted = unsafe {
+        let count = ExtractIconExW(
+            PCWSTR(path.as_ptr()),
+            0,
+            Some(&mut large),
+            Some(&mut small),
+            1,
+        );
+        let valid = count > 0 && !large.is_invalid() && !small.is_invalid();
+        for icon in [large, small] {
+            if !icon.is_invalid() {
+                let _ = DestroyIcon(icon);
+            }
+        }
+        valid
+    };
+    assert!(
+        extracted,
+        "the Host must provide large and small shell icons"
+    );
+}
+
+#[test]
 fn built_host_has_supported_native_image_and_static_import_inventory() {
     let bytes = std::fs::read(env!("CARGO_BIN_EXE_sumibi-host")).unwrap();
     let image = inspect_bytes(&bytes).expect("built Host must match the narrow x64 image profile");

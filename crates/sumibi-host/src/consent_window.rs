@@ -45,6 +45,7 @@ struct WindowContext {
 }
 
 struct View {
+    _icons: [Option<crate::app_icon::Icon>; 2],
     hwnd: HWND,
     details: HWND,
     status: HWND,
@@ -222,9 +223,10 @@ impl View {
             let actions = Rc::new(Actions::default());
             let context = Rc::new(WindowContext {
                 actions,
-                tray: RefCell::new(Some(TrayIcon::new(hwnd))),
+                tray: RefCell::new(Some(TrayIcon::new(hwnd, instance.into()))),
             });
             let mut view = Self {
+                _icons: crate::app_icon::set_window_icons(hwnd, instance.into()),
                 hwnd,
                 details: HWND::default(),
                 status: HWND::default(),

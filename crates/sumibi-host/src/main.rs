@@ -1,6 +1,8 @@
 //! Explicitly launched broker entry. Default builds never enable a converter.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #[cfg(windows)]
+mod app_icon;
+#[cfg(windows)]
 mod consent_window;
 #[cfg(windows)]
 mod host_paths;
