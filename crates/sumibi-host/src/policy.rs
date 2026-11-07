@@ -216,7 +216,7 @@ impl PolicyAuthority {
     }
 
     /// A changed destination invalidates both the old consent and credential
-    /// authorization. The credential stays resident but cannot be sent yet.
+    /// authorization. A key from the old destination must never be reused.
     pub fn set_destination(&self, destination: Destination) -> Result<PolicyVersion, ChangeError> {
         let mut state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
         let settings = state
@@ -227,6 +227,9 @@ impl PolicyAuthority {
             .authorization
             .checked_add(1)
             .ok_or(ChangeError::Exhausted)?;
+        if state.destination != destination {
+            state.credential = None;
+        }
         state.destination = destination;
         state.settings = settings;
         state.authorization = authorization;
@@ -239,8 +242,7 @@ impl PolicyAuthority {
         Ok(published)
     }
 
-    /// Publish the model and its settings revision atomically. Existing
-    /// consent is destination-specific; in-flight requests still become stale.
+    /// Publish the model atomically and require consent for a changed model.
     pub fn set_model(&self, model: &str) -> Result<PolicyVersion, ChangeError> {
         if !crate::first_conversion::valid_model(model) {
             return Err(ChangeError::InvalidModel);
@@ -250,6 +252,15 @@ impl PolicyAuthority {
             .settings
             .checked_add(1)
             .ok_or(ChangeError::Exhausted)?;
+        if state.model.as_deref() != Some(model) {
+            state.authorization = state
+                .authorization
+                .checked_add(1)
+                .ok_or(ChangeError::Exhausted)?;
+            state.manual_consent = None;
+            state.auto_consent = None;
+            state.allowed = false;
+        }
         state.model = Some(model.to_owned());
         state.settings = settings;
         let published = version(&state);
@@ -299,7 +310,8 @@ impl PolicyAuthority {
             .checked_add(1)
             .ok_or(SettingsError::Policy(ChangeError::Exhausted))?;
         let changed_destination = state.destination != destination;
-        let authorization = if changed_destination {
+        let changed_consent = changed_destination || state.model.as_deref() != Some(&model);
+        let authorization = if changed_consent {
             state
                 .authorization
                 .checked_add(1)
@@ -308,12 +320,15 @@ impl PolicyAuthority {
             state.authorization
         };
         persist()?;
+        if state.destination != destination {
+            state.credential = None;
+        }
         state.destination = destination;
         state.model = Some(model);
         state.protection_profile = protection_profile;
         state.settings = settings;
         state.authorization = authorization;
-        if changed_destination {
+        if changed_consent {
             state.manual_consent = None;
             state.auto_consent = None;
             state.allowed = false;
@@ -353,7 +368,9 @@ impl PolicyAuthority {
     #[cfg(windows)]
     pub(crate) fn update_stored_credential(
         &self,
-        operation: impl FnOnce() -> Result<Option<Credential>, sumibi_credentials::StoreError>,
+        operation: impl FnOnce(
+            &Destination,
+        ) -> Result<Option<Credential>, sumibi_credentials::StoreError>,
     ) -> Result<(PolicyVersion, Result<(), sumibi_credentials::StoreError>), ChangeError> {
         let mut state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
         let authorization = state
@@ -365,7 +382,7 @@ impl PolicyAuthority {
         state.manual_consent = None;
         state.auto_consent = None;
         state.allowed = false;
-        let outcome = match operation() {
+        let outcome = match operation(&state.destination) {
             Ok(credential) => {
                 state.credential = credential.map(Arc::new);
                 Ok(())
@@ -790,6 +807,14 @@ mod tests {
             manual::convert(request(&first, old), &authority, &Mock { authority: None }),
             Err(SendError::PolicyDenied)
         );
+        assert!(authority.snapshot().unwrap().credential.is_none());
+        assert_eq!(
+            authority.grant_manual_consent(&second),
+            Err(ChangeError::InvalidConsent)
+        );
+        authority
+            .replace_credential(Credential::new("synthetic-key".into()))
+            .unwrap();
         let renewed = authority.grant_manual_consent(&second).unwrap();
         assert_eq!(
             manual::convert(
@@ -1020,7 +1045,7 @@ mod tests {
             updated,
             PolicyVersion {
                 settings: 2,
-                authorization: 1
+                authorization: 2
             }
         );
         assert_eq!(

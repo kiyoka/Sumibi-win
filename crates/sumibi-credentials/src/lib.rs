@@ -4,4 +4,6 @@
 mod windows_store;
 
 #[cfg(windows)]
-pub use windows_store::{delete, load, save, StoreError};
+pub use windows_store::{
+    delete, delete_scoped, load, load_scoped, migrate_legacy, save, save_scoped, StoreError,
+};

@@ -12,6 +12,9 @@ Windows x64向けの配布ZIPには、インストーラー・アンインスト
 生成・導入・更新の手順は[パッケージングガイド](docs/PACKAGING_AND_LIFECYCLE.md)を参照してください。
 アプリごとの変換互換性は引き続き検証中です。
 
+変換先は OpenAI／Google Gemini／その他の互換 API を設定画面から選択できます。
+Gemini の設定方法と検証状況は [Gemini API ガイド](docs/GEMINI.md)を参照してください。
+
 ### TSFの登録・編集・プレビュー
 
 開発用ツール `sumibi-setup` で、プロセス内に限定した実TSFの登録・有効化・解除を検証できます。

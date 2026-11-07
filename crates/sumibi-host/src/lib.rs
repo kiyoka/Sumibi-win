@@ -28,6 +28,7 @@ pub mod manual;
 #[cfg(windows)]
 pub mod native_https;
 pub mod policy;
+pub mod provider;
 pub mod settings;
 #[cfg(windows)]
 pub mod settings_task;

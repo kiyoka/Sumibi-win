@@ -5549,6 +5549,9 @@ mod tests {
             .unwrap();
         read_frame(&mut client, &stop, deadline);
         source.set_destination(next.clone()).unwrap();
+        source
+            .replace_credential(Credential::new("fixture".into()))
+            .unwrap();
         source.grant_manual_consent(&next).unwrap();
         drop(old_listener);
         let server = std::thread::spawn(move || {

@@ -17,12 +17,15 @@ pub struct PreparedHost {
 }
 impl PreparedHost {
     pub fn load(path: &Path) -> Result<Self, SettingsError> {
+        Settings::upgrade_credentials(path)?;
         Self::load_with(path, credential_store::load_credential)
     }
 
     fn load_with(
         path: &Path,
-        credential_loader: impl FnOnce() -> Result<Option<Credential>, StoreError>,
+        credential_loader: impl FnOnce(
+            &crate::manual::Destination,
+        ) -> Result<Option<Credential>, StoreError>,
     ) -> Result<Self, SettingsError> {
         // Validate the complete saved destination before accessing the key.
         let settings = Settings::load(path)?;
@@ -85,7 +88,7 @@ mod tests {
         let fixture = Fixture::new();
         std::fs::write(fixture.path(), br#"{"version":99}"#).unwrap();
         let called = std::cell::Cell::new(false);
-        assert!(PreparedHost::load_with(&fixture.path(), || {
+        assert!(PreparedHost::load_with(&fixture.path(), |_| {
             called.set(true);
             Ok(None)
         })
@@ -107,7 +110,7 @@ mod tests {
         ] {
             let expected = result.as_ref().map(|_| ()).map_err(|error| *error);
             let expected_key = result.as_ref().is_ok_and(|key| key.is_some());
-            let host = PreparedHost::load_with(&fixture.path(), || result).unwrap();
+            let host = PreparedHost::load_with(&fixture.path(), |_| result).unwrap();
             assert_eq!(host.credential_outcome(), expected);
             assert_eq!(host.settings().model(), "fixture-model");
             let policy = host.authority().snapshot().unwrap();

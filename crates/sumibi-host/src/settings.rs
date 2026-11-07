@@ -45,6 +45,7 @@ enum StoredScheme {
 /// Fully resolved destination; key and send consent are deliberately absent.
 #[derive(Clone)]
 pub struct Settings {
+    legacy_credentials: bool,
     destination: Destination,
     model: String,
     protection_profile: ProtectionProfile,
@@ -80,6 +81,7 @@ impl Settings {
             return Err(SettingsError::Invalid);
         }
         Ok(Self {
+            legacy_credentials: false,
             destination,
             model: model.to_owned(),
             protection_profile: ProtectionProfile::Standard,
@@ -175,7 +177,7 @@ impl Settings {
 
     fn record(&self) -> Record {
         Record {
-            version: 1,
+            version: 2,
             scheme: match self.destination.scheme() {
                 Scheme::Https => StoredScheme::Https,
                 Scheme::HttpLoopback => StoredScheme::HttpLoopback,
@@ -193,7 +195,7 @@ impl Settings {
             return Err(SettingsError::Invalid);
         }
         let record: Record = serde_json::from_slice(bytes).map_err(|_| SettingsError::Invalid)?;
-        if record.version != 1 {
+        if record.version != 1 && record.version != 2 {
             return Err(SettingsError::Invalid);
         }
         let scheme = match record.scheme {
@@ -213,7 +215,38 @@ impl Settings {
             return Err(SettingsError::Invalid);
         }
         settings.protection_profile = record.protection_profile;
+        settings.legacy_credentials = record.version == 1;
         Ok(settings)
+    }
+
+    /// Upgrade under the same cross-process lock used by editors. Bind the old
+    /// key to the original validated destination before allowing any edit.
+    /// No consent is restored. A failed migration leaves v1 settings retryable.
+    #[cfg(windows)]
+    pub fn upgrade_credentials(path: &Path) -> Result<(), SettingsError> {
+        if !Self::load(path)?.legacy_credentials {
+            return Ok(());
+        }
+        Self::upgrade_credentials_with(path, |destination| {
+            sumibi_credentials::migrate_legacy(&crate::credential_store::credential_scope(
+                destination,
+            ))
+            .map_err(|_| SettingsError::Io)
+        })
+    }
+
+    #[cfg(windows)]
+    fn upgrade_credentials_with(
+        path: &Path,
+        migrate: impl FnOnce(&Destination) -> Result<(), SettingsError>,
+    ) -> Result<(), SettingsError> {
+        let _lock = write_lock(path)?;
+        let settings = Self::load(path)?;
+        if settings.legacy_credentials {
+            migrate(settings.destination())?;
+            settings.save_locked(path)?;
+        }
+        Ok(())
     }
 
     pub fn load(path: &Path) -> Result<Self, SettingsError> {
@@ -357,6 +390,51 @@ fn write_lock(path: &Path) -> Result<fs::File, SettingsError> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn legacy_migration_binds_original_destination_and_is_retryable_and_once_only() {
+        let directory = std::env::temp_dir().join(format!(
+            "sumibi-migration-{}-{}",
+            std::process::id(),
+            TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("settings.json");
+        let legacy = br#"{"version":1,"scheme":"https","host":"custom.example.test","port":8443,"chat_path":"/proxy/v1/chat/completions","model":"custom-model","protection_profile":"strict"}"#;
+        fs::write(&path, legacy).unwrap();
+        assert_eq!(
+            Settings::upgrade_credentials_with(&path, |_| Err(SettingsError::Io)),
+            Err(SettingsError::Io)
+        );
+        assert_eq!(fs::read(&path).unwrap(), legacy);
+        Settings::upgrade_credentials_with(&path, |destination| {
+            assert_eq!(destination.host(), "custom.example.test");
+            assert_eq!(destination.port(), 8443);
+            assert_eq!(destination.base_path(), "/proxy/v1/chat/completions");
+            Ok(())
+        })
+        .unwrap();
+        let upgraded = Settings::load(&path).unwrap();
+        assert!(!upgraded.legacy_credentials);
+        assert_eq!(upgraded.model(), "custom-model");
+        assert_eq!(upgraded.protection_profile(), ProtectionProfile::Strict);
+        Settings::upgrade_credentials_with(&path, |_| panic!("migration repeated")).unwrap();
+        let google = Settings::new(
+            Scheme::Https,
+            "generativelanguage.googleapis.com",
+            443,
+            "/v1beta/openai",
+            "editable-model",
+        )
+        .unwrap();
+        google.save_if_unchanged(&path, &upgraded).unwrap();
+        Settings::upgrade_credentials_with(&path, |_| panic!("legacy key rebound to Google"))
+            .unwrap();
+        assert_eq!(Settings::load(&path).unwrap().model(), "editable-model");
+        fs::remove_file(path).unwrap();
+        fs::remove_file(directory.join(".settings.json.lock")).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
     use super::*;
     use crate::manual::PolicySource;
 
@@ -470,7 +548,7 @@ mod tests {
     #[test]
     fn refuses_unknown_duplicate_and_unresolved_fields() {
         for json in [
-            r#"{"version":2,"scheme":"https","host":"example.test","port":443,"chat_path":"/v1/chat/completions","model":"x"}"#,
+            r#"{"version":99,"scheme":"https","host":"example.test","port":443,"chat_path":"/v1/chat/completions","model":"x"}"#,
             r#"{"version":1,"scheme":"https","host":"example.test","port":443,"chat_path":"/v1","model":"x"}"#,
             r#"{"version":1,"scheme":"https","host":"example.test","port":443,"chat_path":"/v1/chat/completions","model":"x","key":"secret"}"#,
             r#"{"version":1,"scheme":"https","host":"example.test","port":443,"chat_path":"/v1/chat/completions","model":"x","protection_profile":"invalid"}"#,
@@ -567,20 +645,22 @@ mod tests {
         let granted = authority.grant_manual_consent(first.destination()).unwrap();
         let update = second.save_and_apply(&path, &authority).unwrap();
         assert_eq!(update.version().settings, granted.settings + 1);
-        assert_eq!(update.version().authorization, granted.authorization);
-        assert!(authority.snapshot().unwrap().allowed);
+        assert_eq!(update.version().authorization, granted.authorization + 1);
+        assert!(!authority.snapshot().unwrap().allowed);
         assert_eq!(Settings::load(&path).unwrap().model(), "second");
         let third = Settings::new(Scheme::Https, "other.test", 443, "/v1", "third").unwrap();
         assert!(third
             .save_and_apply(&directory.join("missing").join("settings.json"), &authority)
             .is_err());
         let unchanged = authority.snapshot().unwrap();
-        assert!(unchanged.allowed);
+        assert!(!unchanged.allowed);
         assert_eq!(unchanged.model.as_deref(), Some("second"));
         let changed = third.save_and_apply(&path, &authority).unwrap();
-        assert_eq!(changed.version().authorization, granted.authorization + 1);
+        assert_eq!(changed.version().authorization, granted.authorization + 2);
         let updated = authority.snapshot().unwrap();
-        assert!(!updated.allowed && updated.manual_consent.is_none());
+        assert!(
+            !updated.allowed && updated.manual_consent.is_none() && updated.credential.is_none()
+        );
         assert_eq!(updated.model.as_deref(), Some("third"));
         assert_eq!(updated.destination.host(), "other.test");
         assert_eq!(Settings::load(&path).unwrap().model(), "third");

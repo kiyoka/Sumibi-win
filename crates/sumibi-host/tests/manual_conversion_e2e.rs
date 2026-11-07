@@ -326,7 +326,7 @@ fn test_settings_atomic_save_and_corruption_recovery() {
 
     // 3. Verify saved record format and that secrets / body never leak into settings
     let saved_raw = std::fs::read_to_string(&settings_path).expect("read settings raw");
-    assert!(saved_raw.contains(r#""version":1"#));
+    assert!(saved_raw.contains(r#""version":2"#));
     assert!(saved_raw.contains(r#""scheme":"https""#));
     assert!(saved_raw.contains(r#""model":"gpt-4o""#));
     assert!(!saved_raw.contains("secret"));

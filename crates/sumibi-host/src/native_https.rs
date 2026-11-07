@@ -374,6 +374,8 @@ mod tests {
     }
 
     struct ScriptedExchange<'a> {
+        host: &'a str,
+        path: &'a str,
         writes: RefCell<Vec<Vec<u8>>>,
         before: Option<&'a dyn Fn()>,
         after: Option<&'a dyn Fn()>,
@@ -381,7 +383,7 @@ mod tests {
     }
     impl Default for ScriptedExchange<'_> {
         fn default() -> Self {
-            Self { writes: RefCell::new(Vec::new()), before: None, after: None,
+            Self { host: "example.test", path: "/proxy/v1/chat/completions", writes: RefCell::new(Vec::new()), before: None, after: None,
                 response: Ok(serde_json::to_vec(&serde_json::json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":r#"{"candidates":["日本語"]}"#}}]})).unwrap()) }
         }
     }
@@ -394,8 +396,8 @@ mod tests {
             _: Instant,
             gate: &mut dyn SendGate,
         ) -> Result<Vec<u8>, SendError> {
-            assert_eq!(destination.host(), "example.test");
-            assert_eq!(destination.base_path(), "/proxy/v1/chat/completions");
+            assert_eq!(destination.host(), self.host);
+            assert_eq!(destination.base_path(), self.path);
             assert_eq!(credential, "synthetic-key");
             if let Some(before) = self.before {
                 before();
@@ -425,6 +427,62 @@ mod tests {
             .unwrap();
         authority.grant_manual_consent(&destination).unwrap();
         (authority, destination)
+    }
+
+    #[test]
+    fn gemini_initial_and_additional_use_compatible_route_model_and_response() {
+        let destination = Destination::for_chat_completions(
+            Scheme::Https,
+            "generativelanguage.googleapis.com",
+            443,
+            "/v1beta/openai/",
+        )
+        .unwrap();
+        let authority = PolicyAuthority::new(destination.clone());
+        authority.set_model("gemini-fixture-model").unwrap();
+        authority
+            .replace_credential(Credential::new("synthetic-key".into()))
+            .unwrap();
+        authority.grant_manual_consent(&destination).unwrap();
+        let exchange = ScriptedExchange {
+            host: "generativelanguage.googleapis.com",
+            path: "/v1beta/openai/chat/completions",
+            ..Default::default()
+        };
+        assert_eq!(
+            convert_fixture(
+                &authority,
+                &destination,
+                revision(&authority),
+                &Admission::default(),
+                &exchange
+            )
+            .unwrap(),
+            "日本語"
+        );
+        let candidates = convert_additional_with_exchange(
+            ManualRequest {
+                revision: revision(&authority),
+                destination: &destination,
+                source: "nihongo",
+                deadline: Instant::now() + Duration::from_secs(2),
+            },
+            "にほんご",
+            &authority,
+            &Admission::default(),
+            &exchange,
+        )
+        .unwrap();
+        assert!(!candidates.is_empty());
+        let writes = exchange.writes.borrow();
+        assert_eq!(writes.len(), 2);
+        for body in writes.iter() {
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["model"], "gemini-fixture-model");
+            assert_eq!(body["messages"][0]["role"], "system");
+            assert_eq!(body["messages"][1]["role"], "user");
+            assert!(body.get("api_key").is_none());
+        }
     }
 
     fn revision(authority: &PolicyAuthority) -> Revision {
