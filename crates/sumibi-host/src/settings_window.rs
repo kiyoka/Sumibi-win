@@ -404,7 +404,7 @@ impl View {
             view.path = fields[2];
             view.model_hint = child(
                 w!("STATIC"),
-                "4 Argon は精度重視（有料枠のみ）、3.6 Flash は速度・費用重視。",
+                "4 Argon は精度重視、3.6 Flash は速度・費用重視。",
                 WINDOW_STYLE(0),
                 115,
                 178,

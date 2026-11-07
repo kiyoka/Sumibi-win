@@ -23,7 +23,7 @@ Issue #22。macOS 版と同じ Google の OpenAI 互換 API を利用する。
 
 モデルの利用可否・制限は Google 側のアカウントと提供状況による。
 Google Gemini を選ぶと、モデル欄の一覧に `gemini-4-argon`、
-`gemini-3.6-flash` の順で表示される。Argon は精度重視で有料枠が必要。
+`gemini-3.6-flash` の順で表示される。Argon は精度重視。
 3.6 Flash は速度と費用を重視した既定値。モデル欄には任意の ID も入力できる。
 [Sumibi のベンチマーク記事](https://zenn.dev/kiyoka/articles/japanese-input-method-sumibi-35)
 で報告された 3.8 Flash の説明・候補列挙の付加と応答時間を考慮し、
