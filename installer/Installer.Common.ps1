@@ -143,7 +143,9 @@ function Stop-SumibiInstalledHosts {
 }
 
 function Get-SumibiStartupCommand {
-    return Get-ItemPropertyValue -LiteralPath 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'SumibiHost' -ErrorAction SilentlyContinue
+    $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run')
+    if ($null -eq $key) { return $null }
+    try { return $key.GetValue('SumibiHost') } finally { $key.Dispose() }
 }
 
 function Assert-SumibiStartupOwner {
@@ -176,16 +178,19 @@ function Set-SumibiShortcuts {
     param([string]$Root, [string]$HostExe, [switch]$Remove)
     $folder = Get-SumibiStartMenu
     $shell = New-Object -ComObject WScript.Shell
-    $entries = @(@('Sumibi Settings.lnk', $HostExe, 'settings-window'),
-        @('Sumibi Background Host.lnk', $HostExe, '--minimized'),
+    $legacy = 'Sumibi Background Host.lnk'
+    $entries = @(@('Sumibi.lnk', $HostExe, ''),
+        @('Sumibi Settings.lnk', $HostExe, 'settings-window'),
         @('Uninstall Sumibi.lnk', (Join-Path $Root 'Uninstall.cmd'), ''))
-    foreach ($entry in $entries) {
-        $path = Get-SumibiChildPath $folder $entry[0]
+    foreach ($name in @($entries | ForEach-Object { $_[0] }) + @($legacy)) {
+        $path = Get-SumibiChildPath $folder $name
         if (Test-Path -LiteralPath $path) {
             $target = $shell.CreateShortcut($path).TargetPath
             if (-not $target.StartsWith($Root + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "Shortcut belongs to another installation: $path" }
         }
     }
+    $legacyPath = Get-SumibiChildPath $folder $legacy
+    if (Test-Path -LiteralPath $legacyPath) { Remove-Item -LiteralPath $legacyPath -Force }
     if (-not $Remove) { $null = New-Item -ItemType Directory -Path $folder -Force }
     foreach ($entry in $entries) {
         $path = Get-SumibiChildPath $folder $entry[0]

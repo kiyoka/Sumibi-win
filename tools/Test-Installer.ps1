@@ -98,6 +98,25 @@ try {
         param([string]$Root, [string]$HostExe, [switch]$Disabled)
         if ($Disabled) { $script:startup = $null } else { $script:startup = '"' + $HostExe + '" --minimized' }
     }
+    # Exercise actual .lnk migration in a disposable Start menu folder.
+    $shortcutRoot = Join-Path $fixture 'Shortcut test install'
+    $shortcutHost = Join-Path $shortcutRoot 'bin\sumibi-host.exe'
+    $shortcutFolder = Join-Path $fixture 'Start Menu\Sumibi'
+    function Get-SumibiStartMenu { return $shortcutFolder }
+    $null = New-Item -ItemType Directory -Path $shortcutFolder -Force
+    $shell = New-Object -ComObject WScript.Shell
+    $legacy = Join-Path $shortcutFolder 'Sumibi Background Host.lnk'
+    $link = $shell.CreateShortcut($legacy)
+    $link.TargetPath = $shortcutHost
+    $link.Arguments = '--minimized'
+    $link.Save()
+    Set-SumibiShortcuts -Root $shortcutRoot -HostExe $shortcutHost
+    $link = $shell.CreateShortcut((Join-Path $shortcutFolder 'Sumibi.lnk'))
+    Assert-Case ($link.TargetPath -eq $shortcutHost -and $link.Arguments -eq '') 'Start menu must open Sumibi in the foreground.'
+    Assert-Case (-not (Test-Path -LiteralPath $legacy)) 'Legacy background shortcut was retained.'
+    Set-SumibiShortcuts -Root $shortcutRoot -Remove
+    Assert-Case (-not (Test-Path -LiteralPath $shortcutFolder)) 'Uninstall retained owned shortcuts.'
+
     function Set-SumibiShortcuts {
         param([string]$Root, [string]$HostExe, [switch]$Remove)
         $script:shortcuts = -not $Remove

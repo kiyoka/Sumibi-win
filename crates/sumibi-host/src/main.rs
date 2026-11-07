@@ -21,6 +21,9 @@ fn main() {
     let non_flag_args: Vec<_> = args.iter().filter(|arg| !is_minimized_flag(arg)).collect();
 
     if non_flag_args.is_empty() {
+        if consent_window::open_existing(!start_minimized) {
+            return;
+        }
         let path = match host_paths::settings_path() {
             Ok(path) => path,
             Err(()) => {
@@ -30,14 +33,23 @@ fn main() {
         };
         // If configured, launch the consent window and background service.
         // Otherwise, launch the settings window to allow initial setup.
-        if path.exists() {
-            if let Err(message) = consent_window::run(path, start_minimized) {
+        let configured = path.exists();
+        let show_consent = if configured {
+            true
+        } else {
+            match settings_window::run_initial_setup(path.clone()) {
+                Ok(continue_setup) => continue_setup,
+                Err(message) => {
+                    eprintln!("{message}");
+                    std::process::exit(1);
+                }
+            }
+        };
+        if show_consent {
+            if let Err(message) = consent_window::run(path, configured && start_minimized) {
                 eprintln!("{message}");
                 std::process::exit(1);
             }
-        } else if let Err(message) = settings_window::run(path) {
-            eprintln!("{message}");
-            std::process::exit(1);
         }
         return;
     }
