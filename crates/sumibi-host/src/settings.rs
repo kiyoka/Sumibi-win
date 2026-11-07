@@ -1,4 +1,4 @@
-//! User settings without credentials, input text or consent. Call file I/O on
+//! User settings without credentials or input text. Call file I/O on
 //! a settings worker; the caller chooses the per-user location.
 use crate::manual::{Destination, Scheme};
 use crate::policy::{ChangeError, PolicyAuthority, PolicyVersion};
@@ -33,6 +33,8 @@ struct Record {
     model: String,
     #[serde(default)]
     protection_profile: ProtectionProfile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    manual_consent: Option<(String, String)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -42,13 +44,14 @@ enum StoredScheme {
     HttpLoopback,
 }
 
-/// Fully resolved destination; key and send consent are deliberately absent.
+/// Fully resolved destination and the saved manual consent for that destination.
 #[derive(Clone)]
 pub struct Settings {
     legacy_credentials: bool,
     destination: Destination,
     model: String,
     protection_profile: ProtectionProfile,
+    manual_consent: Option<(String, String)>,
 }
 
 /// The version must be acknowledged by the matching Broker before the
@@ -85,6 +88,7 @@ impl Settings {
             destination,
             model: model.to_owned(),
             protection_profile: ProtectionProfile::Standard,
+            manual_consent: None,
         })
     }
 
@@ -187,6 +191,7 @@ impl Settings {
             chat_path: self.destination.base_path().to_owned(),
             model: self.model.clone(),
             protection_profile: self.protection_profile,
+            manual_consent: self.manual_consent.clone(),
         }
     }
 
@@ -216,6 +221,9 @@ impl Settings {
         }
         settings.protection_profile = record.protection_profile;
         settings.legacy_credentials = record.version == 1;
+        if !settings.legacy_credentials {
+            settings.manual_consent = record.manual_consent;
+        }
         Ok(settings)
     }
 
@@ -301,7 +309,9 @@ impl Settings {
     /// Atomic replacement does not by itself guarantee power-loss durability.
     pub fn save(&self, path: &Path) -> Result<(), SettingsError> {
         let _lock = write_lock(path)?;
-        self.save_locked(path)
+        let mut replacement = self.clone();
+        replacement.manual_consent = None;
+        replacement.save_locked(path)
     }
 
     /// Refuse a stale editor's replacement while another writer is active or
@@ -312,7 +322,50 @@ impl Settings {
         if current.destination != expected.destination || current.model != expected.model {
             return Err(SettingsError::Conflict);
         }
-        self.save_locked(path)
+        let mut replacement = self.clone();
+        replacement.manual_consent =
+            if current.destination == self.destination && current.model == self.model {
+                current.manual_consent
+            } else {
+                None
+            };
+        replacement.save_locked(path)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn remembers_manual_consent(&self) -> bool {
+        self.destination.scheme() == Scheme::Https
+            && self.manual_consent.as_ref().is_some_and(|(scope, model)| {
+                *model == self.model
+                    && *scope == crate::credential_store::credential_scope(&self.destination)
+            })
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn write_manual_consent(
+        path: &Path,
+        grant: Option<(&Destination, &str)>,
+    ) -> Result<(), ChangeError> {
+        let _lock = write_lock(path).map_err(|_| ChangeError::Unavailable)?;
+        let mut current = Self::load(path).map_err(|_| ChangeError::Unavailable)?;
+        current.manual_consent = match grant {
+            Some((destination, model)) => {
+                if current.legacy_credentials
+                    || current.destination != *destination
+                    || current.model != model
+                {
+                    return Err(ChangeError::StalePolicy);
+                }
+                Some((
+                    crate::credential_store::credential_scope(destination),
+                    model.to_owned(),
+                ))
+            }
+            None => None,
+        };
+        current
+            .save_locked(path)
+            .map_err(|_| ChangeError::Unavailable)
     }
 
     fn save_locked(&self, path: &Path) -> Result<(), SettingsError> {

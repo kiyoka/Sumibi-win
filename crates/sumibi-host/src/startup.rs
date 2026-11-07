@@ -1,5 +1,5 @@
 //! Prepare a Host from saved settings and a separately stored credential.
-//! Run on a startup worker. No send consent is restored across restarts.
+//! Run on a startup worker. The native Host can restore matching manual consent.
 use crate::credential_store;
 use crate::manual::Credential;
 use crate::policy::PolicyAuthority;
@@ -48,6 +48,22 @@ impl PreparedHost {
     }
     pub fn credential_outcome(&self) -> Result<(), StoreError> {
         self.credential_outcome
+    }
+
+    pub(crate) fn restore_manual_consent(&self) -> Result<(), SettingsError> {
+        use crate::manual::PolicySource;
+        if self.settings.remembers_manual_consent()
+            && self.credential_outcome.is_ok()
+            && self
+                .authority
+                .snapshot()
+                .is_some_and(|state| state.credential.is_some())
+        {
+            self.authority
+                .grant_manual_consent(self.settings.destination())
+                .map_err(SettingsError::Policy)?;
+        }
+        Ok(())
     }
 }
 
@@ -118,5 +134,60 @@ mod tests {
             assert_eq!(policy.credential.is_some(), expected_key);
             assert_eq!(policy.model.as_deref(), Some("fixture-model"));
         }
+    }
+
+    #[test]
+    fn remembered_manual_consent_requires_matching_settings_and_a_key() {
+        let fixture = Fixture::new();
+        let path = fixture.path();
+        let original = Settings::new(Scheme::Https, "example.test", 443, "/v1", "model-a").unwrap();
+        original.create(&path).unwrap();
+        let load = || {
+            PreparedHost::load_with(&path, |_| Ok(Credential::new("synthetic-key".into()))).unwrap()
+        };
+        let wait = |mut task: crate::consent_task::ConsentTask| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                if let Some(result) = task.try_take() {
+                    return result.unwrap();
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        };
+        let host = load();
+        let offer = crate::consent_task::ConsentOffer::try_capture(host.authority().clone())
+            .unwrap()
+            .unwrap();
+        let grant =
+            crate::consent_task::ConsentTask::grant_remembered(offer, Some(path.clone())).unwrap();
+        let _receipt = wait(grant);
+
+        let restarted = load();
+        restarted.restore_manual_consent().unwrap();
+        assert!(restarted.authority().snapshot().unwrap().allowed);
+        assert!(!restarted.authority().is_auto_consented());
+        let no_key = PreparedHost::load_with(&path, |_| Ok(None)).unwrap();
+        no_key.restore_manual_consent().unwrap();
+        assert!(!no_key.authority().snapshot().unwrap().allowed);
+
+        let revoke = crate::consent_task::ConsentTask::revoke_remembered(
+            restarted.authority().clone(),
+            Some(path.clone()),
+        )
+        .unwrap();
+        let _receipt = wait(revoke);
+        let restarted = load();
+        restarted.restore_manual_consent().unwrap();
+        assert!(!restarted.authority().snapshot().unwrap().allowed);
+
+        Settings::write_manual_consent(&path, Some((original.destination(), original.model())))
+            .unwrap();
+        let changed = Settings::new(Scheme::Https, "example.test", 443, "/v1", "model-b").unwrap();
+        changed.save_if_unchanged(&path, &original).unwrap();
+        original.save_if_unchanged(&path, &changed).unwrap();
+        let restarted = load();
+        restarted.restore_manual_consent().unwrap();
+        assert!(!restarted.authority().snapshot().unwrap().allowed);
     }
 }

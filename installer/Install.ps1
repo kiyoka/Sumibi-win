@@ -37,6 +37,6 @@ try {
     Write-Host 'Installed. Restart apps that used Sumibi before this update.'
     Write-Host 'Open Sumibi from the Start menu to set up conversion and allow sending.'
     Write-Host 'Then select Sumibi with Win+Space in your input app.'
-    Write-Host 'Settings and API keys belong to the signed-in user. Sending is disabled at each Host start.'
+    Write-Host 'Settings and API keys belong to the signed-in user. Manual sending requires permission for the selected destination and model.'
     if (-not $Silent) { Write-Host 'See README.txt for setup and troubleshooting.' }
 } catch { Write-Error $_; exit 1 }

@@ -83,7 +83,7 @@ Antigravity の入力欄との互換性（Issue #16）では、Undo に Ctrl + Z
 | 選択肢 | OpenAI / Google / その他 | OpenAI / Google Gemini / その他 |
 | Google の接続先 | `/v1beta/openai` | 同じベースパスを完全パスへ補完 |
 | モデル | プロバイダー設定で指定 | プリセットを入力後、自由に編集可能 |
-| 設定の反映 | macOS 側の設定機構 | 保存後に Host を再起動し、送信を再許可 |
+| 設定の反映 | macOS 側の設定機構 | 保存後に Host を再起動。接続先やモデルを変えた場合は送信を再許可 |
 
 参照：
 
