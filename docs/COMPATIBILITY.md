@@ -26,7 +26,7 @@
 | **RichEdit コントロール** | Standard | ✅ 正常動作 | ✅ 1-step Undo | WordPad、各種インストーラー、ダイアログ内エディタ等 |
 | **Antigravity チャット入力欄** | Standard | 直前入力・選択範囲とも変換成功 | 直前入力は2回必要 | [PR #21 の実機確認](https://github.com/kiyoka/Sumibi-win/pull/21)。2026-11-08 に Antigravity で再度変換成功の報告あり。再試験した入力欄と Undo は未確認 |
 | **Visual Studio Code** | Standard | 実機で変換成功 | 未確認 | 2026-11-08 にユーザー確認。エディタ／チャットの内訳と選択範囲の結果は未確認 |
-| **Google Chrome アドレスバー** | Standard | 実機で変換できず | — | 2026-11-08 にユーザー確認。原因は未調査 |
+| **Google Chrome アドレスバー** | Standard | 修正版で変換成功 | 未確認 | 2026-11-08 に `IS_SEARCH` を許容する修正版でユーザー確認。選択範囲は未確認 |
 | **Google Chrome Web フォーム** | Standard | 実機で変換成功 | 未確認 | 2026-11-08 にユーザー確認 |
 | **Google Chrome X の投稿欄** | Standard | 実機で変換成功 | 未確認 | 2026-11-08 にユーザー確認 |
 | **Microsoft Edge アドレスバー** | Standard | 直前入力の変換・置換に成功 | 未確認 | 2026-11-08 に `IS_SEARCH` を許容する修正版で確認。選択範囲は未確認 |
