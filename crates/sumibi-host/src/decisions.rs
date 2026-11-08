@@ -14,11 +14,14 @@ pub use sumibi_core::decisions::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+pub mod official;
+
 const DECISIONS_SYSTEM_PROMPT: &str = "あなたは入力中のテキストを監視し、自然な日本語へ自動変換すべき確定的な状態かどうかを判定するIME判定エンジンです。\n各状態（id, text）について、以下のJSON形式のみを返してください：\n{\"decisions\":[{\"id\":<id>,\"should_convert\":<true|false>,\"confidence\":<0.0〜1.0>,\"converted_text\":<変換後の日本語またはnull>}]}\nJSON以外の説明やMarkdownのコードフェンスは返さないでください。";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecisionsError {
     InvalidModel,
+    InvalidObservation,
     EmptyStates,
     TooManyStates,
     GraphemesExceeded,
