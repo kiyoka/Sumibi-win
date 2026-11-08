@@ -128,7 +128,7 @@ fn classify_with_profile(
             ProtectionProfile::Standard => {
                 matches!(
                     *scope,
-                    IS_DEFAULT | IS_TEXT | IS_CHAT | IS_CHAT_WITHOUT_EMOJI
+                    IS_DEFAULT | IS_TEXT | IS_CHAT | IS_CHAT_WITHOUT_EMOJI | IS_SEARCH
                 )
             }
         };
@@ -248,13 +248,24 @@ fn check_with_profile_internal(
                     if (scope.vtable().GetInputScopes)(scope.as_raw(), &mut memory.0, &mut count)
                         != S_OK
                     {
+                        crate::session::debug_log(
+                            "Preserved key protection: GetInputScopes failed",
+                        );
                         return denied();
                     }
                     if memory.0.is_null() || count == 0 || count as usize > MAX_SCOPES {
+                        crate::session::debug_log(
+                            "Preserved key protection: invalid scope metadata",
+                        );
                         return denied();
                     }
                     let scopes = std::slice::from_raw_parts(memory.0, count as usize);
-                    classify_with_profile(status, scopes, profile)?
+                    classify_with_profile(status, scopes, profile).inspect_err(|_| {
+                        let scope_ids: Vec<i32> = scopes.iter().map(|scope| scope.0).collect();
+                        crate::session::debug_log(&format!(
+                            "Preserved key protection: rejected scope IDs {scope_ids:?}"
+                        ));
+                    })?
                 }
                 _ => {
                     if profile == ProtectionProfile::Standard {
@@ -270,7 +281,12 @@ fn check_with_profile_internal(
             return denied();
         };
 
-        composition_gate()?;
+        composition_gate().inspect_err(|error| {
+            crate::session::debug_log(&format!(
+                "Preserved key protection: composition check HRESULT=0x{:08x}",
+                error.code().0 as u32
+            ));
+        })?;
         // External metadata providers can reenter while returning their scope.
         let latest = context.GetStatus()?;
         if latest.dwDynamicFlags != status.dwDynamicFlags
@@ -282,7 +298,15 @@ fn check_with_profile_internal(
             GUID_COMPARTMENT_KEYBOARD_DISABLED,
             GUID_COMPARTMENT_EMPTYCONTEXT,
         ] {
-            let value = compartments.GetCompartment(&guid)?.GetValue()?;
+            let value = compartments
+                .GetCompartment(&guid)
+                .and_then(|compartment| compartment.GetValue())
+                .inspect_err(|error| {
+                    crate::session::debug_log(&format!(
+                        "Preserved key protection: compartment recheck HRESULT=0x{:08x}",
+                        error.code().0 as u32
+                    ))
+                })?;
             if value.vt() == VT_I4 {
                 if value.Anonymous.Anonymous.Anonymous.lVal != 0 {
                     return denied();
@@ -464,6 +488,20 @@ mod tests {
             input_status_denial_with_profile(standard_status, ProtectionProfile::Standard),
             Some(InputStatusDenial::TransitoryContext)
         );
+    }
+
+    #[test]
+    fn search_scope_is_allowed_only_in_standard_and_with_safe_metadata() {
+        let standard = ProtectionProfile::Standard;
+        let scope = [IS_SEARCH];
+        assert!(classify_with_profile(status(), &scope, standard).is_ok());
+        assert!(classify_with_profile(status(), &scope, ProtectionProfile::Strict).is_err());
+        for disallowed in [IS_PASSWORD, IS_PRIVATE, IS_URL, InputScope(i32::MAX)] {
+            assert!(classify_with_profile(status(), &[IS_SEARCH, disallowed], standard).is_err());
+        }
+        let mut read_only = status();
+        read_only.dwDynamicFlags |= TS_SD_READONLY;
+        assert!(classify_with_profile(read_only, &scope, standard).is_err());
     }
 
     #[test]
