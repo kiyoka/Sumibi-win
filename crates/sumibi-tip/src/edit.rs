@@ -318,8 +318,10 @@ pub fn capture_selection_or_run(
             if policy.get() != captured_policy {
                 return Err(E_ABORT.into());
             }
-            ensure_target(&manager, &target)?;
-            let (range, style) = selection(&target, cookie)?;
+            ensure_target(&manager, &target)
+                .inspect_err(|error| trace_capture_error("focus", error))?;
+            let (range, style) = selection(&target, cookie)
+                .inspect_err(|error| trace_capture_error("selection", error))?;
             // SAFETY: range belongs to the context and cookie of this read session.
             if !same_context(&unsafe { range.GetContext()? }, &target)? {
                 return Err(E_ABORT.into());
@@ -329,7 +331,8 @@ pub fn capture_selection_or_run(
                 &range,
                 cookie,
                 captured_policy.profile,
-            )?;
+            )
+            .inspect_err(|error| trace_capture_error("selection-protection", error))?;
             let selection_range = unsafe { range.Clone()? };
             let expected = if unsafe { range.IsEmpty(cookie)? }.as_bool() {
                 let expected = expected_run.ok_or(E_ABORT)?;
@@ -338,7 +341,8 @@ pub fn capture_selection_or_run(
                 }
                 let wanted = -(expected.len() as i32);
                 let mut shifted = 0;
-                unsafe { range.ShiftStart(cookie, wanted, &mut shifted, std::ptr::null())? };
+                unsafe { range.ShiftStart(cookie, wanted, &mut shifted, std::ptr::null()) }
+                    .inspect_err(|error| trace_capture_error("preceding-range", error))?;
                 if shifted != wanted {
                     return Err(E_ABORT.into());
                 }
@@ -346,7 +350,8 @@ pub fn capture_selection_or_run(
             } else {
                 None
             };
-            let original = read_all_with_profile(&range, cookie, captured_policy.profile)?;
+            let original = read_all_with_profile(&range, cookie, captured_policy.profile)
+                .inspect_err(|error| trace_capture_error("range-read", error))?;
             if expected
                 .as_ref()
                 .is_some_and(|expected| *expected != original)
@@ -359,7 +364,8 @@ pub fn capture_selection_or_run(
                 cookie,
                 protection,
                 captured_policy.profile,
-            )?;
+            )
+            .inspect_err(|error| trace_capture_error("range-revalidation", error))?;
             if policy.get() != captured_policy {
                 return Err(E_ABORT.into());
             }
@@ -378,9 +384,17 @@ pub fn capture_selection_or_run(
             });
             Ok(())
         }),
-    )?;
+    )
+    .inspect_err(|error| trace_capture_error("edit-session", error))?;
     let snapshot = output.borrow_mut().take().ok_or(E_FAIL)?;
     Ok(snapshot)
+}
+
+fn trace_capture_error(stage: &str, error: &windows::core::Error) {
+    crate::session::debug_log(&format!(
+        "Preserved key capture stage={stage} HRESULT=0x{:08x}",
+        error.code().0 as u32
+    ));
 }
 
 /// Replace once, entirely inside a fresh write session. Denial is not retried.

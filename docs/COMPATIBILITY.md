@@ -24,13 +24,23 @@
 | :--- | :---: | :---: | :---: | :--- |
 | **Windows メモ帳 (Notepad)** | Standard | ✅ 正常動作 | ✅ 1-step Undo | `TS_SS_REGIONS` 許容により自然な範囲変換が可能 |
 | **RichEdit コントロール** | Standard | ✅ 正常動作 | ✅ 1-step Undo | WordPad、各種インストーラー、ダイアログ内エディタ等 |
-| **Antigravity チャット入力欄** | Standard | ⚠️ 修正版の実機確認待ち | 未確認 | 2026-11-06: 修正前は `dyn=0x40`, `stat=0x0c` を `TransitoryContext` として拒否。DLLロード・接続・送信許可・Ctrl+J到達は確認済み |
-| **Visual Studio Code** | Standard | 未確認 | 未確認 | Issue #16でエディタ・チャット欄ごとに検証する |
-| **Google Chrome / Microsoft Edge** | Standard | 未確認 | 未確認 | Issue #16でWebフォーム・検索バー・アドレスバーごとに検証する |
-| **Windows Terminal / PowerShell** | Standard | ✅ 打鍵反映 | ⚠️ アプリ依存 | コンソール側のバッファ管理に基づく通常打鍵反映 |
+| **Antigravity チャット入力欄** | Standard | 直前入力・選択範囲とも変換成功 | 直前入力は2回必要 | [PR #21 の実機確認](https://github.com/kiyoka/Sumibi-win/pull/21)。2026-11-08 に Antigravity で再度変換成功の報告あり。再試験した入力欄と Undo は未確認 |
+| **Visual Studio Code** | Standard | 実機で変換成功 | 未確認 | 2026-11-08 にユーザー確認。エディタ／チャットの内訳と選択範囲の結果は未確認 |
+| **Google Chrome アドレスバー** | Standard | 実機で変換できず | — | 2026-11-08 にユーザー確認。原因は未調査 |
+| **Google Chrome Web フォーム** | Standard | 実機で変換成功 | 未確認 | 2026-11-08 にユーザー確認 |
+| **Google Chrome X の投稿欄** | Standard | 実機で変換成功 | 未確認 | 2026-11-08 にユーザー確認 |
+| **Microsoft Edge アドレスバー** | Standard | `IS_SEARCH` 許容後の実機確認待ち | 未確認 | 2026-11-08 に診断版で `IS_SEARCH` の拒否を確認 |
+| **Microsoft Edge Web フォーム** | Standard | 実機で変換成功 | 未確認 | 2026-11-08 に Edge を開き直して再試験し、変換・置換を確認 |
+| **Windows Terminal** | Standard | Ctrl + J が改行になり、変換できず | — | 2026-11-08 にユーザー確認。Sumibi の変換キーが届くかは未調査 |
+| **PowerShell（Windows Terminal 以外のホスト）** | Standard | 未確認 | 未確認 | コンソールホストを区別して検証する |
 | **Windows エクスプローラー** | Standard | ✅ 正常動作 | ✅ 1-step Undo | ファイル名変更、アドレスバー入力 |
 
 ---
+
+[Issue #34](https://github.com/kiyoka/Sumibi-win/issues/34) の診断では、Edge の
+アドレスバーが検索入力スコープ `IS_SEARCH` を返し、入力範囲の取得前に
+`E_ACCESSDENIED` で停止していた。Standard では `IS_SEARCH` を許容する。
+Strict や機密スコープが混ざる入力欄では拒否する。
 
 ## 3. 入力欄種別と絶対防御境界 (Inviolable Guards)
 
