@@ -29,7 +29,7 @@
 | **Google Chrome アドレスバー** | Standard | 実機で変換できず | — | 2026-11-08 にユーザー確認。原因は未調査 |
 | **Google Chrome Web フォーム** | Standard | 実機で変換成功 | 未確認 | 2026-11-08 にユーザー確認 |
 | **Google Chrome X の投稿欄** | Standard | 実機で変換成功 | 未確認 | 2026-11-08 にユーザー確認 |
-| **Microsoft Edge アドレスバー** | Standard | `IS_SEARCH` 許容後の実機確認待ち | 未確認 | 2026-11-08 に診断版で `IS_SEARCH` の拒否を確認 |
+| **Microsoft Edge アドレスバー** | Standard | 直前入力の変換・置換に成功 | 未確認 | 2026-11-08 に `IS_SEARCH` を許容する修正版で確認。選択範囲は未確認 |
 | **Microsoft Edge Web フォーム** | Standard | 実機で変換成功 | 未確認 | 2026-11-08 に Edge を開き直して再試験し、変換・置換を確認 |
 | **Windows Terminal** | Standard | Ctrl + J が改行になり、変換できず | — | 2026-11-08 にユーザー確認。Sumibi の変換キーが届くかは未調査 |
 | **PowerShell（Windows Terminal 以外のホスト）** | Standard | 未確認 | 未確認 | コンソールホストを区別して検証する |
