@@ -154,6 +154,7 @@ fn convert_additional_with_exchange(
     let transport = AdditionalChatTransport {
         model,
         current_result,
+        user_dictionary: &snapshot.user_dictionary,
         exchange,
     };
     let json = crate::manual::convert_ordered(request, authority, admission, &transport)?;
@@ -163,6 +164,7 @@ fn convert_additional_with_exchange(
 struct AdditionalChatTransport<'a> {
     model: &'a str,
     current_result: &'a str,
+    user_dictionary: &'a str,
     exchange: &'a dyn Exchange,
 }
 
@@ -178,7 +180,7 @@ impl OrderedConversionTransport for AdditionalChatTransport<'_> {
         let input = crate::first_conversion::ConversionInput::with_context(
             source,
             Some(self.current_result),
-            None,
+            Some(self.user_dictionary),
         );
         let body = crate::first_conversion::request_body_additional(self.model, &input)
             .map_err(|_| SendError::InvalidRequest)?;
@@ -246,12 +248,17 @@ fn convert_with_exchange(
         return Err(SendError::PolicyDenied);
     }
     let model = snapshot.model.as_deref().ok_or(SendError::PolicyDenied)?;
-    let transport = ChatTransport { model, exchange };
+    let transport = ChatTransport {
+        model,
+        user_dictionary: &snapshot.user_dictionary,
+        exchange,
+    };
     crate::manual::convert_ordered(request, authority, admission, &transport)
 }
 
 struct ChatTransport<'a> {
     model: &'a str,
+    user_dictionary: &'a str,
     exchange: &'a dyn Exchange,
 }
 impl OrderedConversionTransport for ChatTransport<'_> {
@@ -263,7 +270,12 @@ impl OrderedConversionTransport for ChatTransport<'_> {
         deadline: Instant,
         gate: &mut dyn SendGate,
     ) -> Result<String, SendError> {
-        let body = crate::first_conversion::request_body(self.model, source)
+        let input = crate::first_conversion::ConversionInput::with_context(
+            source,
+            None,
+            Some(self.user_dictionary),
+        );
+        let body = crate::first_conversion::request_body_with_input(self.model, &input)
             .map_err(|_| SendError::InvalidRequest)?;
         let bytes = self
             .exchange
@@ -908,7 +920,7 @@ mod tests {
                 "finish_reason": "stop",
                 "message": {
                     "role": "assistant",
-                    "content": r#"{"candidates":["炭火","澄火","墨美"]}"#
+                    "content": r#"{"candidates":["炭火","澄火","墨美","こうしん"]}"#
                 }
             }]
         });

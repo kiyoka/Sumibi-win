@@ -6,6 +6,12 @@ pub use sumibi_core::candidate::{CandidateItem, CandidateSource};
 /// Generate Nakaguro (・) delimiter variants from input or current text.
 pub fn complement_nakaguro(source: &str, current_result: Option<&str>) -> Vec<String> {
     let mut results = Vec::new();
+    if matches!(
+        source.to_ascii_lowercase().as_str(),
+        "ten" | "nakaguro" | "."
+    ) {
+        results.push("・".to_owned());
+    }
 
     // Check delimiters in source: '/', '_', '・', or ASCII space
     let has_delim = source.contains('/') || source.contains('_') || source.contains(' ');
@@ -40,71 +46,59 @@ pub fn complement_nakaguro(source: &str, current_result: Option<&str>) -> Vec<St
     results
 }
 
-// Built-in symbol table derived from Mozc symbols (BSD-3-Clause).
-static MOZC_SYMBOLS: &[(&str, &[&str])] = &[
-    ("->", &["→", "⇒", "➡"]),
-    ("=>", &["⇒", "→"]),
-    ("<-", &["←", "⇐", "⬅"]),
-    ("<=", &["≦", "≤", "⇐"]),
-    (">=", &["≧", "≥", "⇒"]),
-    ("!=", &["≠"]),
-    ("+-", &["±"]),
-    ("...", &["…"]),
-    ("~", &["〜", "～"]),
-    ("yajirushi", &["→", "←", "↑", "↓", "⇒", "⇔"]),
-    ("maru", &["○", "●", "◎", "〇"]),
-    ("batsu", &["×", "✕", "✖"]),
-    ("hoshi", &["★", "☆"]),
-    ("hoshijirushi", &["★", "☆"]),
-    ("onpu", &["♪", "♫", "♬"]),
-    ("check", &["✓", "✔"]),
-    ("sankaku", &["▲", "△", "▼", "▽"]),
-    ("sikaku", &["■", "□", "◆", "◇"]),
-    ("kigou", &["■", "●", "★", "※", "〒", "♪"]),
-];
+use std::{collections::BTreeMap, sync::LazyLock};
 
-/// Match Mozc symbol candidates from input reading.
-pub fn complement_mozc_symbols(source: &str) -> Vec<String> {
-    let lower = source.to_ascii_lowercase();
-    for &(key, symbols) in MOZC_SYMBOLS {
-        if lower == key || source == key {
-            return symbols.iter().map(|s| (*s).to_owned()).collect();
+type Dictionary = BTreeMap<String, Vec<&'static str>>;
+
+fn parse_dictionary(tsv: &'static str, comment: &str, min_candidates: usize) -> Dictionary {
+    let mut entries = Dictionary::new();
+    for line in tsv.lines().filter(|line| !line.starts_with(comment)) {
+        let mut fields = line.split('\t');
+        let Some(reading) = fields.next().filter(|reading| !reading.is_empty()) else {
+            continue;
+        };
+        let candidates: Vec<_> = fields.filter(|value| !value.is_empty()).collect();
+        if candidates.len() >= min_candidates {
+            entries
+                .entry(reading.to_ascii_lowercase())
+                .or_default()
+                .extend(candidates);
         }
     }
-    Vec::new()
+    entries
 }
 
-// Built-in homophone table derived from Sudachi lexicon (Apache-2.0).
-static SUDACHI_HOMOPHONES: &[(&str, &[&str])] = &[
-    ("koushin", &["更新", "行進", "交信", "好転"]),
-    ("seisaku", &["制作", "製作", "政策"]),
-    ("kikaku", &["企画", "規格"]),
-    ("taishou", &["対象", "対照", "対称", "大賞"]),
-    ("kikan", &["期間", "機関", "帰還", "気管"]),
-    ("shikaku", &["資格", "視覚", "死角"]),
-    ("itachi", &["鼬", "いたち"]),
-    ("kaishin", &["会心", "改心", "回心"]),
-    ("jisshi", &["実施", "実子"]),
-    ("kakutei", &["確定", "画定"]),
-    ("henkan", &["変換", "変幻", "返還"]),
-    ("sakusei", &["作成", "作製"]),
-    ("tsuuchi", &["通知", "痛知"]),
-    ("shounin", &["承認", "証人", "商人生"]),
-    ("kanryou", &["完了", "官僚"]),
-    ("shitei", &["指定", "師弟", "子弟"]),
-];
+static MOZC_SYMBOLS: LazyLock<Dictionary> = LazyLock::new(|| {
+    parse_dictionary(
+        include_str!("../dictionaries/App/Resources/MozcSymbols.tsv"),
+        "# ",
+        1,
+    )
+});
+static SUDACHI_HOMOPHONES: LazyLock<Dictionary> = LazyLock::new(|| {
+    parse_dictionary(
+        include_str!("../dictionaries/App/Resources/SudachiCandidates.tsv"),
+        "#",
+        2,
+    )
+});
 
-/// Match Sudachi homophone candidates from input reading.
-pub fn complement_sudachi_homophones(source: &str) -> Vec<String> {
-    let lower = source.to_ascii_lowercase();
-    for &(key, homophones) in SUDACHI_HOMOPHONES {
-        if lower == key {
-            return homophones.iter().map(|s| (*s).to_owned()).collect();
-        }
-    }
-    Vec::new()
+/// Match Mozc readings using ASCII case folding only.
+pub fn complement_mozc_symbols(source: &str) -> &[&'static str] {
+    MOZC_SYMBOLS
+        .get(&source.to_ascii_lowercase())
+        .map_or(&[], Vec::as_slice)
 }
 
+/// Use the first whole hiragana reading returned by the model.
+pub fn complement_sudachi_homophones(candidates: &[String]) -> &'static [&'static str] {
+    let reading = candidates.iter().find(|value| {
+        !value.is_empty() && value.chars().all(|ch| matches!(ch, 'ぁ'..='ゖ' | 'ー'))
+    });
+    reading
+        .and_then(|value| SUDACHI_HOMOPHONES.get(value))
+        .map_or(&[], Vec::as_slice)
+}
 /// Assemble a complete, deduplicated candidate list in strictly ordered priority:
 /// 1. CurrentResult (index 0, if present)
 /// 2. LLM candidates
@@ -132,10 +126,15 @@ pub fn build_complete_candidates(
         }
     }
 
+    let original = source;
     let mut add_if_unique = |text: &str, source: CandidateSource, annotation: Option<&str>| {
         let trimmed = text.trim();
+        if items.len() >= max_total {
+            return true;
+        }
         if trimmed.is_empty()
             || !sumibi_protocol::message::valid_text(trimmed)
+            || (source != CandidateSource::Llm && trimmed == original)
             || items.iter().any(|item| item.text == trimmed)
         {
             return false;
@@ -166,15 +165,15 @@ pub fn build_complete_candidates(
     // 4. Mozc symbols
     let mozc_symbols = complement_mozc_symbols(source);
     for cand in mozc_symbols {
-        if add_if_unique(&cand, CandidateSource::MozcSymbol, Some("記号")) {
+        if add_if_unique(cand, CandidateSource::MozcSymbol, Some("記号")) {
             return items;
         }
     }
 
     // 5. Sudachi homophones
-    let sudachi_homophones = complement_sudachi_homophones(source);
+    let sudachi_homophones = complement_sudachi_homophones(llm_candidates);
     for cand in sudachi_homophones {
-        if add_if_unique(&cand, CandidateSource::SudachiHomophone, Some("辞書")) {
+        if add_if_unique(cand, CandidateSource::SudachiHomophone, Some("辞書")) {
             return items;
         }
     }
@@ -191,6 +190,11 @@ mod tests {
         let res = complement_nakaguro("leader/writer", None);
         assert_eq!(res, vec!["leader・writer"]);
 
+        for trigger in ["TEN", "nakaguro", "."] {
+            assert_eq!(complement_nakaguro(trigger, None), vec!["・"]);
+        }
+        assert!(complement_nakaguro("ten.", None).is_empty());
+
         let res2 = complement_nakaguro("foo bar", Some("フー バー"));
         assert_eq!(res2, vec!["foo・bar", "フー・バー"]);
     }
@@ -198,25 +202,32 @@ mod tests {
     #[test]
     fn test_mozc_symbols() {
         let arrows = complement_mozc_symbols("->");
-        assert!(arrows.contains(&"→".to_string()));
+        assert!(arrows.contains(&"→"));
 
         let ne = complement_mozc_symbols("!=");
-        assert_eq!(ne, vec!["≠".to_string()]);
+        assert!(ne.contains(&"≠"));
 
         let hoshi = complement_mozc_symbols("hoshi");
-        assert!(hoshi.contains(&"★".to_string()));
+        assert!(hoshi.contains(&"★"));
     }
 
     #[test]
     fn test_sudachi_homophones() {
-        let homophones = complement_sudachi_homophones("koushin");
-        assert!(homophones.contains(&"更新".to_string()));
-        assert!(homophones.contains(&"行進".to_string()));
+        let homophones = complement_sudachi_homophones(&["こうしん".to_owned()]);
+        assert!(homophones.contains(&"更新"));
+        assert!(homophones.contains(&"行進"));
+        assert!(complement_sudachi_homophones(&["koushin".to_owned()]).is_empty());
+        assert!(complement_sudachi_homophones(&["文章です。".to_owned()]).is_empty());
+        assert!(build_complete_candidates("ten", None, &[], 0).is_empty());
     }
 
     #[test]
     fn test_build_complete_candidates_ordering_and_deduplication() {
-        let llm = vec!["更新".to_string(), "交信".to_string()];
+        let llm = vec![
+            "更新".to_string(),
+            "交信".to_string(),
+            "こうしん".to_string(),
+        ];
         let items = build_complete_candidates("koushin", Some("更新"), &llm, 10);
 
         // Index 0: CurrentResult ("更新")
@@ -230,7 +241,7 @@ mod tests {
         // Sudachi homophones: "行進", "好転" added (excluding already present "更新", "交信")
         let texts: Vec<&str> = items.iter().map(|it| it.text.as_str()).collect();
         assert!(texts.contains(&"行進"));
-        assert!(texts.contains(&"好転"));
+        assert_eq!(texts.iter().filter(|&&value| value == "更新").count(), 1);
         assert!(items.len() <= 11);
     }
 }

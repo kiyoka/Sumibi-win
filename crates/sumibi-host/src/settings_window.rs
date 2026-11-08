@@ -37,6 +37,7 @@ struct View {
     path: HWND,
     profile_standard: HWND,
     profile_strict: HWND,
+    user_dictionary: HWND,
     save: HWND,
     secret: HWND,
     key_save: HWND,
@@ -214,7 +215,7 @@ impl View {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 600,
-                if initial_setup { 570 } else { 535 },
+                if initial_setup { 705 } else { 670 },
                 None,
                 None,
                 Some(instance.into()),
@@ -230,6 +231,7 @@ impl View {
                 path: HWND::default(),
                 profile_standard: HWND::default(),
                 profile_strict: HWND::default(),
+                user_dictionary: HWND::default(),
                 save: HWND::default(),
                 secret: HWND::default(),
                 key_save: HWND::default(),
@@ -410,11 +412,11 @@ impl View {
 
             view.save = child(
                 w!("BUTTON"),
-                "接続先とモデルを保存",
+                "接続先・モデル・ユーザー辞書を保存",
                 WS_TABSTOP,
-                320,
+                255,
                 265,
-                240,
+                305,
                 30,
                 1,
             )?;
@@ -479,6 +481,29 @@ impl View {
                 40,
                 0,
             )?;
+            child(
+                w!("STATIC"),
+                "ユーザー辞書（1行に よみ = 変換後）。変換時に接続先へ送信します。",
+                WINDOW_STYLE(0),
+                18,
+                475,
+                545,
+                24,
+                0,
+            )?;
+            view.user_dictionary = child(
+                w!("EDIT"),
+                &settings
+                    .map_or("", Settings::user_dictionary)
+                    .replace('\n', "\r\n"),
+                WS_BORDER | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(0x0044),
+                18,
+                500,
+                542,
+                90,
+                23,
+            )?;
+            SendMessageW(view.user_dictionary, 0x00c5, Some(WPARAM(2048)), None);
             view.update_key_labels();
             if initial_setup {
                 let button = child(
@@ -486,7 +511,7 @@ impl View {
                     "送信の確認へ進む",
                     WS_TABSTOP,
                     345,
-                    478,
+                    613,
                     215,
                     32,
                     5,
@@ -497,7 +522,7 @@ impl View {
             if settings.is_none() {
                 set_text(
                     view.status,
-                    "先に「接続先とモデルを保存」を押すと、API キーを入力できます。",
+                    "先に「接続先・モデル・ユーザー辞書を保存」を押すと、API キーを入力できます。",
                 );
                 let _ = EnableWindow(view.key_save, false);
                 let _ = EnableWindow(view.key_delete, false);
@@ -592,7 +617,7 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
             set_text(view.secret, "");
             set_text(
                 view.status,
-                "先に「接続先とモデルを保存」を押すと、API キーを入力できます。",
+                "先に「接続先・モデル・ユーザー辞書を保存」を押すと、API キーを入力できます。",
             );
         }
         view.update_key_labels();
@@ -622,6 +647,11 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
                         )
                         .map(|s| s.with_protection_profile(profile))
                         .map_err(|_| "invalid settings")
+                        .and_then(|settings| {
+                            settings
+                                .with_user_dictionary(&text(view.user_dictionary)?)
+                                .map_err(|_| "invalid dictionary")
+                        })
                     })
                 })
             });
@@ -648,6 +678,10 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
                     }
                     Err(_) => set_text(view.status, "保存処理を開始できませんでした。"),
                 },
+                Err("invalid dictionary") => set_text(
+                    view.status,
+                    "辞書は1行に「半角小文字のよみ = 変換後」を入力してください。\r\n読みの重複、100件または変換の文字数上限を確認してください。",
+                ),
                 Err(_) => set_text(view.status, "ホスト名・モデル・パスを確認してください。"),
             }
         }

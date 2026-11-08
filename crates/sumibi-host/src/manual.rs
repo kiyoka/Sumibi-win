@@ -137,6 +137,7 @@ impl Credential {
 /// corresponding revision before acknowledging the change to the user.
 #[derive(Clone)]
 pub struct PolicySnapshot {
+    pub(crate) user_dictionary: String,
     pub settings: u64,
     pub authorization: u64,
     pub model: Option<String>,
@@ -639,6 +640,7 @@ mod tests {
     fn source() -> Source {
         let destination = destination();
         Source(RefCell::new(PolicySnapshot {
+            user_dictionary: String::new(),
             settings: 1,
             authorization: 1,
             model: None,
