@@ -555,6 +555,18 @@ impl ManualEdit {
                 // Fresh reads may call external COM. Check the retained observation
                 // and target again before the pure Core decision and immediate write.
                 let range = validate_snapshot(&manager, &self.snapshot, cookie)?;
+                let restore_trailing_caret = still_allowed.is_some()
+                    && unsafe {
+                        self.snapshot
+                            .selection_range
+                            .IsEmpty(cookie)
+                            .is_ok_and(|empty| empty.as_bool())
+                            && self
+                                .snapshot
+                                .selection_range
+                                .IsEqualStart(cookie, &range, TF_ANCHOR_END)
+                                .is_ok_and(|equal| equal.as_bool())
+                    };
                 self.guard.check()?;
                 if Instant::now() >= self.deadline
                     || still_allowed.as_ref().is_some_and(|allowed| !allowed())
@@ -577,6 +589,15 @@ impl ManualEdit {
                             .is_ok()
                             && shifted == count
                         {
+                            if restore_trailing_caret {
+                                let _ = restore_caret_after_write(
+                                    &manager,
+                                    &self.snapshot,
+                                    cookie,
+                                    &start,
+                                    &text,
+                                );
+                            }
                             *output.borrow_mut() = Some(start);
                         }
                     }
@@ -586,6 +607,55 @@ impl ManualEdit {
         )?;
         let retained = anchor.borrow_mut().take();
         Ok(retained)
+    }
+}
+
+fn restore_caret_after_write(
+    manager: &ITfThreadMgr,
+    snapshot: &SelectionSnapshot,
+    cookie: u32,
+    replacement: &ITfRange,
+    expected: &[u16],
+) -> Result<()> {
+    ensure_target(manager, &snapshot.context)?;
+    let (caret, style) = selection(&snapshot.context, cookie)?;
+    // Leave applications that already placed the caret after the text alone.
+    // Never move a new selection or a caret outside the converted range.
+    if !unsafe {
+        caret.IsEmpty(cookie)?.as_bool()
+            && caret
+                .IsEqualStart(cookie, replacement, TF_ANCHOR_START)?
+                .as_bool()
+    } || style.fInterimChar.as_bool()
+    {
+        return Ok(());
+    }
+    crate::protection::check_with_profile(
+        &snapshot.context,
+        replacement,
+        cookie,
+        snapshot.captured_policy.profile,
+    )?;
+    if read_all_with_profile(replacement, cookie, snapshot.captured_policy.profile)? != expected {
+        return Ok(());
+    }
+    let end = unsafe { replacement.Clone()? };
+    unsafe { end.Collapse(cookie, TF_ANCHOR_END)? };
+    checked_selection(&snapshot.context, &caret, style, cookie)?;
+    ensure_target(manager, &snapshot.context)?;
+    let chosen = RawSelection(TF_SELECTION {
+        range: ManuallyDrop::new(Some(end)),
+        style: TF_SELECTIONSTYLE {
+            ase: TF_AE_NONE,
+            fInterimChar: false.into(),
+        },
+    });
+    // The replacement has already succeeded. A text store may decline this
+    // selection-only update without invalidating that completed write.
+    unsafe {
+        snapshot
+            .context
+            .SetSelection(cookie, std::slice::from_ref(&chosen.0))
     }
 }
 

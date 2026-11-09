@@ -225,6 +225,11 @@ pub(crate) fn exercise_session_keys(
 
     // Wait for the TipHostSession worker to autonomously discover, connect,
     // and update policy to Ready. We poll OnPreservedKey until it's admitted.
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    let mut caret = store.get().selection.get();
+    caret.acpStart = caret.acpEnd;
+    store.get().selection.set(caret);
+    store.get().collapse_to_start_on_write.set(true);
     let ready_deadline = Instant::now() + Duration::from_secs(6);
     let mut key_admitted = false;
     while Instant::now() < ready_deadline {
@@ -232,6 +237,9 @@ pub(crate) fn exercise_session_keys(
             manager.SetFocus(&document.0)?;
         }
         pump_tsf_messages(&messages)?;
+        for key in b"NIHONGO" {
+            let _ = unsafe { sink.OnTestKeyDown(&context, WPARAM((*key).into()), LPARAM(0))? };
+        }
         let res = unsafe { sink.OnPreservedKey(&context, &COMMAND_CONVERT)? };
         if res.as_bool() {
             key_admitted = true;
@@ -264,18 +272,20 @@ pub(crate) fn exercise_session_keys(
         "text store must be asynchronously replaced with 'prefix 日本語 suffix' via DrainWindow"
     );
     assert_eq!(store.get().undo.borrow().len(), 1);
+    let caret = store.get().selection.get();
+    assert_eq!((caret.acpStart, caret.acpEnd), (10, 10));
     println!("Scenario 2: Autonomous discovery, key conversion and async text replacement: OK");
 
     // Some applications collapse the selection at the start of the result
     // after the initial write returns. The same retained range is still valid.
     let mut caret = store.get().selection.get();
+    caret.acpStart = 7;
     caret.acpEnd = caret.acpStart;
     store.get().selection.set(caret);
 
     // =========================================================================
     // Request additional candidates from the retained result. Until a
     // candidate is selected the document and undo stack must stay unchanged.
-    use windows::Win32::Foundation::{LPARAM, WPARAM};
     server_mode.store(2, Ordering::Release);
     assert!(unsafe { sink.OnPreservedKey(&context, &COMMAND_CONVERT)? }.as_bool());
     let candidate_deadline = Instant::now() + Duration::from_secs(6);
@@ -337,7 +347,7 @@ pub(crate) fn exercise_session_keys(
         "prefix nihongo suffix".encode_utf16().collect::<Vec<_>>()
     );
     let current_selection = store.get().selection.get();
-    assert_eq!(current_selection.acpStart, 7);
+    assert_eq!(current_selection.acpStart, 14);
     assert_eq!(current_selection.acpEnd, 14);
     assert!(store.get().undo.borrow().is_empty());
     println!("Scenario 3: TextStore 1-step Undo: OK");
