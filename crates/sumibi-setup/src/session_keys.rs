@@ -266,6 +266,12 @@ pub(crate) fn exercise_session_keys(
     assert_eq!(store.get().undo.borrow().len(), 1);
     println!("Scenario 2: Autonomous discovery, key conversion and async text replacement: OK");
 
+    // Some applications collapse the selection at the start of the result
+    // after the initial write returns. The same retained range is still valid.
+    let mut caret = store.get().selection.get();
+    caret.acpEnd = caret.acpStart;
+    store.get().selection.set(caret);
+
     // =========================================================================
     // Request additional candidates from the retained result. Until a
     // candidate is selected the document and undo stack must stay unchanged.

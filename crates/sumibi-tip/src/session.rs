@@ -127,10 +127,20 @@ pub(crate) fn debug_log(msg: &str) {
     }
 }
 
+struct RetainedConversion {
+    source: String,
+    current: String,
+    context: ITfContext,
+    anchor: ITfRange,
+    revision: Revision,
+    deadline: Instant,
+}
+
 struct ConvertedText {
     source: String,
     current: String,
     ticket: ManualEdit,
+    retained: Option<RetainedConversion>,
 }
 
 struct PendingEdit {
@@ -152,7 +162,7 @@ struct DrainSink {
     state: Arc<SharedSessionState>,
     event_receiver: Receiver<WorkerEvent>,
     pending_ticket: RefCell<Option<PendingEdit>>,
-    last_conversion: RefCell<Option<ConvertedText>>,
+    last_conversion: RefCell<Option<RetainedConversion>>,
     selection: RefCell<Option<CandidateSelection>>,
 }
 
@@ -180,33 +190,19 @@ impl DrainSink {
                 move || state.is_ready() && state.revision() == revision
             },
         )?;
-        // Initial conversion has already succeeded. Reconversion is available
-        // only when the same TSF range can be captured after the write.
+        // Capture a fresh edit ticket on the next hotkey. Some applications
+        // update the selection only after the initial TSF write has returned.
         if let Some(anchor) = anchor {
-            let policy = Rc::new(Cell::new(EditPolicy {
+            self.last_conversion.replace(Some(RetainedConversion {
+                source,
+                current: replacement,
+                context,
+                anchor,
                 revision,
-                allowed: true,
-                profile: self.state.protection_profile(),
+                deadline: Instant::now() + Duration::from_secs(60),
             }));
-            let ticket = ManualEdit::capture_with_run(
-                &self.manager,
-                &context,
-                self.client,
-                policy,
-                request,
-                request.0,
-                Instant::now() + Duration::from_secs(60),
-                Some(replacement.encode_utf16().collect()),
-            );
-            if let Ok(ticket) = ticket {
-                if self.ready_for(&ticket) && ticket.matches_anchor(anchor).is_ok() {
-                    self.last_conversion.replace(Some(ConvertedText {
-                        source,
-                        current: replacement,
-                        ticket,
-                    }));
-                }
-            }
+        } else {
+            debug_log("Drain could not retain conversion range");
         }
         Ok(())
     }
@@ -236,7 +232,7 @@ impl DrainSink {
             let target = pending.target;
             if pending.additional && matches!(event, WorkerEvent::Failed { .. }) {
                 if target.ticket.is_current() && self.state.revision() == target.ticket.revision() {
-                    self.last_conversion.replace(Some(target));
+                    self.last_conversion.replace(target.retained);
                 }
                 continue;
             }
@@ -277,12 +273,14 @@ impl DrainSink {
                                 session,
                                 popup,
                             }));
+                            debug_log("Drain displayed additional candidates");
                             handled = true;
                         }
                     }
                 }
                 _ if pending.additional => {
-                    self.last_conversion.replace(Some(target));
+                    debug_log("Drain received no additional candidates");
+                    self.last_conversion.replace(target.retained);
                 }
                 _ => {}
             }
@@ -302,7 +300,7 @@ impl DrainSink {
             .borrow()
             .as_ref()
             .is_some_and(|target| {
-                !target.ticket.is_current() || self.state.revision() != target.ticket.revision()
+                Instant::now() >= target.deadline || self.state.revision() != target.revision
             });
         if expired {
             self.last_conversion.take();
@@ -356,7 +354,7 @@ impl DrainSink {
                 self.selection.replace(Some(active));
             }
             0x1b => {
-                self.last_conversion.replace(Some(active.target));
+                self.last_conversion.replace(active.target.retained);
             }
             _ => {
                 if let Some(digit) = digit {
@@ -364,7 +362,7 @@ impl DrainSink {
                 }
                 if let Some(text) = active.session.confirm() {
                     if text == active.target.current {
-                        self.last_conversion.replace(Some(active.target));
+                        self.last_conversion.replace(active.target.retained);
                     } else {
                         let _ = self.apply(active.target, text);
                     }
@@ -741,16 +739,51 @@ impl TipHostSession {
         {
             return Ok(true.into());
         }
-        if let Some(target) = self.sink.last_conversion.take() {
+        if let Some(retained) = self.sink.last_conversion.take() {
             let token = context_token(context);
             if token != 0
-                && token == context_token(target.ticket.context())
-                && self.sink.ready_for(&target.ticket)
-                && target.ticket.source().ok().as_deref() == Some(&target.current)
+                && token == context_token(&retained.context)
+                && self.state.revision() == retained.revision
+                && Instant::now() < retained.deadline
             {
                 let request_id = self.next_request_id.get().wrapping_add(1).max(1);
                 self.next_request_id.set(request_id);
-                return Ok(self.dispatch(request_id, target, true).into());
+                let policy = Rc::new(Cell::new(EditPolicy {
+                    revision: retained.revision,
+                    allowed: true,
+                    profile: self.state.protection_profile(),
+                }));
+                match ManualEdit::capture_target(
+                    &self.manager,
+                    context,
+                    self.client,
+                    policy,
+                    RequestId(request_id.into()),
+                    request_id.into(),
+                    retained.deadline,
+                    Some(retained.current.encode_utf16().collect()),
+                    Some(retained.anchor.clone()),
+                ) {
+                    Ok(ticket) => {
+                        debug_log("Preserved key dispatching additional candidates");
+                        return Ok(self
+                            .dispatch(
+                                request_id,
+                                ConvertedText {
+                                    source: retained.source.clone(),
+                                    current: retained.current.clone(),
+                                    ticket,
+                                    retained: Some(retained),
+                                },
+                                true,
+                            )
+                            .into());
+                    }
+                    Err(error) => debug_log(&format!(
+                        "Preserved key reconversion capture rejected: HRESULT 0x{:08x}",
+                        error.code().0 as u32
+                    )),
+                }
             }
         }
 
@@ -835,6 +868,7 @@ impl TipHostSession {
                     source: text,
                     current: String::new(),
                     ticket,
+                    retained: None,
                 },
                 false,
             )

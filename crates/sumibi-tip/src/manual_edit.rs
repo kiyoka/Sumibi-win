@@ -302,6 +302,31 @@ impl ManualEdit {
         deadline: Instant,
         expected_run: Option<Vec<u16>>,
     ) -> Result<Self> {
+        Self::capture_target(
+            manager,
+            context,
+            client,
+            policy,
+            request,
+            identity,
+            deadline,
+            expected_run,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture_target(
+        manager: &ITfThreadMgr,
+        context: &ITfContext,
+        client: u32,
+        policy: Rc<Cell<EditPolicy>>,
+        request: RequestId,
+        identity: u128,
+        deadline: Instant,
+        expected_run: Option<Vec<u16>>,
+        anchor: Option<ITfRange>,
+    ) -> Result<Self> {
         if request.0 == 0 || identity == 0 {
             return Err(E_INVALIDARG.into());
         }
@@ -313,7 +338,8 @@ impl ManualEdit {
             return Err(E_ACCESSDENIED.into());
         }
         let guard = Guard::new(manager, context)?;
-        let snapshot = capture_selection_or_run(manager, context, client, policy, expected_run)?;
+        let snapshot =
+            capture_conversion_target(manager, context, client, policy, expected_run, anchor)?;
         let output = Rc::new(RefCell::new(None));
         let result = output.clone();
         let manager = manager.clone();
@@ -429,25 +455,6 @@ impl ManualEdit {
             }),
         )?;
         Ok(bounds.get())
-    }
-
-    pub(crate) fn matches_anchor(&self, anchor: ITfRange) -> Result<()> {
-        let manager = self.manager.clone();
-        let snapshot = self.snapshot.clone();
-        run(
-            &self.snapshot.context,
-            self.client,
-            false,
-            Box::new(move |cookie| {
-                let range = validate_snapshot(&manager, &snapshot, cookie)?;
-                if !unsafe { range.IsEqualStart(cookie, &anchor, TF_ANCHOR_START)? }.as_bool()
-                    || !unsafe { range.IsEqualEnd(cookie, &anchor, TF_ANCHOR_END)? }.as_bool()
-                {
-                    return Err(E_ABORT.into());
-                }
-                Ok(())
-            }),
-        )
     }
 
     pub(crate) fn context(&self) -> &ITfContext {
