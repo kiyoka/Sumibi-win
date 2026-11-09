@@ -45,6 +45,7 @@ fn peer_response(frame: &[u8]) -> Vec<u8> {
             policy: policy(),
         }),
         Message::Convert(convert) => Message::Result(ConversionResult {
+            alternatives: None,
             request: convert.request,
             revision: convert.revision,
             text: "日本語".into(),

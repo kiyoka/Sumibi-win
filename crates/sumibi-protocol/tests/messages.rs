@@ -99,6 +99,7 @@ fn every_message_round_trips_through_the_frame_without_integer_precision_loss() 
             policy: policy(),
         }),
         Message::Convert(Convert {
+            current_result: None,
             request: u64::MAX,
             revision: revision(),
             timeout_ms: MAX_TIMEOUT_MS,
@@ -106,6 +107,7 @@ fn every_message_round_trips_through_the_frame_without_integer_precision_loss() 
         }),
         Message::Cancel(Cancel { request: u64::MAX }),
         Message::Result(ConversionResult {
+            alternatives: None,
             request: 1,
             revision: revision(),
             text: "日本語".into(),
@@ -218,6 +220,7 @@ fn utf16_and_encoded_size_caps_apply_in_both_directions() {
         ("a\u{fffc}b".to_owned(), false),
     ] {
         let message = envelope(Message::Result(ConversionResult {
+            alternatives: None,
             request: 1,
             revision: revision(),
             text,
@@ -234,6 +237,7 @@ fn utf16_and_encoded_size_caps_apply_in_both_directions() {
     assert_eq!(decode(&wire(&nested)).err(), Some(MessageError::Malformed));
     for timeout_ms in [0, MAX_TIMEOUT_MS + 1] {
         let message = envelope(Message::Convert(Convert {
+            current_result: None,
             request: 1,
             revision: revision(),
             timeout_ms,

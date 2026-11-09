@@ -366,7 +366,7 @@ pub fn run(path: PathBuf, start_minimized: bool) -> Result<(), &'static str> {
                     .take()
                     .filter(|offer| offer.can_grant() && !offer.allowed())
                 {
-                    let prompt = wide(&format!("手動変換の入力本文と API キーを、次の接続先へ送信することを許可しますか？\n\n{}\nモデル：{}\n\n許可はこの PC に保存されます。送信管理画面から取り消せます。", endpoint(&offer), offer.model().unwrap_or("未設定")));
+                    let prompt = wide(&format!("手動変換の入力本文、登録済みのユーザー辞書、API キーを次の接続先へ送信することを許可しますか？\n\n{}\nモデル：{}\n\n許可はこの PC に保存されます。送信管理画面から取り消せます。", endpoint(&offer), offer.model().unwrap_or("未設定")));
                     let confirmed = unsafe {
                         MessageBoxW(
                             Some(view.hwnd),

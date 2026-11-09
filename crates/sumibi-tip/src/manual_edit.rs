@@ -302,6 +302,31 @@ impl ManualEdit {
         deadline: Instant,
         expected_run: Option<Vec<u16>>,
     ) -> Result<Self> {
+        Self::capture_target(
+            manager,
+            context,
+            client,
+            policy,
+            request,
+            identity,
+            deadline,
+            expected_run,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture_target(
+        manager: &ITfThreadMgr,
+        context: &ITfContext,
+        client: u32,
+        policy: Rc<Cell<EditPolicy>>,
+        request: RequestId,
+        identity: u128,
+        deadline: Instant,
+        expected_run: Option<Vec<u16>>,
+        anchor: Option<ITfRange>,
+    ) -> Result<Self> {
         if request.0 == 0 || identity == 0 {
             return Err(E_INVALIDARG.into());
         }
@@ -313,7 +338,8 @@ impl ManualEdit {
             return Err(E_ACCESSDENIED.into());
         }
         let guard = Guard::new(manager, context)?;
-        let snapshot = capture_selection_or_run(manager, context, client, policy, expected_run)?;
+        let snapshot =
+            capture_conversion_target(manager, context, client, policy, expected_run, anchor)?;
         let output = Rc::new(RefCell::new(None));
         let result = output.clone();
         let manager = manager.clone();
@@ -405,16 +431,79 @@ impl ManualEdit {
     pub fn request(&self) -> RequestId {
         self.request
     }
+    pub(crate) fn is_current(&self) -> bool {
+        Instant::now() < self.deadline && self.guard.check().is_ok()
+    }
+
+    pub(crate) fn candidate_bounds(&self) -> Result<windows::Win32::Foundation::RECT> {
+        let bounds = Rc::new(Cell::new(Default::default()));
+        let output = bounds.clone();
+        let context = self.snapshot.context.clone();
+        let manager = self.manager.clone();
+        let snapshot = self.snapshot.clone();
+        run(
+            &context,
+            self.client,
+            false,
+            Box::new(move |cookie| {
+                let range = validate_snapshot(&manager, &snapshot, cookie)?;
+                let view = unsafe { snapshot.context.GetActiveView()? };
+                let mut rect = Default::default();
+                unsafe { view.GetTextExt(cookie, &range, &mut rect, &mut windows::core::BOOL(0))? };
+                output.set(rect);
+                Ok(())
+            }),
+        )?;
+        Ok(bounds.get())
+    }
+
+    pub(crate) fn context(&self) -> &ITfContext {
+        &self.snapshot.context
+    }
+
     /// A reply is applied only in this fresh, synchronous write session. The
     /// Core decision and SetText occur together, never in a later queued edit.
     pub fn finish(
-        mut self,
+        self,
         manager: &ITfThreadMgr,
         client: u32,
         request: RequestId,
         revision: Revision,
         replacement: String,
     ) -> Result<()> {
+        self.finish_inner(manager, client, request, revision, replacement, None)
+            .map(|_| ())
+    }
+
+    pub(crate) fn finish_retaining(
+        self,
+        manager: &ITfThreadMgr,
+        client: u32,
+        request: RequestId,
+        revision: Revision,
+        replacement: String,
+        still_allowed: impl Fn() -> bool + 'static,
+    ) -> Result<Option<ITfRange>> {
+        self.finish_inner(
+            manager,
+            client,
+            request,
+            revision,
+            replacement,
+            Some(Box::new(still_allowed)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_inner(
+        mut self,
+        manager: &ITfThreadMgr,
+        client: u32,
+        request: RequestId,
+        revision: Revision,
+        replacement: String,
+        still_allowed: Option<Box<dyn Fn() -> bool>>,
+    ) -> Result<Option<ITfRange>> {
         self.guard.check()?;
         if client != self.client
             || request != self.request
@@ -435,6 +524,8 @@ impl ManualEdit {
         }
         let context = self.snapshot.context.clone();
         let manager = manager.clone();
+        let anchor = Rc::new(RefCell::new(None));
+        let output = anchor.clone();
         run(
             &context,
             client,
@@ -443,11 +534,43 @@ impl ManualEdit {
                 self.guard.check()?;
                 let range = validate_snapshot(&manager, &self.snapshot, cookie)?;
                 let current = fresh_target(&self.snapshot, &range, cookie, self.identity)?;
+                let start = if still_allowed.is_some() {
+                    unsafe {
+                        range
+                            .Clone()
+                            .and_then(|start| {
+                                start.Collapse(cookie, TF_ANCHOR_START)?;
+                                start.SetGravity(
+                                    cookie,
+                                    TF_GRAVITY_BACKWARD,
+                                    TF_GRAVITY_BACKWARD,
+                                )?;
+                                Ok(start)
+                            })
+                            .ok()
+                    }
+                } else {
+                    None
+                };
                 // Fresh reads may call external COM. Check the retained observation
                 // and target again before the pure Core decision and immediate write.
                 let range = validate_snapshot(&manager, &self.snapshot, cookie)?;
+                let restore_trailing_caret = still_allowed.is_some()
+                    && unsafe {
+                        self.snapshot
+                            .selection_range
+                            .IsEmpty(cookie)
+                            .is_ok_and(|empty| empty.as_bool())
+                            && self
+                                .snapshot
+                                .selection_range
+                                .IsEqualStart(cookie, &range, TF_ANCHOR_END)
+                                .is_ok_and(|equal| equal.as_bool())
+                    };
                 self.guard.check()?;
-                if Instant::now() >= self.deadline {
+                if Instant::now() >= self.deadline
+                    || still_allowed.as_ref().is_some_and(|allowed| !allowed())
+                {
                     return Err(E_ABORT.into());
                 }
                 let text = self
@@ -458,10 +581,81 @@ impl ManualEdit {
                 // request. Own OnEndEdit may invalidate only after this single write.
                 unsafe {
                     range.SetText(cookie, 0, &text)?;
+                    if let Some(start) = start {
+                        let count = text.len() as i32;
+                        let mut shifted = 0;
+                        if start
+                            .ShiftEnd(cookie, count, &mut shifted, std::ptr::null())
+                            .is_ok()
+                            && shifted == count
+                        {
+                            if restore_trailing_caret {
+                                let _ = restore_caret_after_write(
+                                    &manager,
+                                    &self.snapshot,
+                                    cookie,
+                                    &start,
+                                    &text,
+                                );
+                            }
+                            *output.borrow_mut() = Some(start);
+                        }
+                    }
                 }
                 Ok(())
             }),
-        )
+        )?;
+        let retained = anchor.borrow_mut().take();
+        Ok(retained)
+    }
+}
+
+fn restore_caret_after_write(
+    manager: &ITfThreadMgr,
+    snapshot: &SelectionSnapshot,
+    cookie: u32,
+    replacement: &ITfRange,
+    expected: &[u16],
+) -> Result<()> {
+    ensure_target(manager, &snapshot.context)?;
+    let (caret, style) = selection(&snapshot.context, cookie)?;
+    // Leave applications that already placed the caret after the text alone.
+    // Never move a new selection or a caret outside the converted range.
+    if !unsafe {
+        caret.IsEmpty(cookie)?.as_bool()
+            && caret
+                .IsEqualStart(cookie, replacement, TF_ANCHOR_START)?
+                .as_bool()
+    } || style.fInterimChar.as_bool()
+    {
+        return Ok(());
+    }
+    crate::protection::check_with_profile(
+        &snapshot.context,
+        replacement,
+        cookie,
+        snapshot.captured_policy.profile,
+    )?;
+    if read_all_with_profile(replacement, cookie, snapshot.captured_policy.profile)? != expected {
+        return Ok(());
+    }
+    let end = unsafe { replacement.Clone()? };
+    unsafe { end.Collapse(cookie, TF_ANCHOR_END)? };
+    checked_selection(&snapshot.context, &caret, style, cookie)?;
+    ensure_target(manager, &snapshot.context)?;
+    let chosen = RawSelection(TF_SELECTION {
+        range: ManuallyDrop::new(Some(end)),
+        style: TF_SELECTIONSTYLE {
+            ase: TF_AE_NONE,
+            fInterimChar: false.into(),
+        },
+    });
+    // The replacement has already succeeded. A text store may decline this
+    // selection-only update without invalidating that completed write.
+    unsafe {
+        snapshot
+            .context
+            .SetSelection(cookie, std::slice::from_ref(&chosen.0))
     }
 }
 

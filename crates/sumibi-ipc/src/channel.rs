@@ -7,6 +7,7 @@ use crate::{Error, Nonce, PinnedProcess, Pipe, Result, Stop};
 use std::path::Path;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
+use sumibi_core::candidate::CandidateItem;
 use sumibi_protocol::message::{self, Policy, Revision};
 use sumibi_protocol::session::{ClientSession, Event, Outcome};
 
@@ -32,10 +33,16 @@ pub struct Reply {
     pub request: u64,
     pub revision: Revision,
     text: String,
+    alternatives: Option<Vec<CandidateItem>>,
     deadline: Instant,
     _delivery: Arc<Delivery>,
 }
 impl Reply {
+    pub fn alternatives(&self) -> Result<Option<&[CandidateItem]>> {
+        self.text()?;
+        Ok(self.alternatives.as_deref())
+    }
+
     /// Successful text remains private after the originating request expires.
     pub fn text(&self) -> Result<&str> {
         if Instant::now() >= self.deadline {
@@ -220,6 +227,16 @@ impl Channel {
     /// worker-only method. Nothing is queued or sent while a prior Reply lives.
     /// Every I/O/protocol/cancellation error retires this channel permanently.
     pub fn convert(&mut self, revision: Revision, text: &str, deadline: Instant) -> Result<Reply> {
+        self.convert_with_current(revision, text, None, deadline)
+    }
+
+    pub fn convert_with_current(
+        &mut self,
+        revision: Revision,
+        text: &str,
+        current_result: Option<&str>,
+        deadline: Instant,
+    ) -> Result<Reply> {
         if self.connected.is_none() {
             return Err(Error::Closed);
         }
@@ -236,9 +253,9 @@ impl Channel {
             return Err(Error::InvalidArgument);
         }
         let deadline = deadline.min(self.expires);
-        let result = self.exchange(revision, text, deadline);
+        let result = self.exchange(revision, text, current_result, deadline);
         match result {
-            Ok((request, text)) => {
+            Ok((request, text, alternatives)) => {
                 self.completed += 1;
                 let delivery = Arc::new(Delivery {
                     _reservation: self.reservation.clone(),
@@ -248,6 +265,7 @@ impl Channel {
                     request,
                     revision,
                     text,
+                    alternatives,
                     deadline,
                     _delivery: delivery,
                 })
@@ -263,8 +281,9 @@ impl Channel {
         &mut self,
         revision: Revision,
         text: &str,
+        current_result: Option<&str>,
         deadline: Instant,
-    ) -> Result<(u64, String)> {
+    ) -> Result<(u64, String, Option<Vec<CandidateItem>>)> {
         if self.completed >= MAX_REQUESTS {
             return Err(Error::Retired);
         }
@@ -295,7 +314,13 @@ impl Channel {
         )?;
         let bytes = connected
             .client
-            .begin(revision.input, text, milliseconds as u32, Instant::now())
+            .begin_conversion(
+                revision.input,
+                text,
+                current_result,
+                milliseconds as u32,
+                Instant::now(),
+            )
             .map_err(|_| Error::InvalidMessage)?;
         let expected = connected
             .client
@@ -312,8 +337,17 @@ impl Channel {
             Event::Reply {
                 request,
                 revision: actual,
-                outcome: Outcome::Result(text),
+                outcome,
             } if request == expected && actual == revision => {
+                let (text, alternatives) = match (outcome, current_result) {
+                    (Outcome::Result(text), None) => (text, None),
+                    (Outcome::Alternatives(items), Some(current))
+                        if message::valid_alternatives(current, &items) =>
+                    {
+                        (current.to_owned(), Some(items))
+                    }
+                    _ => return Err(Error::InvalidMessage),
+                };
                 reject_queued(
                     &mut connected.pipe,
                     &mut connected.client,
@@ -321,7 +355,7 @@ impl Channel {
                     &self.stop,
                     deadline,
                 )?;
-                Ok((request, text))
+                Ok((request, text, alternatives))
             }
             Event::PolicyChanged {
                 cancelled: Some(request),

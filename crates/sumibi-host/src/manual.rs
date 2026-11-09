@@ -137,6 +137,7 @@ impl Credential {
 /// corresponding revision before acknowledging the change to the user.
 #[derive(Clone)]
 pub struct PolicySnapshot {
+    pub(crate) user_dictionary: String,
     pub settings: u64,
     pub authorization: u64,
     pub model: Option<String>,
@@ -334,6 +335,27 @@ pub fn convert_ordered(
     admission: &impl SendAdmission,
     transport: &impl OrderedConversionTransport,
 ) -> Result<String, SendError> {
+    convert_ordered_with(
+        request,
+        authority,
+        admission,
+        |destination, credential, source, deadline, gate| {
+            let result =
+                transport.convert_ordered(destination, credential, source, deadline, gate)?;
+            if !message::valid_text(&result) {
+                return Err(SendError::InvalidResponse);
+            }
+            Ok(result)
+        },
+    )
+}
+
+pub(crate) fn convert_ordered_with<T>(
+    request: ManualRequest<'_>,
+    authority: &PolicyAuthority,
+    admission: &impl SendAdmission,
+    convert: impl FnOnce(&Destination, &str, &str, Instant, &mut dyn SendGate) -> Result<T, SendError>,
+) -> Result<T, SendError> {
     if admission.is_cancelled() {
         return Err(SendError::PolicyDenied);
     }
@@ -367,7 +389,7 @@ pub fn convert_ordered(
         used: false,
         sent: false,
     };
-    let result = transport.convert_ordered(
+    let result = convert(
         request.destination,
         credential.expose(),
         request.source,
@@ -387,9 +409,6 @@ pub fn convert_ordered(
     let current_credential = authorized(&after, &request)?;
     if !Arc::ptr_eq(&credential, &current_credential) {
         return Err(SendError::PolicyDenied);
-    }
-    if !message::valid_text(&result) {
-        return Err(SendError::InvalidResponse);
     }
     if admission.is_cancelled() {
         return Err(SendError::PolicyDenied);
@@ -639,6 +658,7 @@ mod tests {
     fn source() -> Source {
         let destination = destination();
         Source(RefCell::new(PolicySnapshot {
+            user_dictionary: String::new(),
             settings: 1,
             authorization: 1,
             model: None,

@@ -380,10 +380,26 @@ impl PolicyFanout {
         text: String,
         now: Instant,
     ) -> Result<Option<Envelope>, FanoutError> {
+        self.conversion_result(key, request, revision, text, None, now)
+    }
+
+    pub fn conversion_result(
+        &mut self,
+        key: u64,
+        request: u64,
+        revision: Revision,
+        text: String,
+        alternatives: Option<Vec<sumibi_core::candidate::CandidateItem>>,
+        now: Instant,
+    ) -> Result<Option<Envelope>, FanoutError> {
         let index = self.index(key)?;
-        let result = self.subscribers[index]
-            .session
-            .result(request, revision, text, now);
+        let result = self.subscribers[index].session.conversion_result(
+            request,
+            revision,
+            text,
+            alternatives,
+            now,
+        );
         match result {
             // A worker can complete after the deadline but before the timer
             // calls expire. The request is consumed; the session is still
@@ -490,6 +506,7 @@ mod tests {
             session: id(client),
             generation,
             message: Message::Convert(Convert {
+                current_result: None,
                 request,
                 revision: Revision {
                     input: 1,

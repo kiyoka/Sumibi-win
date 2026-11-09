@@ -110,6 +110,8 @@ pub struct Convert {
     pub request: u64,
     pub revision: Revision,
     pub timeout_ms: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_result: Option<String>,
     pub text: String,
 }
 
@@ -122,6 +124,8 @@ pub struct Cancel {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConversionResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alternatives: Option<Vec<sumibi_core::candidate::CandidateItem>>,
     pub request: u64,
     pub revision: Revision,
     pub text: String,
@@ -166,10 +170,17 @@ impl Envelope {
                         && convert.revision.valid()
                         && (1..=MAX_TIMEOUT_MS).contains(&convert.timeout_ms)
                         && valid_text(&convert.text)
+                        && convert.current_result.as_deref().is_none_or(valid_text)
                 }
                 Message::Cancel(cancel) => cancel.request != 0,
                 Message::Result(result) => {
-                    result.request != 0 && result.revision.valid() && valid_text(&result.text)
+                    result.request != 0
+                        && result.revision.valid()
+                        && valid_text(&result.text)
+                        && result
+                            .alternatives
+                            .as_deref()
+                            .is_none_or(|items| valid_alternatives(&result.text, items))
                 }
                 Message::Error(error) => error.request != 0 && error.revision.valid(),
                 Message::PolicyChanged(policy) => policy.valid(),
@@ -203,6 +214,22 @@ impl Revision {
     fn valid(self) -> bool {
         self.input != 0 && self.settings != 0 && self.authorization != 0
     }
+}
+
+pub fn valid_alternatives(current: &str, items: &[sumibi_core::candidate::CandidateItem]) -> bool {
+    use sumibi_core::candidate::CandidateSource;
+    (1..=11).contains(&items.len())
+        && items[0].source == CandidateSource::CurrentResult
+        && items[0].text == current
+        && items.iter().enumerate().all(|(index, item)| {
+            valid_text(&item.text)
+                && item
+                    .annotation
+                    .as_ref()
+                    .is_none_or(|value| value.len() <= 64)
+                && (index == 0 || item.source != CandidateSource::CurrentResult)
+                && !items[..index].iter().any(|prior| prior.text == item.text)
+        })
 }
 
 /// Shared, allocation-free single-result text limit for transport adapters.
