@@ -40,6 +40,11 @@ pub(crate) fn exercise_session_keys(
     )
     .into_bytes();
 
+    let additional_body = response_body_200.replace("日本語", "にほんご");
+    let additional_response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{additional_body}",
+        additional_body.len()
+    );
     let response_body_500 = r#"{"error":{"message":"internal simulated failure"}}"#;
     let response_bytes_500 = format!(
         "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body_500}",
@@ -49,6 +54,8 @@ pub(crate) fn exercise_session_keys(
 
     let server_mode = Arc::new(AtomicU8::new(0)); // 0: 200 OK, 1: 500 Error
     let thread_mode = server_mode.clone();
+    let error_served = Arc::new(AtomicBool::new(false));
+    let thread_error_served = error_served.clone();
     let server_running = Arc::new(AtomicBool::new(true));
     let thread_running = server_running.clone();
 
@@ -91,6 +98,9 @@ pub(crate) fn exercise_session_keys(
                 let _ = stream.write_all(&response_bytes_200);
             } else if mode == 1 {
                 let _ = stream.write_all(&response_bytes_500);
+                thread_error_served.store(true, Ordering::Release);
+            } else if mode == 2 {
+                let _ = stream.write_all(additional_response.as_bytes());
             }
         }
     });
@@ -111,7 +121,7 @@ pub(crate) fn exercise_session_keys(
         HostControl::start_diagnostic(move || Ok((thread_authority, false)))
             .map_err(|e| format!("start HostControl: {e:?}"))?,
     );
-    let mut service = HostService::start_with_control(control)
+    let mut service = HostService::start_fixture_with_control(control)
         .map_err(|e| format!("start HostService: {e:?}"))?;
 
     // 2. Setup window, TextStore, document and context
@@ -257,6 +267,62 @@ pub(crate) fn exercise_session_keys(
     println!("Scenario 2: Autonomous discovery, key conversion and async text replacement: OK");
 
     // =========================================================================
+    // Request additional candidates from the retained result. Until a
+    // candidate is selected the document and undo stack must stay unchanged.
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    server_mode.store(2, Ordering::Release);
+    assert!(unsafe { sink.OnPreservedKey(&context, &COMMAND_CONVERT)? }.as_bool());
+    let candidate_deadline = Instant::now() + Duration::from_secs(6);
+    let mut offered = false;
+    while Instant::now() < candidate_deadline {
+        pump_tsf_messages(&messages)?;
+        if unsafe { sink.OnTestKeyDown(&context, WPARAM(0x32), LPARAM(0))? }.as_bool() {
+            offered = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        offered,
+        "additional candidate must be offered by the product TIP"
+    );
+    assert_eq!(*store.get().text.borrow(), expected_replaced);
+    assert_eq!(store.get().undo.borrow().len(), 1);
+    assert!(unsafe { sink.OnKeyDown(&context, WPARAM(0x32), LPARAM(0))? }.as_bool());
+    assert_eq!(
+        String::from_utf16(&store.get().text.borrow())?,
+        "prefix にほんご suffix"
+    );
+    assert_eq!(store.get().undo.borrow().len(), 2);
+
+    server_mode.store(1, Ordering::Release);
+    assert!(unsafe { sink.OnPreservedKey(&context, &COMMAND_CONVERT)? }.as_bool());
+    let failure_deadline = Instant::now() + Duration::from_secs(6);
+    while !error_served.load(Ordering::Acquire) && Instant::now() < failure_deadline {
+        pump_tsf_messages(&messages)?;
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        error_served.load(Ordering::Acquire),
+        "reconversion request must reach the HTTP fixture"
+    );
+    let drain_deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < drain_deadline {
+        pump_tsf_messages(&messages)?;
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!unsafe { sink.OnTestKeyDown(&context, WPARAM(0x32), LPARAM(0))? }.as_bool());
+    assert_eq!(
+        String::from_utf16(&store.get().text.borrow())?,
+        "prefix にほんご suffix"
+    );
+    assert_eq!(store.get().undo.borrow().len(), 2);
+    println!("Additional candidates: API error preserves text and undo history: OK");
+
+    store.get().undo_once()?;
+    assert_eq!(*store.get().text.borrow(), expected_replaced);
+    println!("Additional candidates: retained range, explicit selection and 1-step Undo: OK");
+
     // Scenario 3: 1-step Undo restores original text and selection
     // =========================================================================
     store.get().undo_once()?;
@@ -282,11 +348,18 @@ pub(crate) fn exercise_session_keys(
     selected_retry.acpEnd = 14;
     store.get().selection.set(selected_retry);
 
-    let res_fail = unsafe { sink.OnPreservedKey(&context, &COMMAND_CONVERT)? };
-    assert!(
-        res_fail.as_bool(),
-        "hotkey while ready must be admitted for dispatch even if upstream server subsequently fails"
-    );
+    let ready_deadline = Instant::now() + Duration::from_secs(6);
+    loop {
+        pump_tsf_messages(&messages)?;
+        if unsafe { sink.OnPreservedKey(&context, &COMMAND_CONVERT)? }.as_bool() {
+            break;
+        }
+        assert!(
+            Instant::now() < ready_deadline,
+            "TIP must reconnect after a failed request"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     // Pump messages until worker receives 500, delivers Failed event, and cancels ticket
     let fail_deadline = Instant::now() + Duration::from_secs(4);

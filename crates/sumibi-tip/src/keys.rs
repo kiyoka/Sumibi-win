@@ -22,7 +22,7 @@ pub(super) struct KeySink {
     controller: Weak<Controller>,
     session: Weak<crate::session::TipHostSession>,
     owner: ThreadId,
-    last_test_key: Cell<Option<(u32, isize, u32)>>,
+    last_test_key: Cell<Option<(u32, isize, u32, bool)>>,
     // A manager can retain this sink even after releasing the TIP.
     // Keep the DLL loaded until its last reference has been released.
     _lease: ObjectLease,
@@ -44,6 +44,17 @@ impl KeySink {
             session.observe_key(context.as_ref(), key.0 as u32, flags.0);
             Ok(())
         });
+    }
+
+    fn candidate_key(&self, context: &Ref<ITfContext>, key: WPARAM, test: bool) -> bool {
+        let mut eaten = false;
+        if let Some(session) = self.session.upgrade() {
+            let _ = crate::com::boundary(|| {
+                eaten = session.candidate_key(context.as_ref(), key.0 as u32, test);
+                Ok(())
+            });
+        }
+        eaten
     }
 
     #[cfg(feature = "spike")]
@@ -154,13 +165,17 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         let vk = _key.0 as u32;
         let flags = _flags.0;
         let time = unsafe { windows::Win32::UI::WindowsAndMessaging::GetMessageTime() } as u32;
-        self.last_test_key.set(Some((vk, flags, time)));
+        let candidate = self.candidate_key(&_context, _key, true);
+        self.last_test_key.set(Some((vk, flags, time, candidate)));
         crate::session::debug_log(&format!(
             "KeySink::OnTestKeyDown(key=0x{:x}, flags=0x{:x}, has_context={})",
             _key.0,
             _flags.0,
             _context.as_ref().is_some()
         ));
+        if candidate {
+            return Ok(true.into());
+        }
         self.observe(&_context, _key, _flags);
         #[cfg(feature = "spike")]
         return Ok(self.preview_key(_context, _key, _flags, true).into());
@@ -176,16 +191,21 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         let vk = _key.0 as u32;
         let flags = _flags.0;
         let time = unsafe { windows::Win32::UI::WindowsAndMessaging::GetMessageTime() } as u32;
-        let already_observed = self
+        let tested = self
             .last_test_key
-            .get()
-            .map(|(k, f, t)| k == vk && f == flags && t == time)
-            .unwrap_or(false);
-        self.last_test_key.set(None);
+            .take()
+            .filter(|&(k, f, t, _)| k == vk && f == flags && t == time);
+        let already_observed = tested.is_some();
+        let tested_candidate = tested.is_some_and(|(_, _, _, candidate)| candidate);
         crate::session::debug_log(&format!(
             "KeySink::OnKeyDown(key=0x{:x}, flags=0x{:x}, already_observed={already_observed})",
             _key.0, _flags.0
         ));
+        // A tested candidate key stays consumed if the target expires before
+        // OnKeyDown. In particular Enter must not reach the application.
+        if self.candidate_key(&_context, _key, false) || tested_candidate {
+            return Ok(true.into());
+        }
         if !already_observed {
             self.observe(&_context, _key, _flags);
         }

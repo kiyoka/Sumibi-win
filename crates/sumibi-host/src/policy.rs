@@ -984,6 +984,7 @@ mod tests {
             Err(SessionError::NotAllowed)
         ));
         let old_reply = frame(Message::Result(ConversionResult {
+            alternatives: None,
             request: 1,
             revision: Revision {
                 input: 1,

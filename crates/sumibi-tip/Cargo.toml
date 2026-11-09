@@ -8,7 +8,7 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [features]
-spike = []
+spike = ["sumibi-ipc/spike"]
 
 [target.'cfg(windows)'.dependencies]
 sumibi-core = { path = "../sumibi-core" }

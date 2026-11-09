@@ -69,8 +69,14 @@ pub fn convert_additional_chat_with_policy(
         model: model.to_owned(),
         current_result: current_result.to_owned(),
     };
-    let json = crate::manual::convert_ordered(request, authority, admission, &adapter)?;
-    serde_json::from_str::<Vec<CandidateItem>>(&json).map_err(|_| SendError::InvalidResponse)
+    crate::manual::convert_ordered_with(
+        request,
+        authority,
+        admission,
+        |destination, credential, source, deadline, gate| {
+            adapter.convert_ordered(destination, credential, source, deadline, gate)
+        },
+    )
 }
 
 /// Diagnostic Decisions auto-conversion under separate consent, cost protection and strict schema validation (ADR 0102).
@@ -160,7 +166,7 @@ struct DiagnosticAdditionalChatLoopback {
     current_result: String,
 }
 
-impl OrderedConversionTransport for DiagnosticAdditionalChatLoopback {
+impl DiagnosticAdditionalChatLoopback {
     fn convert_ordered(
         &self,
         destination: &Destination,
@@ -168,7 +174,7 @@ impl OrderedConversionTransport for DiagnosticAdditionalChatLoopback {
         source: &str,
         deadline: Instant,
         gate: &mut dyn SendGate,
-    ) -> Result<String, SendError> {
+    ) -> Result<Vec<CandidateItem>, SendError> {
         let input = crate::first_conversion::ConversionInput::with_context(
             source,
             Some(&self.current_result),
@@ -193,20 +199,17 @@ impl OrderedConversionTransport for DiagnosticAdditionalChatLoopback {
         gate.write_authorized(&mut || {
             send_request(&mut stream, headers.as_bytes(), &body, deadline)
         })?;
-        let response_text = read_response(&mut stream, deadline, &|| gate.is_cancelled())
+        let response = read_response_bytes(&mut stream, deadline, &|| gate.is_cancelled())
             .map_err(SendError::Transport)?;
-        let llm_candidates = crate::first_conversion::response_candidates(
-            response_text.as_bytes(),
-            Some(&self.current_result),
-        )
-        .map_err(|_| SendError::InvalidResponse)?;
+        let llm_candidates = crate::first_conversion::response_candidates(&response, None)
+            .map_err(|_| SendError::InvalidResponse)?;
         let complete = crate::local_dictionary::build_complete_candidates(
             source,
             Some(&self.current_result),
             &llm_candidates,
             crate::first_conversion::MAX_ADDITIONAL_CANDIDATES,
         );
-        serde_json::to_string(&complete).map_err(|_| SendError::InvalidResponse)
+        Ok(complete)
     }
 }
 

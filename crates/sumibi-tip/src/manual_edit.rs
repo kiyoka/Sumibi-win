@@ -405,16 +405,98 @@ impl ManualEdit {
     pub fn request(&self) -> RequestId {
         self.request
     }
+    pub(crate) fn is_current(&self) -> bool {
+        Instant::now() < self.deadline && self.guard.check().is_ok()
+    }
+
+    pub(crate) fn candidate_bounds(&self) -> Result<windows::Win32::Foundation::RECT> {
+        let bounds = Rc::new(Cell::new(Default::default()));
+        let output = bounds.clone();
+        let context = self.snapshot.context.clone();
+        let manager = self.manager.clone();
+        let snapshot = self.snapshot.clone();
+        run(
+            &context,
+            self.client,
+            false,
+            Box::new(move |cookie| {
+                let range = validate_snapshot(&manager, &snapshot, cookie)?;
+                let view = unsafe { snapshot.context.GetActiveView()? };
+                let mut rect = Default::default();
+                unsafe { view.GetTextExt(cookie, &range, &mut rect, &mut windows::core::BOOL(0))? };
+                output.set(rect);
+                Ok(())
+            }),
+        )?;
+        Ok(bounds.get())
+    }
+
+    pub(crate) fn matches_anchor(&self, anchor: ITfRange) -> Result<()> {
+        let manager = self.manager.clone();
+        let snapshot = self.snapshot.clone();
+        run(
+            &self.snapshot.context,
+            self.client,
+            false,
+            Box::new(move |cookie| {
+                let range = validate_snapshot(&manager, &snapshot, cookie)?;
+                if !unsafe { range.IsEqualStart(cookie, &anchor, TF_ANCHOR_START)? }.as_bool()
+                    || !unsafe { range.IsEqualEnd(cookie, &anchor, TF_ANCHOR_END)? }.as_bool()
+                {
+                    return Err(E_ABORT.into());
+                }
+                Ok(())
+            }),
+        )
+    }
+
+    pub(crate) fn context(&self) -> &ITfContext {
+        &self.snapshot.context
+    }
+
     /// A reply is applied only in this fresh, synchronous write session. The
     /// Core decision and SetText occur together, never in a later queued edit.
     pub fn finish(
-        mut self,
+        self,
         manager: &ITfThreadMgr,
         client: u32,
         request: RequestId,
         revision: Revision,
         replacement: String,
     ) -> Result<()> {
+        self.finish_inner(manager, client, request, revision, replacement, None)
+            .map(|_| ())
+    }
+
+    pub(crate) fn finish_retaining(
+        self,
+        manager: &ITfThreadMgr,
+        client: u32,
+        request: RequestId,
+        revision: Revision,
+        replacement: String,
+        still_allowed: impl Fn() -> bool + 'static,
+    ) -> Result<Option<ITfRange>> {
+        self.finish_inner(
+            manager,
+            client,
+            request,
+            revision,
+            replacement,
+            Some(Box::new(still_allowed)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_inner(
+        mut self,
+        manager: &ITfThreadMgr,
+        client: u32,
+        request: RequestId,
+        revision: Revision,
+        replacement: String,
+        still_allowed: Option<Box<dyn Fn() -> bool>>,
+    ) -> Result<Option<ITfRange>> {
         self.guard.check()?;
         if client != self.client
             || request != self.request
@@ -435,6 +517,8 @@ impl ManualEdit {
         }
         let context = self.snapshot.context.clone();
         let manager = manager.clone();
+        let anchor = Rc::new(RefCell::new(None));
+        let output = anchor.clone();
         run(
             &context,
             client,
@@ -443,11 +527,31 @@ impl ManualEdit {
                 self.guard.check()?;
                 let range = validate_snapshot(&manager, &self.snapshot, cookie)?;
                 let current = fresh_target(&self.snapshot, &range, cookie, self.identity)?;
+                let start = if still_allowed.is_some() {
+                    unsafe {
+                        range
+                            .Clone()
+                            .and_then(|start| {
+                                start.Collapse(cookie, TF_ANCHOR_START)?;
+                                start.SetGravity(
+                                    cookie,
+                                    TF_GRAVITY_BACKWARD,
+                                    TF_GRAVITY_BACKWARD,
+                                )?;
+                                Ok(start)
+                            })
+                            .ok()
+                    }
+                } else {
+                    None
+                };
                 // Fresh reads may call external COM. Check the retained observation
                 // and target again before the pure Core decision and immediate write.
                 let range = validate_snapshot(&manager, &self.snapshot, cookie)?;
                 self.guard.check()?;
-                if Instant::now() >= self.deadline {
+                if Instant::now() >= self.deadline
+                    || still_allowed.as_ref().is_some_and(|allowed| !allowed())
+                {
                     return Err(E_ABORT.into());
                 }
                 let text = self
@@ -458,10 +562,23 @@ impl ManualEdit {
                 // request. Own OnEndEdit may invalidate only after this single write.
                 unsafe {
                     range.SetText(cookie, 0, &text)?;
+                    if let Some(start) = start {
+                        let count = text.len() as i32;
+                        let mut shifted = 0;
+                        if start
+                            .ShiftEnd(cookie, count, &mut shifted, std::ptr::null())
+                            .is_ok()
+                            && shifted == count
+                        {
+                            *output.borrow_mut() = Some(start);
+                        }
+                    }
                 }
                 Ok(())
             }),
-        )
+        )?;
+        let retained = anchor.borrow_mut().take();
+        Ok(retained)
     }
 }
 

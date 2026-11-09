@@ -157,8 +157,14 @@ fn convert_additional_with_exchange(
         user_dictionary: &snapshot.user_dictionary,
         exchange,
     };
-    let json = crate::manual::convert_ordered(request, authority, admission, &transport)?;
-    serde_json::from_str::<Vec<CandidateItem>>(&json).map_err(|_| SendError::InvalidResponse)
+    crate::manual::convert_ordered_with(
+        request,
+        authority,
+        admission,
+        |destination, credential, source, deadline, gate| {
+            transport.convert_ordered(destination, credential, source, deadline, gate)
+        },
+    )
 }
 
 struct AdditionalChatTransport<'a> {
@@ -168,7 +174,7 @@ struct AdditionalChatTransport<'a> {
     exchange: &'a dyn Exchange,
 }
 
-impl OrderedConversionTransport for AdditionalChatTransport<'_> {
+impl AdditionalChatTransport<'_> {
     fn convert_ordered(
         &self,
         destination: &Destination,
@@ -176,7 +182,7 @@ impl OrderedConversionTransport for AdditionalChatTransport<'_> {
         source: &str,
         deadline: Instant,
         gate: &mut dyn SendGate,
-    ) -> Result<String, SendError> {
+    ) -> Result<Vec<CandidateItem>, SendError> {
         let input = crate::first_conversion::ConversionInput::with_context(
             source,
             Some(self.current_result),
@@ -187,16 +193,15 @@ impl OrderedConversionTransport for AdditionalChatTransport<'_> {
         let bytes = self
             .exchange
             .exchange(destination, credential, body, deadline, gate)?;
-        let llm_candidates =
-            crate::first_conversion::response_candidates(&bytes, Some(self.current_result))
-                .map_err(|_| SendError::InvalidResponse)?;
+        let llm_candidates = crate::first_conversion::response_candidates(&bytes, None)
+            .map_err(|_| SendError::InvalidResponse)?;
         let complete = crate::local_dictionary::build_complete_candidates(
             source,
             Some(self.current_result),
             &llm_candidates,
             crate::first_conversion::MAX_ADDITIONAL_CANDIDATES,
         );
-        serde_json::to_string(&complete).map_err(|_| SendError::InvalidResponse)
+        Ok(complete)
     }
 }
 

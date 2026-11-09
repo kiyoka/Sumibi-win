@@ -45,6 +45,7 @@ pub struct EditPolicy {
 }
 
 /// Single-use snapshot. No Debug implementation: it contains private input.
+#[derive(Clone)]
 pub struct SelectionSnapshot {
     context: ITfContext,
     range: ITfRange,
@@ -336,7 +337,7 @@ pub fn capture_selection_or_run(
             let selection_range = unsafe { range.Clone()? };
             let expected = if unsafe { range.IsEmpty(cookie)? }.as_bool() {
                 let expected = expected_run.ok_or(E_ABORT)?;
-                if expected.is_empty() || expected.len() > crate::run_record::MAX_RUN_UNITS {
+                if expected.is_empty() || expected.len() > MAX_SELECTION_UNITS {
                     return Err(E_INVALIDARG.into());
                 }
                 let wanted = -(expected.len() as i32);

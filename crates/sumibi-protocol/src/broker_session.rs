@@ -218,13 +218,28 @@ impl BrokerSession {
         text: String,
         now: Instant,
     ) -> Result<Option<Envelope>, BrokerError> {
+        self.conversion_result(request, revision, text, None, now)
+    }
+
+    pub fn conversion_result(
+        &mut self,
+        request: u64,
+        revision: Revision,
+        text: String,
+        alternatives: Option<Vec<sumibi_core::candidate::CandidateItem>>,
+        now: Instant,
+    ) -> Result<Option<Envelope>, BrokerError> {
         let Some(pending) = self.take_matching_request(request, revision)? else {
             return Ok(None);
         };
         if now >= pending.deadline {
             return Err(BrokerError::Expired);
         }
-        if !message::valid_text(&text) {
+        if !message::valid_text(&text)
+            || alternatives
+                .as_deref()
+                .is_some_and(|items| !message::valid_alternatives(&text, items))
+        {
             self.disconnect();
             return Err(BrokerError::InvalidReply);
         }
@@ -235,6 +250,7 @@ impl BrokerSession {
             return Err(BrokerError::PolicyDenied);
         }
         self.frame(Message::Result(ConversionResult {
+            alternatives,
             request,
             revision,
             text,
@@ -377,6 +393,7 @@ mod tests {
 
     fn convert(request: u64) -> Message {
         Message::Convert(Convert {
+            current_result: None,
             request,
             revision: revision(),
             timeout_ms: 100,

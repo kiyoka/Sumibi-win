@@ -93,6 +93,14 @@ impl Completion {
             .map_err(|error| *error)
             .and_then(|reply| reply.text())
     }
+    pub fn alternatives(&self) -> Result<Option<&[sumibi_core::candidate::CandidateItem]>> {
+        self.outcome()?;
+        self.outcome
+            .as_ref()
+            .map_err(|error| *error)?
+            .alternatives()
+    }
+
     /// Metadata only, for verifying process reuse; not an authentication API.
     pub fn exchange(&self) -> Option<(u32, u64)> {
         if self._permit.state.cancelled.load(Ordering::Acquire) || Instant::now() >= self.deadline {
@@ -837,9 +845,10 @@ fn run(
                 peer = Some(opened.peer_process()?);
                 channel = Some(opened);
             }
-            channel.as_mut().ok_or(Error::Closed)?.convert(
+            channel.as_mut().ok_or(Error::Closed)?.convert_with_current(
                 revision,
                 &request.text,
+                request.current_result.as_deref(),
                 request.deadline,
             )
         }))
@@ -1006,6 +1015,7 @@ mod tests {
         let (results, receive) = mpsc::sync_channel(1);
         send.send(Command {
             request: Request {
+                current_result: None,
                 id: 1,
                 revision: Revision {
                     input: 1,

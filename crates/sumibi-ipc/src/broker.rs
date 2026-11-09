@@ -365,6 +365,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                     .checked_add(1)
                     .ok_or(Error::InvalidMessage)?;
                 let reply = Message::Result(ConversionResult {
+                    alternatives: None,
                     request: future,
                     revision: convert.revision,
                     text: "日本語".into(),
@@ -587,6 +588,7 @@ mod tests {
     }
     fn request(id: u64) -> Convert {
         Convert {
+            current_result: None,
             request: id,
             revision: Revision {
                 input: 1,

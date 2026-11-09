@@ -224,6 +224,15 @@ pub fn current_bootstrap_pipe_name() -> Result<String> {
     Ok(bootstrap_pipe_name_for_sid(&local.identity().logon_text))
 }
 
+#[cfg(feature = "spike")]
+pub fn fixture_bootstrap_pipe_name() -> Result<String> {
+    let name = current_bootstrap_pipe_name()?;
+    if std::env::var_os("SUMIBI_TEST_ISOLATED_DISCOVERY").is_some() {
+        return Ok(format!("{name}.Fixture.{}", std::process::id()));
+    }
+    Ok(name)
+}
+
 /// Logon-scoped bootstrap server. Accepts incoming connections from the same
 /// logon session without prior peer knowledge, then discovers and pins the client.
 pub struct BootstrapServer {

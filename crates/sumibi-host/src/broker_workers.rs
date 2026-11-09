@@ -29,9 +29,14 @@ pub enum WorkerPoolError {
     Spawn,
 }
 
+pub enum WorkerResult {
+    Text(String),
+    Alternatives(Vec<sumibi_core::candidate::CandidateItem>),
+}
+
 pub struct WorkerCompletion {
     pub reply: ReplyContext,
-    pub outcome: Result<String, ErrorCode>,
+    pub outcome: Result<WorkerResult, ErrorCode>,
 }
 
 impl WorkerCompletion {
@@ -44,7 +49,12 @@ impl WorkerCompletion {
         deadline: Instant,
     ) -> Result<bool, RuntimeError> {
         match self.outcome {
-            Ok(text) => runtime.publish_result(self.reply, text, stop, deadline),
+            Ok(WorkerResult::Text(text)) => {
+                runtime.publish_result(self.reply, text, stop, deadline)
+            }
+            Ok(WorkerResult::Alternatives(items)) => {
+                runtime.publish_alternatives(self.reply, items, stop, deadline)
+            }
             Err(code) => runtime.publish_error(self.reply, code, stop, deadline),
         }
     }
@@ -378,18 +388,34 @@ impl BrokerWorkLoop {
         if !runtime.uses_source(&authority) {
             return Err(RuntimeError::InvalidTarget);
         }
-        self.advance(runtime, stop, deadline, move |request| {
+        self.advance_conversion(runtime, stop, deadline, move |conversion| {
             move |ticket: JobTicket| {
                 let destination = authority
                     .snapshot()
                     .ok_or(ErrorCode::Unavailable)?
                     .destination;
                 let request = ManualRequest {
-                    revision: request.revision,
+                    revision: conversion.revision,
                     destination: &destination,
-                    source: &request.text,
+                    source: &conversion.text,
                     deadline: ticket.deadline(),
                 };
+                if let Some(current) = conversion.current_result.as_deref() {
+                    return match route {
+                        ChatRoute::DiagnosticLoopback => {
+                            crate::diagnostic_http::convert_additional_chat_with_policy(
+                                request, current, &authority, &ticket,
+                            )
+                        }
+                        ChatRoute::NativeHttps => {
+                            crate::native_https::convert_additional_chat_with_policy(
+                                request, current, &authority, &ticket,
+                            )
+                        }
+                    }
+                    .map(WorkerResult::Alternatives)
+                    .map_err(classify_send_error);
+                }
                 match route {
                     ChatRoute::DiagnosticLoopback => {
                         crate::diagnostic_http::convert_chat_with_policy(
@@ -400,6 +426,7 @@ impl BrokerWorkLoop {
                         crate::native_https::convert_chat_with_policy(request, &authority, &ticket)
                     }
                 }
+                .map(WorkerResult::Text)
                 .map_err(classify_send_error)
             }
         })
@@ -471,6 +498,29 @@ impl BrokerWorkLoop {
         F: FnOnce(Convert) -> W,
         W: FnOnce(JobTicket) -> Result<String, ErrorCode> + Send + 'static,
     {
+        self.advance_conversion(runtime, stop, deadline, |request| {
+            let additional = request.current_result.is_some();
+            let work = make_work(request);
+            move |ticket| {
+                if additional {
+                    return Err(ErrorCode::Rejected);
+                }
+                work(ticket).map(WorkerResult::Text)
+            }
+        })
+    }
+
+    fn advance_conversion<F, W>(
+        &mut self,
+        runtime: &mut BrokerPolicyRuntime<'_>,
+        stop: &Stop,
+        deadline: Instant,
+        make_work: F,
+    ) -> Result<OwnerStep, RuntimeError>
+    where
+        F: FnOnce(Convert) -> W,
+        W: FnOnce(JobTicket) -> Result<WorkerResult, ErrorCode> + Send + 'static,
+    {
         if let Some(outcome) = runtime.publish_current(stop, deadline)? {
             return Ok(OwnerStep::Published(outcome));
         }
@@ -515,7 +565,10 @@ impl BrokerWorkLoop {
         let ticket = runtime
             .job_ticket(key, request)
             .ok_or(RuntimeError::Incomplete)?;
-        match self.workers.submit(ticket.clone(), make_work(convert)) {
+        match self
+            .workers
+            .submit_conversion(ticket.clone(), make_work(convert))
+        {
             Ok(()) => Ok(OwnerStep::Submitted { key, request }),
             Err(WorkerPoolError::Duplicate) => {
                 runtime.disconnect(key);
@@ -594,6 +647,14 @@ impl BrokerWorkers {
         &mut self,
         ticket: JobTicket,
         work: impl FnOnce(JobTicket) -> Result<String, ErrorCode> + Send + 'static,
+    ) -> Result<(), WorkerPoolError> {
+        self.submit_conversion(ticket, |ticket| work(ticket).map(WorkerResult::Text))
+    }
+
+    fn submit_conversion(
+        &mut self,
+        ticket: JobTicket,
+        work: impl FnOnce(JobTicket) -> Result<WorkerResult, ErrorCode> + Send + 'static,
     ) -> Result<(), WorkerPoolError> {
         if ticket.is_cancelled() {
             return Err(WorkerPoolError::Cancelled);

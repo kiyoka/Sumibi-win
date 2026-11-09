@@ -780,6 +780,26 @@ impl<'a> BrokerPolicyRuntime<'a> {
         })
     }
 
+    pub(crate) fn publish_alternatives(
+        &mut self,
+        reply: ReplyContext,
+        items: Vec<sumibi_core::candidate::CandidateItem>,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<bool, RuntimeError> {
+        let text = items.first().ok_or(RuntimeError::Incomplete)?.text.clone();
+        self.publish_reply(reply, stop, deadline, |fanout| {
+            fanout.conversion_result(
+                reply.key,
+                reply.request,
+                reply.revision,
+                text,
+                Some(items),
+                reply.completed_at,
+            )
+        })
+    }
+
     /// Publish a fixed worker failure under the same policy and transport
     /// ordering as a successful result.
     pub fn publish_error(
@@ -1484,6 +1504,7 @@ mod tests {
             session: id(client),
             generation,
             message: message::Message::Convert(Convert {
+                current_result: None,
                 request,
                 revision: Revision {
                     input: 1,
@@ -4190,7 +4211,9 @@ mod tests {
             std::thread::yield_now();
         };
         assert_eq!(result.reply.key, second_key);
-        assert_eq!(result.outcome, Ok("継続".into()));
+        assert!(
+            matches!(result.outcome, Ok(crate::broker_workers::WorkerResult::Text(text)) if text == "継続")
+        );
         assert!(workers.try_completion().is_none());
     }
 
@@ -7209,6 +7232,7 @@ mod tests {
             session: id(1),
             generation: 1,
             message: message::Message::Convert(Convert {
+                current_result: None,
                 request: 1,
                 revision: Revision {
                     input: 1,
@@ -7363,6 +7387,7 @@ mod tests {
             session: id(1),
             generation: 1,
             message: message::Message::Convert(Convert {
+                current_result: None,
                 request: 1,
                 revision: Revision {
                     input: 1,
