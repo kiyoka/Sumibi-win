@@ -28,6 +28,10 @@ Issue #22。macOS 版と同じ Google の OpenAI 互換 API を利用する。
 手動変換、選択範囲の変換、追加候補は既存の Chat Completions 経路を利用する。
 Decisions 自動変換の送信許可と予算は手動変換と独立しており、
 Google を選ぶだけで自動変換を許可することはない。
+公式 OpenAI Decisions で判定し、選択中の接続先で変換する構成は
+[Issue #36](https://github.com/kiyoka/Sumibi-win/issues/36) で対応中。
+公式 API 用のバッチ形式では判定確率だけを受け取り、判定結果をそのまま入力欄に
+反映しない。通常の入力経路から公式 API へ送信する処理はまだ接続されていない。
 
 ## キーと既存設定
 
