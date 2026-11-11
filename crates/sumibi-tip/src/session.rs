@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use sumibi_core::candidate::CandidateItem;
 use sumibi_core::{RequestId, Revision};
 use sumibi_ipc::bootstrap::Mode;
+use sumibi_ipc::conversion_log::{self, Recorder, Writer};
 #[cfg(not(feature = "spike"))]
 use sumibi_ipc::current_bootstrap_pipe_name;
 #[cfg(feature = "spike")]
@@ -44,6 +45,7 @@ const WM_SUMIBI_DRAIN: u32 = WM_APP + 42;
 
 /// Lock-free observable state shared between the background IPC worker and the STA thread.
 pub struct SharedSessionState {
+    diagnostics: Option<Recorder>,
     connected: AtomicBool,
     allowed: AtomicBool,
     input: AtomicU64,
@@ -55,12 +57,19 @@ pub struct SharedSessionState {
 impl SharedSessionState {
     fn new() -> Self {
         Self {
+            diagnostics: None,
             connected: AtomicBool::new(false),
             allowed: AtomicBool::new(false),
             input: AtomicU64::new(1),
             settings: AtomicU64::new(0),
             authorization: AtomicU64::new(0),
             protection_profile: std::sync::atomic::AtomicU8::new(0),
+        }
+    }
+
+    fn record(&self, request: Option<u64>, event: &'static str, detail: std::fmt::Arguments<'_>) {
+        if let Some(log) = &self.diagnostics {
+            log.record(request, event, detail, None);
         }
     }
 
@@ -224,6 +233,11 @@ impl DrainSink {
                 .as_ref()
                 .is_some_and(|pending| pending.id == request_id)
             {
+                self.state.record(
+                    Some(request_id),
+                    "reply_ignored",
+                    format_args!("request no longer pending"),
+                );
                 continue;
             }
             let Some(pending) = self.pending_ticket.take() else {
@@ -237,6 +251,16 @@ impl DrainSink {
                 continue;
             }
             if !self.ready_for(&target.ticket) {
+                self.state.record(
+                    Some(request_id),
+                    "reply_discarded",
+                    format_args!(
+                    "connected={}, allowed={}, revision_matches={}, expired={}, invalidated_by={:?}",
+                    self.state.is_connected(), self.state.allowed.load(Ordering::Acquire),
+                    self.state.revision() == target.ticket.revision(),
+                    Instant::now() >= target.ticket.deadline(), target.ticket.invalidation_reason()
+                ),
+                );
                 debug_log("Drain discarded stale target");
                 continue;
             }
@@ -246,17 +270,36 @@ impl DrainSink {
                     alternatives: None,
                     ..
                 } if !pending.additional => match self.apply(target, text) {
-                    Ok(()) => handled = true,
-                    Err(error) => debug_log(&format!(
-                        "Drain edit rejected: HRESULT 0x{:08x}",
-                        error.code().0 as u32
-                    )),
+                    Ok(()) => {
+                        self.state.record(
+                            Some(request_id),
+                            "text_applied",
+                            format_args!("initial conversion"),
+                        );
+                        handled = true;
+                    }
+                    Err(error) => {
+                        self.state.record(
+                            Some(request_id),
+                            "edit_rejected",
+                            format_args!("HRESULT 0x{:08x}", error.code().0 as u32),
+                        );
+                        debug_log(&format!(
+                            "Drain edit rejected: HRESULT 0x{:08x}",
+                            error.code().0 as u32
+                        ));
+                    }
                 },
                 WorkerEvent::Completed {
                     alternatives: Some(items),
                     ..
                 } if pending.additional && items.len() > 1 => {
                     if target.ticket.source().ok().as_deref() != Some(&target.current) {
+                        self.state.record(
+                            Some(request_id),
+                            "candidates_discarded",
+                            format_args!("current text no longer matches"),
+                        );
                         continue;
                     }
                     let session = CandidateSession::new(
@@ -266,6 +309,7 @@ impl DrainSink {
                         request_id,
                     );
                     let bounds = target.ticket.candidate_bounds().ok();
+                    let mut displayed = false;
                     if self.ready_for(&target.ticket) {
                         if let Ok(popup) = CandidatePopup::new(bounds, &session) {
                             self.selection.replace(Some(CandidateSelection {
@@ -273,12 +317,30 @@ impl DrainSink {
                                 session,
                                 popup,
                             }));
+                            self.state.record(
+                                Some(request_id),
+                                "candidates_displayed",
+                                format_args!("popup shown"),
+                            );
                             debug_log("Drain displayed additional candidates");
-                            handled = true;
+                            displayed = true;
                         }
+                    }
+                    handled |= displayed;
+                    if !displayed {
+                        self.state.record(
+                            Some(request_id),
+                            "candidates_not_displayed",
+                            format_args!("popup failed or target became stale"),
+                        );
                     }
                 }
                 _ if pending.additional => {
+                    self.state.record(
+                        Some(request_id),
+                        "no_additional_candidates",
+                        format_args!("current result only"),
+                    );
                     debug_log("Drain received no additional candidates");
                     self.last_conversion.replace(target.retained);
                 }
@@ -290,6 +352,11 @@ impl DrainSink {
 
     fn cancel_pending(&self) {
         if let Some(mut pending) = self.pending_ticket.take() {
+            self.state.record(
+                Some(pending.id),
+                "request_cancelled",
+                format_args!("pending edit cleared"),
+            );
             let _ = pending.target.ticket.cancel();
         }
     }
@@ -547,7 +614,10 @@ impl TipHostSession {
     /// Start the autonomous session manager and register the conversion hotkey.
     pub fn start(manager: &ITfThreadMgr, client: u32) -> Result<Self> {
         let stop = Stop::new().map_err(|_| windows::core::Error::from(E_FAIL))?;
-        let state = Arc::new(SharedSessionState::new());
+        let (recorder, writer) = conversion_log::channel();
+        let mut state = SharedSessionState::new();
+        state.diagnostics = Some(recorder);
+        let state = Arc::new(state);
 
         let (cmd_tx, cmd_rx) = mpsc::sync_channel(4);
         let (evt_tx, evt_rx) = mpsc::sync_channel(4);
@@ -572,7 +642,14 @@ impl TipHostSession {
         let worker_thread = thread::Builder::new()
             .name("sumibi-tip-session".into())
             .spawn(move || {
-                worker_loop(thread_state, thread_stop, cmd_rx, evt_tx, drain_hwnd);
+                worker_loop(
+                    thread_state,
+                    thread_stop,
+                    cmd_rx,
+                    evt_tx,
+                    drain_hwnd,
+                    writer,
+                );
             })
             .map_err(|_| windows::core::Error::from(E_FAIL))?;
 
@@ -659,6 +736,15 @@ impl TipHostSession {
         if self.owner != thread::current().id() {
             return;
         }
+        if vk == 0x4a
+            && unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x11) < 0 }
+        {
+            self.state.record(
+                None,
+                "ctrl_j_observed",
+                format_args!("context={}", context.is_some()),
+            );
+        }
         // Ctrl and Ctrl+J are part of a repeat conversion gesture.
         if !matches!(vk, 0x11 | 0xa2 | 0xa3)
             && !(vk == 0x4a
@@ -716,8 +802,22 @@ impl TipHostSession {
             return Ok(false.into());
         }
 
+        let request_id = self.next_request_id.get().wrapping_add(1).max(1);
+        self.next_request_id.set(request_id);
+        self.state
+            .record(Some(request_id), "ctrl_j", format_args!("received"));
+
         // 1. Consent and readiness gate: if not ready, ignore key immediately (never read text!)
         if !self.state.is_ready() {
+            self.state.record(
+                Some(request_id),
+                "hotkey_ignored",
+                format_args!(
+                    "connected={}, allowed={}",
+                    self.state.is_connected(),
+                    self.state.allowed.load(Ordering::Acquire)
+                ),
+            );
             debug_log(
                 "Preserved key ignored: host session is not ready (not connected or not allowed)",
             );
@@ -725,6 +825,11 @@ impl TipHostSession {
         }
 
         let Some(context) = context else {
+            self.state.record(
+                Some(request_id),
+                "hotkey_ignored",
+                format_args!("no TSF context"),
+            );
             debug_log("Preserved key ignored: TSF context is None");
             return Ok(false.into());
         };
@@ -737,6 +842,11 @@ impl TipHostSession {
             .as_ref()
             .is_some_and(|pending| pending.additional)
         {
+            self.state.record(
+                Some(request_id),
+                "hotkey_ignored",
+                format_args!("additional candidates pending"),
+            );
             return Ok(true.into());
         }
         if let Some(retained) = self.sink.last_conversion.take() {
@@ -746,8 +856,6 @@ impl TipHostSession {
                 && self.state.revision() == retained.revision
                 && Instant::now() < retained.deadline
             {
-                let request_id = self.next_request_id.get().wrapping_add(1).max(1);
-                self.next_request_id.set(request_id);
                 let policy = Rc::new(Cell::new(EditPolicy {
                     revision: retained.revision,
                     allowed: true,
@@ -779,11 +887,24 @@ impl TipHostSession {
                             )
                             .into());
                     }
-                    Err(error) => debug_log(&format!(
-                        "Preserved key reconversion capture rejected: HRESULT 0x{:08x}",
-                        error.code().0 as u32
-                    )),
+                    Err(error) => {
+                        self.state.record(
+                            Some(request_id),
+                            "reconversion_capture_rejected",
+                            format_args!("HRESULT 0x{:08x}", error.code().0 as u32),
+                        );
+                        debug_log(&format!(
+                            "Preserved key reconversion capture rejected: HRESULT 0x{:08x}",
+                            error.code().0 as u32
+                        ));
+                    }
                 }
+            } else {
+                self.state.record(
+                    Some(request_id),
+                    "reconversion_target_stale",
+                    format_args!("context, revision or deadline changed"),
+                );
             }
         }
 
@@ -793,11 +914,24 @@ impl TipHostSession {
                 status,
                 self.state.protection_profile(),
             );
+            self.state.record(
+                Some(request_id),
+                "input_status",
+                format_args!(
+                    "dyn=0x{:08x}, stat=0x{:08x}, denial={denial:?}",
+                    status.dwDynamicFlags, status.dwStaticFlags
+                ),
+            );
             debug_log(&format!(
                 "Preserved key status: dyn=0x{:08x}, stat=0x{:08x}, denial={:?}",
                 status.dwDynamicFlags, status.dwStaticFlags, denial
             ));
         } else {
+            self.state.record(
+                Some(request_id),
+                "input_status_unavailable",
+                format_args!("TSF query failed"),
+            );
             debug_log("Preserved key status query failed");
         }
 
@@ -811,6 +945,11 @@ impl TipHostSession {
                 .and_then(|c| unsafe { c.GetValue() })
                 .map(|v| unsafe { v.Anonymous.Anonymous.Anonymous.lVal })
                 .unwrap_or(-1);
+            self.state.record(
+                Some(request_id),
+                "input_compartments",
+                format_args!("keyboard_disabled={kbd_disabled}, empty_context={empty_ctx}"),
+            );
             debug_log(&format!(
                 "Preserved key compartments: kbd_disabled={kbd_disabled}, empty_ctx={empty_ctx}"
             ));
@@ -819,15 +958,17 @@ impl TipHostSession {
         // Retain the verified run without changing the application's caret.
         // An explicit selection takes precedence; the record is single-use.
         let recorded = self.run.borrow_mut().take(context_token(context));
+        self.state.record(
+            Some(request_id),
+            "recorded_run",
+            format_args!("utf16_units={:?}", recorded.as_ref().map(Vec::len)),
+        );
         // 2. Capture selection and check protection inside an edit session
         let edit_policy = Rc::new(Cell::new(EditPolicy {
             revision: self.state.revision(),
             allowed: true,
             profile: self.state.protection_profile(),
         }));
-
-        let request_id = self.next_request_id.get().wrapping_add(1).max(1);
-        self.next_request_id.set(request_id);
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let ticket = match ManualEdit::capture_with_run(
@@ -842,6 +983,11 @@ impl TipHostSession {
         ) {
             Ok(ticket) => ticket,
             Err(error) => {
+                self.state.record(
+                    Some(request_id),
+                    "capture_rejected",
+                    format_args!("HRESULT 0x{:08x}", error.code().0 as u32),
+                );
                 debug_log(&format!(
                     "Preserved key capture rejected: HRESULT 0x{:08x}",
                     error.code().0 as u32
@@ -853,6 +999,11 @@ impl TipHostSession {
         let text = match ticket.source() {
             Ok(source) => source,
             Err(error) => {
+                self.state.record(
+                    Some(request_id),
+                    "source_rejected",
+                    format_args!("HRESULT 0x{:08x}", error.code().0 as u32),
+                );
                 debug_log(&format!(
                     "Preserved key source rejected: HRESULT 0x{:08x}",
                     error.code().0 as u32
@@ -876,6 +1027,14 @@ impl TipHostSession {
     }
 
     fn dispatch(&self, request_id: u64, target: ConvertedText, additional: bool) -> bool {
+        if let Some(log) = &self.state.diagnostics {
+            log.record(
+                Some(request_id),
+                "input_verified",
+                format_args!("additional={additional}"),
+                Some(&target.source),
+            );
+        }
         let command = WorkerCommand::Convert {
             request_id,
             revision: target.ticket.revision(),
@@ -889,9 +1048,19 @@ impl TipHostSession {
             additional,
         }));
         if self.command_sender.try_send(command).is_err() {
+            self.state.record(
+                Some(request_id),
+                "dispatch_failed",
+                format_args!("worker queue unavailable"),
+            );
             self.sink.cancel_pending();
             return false;
         }
+        self.state.record(
+            Some(request_id),
+            "dispatched",
+            format_args!("additional={additional}"),
+        );
         true
     }
 
@@ -941,11 +1110,13 @@ fn worker_loop(
     receiver: Receiver<WorkerCommand>,
     event_sender: SyncSender<WorkerEvent>,
     drain_hwnd: Option<isize>,
+    mut diagnostics: Writer,
 ) {
     let mut current_worker: Option<Worker> = None;
     let mut attempted = false;
 
     while !stop.is_cancelled().unwrap_or(true) {
+        diagnostics.poll();
         // 1. Ensure worker connection
         if current_worker.is_none() || current_worker.as_ref().is_some_and(|w| w.is_closed()) {
             state.connected.store(false, Ordering::Release);
@@ -1006,6 +1177,7 @@ fn worker_loop(
             let prep_deadline = Instant::now() + Duration::from_secs(3);
             let mut prep_ok = false;
             while Instant::now() < prep_deadline {
+                diagnostics.poll();
                 if stop.is_cancelled().unwrap_or(true) {
                     return;
                 }
@@ -1094,6 +1266,11 @@ fn worker_loop(
                         };
 
                         if worker.submit(permit, request).is_err() {
+                            state.record(
+                                Some(request_id),
+                                "worker_submit_failed",
+                                format_args!("IPC submit failed"),
+                            );
                             let _ = event_sender.send(WorkerEvent::Failed { request_id });
                             notify_drain(drain_hwnd, request_id);
                             continue;
@@ -1101,6 +1278,7 @@ fn worker_loop(
 
                         // Wait for result
                         loop {
+                            diagnostics.poll();
                             if stop.is_cancelled().unwrap_or(true) {
                                 break;
                             }
@@ -1109,6 +1287,14 @@ fn worker_loop(
                                     if completion.id == request_id {
                                         match (completion.outcome(), completion.alternatives()) {
                                             (Ok(result_text), Ok(alternatives)) => {
+                                                state.record(
+                                                    Some(request_id),
+                                                    "worker_reply",
+                                                    format_args!(
+                                                        "additional={}",
+                                                        alternatives.is_some()
+                                                    ),
+                                                );
                                                 let _ = event_sender.send(WorkerEvent::Completed {
                                                     request_id,
                                                     text: result_text.to_owned(),
@@ -1116,7 +1302,16 @@ fn worker_loop(
                                                 });
                                                 notify_drain(drain_hwnd, request_id);
                                             }
-                                            (outcome, _) => {
+                                            (outcome, alternatives) => {
+                                                state.record(
+                                                    Some(request_id),
+                                                    "worker_reply_failed",
+                                                    format_args!(
+                                                        "text={:?}, alternatives={:?}",
+                                                        outcome.as_ref().err(),
+                                                        alternatives.err()
+                                                    ),
+                                                );
                                                 debug_log(&format!(
                                                     "Worker completion failed: {:?}",
                                                     outcome.err()
@@ -1131,6 +1326,11 @@ fn worker_loop(
                                 }
                                 Ok(None) => {
                                     if Instant::now() >= deadline {
+                                        state.record(
+                                            Some(request_id),
+                                            "worker_timeout",
+                                            format_args!("deadline expired"),
+                                        );
                                         let _ = worker.cancel(request_id);
                                         let _ =
                                             event_sender.send(WorkerEvent::Failed { request_id });
@@ -1139,7 +1339,12 @@ fn worker_loop(
                                     }
                                     thread::sleep(Duration::from_millis(5));
                                 }
-                                Err(_) => {
+                                Err(error) => {
+                                    state.record(
+                                        Some(request_id),
+                                        "worker_poll_failed",
+                                        format_args!("{error:?}"),
+                                    );
                                     let _ = event_sender.send(WorkerEvent::Failed { request_id });
                                     notify_drain(drain_hwnd, request_id);
                                     break;
@@ -1147,7 +1352,12 @@ fn worker_loop(
                             }
                         }
                     }
-                    Err(_) => {
+                    Err(error) => {
+                        state.record(
+                            Some(request_id),
+                            "worker_reservation_failed",
+                            format_args!("{error:?}"),
+                        );
                         let _ = event_sender.send(WorkerEvent::Failed { request_id });
                         notify_drain(drain_hwnd, request_id);
                     }
