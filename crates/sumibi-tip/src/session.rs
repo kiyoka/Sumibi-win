@@ -1287,6 +1287,13 @@ fn worker_loop(
                             match worker.try_result() {
                                 Ok(Some(completion)) => {
                                     if completion.id == request_id {
+                                        if let Some(renewal) = completion.channel_renewal() {
+                                            state.record(
+                                                Some(request_id),
+                                                "channel_renewal",
+                                                format_args!("{renewal:?}"),
+                                            );
+                                        }
                                         if let Some(timing) = completion.channel_timing() {
                                             state.record(
                                                 Some(request_id),

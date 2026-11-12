@@ -246,6 +246,15 @@ impl Channel {
         self.connected.is_none()
     }
 
+    pub(crate) fn needs_renewal(&self, request_deadline: Instant) -> bool {
+        self.expires < request_deadline
+    }
+
+    #[cfg(feature = "spike")]
+    pub(crate) fn expire_fixture(&mut self) {
+        self.expires = self.opened;
+    }
+
     /// Caller must already have reserved its input/target before calling this
     /// worker-only method. Nothing is queued or sent while a prior Reply lives.
     /// Every I/O/protocol/cancellation error retires this channel permanently.
