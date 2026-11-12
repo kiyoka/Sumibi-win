@@ -2,7 +2,7 @@
 //! Only owned text and scalar IDs cross threads. No COM, DLL references or
 //! callbacks are accepted. Explicit shutdown waits outside owner callbacks.
 use crate::bootstrap::Mode;
-use crate::channel::{Channel, Reply, MAX_REQUESTS};
+use crate::channel::{Channel, ChannelTiming, Reply, MAX_REQUESTS};
 use crate::job::{Request, Reservation};
 use crate::support::{own, raw};
 use crate::{Error, Nonce, PinnedProcess, Pipe, Result, Server, Stop};
@@ -75,12 +75,22 @@ pub struct Completion {
     pub id: u64,
     pub revision: Revision,
     outcome: Result<Reply>,
+    channel_timing: Option<ChannelTiming>,
+    channel_renewal: Option<Result<()>>,
     peer: u32,
     deadline: Instant,
     // Release result before allowing the next pre-capture reservation.
     _permit: Permit,
 }
 impl Completion {
+    pub fn channel_timing(&self) -> Option<ChannelTiming> {
+        self.channel_timing
+    }
+
+    pub fn channel_renewal(&self) -> Option<Result<()>> {
+        self.channel_renewal
+    }
+
     pub fn outcome(&self) -> Result<&str> {
         if self._permit.state.cancelled.load(Ordering::Acquire) {
             return Err(Error::Cancelled);
@@ -633,6 +643,47 @@ impl Drop for Worker {
     }
 }
 
+fn discover_channel(
+    pipe_name: &str,
+    expected_peer: Option<&PinnedProcess>,
+    stop: &Stop,
+    deadline: Instant,
+    reservation: &Arc<Reservation>,
+) -> Result<Channel> {
+    let (pipe, peer) = Pipe::connect_bootstrap(pipe_name, stop, deadline)?;
+    if let Some(expected) = expected_peer {
+        expected.require_same(&peer)?;
+    }
+    let offer = crate::handoff::receive(pipe, &peer, stop, deadline)?;
+    Channel::connect_pinned_reserved(
+        &offer.name,
+        offer.broker,
+        peer,
+        stop,
+        deadline,
+        reservation.clone(),
+    )
+}
+
+fn renew_discovered_channel(
+    previous: Channel,
+    pipe_name: &str,
+    stop: &Stop,
+    deadline: Instant,
+    reservation: &Arc<Reservation>,
+) -> Result<Channel> {
+    let policy = previous.policy().ok_or(Error::Closed)?;
+    let peer = previous.peer_process()?;
+    // Release the old pipe before asking this same Host for a replacement.
+    drop(previous);
+    let mut renewed = discover_channel(pipe_name, Some(&peer), stop, deadline, reservation)?;
+    renewed.check_idle_policy(deadline)?;
+    if renewed.policy() != Some(policy) {
+        return Err(Error::PolicyDenied);
+    }
+    Ok(renewed)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run(
     target: Target,
@@ -645,6 +696,10 @@ fn run(
     preparation: Option<(Instant, &Preparation)>,
     listener: Option<&Listener>,
 ) {
+    let discovery_pipe = match &target {
+        Target::Discovery { pipe_name } => Some(pipe_name.clone()),
+        _ => None,
+    };
     let mut target = Some(target);
     let mut channel: Option<Channel> = None;
     let mut peer: Option<PinnedProcess> = None;
@@ -715,53 +770,20 @@ fn run(
                     })
             }
             Some(Target::Discovery { pipe_name }) => {
-                crate::debug_log_ipc(&format!("connect_bootstrap to {pipe_name}"));
-                let (pipe, host_peer) =
-                    match Pipe::connect_bootstrap(&pipe_name, &state.stop, deadline) {
-                        Ok(res) => {
-                            crate::debug_log_ipc("connect_bootstrap OK");
-                            res
-                        }
-                        Err(err) => {
-                            crate::debug_log_ipc(&format!("connect_bootstrap FAILED: {err:?}"));
-                            return;
-                        }
-                    };
-                let offer = match crate::handoff::receive(pipe, &host_peer, &state.stop, deadline) {
-                    Ok(offer) => {
-                        crate::debug_log_ipc(&format!(
-                            "handoff::receive OK: pipe={}",
-                            String::from_utf16_lossy(&offer.name.pipe_name())
-                        ));
-                        offer
-                    }
-                    Err(err) => {
-                        crate::debug_log_ipc(&format!("handoff::receive FAILED: {err:?}"));
-                        return;
-                    }
-                };
-                match Channel::connect_pinned_reserved(
-                    &offer.name,
-                    offer.broker,
-                    host_peer,
-                    &state.stop,
-                    deadline,
-                    reservation.clone(),
-                ) {
-                    Ok(chan) => {
-                        crate::debug_log_ipc("connect_pinned_reserved OK");
-                        Ok(chan)
-                    }
-                    Err(err) => {
-                        crate::debug_log_ipc(&format!("connect_pinned_reserved FAILED: {err:?}"));
-                        Err(err)
-                    }
-                }
+                discover_channel(&pipe_name, None, &state.stop, deadline, reservation)
             }
             _ => Err(Error::InvalidArgument),
         };
         match opened.and_then(|mut opened| {
             opened.check_idle_policy(deadline)?;
+            #[cfg(feature = "spike")]
+            if discovery_pipe
+                .as_deref()
+                .is_some_and(|name| name.contains(".Fixture."))
+                && std::env::var_os("SUMIBI_TEST_EXPIRED_DISCOVERY").is_some()
+            {
+                opened.expire_fixture();
+            }
             let policy = opened.policy().ok_or(Error::Closed)?;
             let pinned = opened.peer_process()?;
             if state.stop.is_cancelled()? {
@@ -816,6 +838,8 @@ fn run(
         };
         let id = request.id;
         let revision = request.revision;
+        let mut channel_timing = None;
+        let mut channel_renewal = None;
         let mut outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if state.closed.load(Ordering::Acquire) {
                 return Err(Error::Cancelled);
@@ -845,11 +869,31 @@ fn run(
                 peer = Some(opened.peer_process()?);
                 channel = Some(opened);
             }
-            channel.as_mut().ok_or(Error::Closed)?.convert_with_current(
+            if let Some(pipe_name) = discovery_pipe.as_deref() {
+                if channel
+                    .as_ref()
+                    .is_some_and(|channel| channel.needs_renewal(request.deadline))
+                {
+                    // Renew before writing the request. No API call on the old
+                    // channel can be duplicated, and the original deadline holds.
+                    let previous = channel.take().ok_or(Error::Closed)?;
+                    let renewed = renew_discovered_channel(
+                        previous,
+                        pipe_name,
+                        &state.stop,
+                        request.deadline,
+                        reservation,
+                    );
+                    channel_renewal = Some(renewed.as_ref().map(|_| ()).map_err(|error| *error));
+                    channel = Some(renewed?);
+                }
+            }
+            channel.as_mut().ok_or(Error::Closed)?.convert_timed(
                 revision,
                 &request.text,
                 request.current_result.as_deref(),
                 request.deadline,
+                &mut channel_timing,
             )
         }))
         .unwrap_or(Err(Error::WorkerFailed));
@@ -879,6 +923,8 @@ fn run(
                 id,
                 revision,
                 outcome,
+                channel_timing,
+                channel_renewal,
                 peer: pid,
                 deadline: request.deadline,
                 _permit: permit,
@@ -903,6 +949,8 @@ fn run(
                 id: request.id,
                 revision: request.revision,
                 outcome: Err(Error::Cancelled),
+                channel_timing: None,
+                channel_renewal: None,
                 peer: 0,
                 deadline: request.deadline,
                 _permit: permit,

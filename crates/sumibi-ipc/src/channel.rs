@@ -2,6 +2,7 @@
 //! Blocking worker-only API: launch/I/O/close/Drop must never run in a TSF or
 //! window callback. No discovery, retry, COM target or UI dispatch is provided.
 use crate::bootstrap::{Launched, Mode};
+use crate::conversion_log::timestamp_ms;
 use crate::job::{read_event, reject_queued, Inbox, Reservation};
 use crate::{Error, Nonce, PinnedProcess, Pipe, Result, Stop};
 use std::path::Path;
@@ -14,6 +15,19 @@ use sumibi_protocol::session::{ClientSession, Event, Outcome};
 pub const MAX_REQUESTS: usize = 64;
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 pub const MAX_LIFETIME: Duration = Duration::from_secs(600);
+
+/// Timing sampled where the channel checks the effective deadline.
+#[derive(Clone, Copy, Debug)]
+pub struct ChannelTiming {
+    pub opened_unix_ms: u64,
+    pub ready_unix_ms: u64,
+    pub expires_unix_ms: u64,
+    pub checked_unix_ms: u64,
+    pub connection_age_ms: u64,
+    pub request_remaining_ms: u64,
+    pub channel_remaining_ms: u64,
+    pub channel_expired: bool,
+}
 
 struct Connected {
     // Drop the pipe before stopping/reaping the launched process.
@@ -55,6 +69,9 @@ impl Reply {
 pub struct Channel {
     connected: Option<Connected>,
     stop: Stop,
+    opened: Instant,
+    opened_unix_ms: u64,
+    ready_unix_ms: u64,
     expires: Instant,
     completed: usize,
     delivery: Weak<Delivery>,
@@ -144,7 +161,9 @@ impl Channel {
         deadline: Instant,
         reservation: Arc<Reservation>,
     ) -> Result<Self> {
-        let expires = Instant::now() + MAX_LIFETIME;
+        let opened = Instant::now();
+        let opened_unix_ms = timestamp_ms();
+        let expires = opened + MAX_LIFETIME;
         let mut client = ClientSession::new(Nonce::random()?.id(), boot.id());
         let mut inbox = Inbox::default();
         pipe.write_all(
@@ -157,6 +176,7 @@ impl Channel {
             crate::debug_log_ipc("establish: expected Event::Ready, but got other message");
             return Err(Error::InvalidMessage);
         };
+        let ready_unix_ms = timestamp_ms();
         crate::debug_log_ipc(&format!(
             "establish: Event::Ready received, policy.allowed={}",
             policy.allowed
@@ -178,6 +198,9 @@ impl Channel {
                 _child: child,
             }),
             stop: stop.clone(),
+            opened,
+            opened_unix_ms,
+            ready_unix_ms,
             expires,
             completed: 0,
             delivery: Weak::new(),
@@ -223,6 +246,15 @@ impl Channel {
         self.connected.is_none()
     }
 
+    pub(crate) fn needs_renewal(&self, request_deadline: Instant) -> bool {
+        self.expires < request_deadline
+    }
+
+    #[cfg(feature = "spike")]
+    pub(crate) fn expire_fixture(&mut self) {
+        self.expires = self.opened;
+    }
+
     /// Caller must already have reserved its input/target before calling this
     /// worker-only method. Nothing is queued or sent while a prior Reply lives.
     /// Every I/O/protocol/cancellation error retires this channel permanently.
@@ -237,13 +269,24 @@ impl Channel {
         current_result: Option<&str>,
         deadline: Instant,
     ) -> Result<Reply> {
+        self.convert_timed(revision, text, current_result, deadline, &mut None)
+    }
+
+    pub(crate) fn convert_timed(
+        &mut self,
+        revision: Revision,
+        text: &str,
+        current_result: Option<&str>,
+        request_deadline: Instant,
+        timing: &mut Option<ChannelTiming>,
+    ) -> Result<Reply> {
         if self.connected.is_none() {
             return Err(Error::Closed);
         }
         if self.delivery.upgrade().is_some() {
             return Err(Error::Capacity);
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = request_deadline.saturating_duration_since(Instant::now());
         if revision.input == 0
             || revision.settings == 0
             || revision.authorization == 0
@@ -252,8 +295,15 @@ impl Channel {
         {
             return Err(Error::InvalidArgument);
         }
-        let deadline = deadline.min(self.expires);
-        let result = self.exchange(revision, text, current_result, deadline);
+        let deadline = request_deadline.min(self.expires);
+        let result = self.exchange(
+            revision,
+            text,
+            current_result,
+            deadline,
+            request_deadline,
+            timing,
+        );
         match result {
             Ok((request, text, alternatives)) => {
                 self.completed += 1;
@@ -283,6 +333,8 @@ impl Channel {
         text: &str,
         current_result: Option<&str>,
         deadline: Instant,
+        request_deadline: Instant,
+        timing: &mut Option<ChannelTiming>,
     ) -> Result<(u64, String, Option<Vec<CandidateItem>>)> {
         if self.completed >= MAX_REQUESTS {
             return Err(Error::Retired);
@@ -290,9 +342,21 @@ impl Channel {
         if self.stop.is_cancelled()? {
             return Err(Error::Cancelled);
         }
-        let milliseconds = deadline
-            .saturating_duration_since(Instant::now())
-            .as_millis();
+        let now = Instant::now();
+        *timing = Some(ChannelTiming {
+            opened_unix_ms: self.opened_unix_ms,
+            ready_unix_ms: self.ready_unix_ms,
+            expires_unix_ms: self
+                .opened_unix_ms
+                .saturating_add(MAX_LIFETIME.as_millis() as u64),
+            checked_unix_ms: timestamp_ms(),
+            connection_age_ms: now.saturating_duration_since(self.opened).as_millis() as u64,
+            request_remaining_ms: request_deadline.saturating_duration_since(now).as_millis()
+                as u64,
+            channel_remaining_ms: self.expires.saturating_duration_since(now).as_millis() as u64,
+            channel_expired: now >= self.expires,
+        });
+        let milliseconds = deadline.saturating_duration_since(now).as_millis();
         if milliseconds == 0 {
             return Err(Error::Timeout);
         }
