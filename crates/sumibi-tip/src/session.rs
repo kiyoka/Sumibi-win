@@ -1285,6 +1285,27 @@ fn worker_loop(
                             match worker.try_result() {
                                 Ok(Some(completion)) => {
                                     if completion.id == request_id {
+                                        if let Some(timing) = completion.channel_timing() {
+                                            state.record(
+                                                Some(request_id),
+                                                "channel_deadline_checked",
+                                                format_args!(
+                                                    concat!(
+                                                        "opened_unix_ms={}, ready_unix_ms={}, expires_unix_ms={}, ",
+                                                        "checked_unix_ms={}, connection_age_ms={}, request_remaining_ms={}, ",
+                                                        "channel_remaining_ms={}, channel_expired={}"
+                                                    ),
+                                                    timing.opened_unix_ms,
+                                                    timing.ready_unix_ms,
+                                                    timing.expires_unix_ms,
+                                                    timing.checked_unix_ms,
+                                                    timing.connection_age_ms,
+                                                    timing.request_remaining_ms,
+                                                    timing.channel_remaining_ms,
+                                                    timing.channel_expired,
+                                                ),
+                                            );
+                                        }
                                         match (completion.outcome(), completion.alternatives()) {
                                             (Ok(result_text), Ok(alternatives)) => {
                                                 state.record(

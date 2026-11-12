@@ -44,7 +44,7 @@ pub fn directory() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::other("LocalAppData unavailable"))
 }
 
-fn timestamp_ms() -> u64 {
+pub(crate) fn timestamp_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

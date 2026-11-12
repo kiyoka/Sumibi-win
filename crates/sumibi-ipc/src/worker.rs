@@ -2,7 +2,7 @@
 //! Only owned text and scalar IDs cross threads. No COM, DLL references or
 //! callbacks are accepted. Explicit shutdown waits outside owner callbacks.
 use crate::bootstrap::Mode;
-use crate::channel::{Channel, Reply, MAX_REQUESTS};
+use crate::channel::{Channel, ChannelTiming, Reply, MAX_REQUESTS};
 use crate::job::{Request, Reservation};
 use crate::support::{own, raw};
 use crate::{Error, Nonce, PinnedProcess, Pipe, Result, Server, Stop};
@@ -75,12 +75,17 @@ pub struct Completion {
     pub id: u64,
     pub revision: Revision,
     outcome: Result<Reply>,
+    channel_timing: Option<ChannelTiming>,
     peer: u32,
     deadline: Instant,
     // Release result before allowing the next pre-capture reservation.
     _permit: Permit,
 }
 impl Completion {
+    pub fn channel_timing(&self) -> Option<ChannelTiming> {
+        self.channel_timing
+    }
+
     pub fn outcome(&self) -> Result<&str> {
         if self._permit.state.cancelled.load(Ordering::Acquire) {
             return Err(Error::Cancelled);
@@ -816,6 +821,7 @@ fn run(
         };
         let id = request.id;
         let revision = request.revision;
+        let mut channel_timing = None;
         let mut outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if state.closed.load(Ordering::Acquire) {
                 return Err(Error::Cancelled);
@@ -845,11 +851,12 @@ fn run(
                 peer = Some(opened.peer_process()?);
                 channel = Some(opened);
             }
-            channel.as_mut().ok_or(Error::Closed)?.convert_with_current(
+            channel.as_mut().ok_or(Error::Closed)?.convert_timed(
                 revision,
                 &request.text,
                 request.current_result.as_deref(),
                 request.deadline,
+                &mut channel_timing,
             )
         }))
         .unwrap_or(Err(Error::WorkerFailed));
@@ -879,6 +886,7 @@ fn run(
                 id,
                 revision,
                 outcome,
+                channel_timing,
                 peer: pid,
                 deadline: request.deadline,
                 _permit: permit,
@@ -903,6 +911,7 @@ fn run(
                 id: request.id,
                 revision: request.revision,
                 outcome: Err(Error::Cancelled),
+                channel_timing: None,
                 peer: 0,
                 deadline: request.deadline,
                 _permit: permit,
