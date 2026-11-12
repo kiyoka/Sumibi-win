@@ -42,6 +42,7 @@ pub const CONVERT_KEY: TF_PRESERVEDKEY = TF_PRESERVEDKEY {
 };
 
 const WM_SUMIBI_DRAIN: u32 = WM_APP + 42;
+const CONVERSION_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Lock-free observable state shared between the background IPC worker and the STA thread.
 pub struct SharedSessionState {
@@ -111,7 +112,7 @@ enum WorkerCommand {
         request_id: u64,
         revision: Revision,
         text: String,
-        timeout: Duration,
+        deadline: Instant,
     },
 }
 
@@ -970,7 +971,7 @@ impl TipHostSession {
             profile: self.state.protection_profile(),
         }));
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + CONVERSION_TIMEOUT;
         let ticket = match ManualEdit::capture_with_run(
             &self.manager,
             context,
@@ -1040,7 +1041,10 @@ impl TipHostSession {
             revision: target.ticket.revision(),
             text: target.source.clone(),
             current_result: additional.then(|| target.current.clone()),
-            timeout: Duration::from_secs(5),
+            deadline: target
+                .ticket
+                .deadline()
+                .min(Instant::now() + CONVERSION_TIMEOUT),
         };
         self.sink.pending_ticket.replace(Some(PendingEdit {
             id: request_id,
@@ -1245,10 +1249,8 @@ fn worker_loop(
                 revision,
                 text,
                 current_result,
-                timeout,
+                deadline,
             }) => {
-                let deadline = Instant::now() + timeout;
-
                 // Reserve permit
                 match worker.reserve(request_id) {
                     Ok(permit) => {
