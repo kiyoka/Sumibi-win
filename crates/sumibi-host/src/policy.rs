@@ -61,6 +61,7 @@ impl PolicyAuthority {
     ) -> Self {
         Self {
             state: Mutex::new(PolicySnapshot {
+                user_dictionary: String::new(),
                 settings: 1,
                 authorization: 1,
                 model: None,
@@ -290,6 +291,19 @@ impl PolicyAuthority {
         Ok(published)
     }
 
+    pub(crate) fn set_initial_conversion_settings(
+        &self,
+        model: &str,
+        user_dictionary: String,
+    ) -> Result<(), ChangeError> {
+        self.set_model(model)?;
+        self.state
+            .lock()
+            .map_err(|_| ChangeError::Unavailable)?
+            .user_dictionary = user_dictionary;
+        Ok(())
+    }
+
     /// Persist and publish the validated destination and model under one
     /// authority lock. An I/O error leaves the in-memory policy unchanged.
     /// This blocking operation is for a settings worker, never a TSF callback.
@@ -298,6 +312,7 @@ impl PolicyAuthority {
         destination: Destination,
         model: String,
         protection_profile: sumibi_protocol::ProtectionProfile,
+        user_dictionary: String,
         persist: impl FnOnce() -> Result<(), crate::settings::SettingsError>,
     ) -> Result<PolicyVersion, crate::settings::SettingsError> {
         use crate::settings::SettingsError;
@@ -325,6 +340,7 @@ impl PolicyAuthority {
         }
         state.destination = destination;
         state.model = Some(model);
+        state.user_dictionary = user_dictionary;
         state.protection_profile = protection_profile;
         state.settings = settings;
         state.authorization = authorization;
@@ -968,6 +984,7 @@ mod tests {
             Err(SessionError::NotAllowed)
         ));
         let old_reply = frame(Message::Result(ConversionResult {
+            alternatives: None,
             request: 1,
             revision: Revision {
                 input: 1,

@@ -306,6 +306,7 @@ fn preparation_preserves_the_request_id_until_ready_then_converts() {
         .submit(
             permit,
             Request {
+                current_result: None,
                 id: 1,
                 revision: Revision {
                     input: 1,
@@ -489,6 +490,7 @@ fn client_fixture() {
             .submit(
                 permit,
                 Request {
+                    current_result: None,
                     id: 1,
                     revision,
                     text: "nihongo".into(),

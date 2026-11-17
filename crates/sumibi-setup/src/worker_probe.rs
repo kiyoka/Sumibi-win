@@ -27,6 +27,7 @@ fn worker(mode: Mode) -> Result<Worker> {
 }
 fn request(id: u64, mode: Mode) -> Request {
     Request {
+        current_result: None,
         id,
         revision: Revision {
             input: id,

@@ -154,19 +154,27 @@ fn convert_additional_with_exchange(
     let transport = AdditionalChatTransport {
         model,
         current_result,
+        user_dictionary: &snapshot.user_dictionary,
         exchange,
     };
-    let json = crate::manual::convert_ordered(request, authority, admission, &transport)?;
-    serde_json::from_str::<Vec<CandidateItem>>(&json).map_err(|_| SendError::InvalidResponse)
+    crate::manual::convert_ordered_with(
+        request,
+        authority,
+        admission,
+        |destination, credential, source, deadline, gate| {
+            transport.convert_ordered(destination, credential, source, deadline, gate)
+        },
+    )
 }
 
 struct AdditionalChatTransport<'a> {
     model: &'a str,
     current_result: &'a str,
+    user_dictionary: &'a str,
     exchange: &'a dyn Exchange,
 }
 
-impl OrderedConversionTransport for AdditionalChatTransport<'_> {
+impl AdditionalChatTransport<'_> {
     fn convert_ordered(
         &self,
         destination: &Destination,
@@ -174,27 +182,26 @@ impl OrderedConversionTransport for AdditionalChatTransport<'_> {
         source: &str,
         deadline: Instant,
         gate: &mut dyn SendGate,
-    ) -> Result<String, SendError> {
+    ) -> Result<Vec<CandidateItem>, SendError> {
         let input = crate::first_conversion::ConversionInput::with_context(
             source,
             Some(self.current_result),
-            None,
+            Some(self.user_dictionary),
         );
         let body = crate::first_conversion::request_body_additional(self.model, &input)
             .map_err(|_| SendError::InvalidRequest)?;
         let bytes = self
             .exchange
             .exchange(destination, credential, body, deadline, gate)?;
-        let llm_candidates =
-            crate::first_conversion::response_candidates(&bytes, Some(self.current_result))
-                .map_err(|_| SendError::InvalidResponse)?;
+        let llm_candidates = crate::first_conversion::response_candidates(&bytes, None)
+            .map_err(|_| SendError::InvalidResponse)?;
         let complete = crate::local_dictionary::build_complete_candidates(
             source,
             Some(self.current_result),
             &llm_candidates,
             crate::first_conversion::MAX_ADDITIONAL_CANDIDATES,
         );
-        serde_json::to_string(&complete).map_err(|_| SendError::InvalidResponse)
+        Ok(complete)
     }
 }
 
@@ -246,12 +253,17 @@ fn convert_with_exchange(
         return Err(SendError::PolicyDenied);
     }
     let model = snapshot.model.as_deref().ok_or(SendError::PolicyDenied)?;
-    let transport = ChatTransport { model, exchange };
+    let transport = ChatTransport {
+        model,
+        user_dictionary: &snapshot.user_dictionary,
+        exchange,
+    };
     crate::manual::convert_ordered(request, authority, admission, &transport)
 }
 
 struct ChatTransport<'a> {
     model: &'a str,
+    user_dictionary: &'a str,
     exchange: &'a dyn Exchange,
 }
 impl OrderedConversionTransport for ChatTransport<'_> {
@@ -263,7 +275,12 @@ impl OrderedConversionTransport for ChatTransport<'_> {
         deadline: Instant,
         gate: &mut dyn SendGate,
     ) -> Result<String, SendError> {
-        let body = crate::first_conversion::request_body(self.model, source)
+        let input = crate::first_conversion::ConversionInput::with_context(
+            source,
+            None,
+            Some(self.user_dictionary),
+        );
+        let body = crate::first_conversion::request_body_with_input(self.model, &input)
             .map_err(|_| SendError::InvalidRequest)?;
         let bytes = self
             .exchange
@@ -908,7 +925,7 @@ mod tests {
                 "finish_reason": "stop",
                 "message": {
                     "role": "assistant",
-                    "content": r#"{"candidates":["炭火","澄火","墨美"]}"#
+                    "content": r#"{"candidates":["炭火","澄火","墨美","こうしん"]}"#
                 }
             }]
         });

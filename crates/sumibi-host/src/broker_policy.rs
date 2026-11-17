@@ -641,6 +641,7 @@ mod tests {
                     session: id(1),
                     generation: 2,
                     message: Message::Convert(Convert {
+                        current_result: None,
                         request: 1,
                         revision,
                         timeout_ms: 1000,

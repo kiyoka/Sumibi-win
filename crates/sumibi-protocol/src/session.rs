@@ -39,6 +39,7 @@ impl std::error::Error for SessionError {}
 
 pub enum Outcome {
     Result(String),
+    Alternatives(Vec<sumibi_core::candidate::CandidateItem>),
     Error(ErrorCode),
 }
 
@@ -119,6 +120,17 @@ impl ClientSession {
         timeout_ms: u32,
         now: Instant,
     ) -> Result<Vec<u8>, SessionError> {
+        self.begin_conversion(input_revision, text, None, timeout_ms, now)
+    }
+
+    pub fn begin_conversion(
+        &mut self,
+        input_revision: u64,
+        text: &str,
+        current_result: Option<&str>,
+        timeout_ms: u32,
+        now: Instant,
+    ) -> Result<Vec<u8>, SessionError> {
         if self.status != Status::Ready {
             return Err(SessionError::WrongState);
         }
@@ -150,6 +162,7 @@ impl ClientSession {
         // Reserve the wire result before changing state. The caller must also
         // reserve transport capacity before consuming a host key or target.
         let frame = self.encode(Message::Convert(Convert {
+            current_result: current_result.map(str::to_owned),
             request,
             revision,
             timeout_ms,
@@ -291,7 +304,9 @@ impl ClientSession {
             Message::Result(result) => self.reply(
                 result.request,
                 result.revision,
-                Outcome::Result(result.text),
+                result
+                    .alternatives
+                    .map_or_else(|| Outcome::Result(result.text), Outcome::Alternatives),
                 now,
             ),
             Message::Error(error) => self.reply(
@@ -363,6 +378,7 @@ mod tests {
 
     fn reply(request: u64) -> Message {
         Message::Result(ConversionResult {
+            alternatives: None,
             request,
             revision: Revision {
                 input: 1,

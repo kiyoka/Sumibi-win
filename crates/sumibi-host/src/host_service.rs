@@ -28,10 +28,20 @@ impl HostService {
 
     /// Start the service with an already initialized HostControl instance.
     pub fn start_with_control(control: Arc<HostControl>) -> Result<Self, ControlError> {
+        let pipe_name = current_bootstrap_pipe_name().map_err(|_| ControlError::Startup)?;
+        Self::start_on_pipe(control, pipe_name)
+    }
+
+    #[cfg(feature = "spike")]
+    pub fn start_fixture_with_control(control: Arc<HostControl>) -> Result<Self, ControlError> {
+        let pipe_name =
+            sumibi_ipc::fixture_bootstrap_pipe_name().map_err(|_| ControlError::Startup)?;
+        Self::start_on_pipe(control, pipe_name)
+    }
+
+    fn start_on_pipe(control: Arc<HostControl>, pipe_name: String) -> Result<Self, ControlError> {
         let stop = Stop::new().map_err(|_| ControlError::WorkerFailed)?;
         let is_running = Arc::new(AtomicBool::new(true));
-
-        let pipe_name = current_bootstrap_pipe_name().map_err(|_| ControlError::Startup)?;
         let initial_server = BootstrapServer::create(&pipe_name, DISCOVERY_MAX_INSTANCES)
             .map_err(|_| ControlError::Startup)?;
 

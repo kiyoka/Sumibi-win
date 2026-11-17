@@ -97,6 +97,7 @@ impl Drop for Reservation {
 }
 
 pub struct Request {
+    pub current_result: Option<String>,
     pub id: u64,
     pub revision: Revision,
     pub text: String,
@@ -111,6 +112,10 @@ impl Request {
             || self.revision.settings == 0
             || self.revision.authorization == 0
             || !message::valid_text(&self.text)
+            || self
+                .current_result
+                .as_deref()
+                .is_some_and(|text| !message::valid_text(text))
             || remaining.is_zero()
             || remaining > Duration::from_secs(60)
         {
@@ -195,6 +200,9 @@ impl Drop for BrokerJob {
 }
 
 fn run(executable: PathBuf, request: Request, stop: &Stop) -> Result<String> {
+    if request.current_result.is_some() {
+        return Err(Error::InvalidArgument);
+    }
     let (_child, mut pipe, boot) =
         Launched::connect(&executable, request.mode, stop, request.deadline)?;
     let mut client = ClientSession::new(Nonce::random()?.id(), boot.id());
@@ -458,6 +466,7 @@ mod tests {
     #[test]
     fn invalid_requests_are_rejected_before_launch() {
         let mut request = Request {
+            current_result: None,
             id: 1,
             revision: Revision {
                 input: 1,

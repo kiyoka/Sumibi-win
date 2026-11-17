@@ -34,7 +34,16 @@ try {
     foreach ($name in @('Install.cmd', 'Install.ps1', 'Uninstall.cmd', 'Uninstall.ps1', 'Installer.Common.ps1', 'README.txt')) {
         Copy-Item -LiteralPath (Join-Path $repository "installer\$name") -Destination $stage
     }
-    Copy-Item -LiteralPath (Join-Path $repository 'LICENSE') -Destination $stage
+    # Keep the package layout compatible with earlier installers.
+    $dictionaryRoot = Join-Path $repository 'crates/sumibi-host/dictionaries'
+    $license = [IO.File]::ReadAllText((Join-Path $repository 'LICENSE'))
+    foreach ($relative in @('README.md', 'ThirdParty/Mozc/ATTRIBUTION.txt', 'ThirdParty/Mozc/LICENSE',
+        'ThirdParty/Mozc/README.md', 'ThirdParty/SudachiDict/LEGAL',
+        'ThirdParty/SudachiDict/LICENSE-2.0.txt', 'ThirdParty/SudachiDict/README.md')) {
+        $notice = [IO.File]::ReadAllText((Join-Path $dictionaryRoot $relative))
+        $license += "`r`n`r`n--- Dictionary notices: $relative ---`r`n`r`n$notice"
+    }
+    [IO.File]::WriteAllText((Join-Path $stage 'LICENSE'), $license)
     $files = [ordered]@{}
     foreach ($relative in @(Get-SumibiPackageFiles)) {
         $files[$relative] = (Get-FileHash -LiteralPath (Get-SumibiChildPath $stage $relative) -Algorithm SHA256).Hash.ToLowerInvariant()

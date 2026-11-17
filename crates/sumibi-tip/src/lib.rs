@@ -4,6 +4,8 @@
 
 #[cfg(feature = "spike")]
 mod broker_spike;
+#[cfg(windows)]
+mod candidate_popup;
 pub mod candidate_session;
 mod com;
 mod composition;

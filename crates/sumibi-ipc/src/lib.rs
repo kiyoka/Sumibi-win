@@ -12,6 +12,8 @@ pub mod broker;
 #[cfg(windows)]
 pub mod channel;
 #[cfg(windows)]
+pub mod conversion_log;
+#[cfg(windows)]
 pub mod development_placement;
 #[cfg(windows)]
 pub mod discovery;
@@ -46,6 +48,8 @@ pub mod worker;
 
 #[cfg(windows)]
 pub use identity::PinnedProcess;
+#[cfg(all(windows, feature = "spike"))]
+pub use pipe::fixture_bootstrap_pipe_name;
 #[cfg(windows)]
 pub use pipe::{
     bootstrap_pipe_name_for_sid, current_bootstrap_pipe_name, wait_any, AcceptTask,

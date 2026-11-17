@@ -15,7 +15,7 @@ pub const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
 const SYSTEM_PROMPT_PREFIX: &str = "あなたはローマ字と英語を、通常は自然な日本語へ変換するIMEです。ユーザーによる追加の変換指示で出力言語が指定された場合は、その言語へ翻訳してください。\nMarkdown記法、URL、固有名詞は可能な限り維持してください。\n入力にない情報は追加しないでください。";
 const SYSTEM_PROMPT_SUFFIX: &str = "ユーザーによる追加の変換指示はありません。\nユーザーによる追加の変換指示がある場合はそれを反映し、ない場合は文脈に最も自然な日本語変換を1件だけ作ってください。{\"candidates\":[\"候補1\"]}というJSONだけを返してください。\nJSON以外の説明やMarkdownのコードフェンスは返さないでください。";
-const ADDITIONAL_SYSTEM_PROMPT_SUFFIX: &str = "ユーザーによる追加の変換指示はありません。\nユーザーによる追加の変換指示がある場合はそれを反映し、ない場合は文脈に合う自然な日本語の変換候補を複数件（最大10件）作ってください。{\"candidates\":[\"候補1\",\"候補2\",...]}というJSONだけを返してください。\nJSON以外の説明やMarkdownのコードフェンスは返さないでください。";
+const ADDITIONAL_SYSTEM_PROMPT_SUFFIX: &str = "ユーザーによる追加の変換指示はありません。\nユーザーによる追加の変換指示がある場合はそれを反映し、ない場合は文脈に合う自然な日本語の変換候補を複数件（最大6件）作ってください。変換対象が単語一つなら、その単語全体のひらがなの読みも候補に含めてください。{\"candidates\":[\"候補1\",\"候補2\",...]}というJSONだけを返してください。\nJSON以外の説明やMarkdownのコードフェンスは返さないでください。";
 
 pub const MAX_ADDITIONAL_CANDIDATES: usize = 10;
 
@@ -465,9 +465,8 @@ mod tests {
         let body_bytes = request_body_additional("fixture-model", &input).unwrap();
         let body: Value = serde_json::from_slice(&body_bytes).unwrap();
         let system = body["messages"][0]["content"].as_str().unwrap();
-        assert!(
-            system.contains("文脈に合う自然な日本語の変換候補を複数件（最大10件）作ってください。")
-        );
+        assert!(system.contains("変換候補を複数件（最大6件）"));
+        assert!(system.contains("その単語全体のひらがなの読みも候補に含めてください。"));
     }
 
     #[test]

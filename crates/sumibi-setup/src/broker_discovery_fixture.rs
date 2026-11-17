@@ -192,6 +192,7 @@ mod tests {
             .submit(
                 permit,
                 Request {
+                    current_result: None,
                     id: 1,
                     revision: Revision {
                         input: 1,

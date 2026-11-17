@@ -332,6 +332,7 @@ pub(super) fn run() -> Result<()> {
         }
         if case == "round-trip" {
             request.message = Message::Result(ConversionResult {
+                alternatives: None,
                 request: value.request,
                 revision: value.revision,
                 text: "日本語".into(),

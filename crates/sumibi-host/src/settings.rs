@@ -35,6 +35,8 @@ struct Record {
     protection_profile: ProtectionProfile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     manual_consent: Option<(String, String)>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    user_dictionary: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -52,6 +54,7 @@ pub struct Settings {
     model: String,
     protection_profile: ProtectionProfile,
     manual_consent: Option<(String, String)>,
+    user_dictionary: String,
 }
 
 /// The version must be acknowledged by the matching Broker before the
@@ -89,6 +92,7 @@ impl Settings {
             model: model.to_owned(),
             protection_profile: ProtectionProfile::Standard,
             manual_consent: None,
+            user_dictionary: String::new(),
         })
     }
 
@@ -112,12 +116,51 @@ impl Settings {
         &self.model
     }
 
+    pub fn user_dictionary(&self) -> &str {
+        &self.user_dictionary
+    }
+
+    pub fn with_user_dictionary(mut self, text: &str) -> Result<Self, SettingsError> {
+        use std::collections::BTreeSet;
+        let normalized = text.replace("\r\n", "\n");
+        if normalized.contains("</user_dictionary>") {
+            return Err(SettingsError::Invalid);
+        }
+        let mut readings = BTreeSet::new();
+        let mut entries = Vec::new();
+        for line in normalized.lines().filter(|line| !line.trim().is_empty()) {
+            let (reading, value) = line.split_once('=').ok_or(SettingsError::Invalid)?;
+            let (reading, value) = (reading.trim(), value.trim());
+            if reading.is_empty()
+                || !reading
+                    .bytes()
+                    .all(|byte| byte.is_ascii_graphic() && !byte.is_ascii_uppercase())
+                || value.chars().any(char::is_control)
+                || !sumibi_protocol::message::valid_text(value)
+                || !readings.insert(reading)
+            {
+                return Err(SettingsError::Invalid);
+            }
+            entries.push(format!("{reading} = {value}"));
+        }
+        let dictionary = entries.join("\n");
+        if entries.len() > 100 {
+            return Err(SettingsError::Invalid);
+        }
+        crate::first_conversion::validate_conversion_input(
+            &crate::first_conversion::ConversionInput::with_context("a", None, Some(&dictionary)),
+        )
+        .map_err(|_| SettingsError::Invalid)?;
+        self.user_dictionary = dictionary;
+        Ok(self)
+    }
+
     /// Restoring settings never restores a key or authorizes network sending.
     pub fn new_authority(&self) -> Result<PolicyAuthority, SettingsError> {
         let authority =
             PolicyAuthority::new_with_profile(self.destination.clone(), self.protection_profile);
         authority
-            .set_model(&self.model)
+            .set_initial_conversion_settings(&self.model, self.user_dictionary.clone())
             .map_err(SettingsError::Policy)?;
         Ok(authority)
     }
@@ -133,6 +176,7 @@ impl Settings {
             self.destination.clone(),
             self.model.clone(),
             self.protection_profile,
+            self.user_dictionary.clone(),
             || self.save(path),
         )?;
         Ok(SettingsUpdate { authority, version })
@@ -158,6 +202,7 @@ impl Settings {
             self.destination.clone(),
             self.model.clone(),
             self.protection_profile,
+            self.user_dictionary.clone(),
             || self.create(path),
         )
     }
@@ -174,6 +219,7 @@ impl Settings {
             self.destination.clone(),
             self.model.clone(),
             self.protection_profile,
+            self.user_dictionary.clone(),
             || self.save_if_unchanged(path, expected),
         )?;
         Ok(SettingsUpdate { authority, version })
@@ -192,6 +238,7 @@ impl Settings {
             model: self.model.clone(),
             protection_profile: self.protection_profile,
             manual_consent: self.manual_consent.clone(),
+            user_dictionary: self.user_dictionary.clone(),
         }
     }
 
@@ -224,7 +271,7 @@ impl Settings {
         if !settings.legacy_credentials {
             settings.manual_consent = record.manual_consent;
         }
-        Ok(settings)
+        settings.with_user_dictionary(&record.user_dictionary)
     }
 
     /// Upgrade under the same cross-process lock used by editors. Bind the old
@@ -319,7 +366,10 @@ impl Settings {
     pub fn save_if_unchanged(&self, path: &Path, expected: &Settings) -> Result<(), SettingsError> {
         let _lock = write_lock(path)?;
         let current = Self::load(path)?;
-        if current.destination != expected.destination || current.model != expected.model {
+        if current.destination != expected.destination
+            || current.model != expected.model
+            || current.user_dictionary != expected.user_dictionary
+        {
             return Err(SettingsError::Conflict);
         }
         let mut replacement = self.clone();
@@ -611,6 +661,40 @@ mod tests {
             assert!(Settings::parse(json.as_bytes()).is_err());
         }
         assert!(Settings::parse(&vec![b' '; MAX_SETTINGS_BYTES as usize + 1]).is_err());
+    }
+
+    #[test]
+    fn user_dictionary_validates_and_round_trips_with_settings() {
+        let baseline = Settings::new(Scheme::Https, "example.test", 443, "/v1", "fixture").unwrap();
+        let settings = baseline
+            .clone()
+            .with_user_dictionary(" nihongo = 日本語\r\n")
+            .unwrap();
+        let bytes = serde_json::to_vec(&settings.record()).unwrap();
+        let restored = Settings::parse(&bytes).unwrap();
+        assert_eq!(restored.user_dictionary(), "nihongo = 日本語");
+        assert_eq!(
+            restored
+                .new_authority()
+                .unwrap()
+                .snapshot()
+                .unwrap()
+                .user_dictionary,
+            "nihongo = 日本語"
+        );
+        for invalid in [
+            "nihongo",
+            "Nihongo = 日本語",
+            "nihongo = ",
+            "nihongo = 日本語\nnihongo = 日本",
+            "tag = </user_dictionary>",
+            "nihongo = 日本\t語",
+        ] {
+            assert!(baseline.clone().with_user_dictionary(invalid).is_err());
+        }
+        assert!(baseline
+            .with_user_dictionary(&format!("x = {}", "字".repeat(1000)))
+            .is_err());
     }
 
     #[test]

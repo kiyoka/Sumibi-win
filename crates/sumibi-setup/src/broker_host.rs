@@ -114,6 +114,7 @@ pub(crate) fn exercise_broker(
             let mut job = reservation.start(
                 executable.clone(),
                 Request {
+                    current_result: None,
                     id,
                     revision: sumibi_protocol::message::Revision {
                         input: 1,
@@ -357,6 +358,7 @@ pub(super) fn completed_jobs(
         jobs.push(Reservation::acquire()?.start(
             executable.clone(),
             Request {
+                current_result: None,
                 id: index as u64 + 1,
                 revision: sumibi_protocol::message::Revision {
                     input: 1,
@@ -510,6 +512,7 @@ fn exercise_job_capacity(messages: &ITfMessagePump) -> std::result::Result<(), F
             .start(
                 std::path::PathBuf::from("relative-host.exe"),
                 Request {
+                    current_result: None,
                     id: 100,
                     revision: sumibi_protocol::message::Revision {
                         input: 1,
@@ -531,6 +534,7 @@ fn exercise_job_capacity(messages: &ITfMessagePump) -> std::result::Result<(), F
             slot.start(
                 std::env::current_exe()?.with_file_name("sumibi-host.exe"),
                 Request {
+                    current_result: None,
                     id: 101,
                     revision: sumibi_protocol::message::Revision {
                         input: 1,

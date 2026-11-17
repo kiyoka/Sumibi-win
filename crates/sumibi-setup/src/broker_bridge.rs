@@ -410,6 +410,7 @@ impl ISpikeBrokerTransport_Impl for Bridge_Impl {
                 .submit(
                     permit,
                     Request {
+                        current_result: None,
                         id: request,
                         revision: Revision {
                             input,

@@ -45,6 +45,7 @@ pub struct EditPolicy {
 }
 
 /// Single-use snapshot. No Debug implementation: it contains private input.
+#[derive(Clone)]
 pub struct SelectionSnapshot {
     context: ITfContext,
     range: ITfRange,
@@ -302,6 +303,17 @@ pub fn capture_selection_or_run(
     policy: Rc<Cell<EditPolicy>>,
     expected_run: Option<Vec<u16>>,
 ) -> Result<SelectionSnapshot> {
+    capture_conversion_target(manager, context, client, policy, expected_run, None)
+}
+
+fn capture_conversion_target(
+    manager: &ITfThreadMgr,
+    context: &ITfContext,
+    client: u32,
+    policy: Rc<Cell<EditPolicy>>,
+    expected_run: Option<Vec<u16>>,
+    anchor: Option<ITfRange>,
+) -> Result<SelectionSnapshot> {
     let captured_policy = policy.get();
     if !captured_policy.allowed {
         return Err(E_ACCESSDENIED.into());
@@ -334,9 +346,29 @@ pub fn capture_selection_or_run(
             )
             .inspect_err(|error| trace_capture_error("selection-protection", error))?;
             let selection_range = unsafe { range.Clone()? };
-            let expected = if unsafe { range.IsEmpty(cookie)? }.as_bool() {
+            let (range, expected) = if let Some(anchor) = anchor {
+                let matches = unsafe {
+                    if range.IsEmpty(cookie)?.as_bool() {
+                        range
+                            .IsEqualStart(cookie, &anchor, TF_ANCHOR_START)?
+                            .as_bool()
+                            || range
+                                .IsEqualStart(cookie, &anchor, TF_ANCHOR_END)?
+                                .as_bool()
+                    } else {
+                        range
+                            .IsEqualStart(cookie, &anchor, TF_ANCHOR_START)?
+                            .as_bool()
+                            && range.IsEqualEnd(cookie, &anchor, TF_ANCHOR_END)?.as_bool()
+                    }
+                };
+                if !matches {
+                    return Err(E_ABORT.into());
+                }
+                (anchor, expected_run)
+            } else if unsafe { range.IsEmpty(cookie)? }.as_bool() {
                 let expected = expected_run.ok_or(E_ABORT)?;
-                if expected.is_empty() || expected.len() > crate::run_record::MAX_RUN_UNITS {
+                if expected.is_empty() || expected.len() > MAX_SELECTION_UNITS {
                     return Err(E_INVALIDARG.into());
                 }
                 let wanted = -(expected.len() as i32);
@@ -346,9 +378,9 @@ pub fn capture_selection_or_run(
                 if shifted != wanted {
                     return Err(E_ABORT.into());
                 }
-                Some(expected)
+                (range, Some(expected))
             } else {
-                None
+                (range, None)
             };
             let original = read_all_with_profile(&range, cookie, captured_policy.profile)
                 .inspect_err(|error| trace_capture_error("range-read", error))?;

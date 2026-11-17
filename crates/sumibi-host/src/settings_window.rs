@@ -15,6 +15,7 @@ use windows::Win32::{
 };
 
 const BS_AUTORADIOBUTTON: WINDOW_STYLE = WINDOW_STYLE(0x00000009);
+const BS_AUTOCHECKBOX: WINDOW_STYLE = WINDOW_STYLE(0x00000003);
 const BST_CHECKED: usize = 1;
 const BM_GETCHECK: u32 = 0x00F0;
 const BM_SETCHECK: u32 = 0x00F1;
@@ -26,6 +27,7 @@ struct Actions {
     key_save: Cell<bool>,
     key_delete: Cell<bool>,
     continue_setup: Cell<bool>,
+    debug_toggle: Cell<bool>,
     close: Cell<bool>,
 }
 struct View {
@@ -37,6 +39,7 @@ struct View {
     path: HWND,
     profile_standard: HWND,
     profile_strict: HWND,
+    user_dictionary: HWND,
     save: HWND,
     secret: HWND,
     key_save: HWND,
@@ -44,6 +47,7 @@ struct View {
     status: HWND,
     key_hint: HWND,
     continue_setup: Option<HWND>,
+    debug_checkbox: Option<HWND>,
     actions: Rc<Actions>,
 }
 impl Drop for View {
@@ -94,6 +98,10 @@ unsafe extern "system" fn procedure(
             }
             if message == WM_COMMAND && key.0 & 0xffff == 5 && key.0 >> 16 == 0 {
                 (*pointer).continue_setup.set(true);
+                return LRESULT(0);
+            }
+            if message == WM_COMMAND && key.0 & 0xffff == 6 && key.0 >> 16 == 0 {
+                (*pointer).debug_toggle.set(true);
                 return LRESULT(0);
             }
         }
@@ -214,7 +222,7 @@ impl View {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 600,
-                if initial_setup { 570 } else { 535 },
+                if initial_setup { 705 } else { 720 },
                 None,
                 None,
                 Some(instance.into()),
@@ -230,6 +238,7 @@ impl View {
                 path: HWND::default(),
                 profile_standard: HWND::default(),
                 profile_strict: HWND::default(),
+                user_dictionary: HWND::default(),
                 save: HWND::default(),
                 secret: HWND::default(),
                 key_save: HWND::default(),
@@ -237,6 +246,7 @@ impl View {
                 status: HWND::default(),
                 key_hint: HWND::default(),
                 continue_setup: None,
+                debug_checkbox: None,
                 actions,
             };
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Rc::as_ptr(&view.actions) as isize);
@@ -410,11 +420,11 @@ impl View {
 
             view.save = child(
                 w!("BUTTON"),
-                "接続先とモデルを保存",
+                "接続先・モデル・ユーザー辞書を保存",
                 WS_TABSTOP,
-                320,
+                255,
                 265,
-                240,
+                305,
                 30,
                 1,
             )?;
@@ -479,6 +489,29 @@ impl View {
                 40,
                 0,
             )?;
+            child(
+                w!("STATIC"),
+                "ユーザー辞書（1行に よみ = 変換後）。変換時に接続先へ送信します。",
+                WINDOW_STYLE(0),
+                18,
+                475,
+                545,
+                24,
+                0,
+            )?;
+            view.user_dictionary = child(
+                w!("EDIT"),
+                &settings
+                    .map_or("", Settings::user_dictionary)
+                    .replace('\n', "\r\n"),
+                WS_BORDER | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(0x0044),
+                18,
+                500,
+                542,
+                90,
+                23,
+            )?;
+            SendMessageW(view.user_dictionary, 0x00c5, Some(WPARAM(2048)), None);
             view.update_key_labels();
             if initial_setup {
                 let button = child(
@@ -486,18 +519,46 @@ impl View {
                     "送信の確認へ進む",
                     WS_TABSTOP,
                     345,
-                    478,
+                    613,
                     215,
                     32,
                     5,
                 )?;
                 let _ = EnableWindow(button, false);
                 view.continue_setup = Some(button);
+            } else {
+                let checkbox = child(
+                    w!("BUTTON"),
+                    "デバッグモード（Ctrl + J の変換対象と判定をこの PC に記録）",
+                    WS_TABSTOP | BS_AUTOCHECKBOX,
+                    18,
+                    601,
+                    545,
+                    24,
+                    6,
+                )?;
+                SendMessageW(
+                    checkbox,
+                    BM_SETCHECK,
+                    Some(WPARAM(usize::from(sumibi_ipc::conversion_log::enabled()))),
+                    None,
+                );
+                child(
+                    w!("STATIC"),
+                    "%LOCALAPPDATA%\\Sumibi\\conversion-logs に入力本文を平文で保存します。",
+                    WINDOW_STYLE(0),
+                    18,
+                    630,
+                    545,
+                    24,
+                    0,
+                )?;
+                view.debug_checkbox = Some(checkbox);
             }
             if settings.is_none() {
                 set_text(
                     view.status,
-                    "先に「接続先とモデルを保存」を押すと、API キーを入力できます。",
+                    "先に「接続先・モデル・ユーザー辞書を保存」を押すと、API キーを入力できます。",
                 );
                 let _ = EnableWindow(view.key_save, false);
                 let _ = EnableWindow(view.key_delete, false);
@@ -577,6 +638,24 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
                 DispatchMessageW(&message);
             }
         }
+        if view.actions.debug_toggle.replace(false) {
+            if let Some(checkbox) = view.debug_checkbox {
+                let checked = unsafe { SendMessageW(checkbox, BM_GETCHECK, None, None).0 }
+                    == BST_CHECKED as isize;
+                if sumibi_ipc::conversion_log::set_enabled(checked).is_err() {
+                    let enabled = sumibi_ipc::conversion_log::enabled();
+                    unsafe {
+                        SendMessageW(
+                            checkbox,
+                            BM_SETCHECK,
+                            Some(WPARAM(usize::from(enabled))),
+                            None,
+                        )
+                    };
+                    set_text(view.status, "デバッグモードの設定を保存できませんでした。");
+                }
+            }
+        }
         if view.actions.provider.replace(false) && pending.is_none() && key_pending.is_none() {
             let selection = unsafe { SendMessageW(view.provider, CB_GETCURSEL, None, None).0 };
             let provider = match selection {
@@ -592,7 +671,7 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
             set_text(view.secret, "");
             set_text(
                 view.status,
-                "先に「接続先とモデルを保存」を押すと、API キーを入力できます。",
+                "先に「接続先・モデル・ユーザー辞書を保存」を押すと、API キーを入力できます。",
             );
         }
         view.update_key_labels();
@@ -622,6 +701,11 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
                         )
                         .map(|s| s.with_protection_profile(profile))
                         .map_err(|_| "invalid settings")
+                        .and_then(|settings| {
+                            settings
+                                .with_user_dictionary(&text(view.user_dictionary)?)
+                                .map_err(|_| "invalid dictionary")
+                        })
                     })
                 })
             });
@@ -648,6 +732,10 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
                     }
                     Err(_) => set_text(view.status, "保存処理を開始できませんでした。"),
                 },
+                Err("invalid dictionary") => set_text(
+                    view.status,
+                    "辞書は1行に「半角小文字のよみ = 変換後」を入力してください。\r\n読みの重複、100件または変換の文字数上限を確認してください。",
+                ),
                 Err(_) => set_text(view.status, "ホスト名・モデル・パスを確認してください。"),
             }
         }

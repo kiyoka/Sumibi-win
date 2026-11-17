@@ -87,17 +87,17 @@ impl CandidateSession {
     ///
     /// Returns the selected CandidateItem if the index is valid.
     pub fn select_digit(&mut self, digit: char) -> Option<&CandidateItem> {
+        self.selected_index = self.digit_index(digit)?;
+        self.selected_candidate()
+    }
+
+    pub(crate) fn digit_index(&self, digit: char) -> Option<usize> {
         let index = match digit {
             '1'..='9' => (digit as usize) - ('1' as usize),
             '0' => 9,
             _ => return None,
         };
-        if index < self.candidates.len() {
-            self.selected_index = index;
-            self.candidates.get(self.selected_index)
-        } else {
-            None
-        }
+        (index < self.candidates.len()).then_some(index)
     }
 
     /// Confirm selection and finish the session.

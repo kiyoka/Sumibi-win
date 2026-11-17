@@ -91,6 +91,7 @@ struct TextStore {
     set_text_calls: Cell<usize>,
     write_hook: RefCell<Option<WriteHook>>,
     fail_text_before: Cell<bool>,
+    collapse_to_start_on_write: Cell<bool>,
     fail_text_after: Cell<bool>,
     fail_selection: Cell<bool>,
     set_selection_calls: Cell<usize>,
@@ -188,6 +189,7 @@ impl TextStore {
             set_text_calls: Cell::new(0),
             write_hook: RefCell::new(None),
             fail_text_before: Cell::new(false),
+            collapse_to_start_on_write: Cell::new(false),
             fail_text_after: Cell::new(false),
             fail_selection: Cell::new(false),
             set_selection_calls: Cell::new(0),
@@ -509,6 +511,9 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         let mut selection = self.selection.get();
         selection.acpStart = start as i32;
         selection.acpEnd = (start + input.len()) as i32;
+        if self.collapse_to_start_on_write.replace(false) {
+            selection.acpEnd = selection.acpStart;
+        }
         self.selection.set(selection);
         if self.scope_cycle_on_write.replace(false) {
             let sink = self.sink.borrow().clone().ok_or(E_FAIL)?;
