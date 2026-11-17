@@ -12,6 +12,8 @@ pub mod broker;
 #[cfg(windows)]
 pub mod channel;
 #[cfg(windows)]
+pub mod conversion_log;
+#[cfg(windows)]
 pub mod development_placement;
 #[cfg(windows)]
 pub mod discovery;

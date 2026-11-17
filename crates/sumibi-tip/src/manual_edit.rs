@@ -11,7 +11,7 @@ use windows::core::{ComObject, Ref};
 
 struct Observation {
     owner: ThreadId,
-    invalid: Cell<bool>,
+    invalid: Cell<Option<&'static str>>,
     generation: Cell<Option<u64>>,
     boundary_generation: Cell<Option<u64>>,
     #[cfg(feature = "spike")]
@@ -29,14 +29,16 @@ struct Observer {
     _lease: ObjectLease,
 }
 impl Observer_Impl {
-    fn invalidate(&self, protection_boundary: bool) -> Result<()> {
+    fn invalidate(&self, protection_boundary: bool, reason: &'static str) -> Result<()> {
         boundary(|| {
             // Check before touching the apartment-local weak Rc.
             if self.owner != thread::current().id() {
                 return Err(RPC_E_WRONG_THREAD.into());
             }
             if let Some(state) = self.state.upgrade() {
-                state.invalid.set(true);
+                if state.invalid.get().is_none() {
+                    state.invalid.set(Some(reason));
+                }
                 if protection_boundary {
                     state.boundary_generation.set(
                         state
@@ -95,34 +97,41 @@ impl ITfTextEditSink_Impl for Observer_Impl {
             Ok(!(status == windows::Win32::Foundation::S_FALSE && count == 0 && slot.is_none()))
         })()
         .unwrap_or(true);
-        self.invalidate(scope_changed)
+        self.invalidate(
+            scope_changed,
+            if scope_changed {
+                "input_scope_changed"
+            } else {
+                "text_edit_notification"
+            },
+        )
     }
 }
 impl ITfThreadMgrEventSink_Impl for Observer_Impl {
     fn OnInitDocumentMgr(&self, _: Ref<ITfDocumentMgr>) -> Result<()> {
-        self.invalidate(true)
+        self.invalidate(true, "document_initialized")
     }
     fn OnUninitDocumentMgr(&self, _: Ref<ITfDocumentMgr>) -> Result<()> {
-        self.invalidate(true)
+        self.invalidate(true, "document_uninitialized")
     }
     fn OnSetFocus(&self, _: Ref<ITfDocumentMgr>, _: Ref<ITfDocumentMgr>) -> Result<()> {
-        self.invalidate(true)
+        self.invalidate(true, "focus_changed")
     }
     fn OnPushContext(&self, _: Ref<ITfContext>) -> Result<()> {
-        self.invalidate(true)
+        self.invalidate(true, "context_pushed")
     }
     fn OnPopContext(&self, _: Ref<ITfContext>) -> Result<()> {
-        self.invalidate(true)
+        self.invalidate(true, "context_popped")
     }
 }
 impl ITfCompartmentEventSink_Impl for Observer_Impl {
     fn OnChange(&self, _: *const windows::core::GUID) -> Result<()> {
-        self.invalidate(true)
+        self.invalidate(true, "compartment_changed")
     }
 }
 impl ITfStatusSink_Impl for Observer_Impl {
     fn OnStatusChange(&self, _: Ref<ITfContext>, _: u32) -> Result<()> {
-        self.invalidate(true)
+        self.invalidate(true, "status_changed")
     }
 }
 struct Subscription {
@@ -144,7 +153,7 @@ impl Guard {
     fn new(manager: &ITfThreadMgr, context: &ITfContext) -> Result<Self> {
         let state = Rc::new(Observation {
             owner: thread::current().id(),
-            invalid: Cell::new(false),
+            invalid: Cell::new(None),
             generation: Cell::new(Some(0)),
             boundary_generation: Cell::new(Some(0)),
             #[cfg(feature = "spike")]
@@ -197,7 +206,7 @@ impl Guard {
         if self.state.owner != thread::current().id() {
             return Err(RPC_E_WRONG_THREAD.into());
         }
-        if self.state.invalid.get() {
+        if self.state.invalid.get().is_some() {
             return Err(E_ABORT.into());
         }
         Ok(())
@@ -268,7 +277,7 @@ impl ManualEdit {
         if self.snapshot.owner != thread::current().id() {
             return Err(RPC_E_WRONG_THREAD.into());
         }
-        self.guard.state.invalid.set(true);
+        self.guard.state.invalid.set(Some("cancelled"));
         self.core.cancel();
         self.snapshot.original = Vec::new();
         Ok(())
@@ -381,7 +390,7 @@ impl ManualEdit {
         // Once this owner observes a bad selection/protection/lock/policy,
         // restoring the visible state is not permission to reuse the ticket.
         if result.is_err() {
-            self.guard.state.invalid.set(true);
+            self.guard.state.invalid.set(Some("source_recheck_failed"));
         }
         result
     }
@@ -408,7 +417,7 @@ impl ManualEdit {
                     &target, &range, cookie, expected, profile,
                 )?;
                 ensure_target(&manager, &target)?;
-                if observation.invalid.get() {
+                if observation.invalid.get().is_some() {
                     return Err(E_ABORT.into());
                 }
                 Ok(())
@@ -431,6 +440,10 @@ impl ManualEdit {
     pub fn request(&self) -> RequestId {
         self.request
     }
+    pub(crate) fn invalidation_reason(&self) -> Option<&'static str> {
+        self.guard.state.invalid.get()
+    }
+
     pub(crate) fn is_current(&self) -> bool {
         Instant::now() < self.deadline && self.guard.check().is_ok()
     }

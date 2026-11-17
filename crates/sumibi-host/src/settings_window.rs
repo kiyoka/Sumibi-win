@@ -15,6 +15,7 @@ use windows::Win32::{
 };
 
 const BS_AUTORADIOBUTTON: WINDOW_STYLE = WINDOW_STYLE(0x00000009);
+const BS_AUTOCHECKBOX: WINDOW_STYLE = WINDOW_STYLE(0x00000003);
 const BST_CHECKED: usize = 1;
 const BM_GETCHECK: u32 = 0x00F0;
 const BM_SETCHECK: u32 = 0x00F1;
@@ -26,6 +27,7 @@ struct Actions {
     key_save: Cell<bool>,
     key_delete: Cell<bool>,
     continue_setup: Cell<bool>,
+    debug_toggle: Cell<bool>,
     close: Cell<bool>,
 }
 struct View {
@@ -45,6 +47,7 @@ struct View {
     status: HWND,
     key_hint: HWND,
     continue_setup: Option<HWND>,
+    debug_checkbox: Option<HWND>,
     actions: Rc<Actions>,
 }
 impl Drop for View {
@@ -95,6 +98,10 @@ unsafe extern "system" fn procedure(
             }
             if message == WM_COMMAND && key.0 & 0xffff == 5 && key.0 >> 16 == 0 {
                 (*pointer).continue_setup.set(true);
+                return LRESULT(0);
+            }
+            if message == WM_COMMAND && key.0 & 0xffff == 6 && key.0 >> 16 == 0 {
+                (*pointer).debug_toggle.set(true);
                 return LRESULT(0);
             }
         }
@@ -215,7 +222,7 @@ impl View {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 600,
-                if initial_setup { 705 } else { 670 },
+                if initial_setup { 705 } else { 720 },
                 None,
                 None,
                 Some(instance.into()),
@@ -239,6 +246,7 @@ impl View {
                 status: HWND::default(),
                 key_hint: HWND::default(),
                 continue_setup: None,
+                debug_checkbox: None,
                 actions,
             };
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Rc::as_ptr(&view.actions) as isize);
@@ -518,6 +526,34 @@ impl View {
                 )?;
                 let _ = EnableWindow(button, false);
                 view.continue_setup = Some(button);
+            } else {
+                let checkbox = child(
+                    w!("BUTTON"),
+                    "デバッグモード（Ctrl + J の変換対象と判定をこの PC に記録）",
+                    WS_TABSTOP | BS_AUTOCHECKBOX,
+                    18,
+                    601,
+                    545,
+                    24,
+                    6,
+                )?;
+                SendMessageW(
+                    checkbox,
+                    BM_SETCHECK,
+                    Some(WPARAM(usize::from(sumibi_ipc::conversion_log::enabled()))),
+                    None,
+                );
+                child(
+                    w!("STATIC"),
+                    "%LOCALAPPDATA%\\Sumibi\\conversion-logs に入力本文を平文で保存します。",
+                    WINDOW_STYLE(0),
+                    18,
+                    630,
+                    545,
+                    24,
+                    0,
+                )?;
+                view.debug_checkbox = Some(checkbox);
             }
             if settings.is_none() {
                 set_text(
@@ -600,6 +636,24 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
             if !IsDialogMessageW(view.hwnd, &message).as_bool() {
                 let _ = TranslateMessage(&message);
                 DispatchMessageW(&message);
+            }
+        }
+        if view.actions.debug_toggle.replace(false) {
+            if let Some(checkbox) = view.debug_checkbox {
+                let checked = unsafe { SendMessageW(checkbox, BM_GETCHECK, None, None).0 }
+                    == BST_CHECKED as isize;
+                if sumibi_ipc::conversion_log::set_enabled(checked).is_err() {
+                    let enabled = sumibi_ipc::conversion_log::enabled();
+                    unsafe {
+                        SendMessageW(
+                            checkbox,
+                            BM_SETCHECK,
+                            Some(WPARAM(usize::from(enabled))),
+                            None,
+                        )
+                    };
+                    set_text(view.status, "デバッグモードの設定を保存できませんでした。");
+                }
             }
         }
         if view.actions.provider.replace(false) && pending.is_none() && key_pending.is_none() {

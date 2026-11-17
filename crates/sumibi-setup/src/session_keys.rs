@@ -24,6 +24,8 @@ pub(crate) fn exercise_session_keys(
     // 0. Setup local diagnostic HTTP server with switchable response modes:
     //    0: 200 OK ("日本語")
     //    1: 500 Internal Server Error
+    //    2: Additional candidates
+    //    3: 200 OK delayed beyond the former five-second limit
     let response_body_200 = serde_json::json!({
         "choices": [{
             "finish_reason": "stop",
@@ -52,7 +54,7 @@ pub(crate) fn exercise_session_keys(
     )
     .into_bytes();
 
-    let server_mode = Arc::new(AtomicU8::new(0)); // 0: 200 OK, 1: 500 Error
+    let server_mode = Arc::new(AtomicU8::new(3));
     let thread_mode = server_mode.clone();
     let error_served = Arc::new(AtomicBool::new(false));
     let thread_error_served = error_served.clone();
@@ -101,6 +103,9 @@ pub(crate) fn exercise_session_keys(
                 thread_error_served.store(true, Ordering::Release);
             } else if mode == 2 {
                 let _ = stream.write_all(additional_response.as_bytes());
+            } else if mode == 3 {
+                std::thread::sleep(Duration::from_secs(6));
+                let _ = stream.write_all(&response_bytes_200);
             }
         }
     });
@@ -256,7 +261,7 @@ pub(crate) fn exercise_session_keys(
     // with the Host over private pipe, receives "日本語", and posts WM_SUMIBI_DRAIN
     // to DrainWindow. Pumping messages on the STA thread executes sink.drain()
     // and updates the text store.
-    let drain_deadline = Instant::now() + Duration::from_secs(6);
+    let drain_deadline = Instant::now() + Duration::from_secs(12);
     let expected_replaced: Vec<u16> = "prefix 日本語 suffix".encode_utf16().collect();
     let mut replaced = false;
     while Instant::now() < drain_deadline {
