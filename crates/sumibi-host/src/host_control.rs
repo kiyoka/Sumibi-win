@@ -97,6 +97,8 @@ impl HostControl {
                     crate::startup::PreparedHost::load(&path).map_err(|_| ControlError::Startup)?;
                 host.restore_manual_consent()
                     .map_err(|_| ControlError::Startup)?;
+                host.restore_auto_consent()
+                    .map_err(|_| ControlError::Startup)?;
                 Ok((host.authority().clone(), host.credential_outcome().is_err()))
             },
             || {
@@ -346,6 +348,19 @@ fn run(
     let stop = Stop::new().map_err(|_| ControlError::Broker)?;
     let mut boot = BrokerBoot::start(&authority, 64, Instant::now() + Duration::from_secs(2))
         .map_err(|_| ControlError::Broker)?;
+    if consent_path.is_some() {
+        if let Some(budget_path) = crate::decisions::default_budget_path() {
+            if let Some(parent) = budget_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(budget) = crate::decisions::BudgetManager::new(
+                budget_path,
+                crate::decisions::MAX_DECISIONS_BUDGET,
+            ) {
+                boot.set_budget(Arc::new(budget));
+            }
+        }
+    }
     let mut pending: Option<ConsentTask> = None;
     let mut update: Option<ConsentUpdate> = None;
     let mut failure = None;

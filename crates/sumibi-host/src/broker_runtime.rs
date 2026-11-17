@@ -800,6 +800,24 @@ impl<'a> BrokerPolicyRuntime<'a> {
         })
     }
 
+    pub(crate) fn publish_skipped(
+        &mut self,
+        reply: ReplyContext,
+        text: String,
+        stop: &Stop,
+        deadline: Instant,
+    ) -> Result<bool, RuntimeError> {
+        self.publish_reply(reply, stop, deadline, |fanout| {
+            fanout.skipped_result(
+                reply.key,
+                reply.request,
+                reply.revision,
+                text,
+                reply.completed_at,
+            )
+        })
+    }
+
     /// Publish a fixed worker failure under the same policy and transport
     /// ordering as a successful result.
     pub fn publish_error(
@@ -1505,6 +1523,7 @@ mod tests {
             generation,
             message: message::Message::Convert(Convert {
                 current_result: None,
+                auto_conversion: false,
                 request,
                 revision: Revision {
                     input: 1,
@@ -7233,6 +7252,7 @@ mod tests {
             generation: 1,
             message: message::Message::Convert(Convert {
                 current_result: None,
+                auto_conversion: false,
                 request: 1,
                 revision: Revision {
                     input: 1,
@@ -7388,6 +7408,7 @@ mod tests {
             generation: 1,
             message: message::Message::Convert(Convert {
                 current_result: None,
+                auto_conversion: false,
                 request: 1,
                 revision: Revision {
                     input: 1,

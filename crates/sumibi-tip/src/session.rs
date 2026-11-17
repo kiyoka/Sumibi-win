@@ -49,6 +49,7 @@ pub struct SharedSessionState {
     diagnostics: Option<Recorder>,
     connected: AtomicBool,
     allowed: AtomicBool,
+    auto_allowed: AtomicBool,
     input: AtomicU64,
     settings: AtomicU64,
     authorization: AtomicU64,
@@ -61,6 +62,7 @@ impl SharedSessionState {
             diagnostics: None,
             connected: AtomicBool::new(false),
             allowed: AtomicBool::new(false),
+            auto_allowed: AtomicBool::new(false),
             input: AtomicU64::new(1),
             settings: AtomicU64::new(0),
             authorization: AtomicU64::new(0),
@@ -76,6 +78,14 @@ impl SharedSessionState {
 
     pub fn is_ready(&self) -> bool {
         self.connected.load(Ordering::Acquire) && self.allowed.load(Ordering::Acquire)
+    }
+
+    pub fn is_auto_allowed(&self) -> bool {
+        self.connected.load(Ordering::Acquire) && self.auto_allowed.load(Ordering::Acquire)
+    }
+
+    pub fn is_input_monitored(&self) -> bool {
+        self.is_ready() || self.is_auto_allowed()
     }
 
     pub fn is_connected(&self) -> bool {
@@ -109,6 +119,7 @@ impl SharedSessionState {
 enum WorkerCommand {
     Convert {
         current_result: Option<String>,
+        auto_conversion: bool,
         request_id: u64,
         revision: Revision,
         text: String,
@@ -121,6 +132,7 @@ enum WorkerEvent {
         request_id: u64,
         text: String,
         alternatives: Option<Vec<CandidateItem>>,
+        skipped: bool,
     },
     Failed {
         request_id: u64,
@@ -157,6 +169,7 @@ struct PendingEdit {
     id: u64,
     target: ConvertedText,
     additional: bool,
+    auto_conversion: bool,
 }
 
 struct CandidateSelection {
@@ -174,16 +187,28 @@ struct DrainSink {
     pending_ticket: RefCell<Option<PendingEdit>>,
     last_conversion: RefCell<Option<RetainedConversion>>,
     selection: RefCell<Option<CandidateSelection>>,
+    run: Rc<RefCell<crate::run_record::RunRecord>>,
+    auto_callback: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 impl DrainSink {
-    fn ready_for(&self, ticket: &ManualEdit) -> bool {
-        self.state.is_ready() && self.state.revision() == ticket.revision() && ticket.is_current()
+    fn ready_for(&self, ticket: &ManualEdit, auto_conversion: bool) -> bool {
+        let permitted = if auto_conversion {
+            self.state.is_auto_allowed()
+        } else {
+            self.state.is_ready()
+        };
+        permitted && self.state.revision() == ticket.revision() && ticket.is_current()
     }
 
-    fn apply(&self, target: ConvertedText, replacement: String) -> Result<()> {
+    fn apply(
+        &self,
+        target: ConvertedText,
+        replacement: String,
+        auto_conversion: bool,
+    ) -> Result<()> {
         let ConvertedText { source, ticket, .. } = target;
-        if !self.ready_for(&ticket) {
+        if !self.ready_for(&ticket, auto_conversion) {
             return Err(windows::Win32::Foundation::E_ABORT.into());
         }
         let context = ticket.context().clone();
@@ -197,7 +222,14 @@ impl DrainSink {
             replacement.clone(),
             {
                 let state = self.state.clone();
-                move || state.is_ready() && state.revision() == revision
+                move || {
+                    let permitted = if auto_conversion {
+                        state.is_auto_allowed()
+                    } else {
+                        state.is_ready()
+                    };
+                    permitted && state.revision() == revision
+                }
             },
         )?;
         // Capture a fresh edit ticket on the next hotkey. Some applications
@@ -213,6 +245,9 @@ impl DrainSink {
             }));
         } else {
             debug_log("Drain could not retain conversion range");
+        }
+        if auto_conversion {
+            self.run.borrow_mut().clear();
         }
         Ok(())
     }
@@ -251,13 +286,14 @@ impl DrainSink {
                 }
                 continue;
             }
-            if !self.ready_for(&target.ticket) {
+            if !self.ready_for(&target.ticket, pending.auto_conversion) {
                 self.state.record(
                     Some(request_id),
                     "reply_discarded",
                     format_args!(
-                    "connected={}, allowed={}, revision_matches={}, expired={}, invalidated_by={:?}",
+                    "connected={}, allowed={}, auto_allowed={}, revision_matches={}, expired={}, invalidated_by={:?}",
                     self.state.is_connected(), self.state.allowed.load(Ordering::Acquire),
+                    self.state.auto_allowed.load(Ordering::Acquire),
                     self.state.revision() == target.ticket.revision(),
                     Instant::now() >= target.ticket.deadline(), target.ticket.invalidation_reason()
                 ),
@@ -266,11 +302,22 @@ impl DrainSink {
                 continue;
             }
             match event {
+                WorkerEvent::Completed { skipped: true, .. } if pending.auto_conversion => {
+                    self.state.record(
+                        Some(request_id),
+                        "auto_skipped",
+                        format_args!("decisions predicate skipped non-Japanese text"),
+                    );
+                    debug_log("Auto-conversion skipped by Decisions API");
+                    handled = true;
+                }
                 WorkerEvent::Completed {
                     text,
                     alternatives: None,
+                    skipped: false,
                     ..
-                } if !pending.additional => match self.apply(target, text) {
+                } if !pending.additional => match self.apply(target, text, pending.auto_conversion)
+                {
                     Ok(()) => {
                         self.state.record(
                             Some(request_id),
@@ -311,7 +358,7 @@ impl DrainSink {
                     );
                     let bounds = target.ticket.candidate_bounds().ok();
                     let mut displayed = false;
-                    if self.ready_for(&target.ticket) {
+                    if self.ready_for(&target.ticket, false) {
                         if let Ok(popup) = CandidatePopup::new(bounds, &session) {
                             self.selection.replace(Some(CandidateSelection {
                                 target,
@@ -362,6 +409,17 @@ impl DrainSink {
         }
     }
 
+    fn cancel_auto_pending(&self) {
+        let is_auto = self
+            .pending_ticket
+            .borrow()
+            .as_ref()
+            .is_some_and(|pending| pending.auto_conversion);
+        if is_auto {
+            self.cancel_pending();
+        }
+    }
+
     fn expire_targets(&self) {
         let expired = self
             .last_conversion
@@ -381,7 +439,7 @@ impl DrainSink {
             .selection
             .borrow()
             .as_ref()
-            .is_some_and(|selection| !self.ready_for(&selection.target.ticket));
+            .is_some_and(|selection| !self.ready_for(&selection.target.ticket, false));
         if expired {
             self.selection.take();
         }
@@ -432,7 +490,7 @@ impl DrainSink {
                     if text == active.target.current {
                         self.last_conversion.replace(active.target.retained);
                     } else {
-                        let _ = self.apply(active.target, text);
+                        let _ = self.apply(active.target, text, false);
                     }
                 }
             }
@@ -529,10 +587,21 @@ unsafe extern "system" fn drain_window_proc(
         windows::Win32::UI::WindowsAndMessaging::WM_TIMER => {
             let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const DrainSink;
             if let Some(sink) = unsafe { ptr.as_ref() } {
-                sink.expire_targets();
-                if sink.selection.borrow().is_none() && sink.last_conversion.borrow().is_none() {
+                if wparam.0 == 2 {
                     unsafe {
-                        let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), 1);
+                        let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), 2);
+                    }
+                    if let Some(cb) = sink.auto_callback.borrow().as_ref() {
+                        cb();
+                    }
+                } else {
+                    sink.expire_targets();
+                    if sink.selection.borrow().is_none() && sink.last_conversion.borrow().is_none()
+                    {
+                        unsafe {
+                            let _ =
+                                windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), 1);
+                        }
                     }
                 }
             }
@@ -595,10 +664,13 @@ pub struct TipHostSession {
     sink: Rc<DrainSink>,
     worker_thread: RefCell<Option<JoinHandle<()>>>,
     preserved_registered: Cell<bool>,
-    next_request_id: Cell<u64>,
+    next_request_id: Rc<Cell<u64>>,
     drain_window: RefCell<Option<DrainWindow>>,
     /// Passive romaji run for caret conversion (ADR 0104); owner thread only.
-    run: RefCell<crate::run_record::RunRecord>,
+    run: Rc<RefCell<crate::run_record::RunRecord>>,
+    last_context: Rc<RefCell<Option<ITfContext>>>,
+    auto_timer_armed: Rc<Cell<bool>>,
+    last_auto_text: Rc<RefCell<Option<String>>>,
 }
 
 /// Identity token of a TSF context: the IUnknown identity of the object, so
@@ -623,6 +695,12 @@ impl TipHostSession {
         let (cmd_tx, cmd_rx) = mpsc::sync_channel(4);
         let (evt_tx, evt_rx) = mpsc::sync_channel(4);
 
+        let run = Rc::new(RefCell::new(crate::run_record::RunRecord::default()));
+        let last_context = Rc::new(RefCell::new(None));
+        let auto_timer_armed = Rc::new(Cell::new(false));
+        let last_auto_text = Rc::new(RefCell::new(None));
+        let next_request_id: Rc<Cell<u64>> = Rc::new(Cell::new(0));
+
         let sink = Rc::new(DrainSink {
             owner: thread::current().id(),
             manager: manager.clone(),
@@ -632,10 +710,109 @@ impl TipHostSession {
             pending_ticket: RefCell::new(None),
             last_conversion: RefCell::new(None),
             selection: RefCell::new(None),
+            run: run.clone(),
+            auto_callback: RefCell::new(None),
         });
 
         let drain_window = DrainWindow::create(Rc::as_ptr(&sink));
         let drain_hwnd = drain_window.as_ref().map(|w| w.hwnd.0 as isize);
+
+        {
+            let sink_weak = Rc::downgrade(&sink);
+            let manager_cb = manager.clone();
+            let state_cb = state.clone();
+            let cmd_tx_cb = cmd_tx.clone();
+            let run_cb = run.clone();
+            let ctx_cb = last_context.clone();
+            let armed_cb = auto_timer_armed.clone();
+            let last_auto_cb = last_auto_text.clone();
+            let req_id_cb = next_request_id.clone();
+            sink.auto_callback.replace(Some(Box::new(move || {
+                armed_cb.set(false);
+                let Some(sink) = sink_weak.upgrade() else {
+                    return;
+                };
+                if !state_cb.is_auto_allowed() {
+                    return;
+                }
+                if sink.pending_ticket.borrow().is_some() || sink.selection.borrow().is_some() {
+                    return;
+                }
+                let Some(context) = ctx_cb.borrow().clone() else {
+                    return;
+                };
+                let token = context_token(&context);
+                let Some(recorded) = run_cb.borrow().snapshot(token) else {
+                    return;
+                };
+                let edit_policy = Rc::new(Cell::new(EditPolicy {
+                    revision: state_cb.revision(),
+                    allowed: true,
+                    profile: state_cb.protection_profile(),
+                }));
+                let request_id = req_id_cb.get().wrapping_add(1).max(1);
+                req_id_cb.set(request_id);
+                let deadline = Instant::now() + CONVERSION_TIMEOUT;
+                let Ok(mut ticket) = ManualEdit::capture_with_run(
+                    &manager_cb,
+                    &context,
+                    client,
+                    edit_policy,
+                    RequestId(request_id.into()),
+                    request_id.into(),
+                    deadline,
+                    Some(recorded),
+                ) else {
+                    return;
+                };
+                let Ok(source) = ticket.source() else {
+                    let _ = ticket.cancel();
+                    return;
+                };
+                if source.trim().is_empty()
+                    || last_auto_cb
+                        .borrow()
+                        .as_deref()
+                        .is_some_and(|prev| prev == source)
+                {
+                    let _ = ticket.cancel();
+                    return;
+                }
+                last_auto_cb.replace(Some(source.clone()));
+                let target = ConvertedText {
+                    source: source.clone(),
+                    current: String::new(),
+                    ticket,
+                    retained: None,
+                };
+                let command = WorkerCommand::Convert {
+                    request_id,
+                    revision: target.ticket.revision(),
+                    text: source,
+                    current_result: None,
+                    auto_conversion: true,
+                    deadline: target
+                        .ticket
+                        .deadline()
+                        .min(Instant::now() + CONVERSION_TIMEOUT),
+                };
+                sink.pending_ticket.replace(Some(PendingEdit {
+                    id: request_id,
+                    target,
+                    additional: false,
+                    auto_conversion: true,
+                }));
+                if cmd_tx_cb.try_send(command).is_err() {
+                    sink.cancel_pending();
+                } else {
+                    state_cb.record(
+                        Some(request_id),
+                        "auto_dispatched",
+                        format_args!("200ms window elapsed"),
+                    );
+                }
+            })));
+        }
 
         let thread_state = state.clone();
         let thread_stop = stop.clone();
@@ -664,9 +841,12 @@ impl TipHostSession {
             sink,
             worker_thread: RefCell::new(Some(worker_thread)),
             preserved_registered: Cell::new(false),
-            next_request_id: Cell::new(0),
+            next_request_id,
             drain_window: RefCell::new(drain_window),
-            run: RefCell::new(crate::run_record::RunRecord::default()),
+            run,
+            last_context,
+            auto_timer_armed,
+            last_auto_text,
         };
 
         // Register preserved key (Ctrl+J)
@@ -730,6 +910,34 @@ impl TipHostSession {
         }
     }
 
+    fn arm_auto_timer(&self) {
+        if self.auto_timer_armed.get() {
+            return;
+        }
+        if let Some(window) = self.drain_window.borrow().as_ref() {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(
+                    Some(window.hwnd),
+                    2,
+                    sumibi_core::decisions::WINDOW_DURATION_MS as u32,
+                    None,
+                );
+            }
+            self.auto_timer_armed.set(true);
+        }
+    }
+
+    fn kill_auto_timer(&self) {
+        if !self.auto_timer_armed.replace(false) {
+            return;
+        }
+        if let Some(window) = self.drain_window.borrow().as_ref() {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(window.hwnd), 2);
+            }
+        }
+    }
+
     /// Observe one key press without ever consuming it. Records only romaji
     /// units, and only while the Host session is ready and the context passes
     /// the metadata-only status gate; every other key is a boundary.
@@ -754,11 +962,14 @@ impl TipHostSession {
             self.sink.last_conversion.take();
         }
         let Some(context) = context else {
+            self.kill_auto_timer();
+            self.last_context.take();
+            self.last_auto_text.take();
             self.run.borrow_mut().clear();
             return;
         };
         let token = context_token(context);
-        let is_ready = self.state.is_ready();
+        let is_ready = self.state.is_input_monitored();
         let status_res = unsafe { context.GetStatus() };
         let status_ok = status_res
             .as_ref()
@@ -773,20 +984,40 @@ impl TipHostSession {
         let gated = is_ready && status_ok;
         if !gated {
             debug_log(&format!(
-                "Key observed: gated=false (is_ready={is_ready} [connected={}, allowed={}], status_ok={status_ok})",
+                "Key observed: gated=false (is_ready={is_ready} [connected={}, allowed={}, auto_allowed={}], status_ok={status_ok})",
                 self.state.is_connected(),
-                self.state.allowed.load(Ordering::Acquire)
+                self.state.allowed.load(Ordering::Acquire),
+                self.state.auto_allowed.load(Ordering::Acquire)
             ));
+            self.kill_auto_timer();
+            self.last_context.take();
+            self.last_auto_text.take();
             self.run.borrow_mut().clear();
             return;
         }
+        self.last_context.replace(Some(context.clone()));
         let action = crate::run_record::classify(vk, translate_key(vk, flags), command_modifier());
+        if !matches!(action, crate::run_record::KeyAction::Ignore) {
+            self.sink.cancel_auto_pending();
+            self.state.input.fetch_add(1, Ordering::AcqRel);
+            self.last_auto_text.take();
+        }
         let mut record = self.run.borrow_mut();
         record.apply(token, action);
+        let len = record.len();
+        drop(record);
+        if len > 0 && self.state.is_auto_allowed() {
+            if !matches!(action, crate::run_record::KeyAction::Ignore) {
+                self.arm_auto_timer();
+            }
+        } else if len == 0 {
+            self.kill_auto_timer();
+            self.last_auto_text.take();
+        }
         debug_log(&format!(
             "Key observed: gated=true, action={}, run_units={}",
             action.label(),
-            record.len()
+            len
         ));
     }
 
@@ -802,6 +1033,8 @@ impl TipHostSession {
         if *key != COMMAND_CONVERT {
             return Ok(false.into());
         }
+        self.kill_auto_timer();
+        self.sink.cancel_auto_pending();
 
         let request_id = self.next_request_id.get().wrapping_add(1).max(1);
         self.next_request_id.set(request_id);
@@ -1041,6 +1274,7 @@ impl TipHostSession {
             revision: target.ticket.revision(),
             text: target.source.clone(),
             current_result: additional.then(|| target.current.clone()),
+            auto_conversion: false,
             deadline: target
                 .ticket
                 .deadline()
@@ -1050,6 +1284,7 @@ impl TipHostSession {
             id: request_id,
             target,
             additional,
+            auto_conversion: false,
         }));
         if self.command_sender.try_send(command).is_err() {
             self.state.record(
@@ -1125,6 +1360,7 @@ fn worker_loop(
         if current_worker.is_none() || current_worker.as_ref().is_some_and(|w| w.is_closed()) {
             state.connected.store(false, Ordering::Release);
             state.allowed.store(false, Ordering::Release);
+            state.auto_allowed.store(false, Ordering::Release);
             current_worker = None;
 
             // Preparation failures also clear current_worker. Throttle every
@@ -1196,6 +1432,9 @@ fn worker_loop(
                             .authorization
                             .store(policy.authorization, Ordering::Release);
                         state.allowed.store(policy.allowed, Ordering::Release);
+                        state
+                            .auto_allowed
+                            .store(policy.auto_allowed, Ordering::Release);
                         state.set_protection_profile(policy.protection_profile);
                         state.connected.store(true, Ordering::Release);
                         prep_ok = true;
@@ -1214,6 +1453,7 @@ fn worker_loop(
             if !prep_ok {
                 state.connected.store(false, Ordering::Release);
                 state.allowed.store(false, Ordering::Release);
+                state.auto_allowed.store(false, Ordering::Release);
                 current_worker = None;
                 continue;
             }
@@ -1229,6 +1469,9 @@ fn worker_loop(
                     .authorization
                     .store(policy.authorization, Ordering::Release);
                 state.allowed.store(policy.allowed, Ordering::Release);
+                state
+                    .auto_allowed
+                    .store(policy.auto_allowed, Ordering::Release);
                 state.set_protection_profile(policy.protection_profile);
                 state.connected.store(true, Ordering::Release);
             }
@@ -1237,6 +1480,7 @@ fn worker_loop(
                 // Connection broken or revoked
                 state.connected.store(false, Ordering::Release);
                 state.allowed.store(false, Ordering::Release);
+                state.auto_allowed.store(false, Ordering::Release);
                 current_worker = None;
                 continue;
             }
@@ -1249,6 +1493,7 @@ fn worker_loop(
                 revision,
                 text,
                 current_result,
+                auto_conversion,
                 deadline,
             }) => {
                 // Reserve permit
@@ -1263,6 +1508,7 @@ fn worker_loop(
                             },
                             text,
                             current_result,
+                            auto_conversion,
                             deadline,
                             mode: Mode::Pinned,
                         };
@@ -1315,40 +1561,59 @@ fn worker_loop(
                                                 ),
                                             );
                                         }
-                                        match (completion.outcome(), completion.alternatives()) {
-                                            (Ok(result_text), Ok(alternatives)) => {
-                                                state.record(
-                                                    Some(request_id),
-                                                    "worker_reply",
-                                                    format_args!(
-                                                        "additional={}",
-                                                        alternatives.is_some()
-                                                    ),
-                                                );
-                                                let _ = event_sender.send(WorkerEvent::Completed {
-                                                    request_id,
-                                                    text: result_text.to_owned(),
-                                                    alternatives: alternatives.map(<[_]>::to_vec),
-                                                });
-                                                notify_drain(drain_hwnd, request_id);
-                                            }
-                                            (outcome, alternatives) => {
-                                                state.record(
-                                                    Some(request_id),
-                                                    "worker_reply_failed",
-                                                    format_args!(
-                                                        "text={:?}, alternatives={:?}",
-                                                        outcome.as_ref().err(),
-                                                        alternatives.err()
-                                                    ),
-                                                );
-                                                debug_log(&format!(
-                                                    "Worker completion failed: {:?}",
-                                                    outcome.err()
-                                                ));
-                                                let _ = event_sender
-                                                    .send(WorkerEvent::Failed { request_id });
-                                                notify_drain(drain_hwnd, request_id);
+                                        if completion.is_skipped() {
+                                            state.record(
+                                                Some(request_id),
+                                                "worker_reply_skipped",
+                                                format_args!("auto_conversion skipped"),
+                                            );
+                                            let _ = event_sender.send(WorkerEvent::Completed {
+                                                request_id,
+                                                text: String::new(),
+                                                alternatives: None,
+                                                skipped: true,
+                                            });
+                                            notify_drain(drain_hwnd, request_id);
+                                        } else {
+                                            match (completion.outcome(), completion.alternatives())
+                                            {
+                                                (Ok(result_text), Ok(alternatives)) => {
+                                                    state.record(
+                                                        Some(request_id),
+                                                        "worker_reply",
+                                                        format_args!(
+                                                            "additional={}",
+                                                            alternatives.is_some()
+                                                        ),
+                                                    );
+                                                    let _ =
+                                                        event_sender.send(WorkerEvent::Completed {
+                                                            request_id,
+                                                            text: result_text.to_owned(),
+                                                            alternatives: alternatives
+                                                                .map(<[_]>::to_vec),
+                                                            skipped: false,
+                                                        });
+                                                    notify_drain(drain_hwnd, request_id);
+                                                }
+                                                (outcome, alternatives) => {
+                                                    state.record(
+                                                        Some(request_id),
+                                                        "worker_reply_failed",
+                                                        format_args!(
+                                                            "text={:?}, alternatives={:?}",
+                                                            outcome.as_ref().err(),
+                                                            alternatives.err()
+                                                        ),
+                                                    );
+                                                    debug_log(&format!(
+                                                        "Worker completion failed: {:?}",
+                                                        outcome.err()
+                                                    ));
+                                                    let _ = event_sender
+                                                        .send(WorkerEvent::Failed { request_id });
+                                                    notify_drain(drain_hwnd, request_id);
+                                                }
                                             }
                                         }
                                     }
@@ -1683,6 +1948,8 @@ mod tests {
             pending_ticket: RefCell::new(None),
             last_conversion: RefCell::new(None),
             selection: RefCell::new(None),
+            run: Rc::new(RefCell::new(crate::run_record::RunRecord::default())),
+            auto_callback: RefCell::new(None),
         });
 
         let mut window = DrainWindow::create(Rc::as_ptr(&sink)).expect("create drain window");
@@ -1694,6 +1961,7 @@ mod tests {
                 request_id: 100,
                 text: "test".into(),
                 alternatives: None,
+                skipped: false,
             })
             .expect("send event");
 
@@ -1755,6 +2023,8 @@ mod tests {
             pending_ticket: RefCell::new(None),
             last_conversion: RefCell::new(None),
             selection: RefCell::new(None),
+            run: Rc::new(RefCell::new(crate::run_record::RunRecord::default())),
+            auto_callback: RefCell::new(None),
         });
 
         // 1. Send Failed event

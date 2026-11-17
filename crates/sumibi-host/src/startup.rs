@@ -18,7 +18,18 @@ pub struct PreparedHost {
 impl PreparedHost {
     pub fn load(path: &Path) -> Result<Self, SettingsError> {
         Settings::upgrade_credentials(path)?;
-        Self::load_with(path, credential_store::load_credential)
+        let host = Self::load_with(path, credential_store::load_credential)?;
+        if let Some(openai_dest) = crate::manual::Destination::for_chat_completions(
+            crate::manual::Scheme::Https,
+            "api.openai.com",
+            443,
+            "/v1",
+        ) {
+            if let Ok(Some(cred)) = credential_store::load_credential(&openai_dest) {
+                let _ = host.authority.set_decisions_credential(Some(cred));
+            }
+        }
+        Ok(host)
     }
 
     fn load_with(
@@ -61,6 +72,23 @@ impl PreparedHost {
         {
             self.authority
                 .grant_manual_consent(self.settings.destination())
+                .map_err(SettingsError::Policy)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn restore_auto_consent(&self) -> Result<(), SettingsError> {
+        use crate::manual::PolicySource;
+        if self.settings.auto_conversion()
+            && self.credential_outcome.is_ok()
+            && self.authority.snapshot().is_some_and(|state| {
+                state.credential.is_some()
+                    && (state.decisions_credential.is_some()
+                        || state.destination.host() == "api.openai.com")
+            })
+        {
+            self.authority
+                .grant_auto_consent(self.settings.destination())
                 .map_err(SettingsError::Policy)?;
         }
         Ok(())
@@ -189,5 +217,33 @@ mod tests {
         let restarted = load();
         restarted.restore_manual_consent().unwrap();
         assert!(!restarted.authority().snapshot().unwrap().allowed);
+    }
+
+    #[test]
+    fn remembered_auto_consent_restores_independently_from_manual_consent() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("settings.json");
+        let settings = Settings::new(Scheme::Https, "api.openai.com", 443, "/v1", "gpt-4o")
+            .unwrap()
+            .with_auto_conversion(true);
+        settings.create(&path).unwrap();
+
+        let host = PreparedHost::load_with(&path, |_| {
+            Ok(Some(
+                Credential::new("synthetic-openai-key".into()).unwrap(),
+            ))
+        })
+        .unwrap();
+        host.restore_manual_consent().unwrap();
+        host.restore_auto_consent().unwrap();
+
+        let snapshot = host.authority().snapshot().unwrap();
+        assert!(!snapshot.allowed);
+        assert!(snapshot.auto_allowed);
+        assert!(host.authority().is_auto_consented());
+
+        let no_key = PreparedHost::load_with(&path, |_| Ok(None)).unwrap();
+        no_key.restore_auto_consent().unwrap();
+        assert!(!no_key.authority().snapshot().unwrap().auto_allowed);
     }
 }

@@ -136,6 +136,14 @@ impl BudgetManager {
     }
 }
 
+/// Default per-user persistent budget file path (`%LOCALAPPDATA%\Sumibi\decisions_budget.json`).
+pub fn default_budget_path() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|base| base.join("Sumibi").join("decisions_budget.json"))
+}
+
 /// Build the OpenAI API request body for decisions evaluation.
 pub fn request_body_decisions(
     model: &str,

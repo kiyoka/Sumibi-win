@@ -145,7 +145,9 @@ pub struct PolicySnapshot {
     pub manual_consent: Option<Destination>,
     pub auto_consent: Option<Destination>,
     pub credential: Option<Arc<Credential>>,
+    pub decisions_credential: Option<Arc<Credential>>,
     pub allowed: bool,
+    pub auto_allowed: bool,
     pub protection_profile: sumibi_protocol::ProtectionProfile,
 }
 
@@ -329,6 +331,105 @@ impl SendGate for AuthoritySendGate<'_> {
 /// exactly once around its outbound request write. Revocation that finishes
 /// before the callback starts denies all request bytes; a concurrent revoke
 /// waits for the bounded write to finish before acknowledging the new policy.
+pub fn convert_ordered_auto(
+    request: ManualRequest<'_>,
+    authority: &PolicyAuthority,
+    admission: &impl SendAdmission,
+    transport: &impl OrderedConversionTransport,
+) -> Result<String, SendError> {
+    convert_ordered_with_auto(
+        request,
+        authority,
+        admission,
+        |destination, credential, source, deadline, gate| {
+            let result =
+                transport.convert_ordered(destination, credential, source, deadline, gate)?;
+            if !message::valid_text(&result) {
+                return Err(SendError::InvalidResponse);
+            }
+            Ok(result)
+        },
+    )
+}
+
+pub(crate) fn convert_ordered_with_auto<T>(
+    request: ManualRequest<'_>,
+    authority: &PolicyAuthority,
+    admission: &impl SendAdmission,
+    convert: impl FnOnce(&Destination, &str, &str, Instant, &mut dyn SendGate) -> Result<T, SendError>,
+) -> Result<T, SendError> {
+    if admission.is_cancelled() {
+        return Err(SendError::PolicyDenied);
+    }
+    if admission
+        .request_deadline()
+        .is_some_and(|accepted| request.deadline > accepted)
+    {
+        return Err(SendError::InvalidRequest);
+    }
+    let remaining = request.deadline.saturating_duration_since(Instant::now());
+    if request.revision.input == 0
+        || request.revision.settings == 0
+        || request.revision.authorization == 0
+        || !message::valid_text(request.source)
+        || remaining > Duration::from_secs(60)
+    {
+        return Err(SendError::InvalidRequest);
+    }
+    let before = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    let credential = authorized_auto_chat(&before, &request)?;
+    if Instant::now() >= request.deadline {
+        return Err(SendError::Timeout);
+    }
+    let mut gate = AuthorityAutoSendGate {
+        authority,
+        revision: request.revision,
+        destination: request.destination,
+        credential: &credential,
+        admission,
+        deadline: request.deadline,
+        used: false,
+        sent: false,
+    };
+    let result = convert(
+        request.destination,
+        credential.expose(),
+        request.source,
+        request.deadline,
+        &mut gate,
+    )?;
+    if !gate.sent {
+        return Err(SendError::InvalidResponse);
+    }
+    if admission.is_cancelled() {
+        return Err(SendError::PolicyDenied);
+    }
+    if Instant::now() >= request.deadline {
+        return Err(SendError::Timeout);
+    }
+    let after = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    let current_credential = authorized_auto_chat(&after, &request)?;
+    if !Arc::ptr_eq(&credential, &current_credential) {
+        return Err(SendError::PolicyDenied);
+    }
+    Ok(result)
+}
+
+fn authorized_auto_chat(
+    snapshot: &PolicySnapshot,
+    request: &ManualRequest<'_>,
+) -> Result<Arc<Credential>, SendError> {
+    if !snapshot.auto_allowed
+        || snapshot.settings != request.revision.settings
+        || snapshot.authorization != request.revision.authorization
+        || snapshot.destination != *request.destination
+        || snapshot.auto_consent.as_ref() != Some(request.destination)
+    {
+        return Err(SendError::PolicyDenied);
+    }
+    snapshot.credential.clone().ok_or(SendError::PolicyDenied)
+}
+
 pub fn convert_ordered(
     request: ManualRequest<'_>,
     authority: &PolicyAuthority,
@@ -519,6 +620,126 @@ pub fn evaluate_decisions_ordered(
     Ok(result)
 }
 
+struct AuthorityOfficialAutoSendGate<'a> {
+    authority: &'a PolicyAuthority,
+    revision: Revision,
+    credential: &'a Arc<Credential>,
+    admission: &'a dyn SendAdmission,
+    deadline: Instant,
+    used: bool,
+    sent: bool,
+}
+
+impl SendGate for AuthorityOfficialAutoSendGate<'_> {
+    fn is_cancelled(&self) -> bool {
+        self.admission.is_cancelled()
+    }
+
+    fn write_authorized(
+        &mut self,
+        write: &mut dyn FnMut() -> Result<(), TransportError>,
+    ) -> Result<(), SendError> {
+        if self.used {
+            return Err(SendError::InvalidRequest);
+        }
+        self.used = true;
+        if Instant::now() >= self.deadline {
+            return Err(SendError::Timeout);
+        }
+        let _guard = self
+            .authority
+            .authorize_official_auto_send_start(self.revision, self.credential)
+            .map_err(|_| SendError::PolicyDenied)?;
+        if Instant::now() >= self.deadline {
+            return Err(SendError::Timeout);
+        }
+        self.admission.write_if_active(write)?;
+        self.sent = true;
+        Ok(())
+    }
+}
+
+/// Official OpenAI `/v1/decisions` send boundary under independent auto-conversion consent.
+pub fn evaluate_official_decisions_ordered(
+    destination: &Destination,
+    revision: Revision,
+    deadline: Instant,
+    authority: &PolicyAuthority,
+    admission: &impl SendAdmission,
+    transport: &impl OrderedConversionTransport,
+) -> Result<String, SendError> {
+    if admission.is_cancelled() {
+        return Err(SendError::PolicyDenied);
+    }
+    if admission
+        .request_deadline()
+        .is_some_and(|accepted| deadline > accepted)
+    {
+        return Err(SendError::InvalidRequest);
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if revision.input == 0
+        || revision.settings == 0
+        || revision.authorization == 0
+        || remaining > Duration::from_secs(60)
+    {
+        return Err(SendError::InvalidRequest);
+    }
+    let before = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    let credential = authorized_official_auto(&before, revision)?;
+    if Instant::now() >= deadline {
+        return Err(SendError::Timeout);
+    }
+    let mut gate = AuthorityOfficialAutoSendGate {
+        authority,
+        revision,
+        credential: &credential,
+        admission,
+        deadline,
+        used: false,
+        sent: false,
+    };
+    let result =
+        transport.convert_ordered(destination, credential.expose(), "", deadline, &mut gate)?;
+    if !gate.sent {
+        return Err(SendError::InvalidResponse);
+    }
+    if admission.is_cancelled() {
+        return Err(SendError::PolicyDenied);
+    }
+    if Instant::now() >= deadline {
+        return Err(SendError::Timeout);
+    }
+    let after = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    let current_credential = authorized_official_auto(&after, revision)?;
+    if !Arc::ptr_eq(&credential, &current_credential) {
+        return Err(SendError::PolicyDenied);
+    }
+    Ok(result)
+}
+
+fn authorized_official_auto(
+    snapshot: &PolicySnapshot,
+    revision: Revision,
+) -> Result<Arc<Credential>, SendError> {
+    if !snapshot.auto_allowed
+        || snapshot.settings != revision.settings
+        || snapshot.authorization != revision.authorization
+        || snapshot.auto_consent.is_none()
+    {
+        return Err(SendError::PolicyDenied);
+    }
+    snapshot
+        .decisions_credential
+        .clone()
+        .or_else(|| {
+            (snapshot.destination.host() == "api.openai.com")
+                .then(|| snapshot.credential.clone())
+                .flatten()
+        })
+        .ok_or(SendError::PolicyDenied)
+}
+
 fn authorized_auto(
     snapshot: &PolicySnapshot,
     revision: Revision,
@@ -666,7 +887,9 @@ mod tests {
             manual_consent: Some(destination),
             auto_consent: None,
             credential: Some(Arc::new(Credential::new("synthetic-key".into()).unwrap())),
+            decisions_credential: None,
             allowed: true,
+            auto_allowed: false,
             protection_profile: sumibi_protocol::ProtectionProfile::Standard,
         }))
     }

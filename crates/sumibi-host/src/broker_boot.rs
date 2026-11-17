@@ -142,6 +142,10 @@ impl<'a> BrokerBoot<'a> {
         })
     }
 
+    pub fn set_budget(&mut self, budget: Arc<crate::decisions::BudgetManager>) {
+        self.owner.set_budget(budget);
+    }
+
     pub fn name(&self) -> &Nonce {
         &self.name
     }

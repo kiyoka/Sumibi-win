@@ -125,6 +125,7 @@ pub fn serve_once(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> 
         settings: 1,
         authorization: 1,
         allowed,
+        auto_allowed: false,
         protection_profile: sumibi_protocol::ProtectionProfile::Standard,
     };
     let mut order = BrokerSession::new(bootstrap.boot.id(), policy).map_err(map_broker_error)?;
@@ -219,6 +220,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
         settings: 1,
         authorization: 1,
         allowed,
+        auto_allowed: false,
         protection_profile: sumibi_protocol::ProtectionProfile::Standard,
     };
     let gate = BrokerPolicyGate::new(policy)?;
@@ -366,6 +368,7 @@ fn serve_channel(bootstrap: Bootstrap, diagnostic_enabled: bool) -> Result<()> {
                     .ok_or(Error::InvalidMessage)?;
                 let reply = Message::Result(ConversionResult {
                     alternatives: None,
+                    skipped: false,
                     request: future,
                     revision: convert.revision,
                     text: "日本語".into(),
@@ -583,12 +586,14 @@ mod tests {
             settings: 1,
             authorization: 1,
             allowed: true,
+            auto_allowed: false,
             protection_profile: sumibi_protocol::ProtectionProfile::Standard,
         }
     }
     fn request(id: u64) -> Convert {
         Convert {
             current_result: None,
+            auto_conversion: false,
             request: id,
             revision: Revision {
                 input: 1,
