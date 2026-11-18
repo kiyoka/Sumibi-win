@@ -17,6 +17,12 @@ const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthHeader {
+    Bearer,
+    XGoogApiKey,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     InvalidDestination,
     Capacity,
@@ -342,9 +348,21 @@ impl PreparedRequest {
     /// guard through this entire call, not just WinHttpSendRequest's return.
     /// Payload and header storage remain in the context through final close.
     /// No response is received, automatic retry or redirect is attempted.
+    /// Authentication header format for native HTTPS requests.
     pub fn send(
         &mut self,
         credential: &str,
+        body: Vec<u8>,
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), Error> {
+        self.send_with_auth_header(credential, AuthHeader::Bearer, body, deadline, cancelled)
+    }
+
+    pub fn send_with_auth_header(
+        &mut self,
+        credential: &str,
+        auth_header: AuthHeader,
         body: Vec<u8>,
         deadline: Instant,
         cancelled: &dyn Fn() -> bool,
@@ -370,12 +388,16 @@ impl PreparedRequest {
         if cancelled() {
             return Err(Error::Cancelled);
         }
+        let header_line = match auth_header {
+            AuthHeader::Bearer => {
+                format!("Content-Type: application/json\r\nAuthorization: Bearer {credential}\r\n")
+            }
+            AuthHeader::XGoogApiKey => {
+                format!("Content-Type: application/json\r\nx-goog-api-key: {credential}\r\n")
+            }
+        };
         let payload = Arc::new(Payload {
-            headers: format!(
-                "Content-Type: application/json\r\nAuthorization: Bearer {credential}\r\n"
-            )
-            .encode_utf16()
-            .collect(),
+            headers: header_line.encode_utf16().collect(),
             body,
         });
         self.state

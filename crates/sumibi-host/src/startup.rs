@@ -84,7 +84,8 @@ impl PreparedHost {
             && self.authority.snapshot().is_some_and(|state| {
                 state.credential.is_some()
                     && (state.decisions_credential.is_some()
-                        || state.destination.host() == "api.openai.com")
+                        || state.destination.host() == "api.openai.com"
+                        || state.destination.host() == "generativelanguage.googleapis.com")
             })
         {
             self.authority
@@ -245,5 +246,35 @@ mod tests {
         let no_key = PreparedHost::load_with(&path, |_| Ok(None)).unwrap();
         no_key.restore_auto_consent().unwrap();
         assert!(!no_key.authority().snapshot().unwrap().auto_allowed);
+    }
+
+    #[test]
+    fn gemini_auto_consent_restores_with_only_gemini_key() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("settings.json");
+        let settings = Settings::new(
+            Scheme::Https,
+            "generativelanguage.googleapis.com",
+            443,
+            "/v1beta/openai",
+            "gemini-3.6-flash",
+        )
+        .unwrap()
+        .with_auto_conversion(true);
+        settings.create(&path).unwrap();
+
+        let host = PreparedHost::load_with(&path, |_| {
+            Ok(Some(
+                Credential::new("synthetic-gemini-key".into()).unwrap(),
+            ))
+        })
+        .unwrap();
+        host.restore_auto_consent().unwrap();
+
+        let snapshot = host.authority().snapshot().unwrap();
+        assert!(!snapshot.allowed);
+        assert!(snapshot.auto_allowed);
+        assert!(snapshot.decisions_credential.is_none());
+        assert!(host.authority().is_auto_consented());
     }
 }

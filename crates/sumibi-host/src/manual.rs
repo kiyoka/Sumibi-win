@@ -729,6 +729,9 @@ fn authorized_official_auto(
     {
         return Err(SendError::PolicyDenied);
     }
+    if snapshot.destination.host() == "generativelanguage.googleapis.com" {
+        return snapshot.credential.clone().ok_or(SendError::PolicyDenied);
+    }
     snapshot
         .decisions_credential
         .clone()
