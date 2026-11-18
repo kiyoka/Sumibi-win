@@ -728,6 +728,12 @@ mod tests {
             session.receive(frame(convert(1), 1), now).err(),
             Some(BrokerError::PolicyDenied)
         );
+        assert_eq!(session.status(), Status::Closed);
+
+        let mut session = BrokerSession::new(id(20), auto_only_policy).unwrap();
+        session
+            .receive(frame(Message::Hello(Hello { broker: id(20) }), 1), now)
+            .unwrap();
 
         let auto_req = Message::Convert(Convert {
             current_result: None,
