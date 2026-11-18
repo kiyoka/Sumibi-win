@@ -119,6 +119,12 @@ impl RunRecord {
         }
     }
 
+    pub(crate) fn snapshot(&self, context: usize) -> Option<Vec<u16>> {
+        let usable =
+            context != 0 && self.context == context && !self.overflowed && !self.units.is_empty();
+        usable.then(|| self.units.clone())
+    }
+
     /// Consume the record for `context`. It is always discarded afterwards,
     /// whether or not the conversion later succeeds.
     pub(crate) fn take(&mut self, context: usize) -> Option<Vec<u16>> {

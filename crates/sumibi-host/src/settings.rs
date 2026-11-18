@@ -22,6 +22,10 @@ pub enum SettingsError {
     Policy(ChangeError),
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
@@ -35,6 +39,8 @@ struct Record {
     protection_profile: ProtectionProfile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     manual_consent: Option<(String, String)>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    auto_conversion: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     user_dictionary: String,
 }
@@ -54,6 +60,7 @@ pub struct Settings {
     model: String,
     protection_profile: ProtectionProfile,
     manual_consent: Option<(String, String)>,
+    auto_conversion: bool,
     user_dictionary: String,
 }
 
@@ -92,8 +99,22 @@ impl Settings {
             model: model.to_owned(),
             protection_profile: ProtectionProfile::Standard,
             manual_consent: None,
+            auto_conversion: false,
             user_dictionary: String::new(),
         })
+    }
+
+    pub fn auto_conversion(&self) -> bool {
+        self.auto_conversion
+    }
+
+    pub fn with_auto_conversion(mut self, enabled: bool) -> Self {
+        self.auto_conversion = enabled;
+        self
+    }
+
+    pub fn set_auto_conversion(&mut self, enabled: bool) {
+        self.auto_conversion = enabled;
     }
 
     pub fn with_protection_profile(mut self, profile: ProtectionProfile) -> Self {
@@ -238,6 +259,7 @@ impl Settings {
             model: self.model.clone(),
             protection_profile: self.protection_profile,
             manual_consent: self.manual_consent.clone(),
+            auto_conversion: self.auto_conversion,
             user_dictionary: self.user_dictionary.clone(),
         }
     }
@@ -267,6 +289,7 @@ impl Settings {
             return Err(SettingsError::Invalid);
         }
         settings.protection_profile = record.protection_profile;
+        settings.auto_conversion = record.auto_conversion;
         settings.legacy_credentials = record.version == 1;
         if !settings.legacy_credentials {
             settings.manual_consent = record.manual_consent;

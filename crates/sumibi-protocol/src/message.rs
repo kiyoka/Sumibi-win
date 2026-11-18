@@ -86,12 +86,18 @@ pub enum ProtectionProfile {
     Strict,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
     pub settings: u64,
     pub authorization: u64,
     pub allowed: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_allowed: bool,
     #[serde(default)]
     pub protection_profile: ProtectionProfile,
 }
@@ -112,6 +118,8 @@ pub struct Convert {
     pub timeout_ms: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_result: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_conversion: bool,
     pub text: String,
 }
 
@@ -126,6 +134,8 @@ pub struct Cancel {
 pub struct ConversionResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alternatives: Option<Vec<sumibi_core::candidate::CandidateItem>>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub skipped: bool,
     pub request: u64,
     pub revision: Revision,
     pub text: String,
@@ -206,7 +216,8 @@ impl Policy {
             && previous.valid()
             && self.settings >= previous.settings
             && self.authorization >= previous.authorization
-            && (self.allowed == previous.allowed || self.authorization > previous.authorization)
+            && ((self.allowed == previous.allowed && self.auto_allowed == previous.auto_allowed)
+                || self.authorization > previous.authorization)
     }
 }
 

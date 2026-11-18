@@ -303,6 +303,7 @@ pub(super) fn run() -> Result<()> {
                 settings: 1,
                 authorization: 1,
                 allowed: true,
+                auto_allowed: false,
                 protection_profile: sumibi_protocol::ProtectionProfile::Standard,
             },
         });
@@ -333,6 +334,7 @@ pub(super) fn run() -> Result<()> {
         if case == "round-trip" {
             request.message = Message::Result(ConversionResult {
                 alternatives: None,
+                skipped: false,
                 request: value.request,
                 revision: value.revision,
                 text: "日本語".into(),

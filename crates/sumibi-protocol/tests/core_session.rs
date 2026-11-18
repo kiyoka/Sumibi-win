@@ -11,6 +11,7 @@ fn policy() -> Policy {
         settings: 1,
         authorization: 1,
         allowed: true,
+        auto_allowed: false,
         protection_profile: ProtectionProfile::Standard,
     }
 }
@@ -46,6 +47,7 @@ fn peer_response(frame: &[u8]) -> Vec<u8> {
         }),
         Message::Convert(convert) => Message::Result(ConversionResult {
             alternatives: None,
+            skipped: false,
             request: convert.request,
             revision: convert.revision,
             text: "日本語".into(),

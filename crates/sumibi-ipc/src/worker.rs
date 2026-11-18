@@ -103,6 +103,10 @@ impl Completion {
             .map_err(|error| *error)
             .and_then(|reply| reply.text())
     }
+    pub fn is_skipped(&self) -> bool {
+        self.outcome.as_ref().is_ok_and(|reply| reply.is_skipped())
+    }
+
     pub fn alternatives(&self) -> Result<Option<&[sumibi_core::candidate::CandidateItem]>> {
         self.outcome()?;
         self.outcome
@@ -888,13 +892,23 @@ fn run(
                     channel = Some(renewed?);
                 }
             }
-            channel.as_mut().ok_or(Error::Closed)?.convert_timed(
-                revision,
-                &request.text,
-                request.current_result.as_deref(),
-                request.deadline,
-                &mut channel_timing,
-            )
+            let active_channel = channel.as_mut().ok_or(Error::Closed)?;
+            if request.auto_conversion {
+                active_channel.auto_convert_timed(
+                    revision,
+                    &request.text,
+                    request.deadline,
+                    &mut channel_timing,
+                )
+            } else {
+                active_channel.convert_timed(
+                    revision,
+                    &request.text,
+                    request.current_result.as_deref(),
+                    request.deadline,
+                    &mut channel_timing,
+                )
+            }
         }))
         .unwrap_or(Err(Error::WorkerFailed));
         drop(request.text);
@@ -976,6 +990,7 @@ mod tests {
                 settings: 1,
                 authorization: 1,
                 allowed: true,
+                auto_allowed: false,
                 protection_profile: sumibi_protocol::ProtectionProfile::Standard,
             }))),
         };
@@ -1064,6 +1079,7 @@ mod tests {
         send.send(Command {
             request: Request {
                 current_result: None,
+                auto_conversion: false,
                 id: 1,
                 revision: Revision {
                     input: 1,
@@ -1177,6 +1193,7 @@ mod tests {
                             settings: 1,
                             authorization: 1,
                             allowed: true,
+                            auto_allowed: false,
                             protection_profile: sumibi_protocol::ProtectionProfile::Standard,
                         },
                     },

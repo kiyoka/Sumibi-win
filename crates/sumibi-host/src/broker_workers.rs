@@ -32,6 +32,7 @@ pub enum WorkerPoolError {
 pub enum WorkerResult {
     Text(String),
     Alternatives(Vec<sumibi_core::candidate::CandidateItem>),
+    Skipped(String),
 }
 
 pub struct WorkerCompletion {
@@ -54,6 +55,9 @@ impl WorkerCompletion {
             }
             Ok(WorkerResult::Alternatives(items)) => {
                 runtime.publish_alternatives(self.reply, items, stop, deadline)
+            }
+            Ok(WorkerResult::Skipped(text)) => {
+                runtime.publish_skipped(self.reply, text, stop, deadline)
             }
             Err(code) => runtime.publish_error(self.reply, code, stop, deadline),
         }
@@ -117,6 +121,7 @@ pub struct BrokerWorkLoop {
     workers: BrokerWorkers,
     accept_first: bool,
     completed_accept_index: Option<usize>,
+    budget: Arc<crate::decisions::BudgetManager>,
 }
 
 #[derive(Clone, Copy)]
@@ -133,11 +138,22 @@ impl Default for BrokerWorkLoop {
 
 impl BrokerWorkLoop {
     pub fn new() -> Self {
+        Self::with_budget(Arc::new(crate::decisions::BudgetManager::new_in_memory(
+            crate::decisions::MAX_DECISIONS_BUDGET,
+        )))
+    }
+
+    pub fn with_budget(budget: Arc<crate::decisions::BudgetManager>) -> Self {
         Self {
             workers: BrokerWorkers::new(),
             accept_first: true,
             completed_accept_index: None,
+            budget,
         }
+    }
+
+    pub fn set_budget(&mut self, budget: Arc<crate::decisions::BudgetManager>) {
+        self.budget = budget;
     }
 
     pub fn active_count(&self) -> usize {
@@ -388,6 +404,7 @@ impl BrokerWorkLoop {
         if !runtime.uses_source(&authority) {
             return Err(RuntimeError::InvalidTarget);
         }
+        let budget = self.budget.clone();
         self.advance_conversion(runtime, stop, deadline, move |conversion| {
             move |ticket: JobTicket| {
                 let destination = authority
@@ -400,6 +417,43 @@ impl BrokerWorkLoop {
                     source: &conversion.text,
                     deadline: ticket.deadline(),
                 };
+                if conversion.auto_conversion {
+                    return match route {
+                        ChatRoute::DiagnosticLoopback => {
+                            crate::diagnostic_http::convert_chat_with_policy(
+                                request, &authority, &ticket,
+                            )
+                            .map(WorkerResult::Text)
+                            .map_err(classify_send_error)
+                        }
+                        ChatRoute::NativeHttps => {
+                            let states =
+                                [crate::decisions::DecisionState::new(1, &conversion.text, 0)];
+                            let scores =
+                                crate::native_https::evaluate_official_decisions_with_policy(
+                                    conversion.revision,
+                                    &states,
+                                    &authority,
+                                    &ticket,
+                                    &budget,
+                                    ticket.deadline(),
+                                )
+                                .map_err(classify_send_error)?;
+                            let should_convert = scores
+                                .first()
+                                .and_then(|score| score.probability)
+                                .is_some_and(|p| p >= crate::decisions::CONFIDENCE_THRESHOLD);
+                            if !should_convert {
+                                return Ok(WorkerResult::Skipped(conversion.text));
+                            }
+                            crate::native_https::convert_auto_chat_with_policy(
+                                request, &authority, &ticket,
+                            )
+                            .map(WorkerResult::Text)
+                            .map_err(classify_send_error)
+                        }
+                    };
+                }
                 if let Some(current) = conversion.current_result.as_deref() {
                     return match route {
                         ChatRoute::DiagnosticLoopback => {

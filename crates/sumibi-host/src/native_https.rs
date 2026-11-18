@@ -22,6 +22,20 @@ pub fn convert_chat_with_policy(
     convert_with_exchange(request, authority, admission, &NativeExchange { admission })
 }
 
+pub fn convert_auto_chat_with_policy(
+    request: ManualRequest<'_>,
+    authority: &PolicyAuthority,
+    admission: &impl SendAdmission,
+) -> Result<String, SendError> {
+    convert_with_exchange_mode(
+        request,
+        authority,
+        admission,
+        true,
+        &NativeExchange { admission },
+    )
+}
+
 /// Additional chat conversion with local dictionary completions (ADR 0099, ADR 0100).
 /// Requests additional candidates from remote LLM and integrates Nakaguro, Mozc and Sudachi.
 /// Fail-closed: remote LLM failure does not perform silent local fallback substitution.
@@ -108,6 +122,91 @@ fn evaluate_decisions_with_exchange(
         &transport,
     )?;
     serde_json::from_str::<Vec<DecisionResultItem>>(&json).map_err(|_| SendError::InvalidResponse)
+}
+
+/// Evaluate OpenAI Official `/v1/decisions` (`gpt-6-luna`) under separate consent and cost protection.
+pub fn evaluate_official_decisions_with_policy(
+    revision: Revision,
+    states: &[DecisionState],
+    authority: &PolicyAuthority,
+    admission: &impl SendAdmission,
+    budget: &BudgetManager,
+    deadline: Instant,
+) -> Result<Vec<crate::decisions::official::Score>, SendError> {
+    if !authority.is_auto_consented() {
+        return Err(SendError::PolicyDenied);
+    }
+    let snapshot = authority.snapshot().ok_or(SendError::PolicyDenied)?;
+    if !snapshot.auto_allowed
+        || snapshot.settings != revision.settings
+        || snapshot.authorization != revision.authorization
+    {
+        return Err(SendError::PolicyDenied);
+    }
+    let batch =
+        crate::decisions::official::Batch::new(states).map_err(|_| SendError::InvalidRequest)?;
+    let destination = Destination::new(
+        Scheme::Https,
+        crate::decisions::official::HOST,
+        443,
+        crate::decisions::official::PATH,
+    )
+    .ok_or(SendError::InvalidRequest)?;
+
+    budget.reserve().map_err(|_| SendError::PolicyDenied)?;
+
+    let scores = std::sync::Mutex::new(None);
+    let transport = OfficialDecisionsTransport {
+        batch: &batch,
+        exchange: &NativeExchange { admission },
+        scores: &scores,
+    };
+
+    crate::manual::evaluate_official_decisions_ordered(
+        &destination,
+        revision,
+        deadline,
+        authority,
+        admission,
+        &transport,
+    )?;
+
+    scores
+        .into_inner()
+        .ok()
+        .flatten()
+        .ok_or(SendError::InvalidResponse)
+}
+
+struct OfficialDecisionsTransport<'a> {
+    batch: &'a crate::decisions::official::Batch,
+    exchange: &'a dyn Exchange,
+    scores: &'a std::sync::Mutex<Option<Vec<crate::decisions::official::Score>>>,
+}
+
+impl OrderedConversionTransport for OfficialDecisionsTransport<'_> {
+    fn convert_ordered(
+        &self,
+        destination: &Destination,
+        credential: &str,
+        _source: &str,
+        deadline: Instant,
+        gate: &mut dyn SendGate,
+    ) -> Result<String, SendError> {
+        let bytes = self.exchange.exchange(
+            destination,
+            credential,
+            self.batch.body().to_vec(),
+            deadline,
+            gate,
+        )?;
+        let parsed = self
+            .batch
+            .scores(&bytes)
+            .map_err(|_| SendError::InvalidResponse)?;
+        *self.scores.lock().map_err(|_| SendError::InvalidResponse)? = Some(parsed);
+        Ok(String::new())
+    }
 }
 
 struct DecisionsTransport<'a> {
@@ -243,6 +342,16 @@ fn convert_with_exchange(
     admission: &impl SendAdmission,
     exchange: &dyn Exchange,
 ) -> Result<String, SendError> {
+    convert_with_exchange_mode(request, authority, admission, false, exchange)
+}
+
+fn convert_with_exchange_mode(
+    request: ManualRequest<'_>,
+    authority: &PolicyAuthority,
+    admission: &impl SendAdmission,
+    auto_mode: bool,
+    exchange: &dyn Exchange,
+) -> Result<String, SendError> {
     if request.destination.scheme() != Scheme::Https {
         return Err(SendError::InvalidRequest);
     }
@@ -258,7 +367,11 @@ fn convert_with_exchange(
         user_dictionary: &snapshot.user_dictionary,
         exchange,
     };
-    crate::manual::convert_ordered(request, authority, admission, &transport)
+    if auto_mode {
+        crate::manual::convert_ordered_auto(request, authority, admission, &transport)
+    } else {
+        crate::manual::convert_ordered(request, authority, admission, &transport)
+    }
 }
 
 struct ChatTransport<'a> {

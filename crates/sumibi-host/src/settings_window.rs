@@ -28,6 +28,7 @@ struct Actions {
     key_delete: Cell<bool>,
     continue_setup: Cell<bool>,
     debug_toggle: Cell<bool>,
+    auto_conversion_toggle: Cell<bool>,
     close: Cell<bool>,
 }
 struct View {
@@ -39,6 +40,7 @@ struct View {
     path: HWND,
     profile_standard: HWND,
     profile_strict: HWND,
+    auto_conversion: HWND,
     user_dictionary: HWND,
     save: HWND,
     secret: HWND,
@@ -102,6 +104,10 @@ unsafe extern "system" fn procedure(
             }
             if message == WM_COMMAND && key.0 & 0xffff == 6 && key.0 >> 16 == 0 {
                 (*pointer).debug_toggle.set(true);
+                return LRESULT(0);
+            }
+            if message == WM_COMMAND && key.0 & 0xffff == 24 && key.0 >> 16 == 0 {
+                (*pointer).auto_conversion_toggle.set(true);
                 return LRESULT(0);
             }
         }
@@ -222,7 +228,7 @@ impl View {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 600,
-                if initial_setup { 705 } else { 720 },
+                if initial_setup { 775 } else { 790 },
                 None,
                 None,
                 Some(instance.into()),
@@ -238,6 +244,7 @@ impl View {
                 path: HWND::default(),
                 profile_standard: HWND::default(),
                 profile_strict: HWND::default(),
+                auto_conversion: HWND::default(),
                 user_dictionary: HWND::default(),
                 save: HWND::default(),
                 secret: HWND::default(),
@@ -418,12 +425,64 @@ impl View {
                 None,
             );
 
+            child(
+                w!("STATIC"),
+                "自動変換",
+                WINDOW_STYLE(0),
+                18,
+                262,
+                90,
+                24,
+                0,
+            )?;
+            view.auto_conversion = child(
+                w!("BUTTON"),
+                "自動変換を有効にする（OpenAI Decisions / gpt-6-luna）",
+                WS_TABSTOP | BS_AUTOCHECKBOX,
+                115,
+                260,
+                445,
+                24,
+                24,
+            )?;
+            SendMessageW(
+                view.auto_conversion,
+                BM_SETCHECK,
+                Some(WPARAM(usize::from(
+                    settings.is_some_and(Settings::auto_conversion),
+                ))),
+                None,
+            );
+            let budget_used = sumibi_host::decisions::default_budget_path()
+                .and_then(|budget_path| {
+                    sumibi_host::decisions::BudgetManager::new(
+                        budget_path,
+                        sumibi_host::decisions::MAX_DECISIONS_BUDGET,
+                    )
+                    .ok()
+                })
+                .map_or(0, |manager| manager.consumed());
+            let budget_hint = format!(
+                "利用状況: {budget_used} / {} 回（OpenAI API キーが必要です。英語・記号は自動スキップ）",
+                sumibi_host::decisions::MAX_DECISIONS_BUDGET
+            );
+            child(
+                w!("STATIC"),
+                &budget_hint,
+                WINDOW_STYLE(0),
+                115,
+                287,
+                445,
+                24,
+                0,
+            )?;
+
             view.save = child(
                 w!("BUTTON"),
                 "接続先・モデル・ユーザー辞書を保存",
                 WS_TABSTOP,
                 255,
-                265,
+                325,
                 305,
                 30,
                 1,
@@ -433,7 +492,7 @@ impl View {
                 "API キー",
                 WINDOW_STYLE(0),
                 18,
-                315,
+                375,
                 90,
                 24,
                 0,
@@ -443,7 +502,7 @@ impl View {
                 "",
                 WS_BORDER | WS_TABSTOP | WINDOW_STYLE(0xa0),
                 115,
-                310,
+                370,
                 445,
                 28,
                 13,
@@ -454,7 +513,7 @@ impl View {
                 "API キーをこのPCに保存",
                 WS_TABSTOP,
                 250,
-                350,
+                410,
                 310,
                 30,
                 3,
@@ -464,7 +523,7 @@ impl View {
                 "API キーを削除",
                 WS_TABSTOP,
                 115,
-                350,
+                410,
                 120,
                 30,
                 4,
@@ -474,7 +533,7 @@ impl View {
                 "保存した API キーは、この接続先での変換に使用します。",
                 WINDOW_STYLE(0),
                 18,
-                390,
+                450,
                 545,
                 24,
                 0,
@@ -484,7 +543,7 @@ impl View {
                 "キーの保存だけでは送信は許可されません。",
                 WINDOW_STYLE(0),
                 18,
-                430,
+                490,
                 545,
                 40,
                 0,
@@ -494,7 +553,7 @@ impl View {
                 "ユーザー辞書（1行に よみ = 変換後）。変換時に接続先へ送信します。",
                 WINDOW_STYLE(0),
                 18,
-                475,
+                535,
                 545,
                 24,
                 0,
@@ -506,7 +565,7 @@ impl View {
                     .replace('\n', "\r\n"),
                 WS_BORDER | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(0x0044),
                 18,
-                500,
+                560,
                 542,
                 90,
                 23,
@@ -519,7 +578,7 @@ impl View {
                     "送信の確認へ進む",
                     WS_TABSTOP,
                     345,
-                    613,
+                    673,
                     215,
                     32,
                     5,
@@ -532,7 +591,7 @@ impl View {
                     "デバッグモード（Ctrl + J の変換対象と判定をこの PC に記録）",
                     WS_TABSTOP | BS_AUTOCHECKBOX,
                     18,
-                    601,
+                    661,
                     545,
                     24,
                     6,
@@ -548,7 +607,7 @@ impl View {
                     "%LOCALAPPDATA%\\Sumibi\\conversion-logs に入力本文を平文で保存します。",
                     WINDOW_STYLE(0),
                     18,
-                    630,
+                    690,
                     545,
                     24,
                     0,
@@ -681,6 +740,26 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
         if !key_destination_saved {
             set_text(view.secret, "");
         }
+        if view.actions.auto_conversion_toggle.replace(false) {
+            let checked = unsafe { SendMessageW(view.auto_conversion, BM_GETCHECK, None, None).0 }
+                == BST_CHECKED as isize;
+            if checked {
+                let confirmed = unsafe {
+                    MessageBoxW(
+                        Some(view.hwnd),
+                        w!("自動変換（Decisions API）を有効にすると、入力中のテキストを OpenAI（api.openai.com / gpt-6-luna）へ自動送信して日本語かどうか判定します。\n\n利用には OpenAI API キーが必要です（累積上限 10,000 回）。有効にしますか？"),
+                        w!("自動変換の送信確認"),
+                        MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2,
+                    )
+                } == IDYES;
+                if !confirmed {
+                    unsafe {
+                        let _ =
+                            SendMessageW(view.auto_conversion, BM_SETCHECK, Some(WPARAM(0)), None);
+                    }
+                }
+            }
+        }
         if view.actions.save.replace(false) && pending.is_none() && key_pending.is_none() {
             let profile = if unsafe { SendMessageW(view.profile_strict, BM_GETCHECK, None, None).0 }
                 == BST_CHECKED as isize
@@ -689,6 +768,9 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
             } else {
                 ProtectionProfile::Standard
             };
+            let auto_conversion =
+                unsafe { SendMessageW(view.auto_conversion, BM_GETCHECK, None, None).0 }
+                    == BST_CHECKED as isize;
             let settings = text(view.host).and_then(|host| {
                 text(view.model).and_then(|model| {
                     text(view.path).and_then(|base| {
@@ -699,7 +781,10 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
                             &base,
                             &model,
                         )
-                        .map(|s| s.with_protection_profile(profile))
+                        .map(|s| {
+                            s.with_protection_profile(profile)
+                                .with_auto_conversion(auto_conversion)
+                        })
                         .map_err(|_| "invalid settings")
                         .and_then(|settings| {
                             settings
@@ -1042,5 +1127,33 @@ mod tests {
             );
         }
         drop(view_strict);
+    }
+
+    #[test]
+    fn view_initializes_and_reads_auto_conversion_checkbox() {
+        use sumibi_host::manual::Scheme;
+
+        let default_settings =
+            Settings::new(Scheme::Https, "api.openai.com", 443, "/v1", "gpt-4o").unwrap();
+        assert!(!default_settings.auto_conversion());
+        let view_off = View::new(Some(&default_settings), false).expect("create off view");
+        unsafe {
+            assert_eq!(
+                SendMessageW(view_off.auto_conversion, BM_GETCHECK, None, None).0,
+                0
+            );
+        }
+        drop(view_off);
+
+        let enabled_settings = default_settings.with_auto_conversion(true);
+        assert!(enabled_settings.auto_conversion());
+        let view_on = View::new(Some(&enabled_settings), false).expect("create on view");
+        unsafe {
+            assert_eq!(
+                SendMessageW(view_on.auto_conversion, BM_GETCHECK, None, None).0,
+                BST_CHECKED as isize
+            );
+        }
+        drop(view_on);
     }
 }

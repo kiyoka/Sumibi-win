@@ -48,10 +48,15 @@ pub struct Reply {
     pub revision: Revision,
     text: String,
     alternatives: Option<Vec<CandidateItem>>,
+    skipped: bool,
     deadline: Instant,
     _delivery: Arc<Delivery>,
 }
 impl Reply {
+    pub fn is_skipped(&self) -> bool {
+        self.skipped
+    }
+
     pub fn alternatives(&self) -> Result<Option<&[CandidateItem]>> {
         self.text()?;
         Ok(self.alternatives.as_deref())
@@ -272,11 +277,40 @@ impl Channel {
         self.convert_timed(revision, text, current_result, deadline, &mut None)
     }
 
+    pub(crate) fn auto_convert_timed(
+        &mut self,
+        revision: Revision,
+        text: &str,
+        request_deadline: Instant,
+        timing: &mut Option<ChannelTiming>,
+    ) -> Result<Reply> {
+        self.convert_timed_inner(revision, text, None, true, request_deadline, timing)
+    }
+
     pub(crate) fn convert_timed(
         &mut self,
         revision: Revision,
         text: &str,
         current_result: Option<&str>,
+        request_deadline: Instant,
+        timing: &mut Option<ChannelTiming>,
+    ) -> Result<Reply> {
+        self.convert_timed_inner(
+            revision,
+            text,
+            current_result,
+            false,
+            request_deadline,
+            timing,
+        )
+    }
+
+    fn convert_timed_inner(
+        &mut self,
+        revision: Revision,
+        text: &str,
+        current_result: Option<&str>,
+        auto_conversion: bool,
         request_deadline: Instant,
         timing: &mut Option<ChannelTiming>,
     ) -> Result<Reply> {
@@ -300,12 +334,13 @@ impl Channel {
             revision,
             text,
             current_result,
+            auto_conversion,
             deadline,
             request_deadline,
             timing,
         );
         match result {
-            Ok((request, text, alternatives)) => {
+            Ok((request, text, alternatives, skipped)) => {
                 self.completed += 1;
                 let delivery = Arc::new(Delivery {
                     _reservation: self.reservation.clone(),
@@ -316,6 +351,7 @@ impl Channel {
                     revision,
                     text,
                     alternatives,
+                    skipped,
                     deadline,
                     _delivery: delivery,
                 })
@@ -327,15 +363,17 @@ impl Channel {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn exchange(
         &mut self,
         revision: Revision,
         text: &str,
         current_result: Option<&str>,
+        auto_conversion: bool,
         deadline: Instant,
         request_deadline: Instant,
         timing: &mut Option<ChannelTiming>,
-    ) -> Result<(u64, String, Option<Vec<CandidateItem>>)> {
+    ) -> Result<(u64, String, Option<Vec<CandidateItem>>, bool)> {
         if self.completed >= MAX_REQUESTS {
             return Err(Error::Retired);
         }
@@ -361,7 +399,12 @@ impl Channel {
             return Err(Error::Timeout);
         }
         let connected = self.connected.as_mut().ok_or(Error::Closed)?;
-        if !connected.policy.allowed
+        let permitted = if auto_conversion {
+            connected.policy.auto_allowed
+        } else {
+            connected.policy.allowed
+        };
+        if !permitted
             || connected.policy.settings != revision.settings
             || connected.policy.authorization != revision.authorization
         {
@@ -376,16 +419,20 @@ impl Channel {
             &self.stop,
             deadline,
         )?;
-        let bytes = connected
-            .client
-            .begin_conversion(
+        let bytes = if auto_conversion {
+            connected
+                .client
+                .auto_convert(revision.input, text, milliseconds as u32, Instant::now())
+        } else {
+            connected.client.begin_conversion(
                 revision.input,
                 text,
                 current_result,
                 milliseconds as u32,
                 Instant::now(),
             )
-            .map_err(|_| Error::InvalidMessage)?;
+        }
+        .map_err(|_| Error::InvalidMessage)?;
         let expected = connected
             .client
             .pending_request()
@@ -403,12 +450,13 @@ impl Channel {
                 revision: actual,
                 outcome,
             } if request == expected && actual == revision => {
-                let (text, alternatives) = match (outcome, current_result) {
-                    (Outcome::Result(text), None) => (text, None),
+                let (text, alternatives, skipped) = match (outcome, current_result) {
+                    (Outcome::Result(text), None) => (text, None, false),
+                    (Outcome::Skipped, None) if auto_conversion => (String::new(), None, true),
                     (Outcome::Alternatives(items), Some(current))
-                        if message::valid_alternatives(current, &items) =>
+                        if !auto_conversion && message::valid_alternatives(current, &items) =>
                     {
-                        (current.to_owned(), Some(items))
+                        (current.to_owned(), Some(items), false)
                     }
                     _ => return Err(Error::InvalidMessage),
                 };
@@ -419,7 +467,7 @@ impl Channel {
                     &self.stop,
                     deadline,
                 )?;
-                Ok((request, text, alternatives))
+                Ok((request, text, alternatives, skipped))
             }
             Event::PolicyChanged {
                 cancelled: Some(request),

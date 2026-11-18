@@ -14,11 +14,14 @@ pub use sumibi_core::decisions::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+pub mod official;
+
 const DECISIONS_SYSTEM_PROMPT: &str = "あなたは入力中のテキストを監視し、自然な日本語へ自動変換すべき確定的な状態かどうかを判定するIME判定エンジンです。\n各状態（id, text）について、以下のJSON形式のみを返してください：\n{\"decisions\":[{\"id\":<id>,\"should_convert\":<true|false>,\"confidence\":<0.0〜1.0>,\"converted_text\":<変換後の日本語またはnull>}]}\nJSON以外の説明やMarkdownのコードフェンスは返さないでください。";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecisionsError {
     InvalidModel,
+    InvalidObservation,
     EmptyStates,
     TooManyStates,
     GraphemesExceeded,
@@ -131,6 +134,14 @@ impl BudgetManager {
         self.consumed.store(next_count, Ordering::Release);
         Ok(next_count)
     }
+}
+
+/// Default per-user persistent budget file path (`%LOCALAPPDATA%\Sumibi\decisions_budget.json`).
+pub fn default_budget_path() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|base| base.join("Sumibi").join("decisions_budget.json"))
 }
 
 /// Build the OpenAI API request body for decisions evaluation.

@@ -98,6 +98,7 @@ impl Drop for Reservation {
 
 pub struct Request {
     pub current_result: Option<String>,
+    pub auto_conversion: bool,
     pub id: u64,
     pub revision: Revision,
     pub text: String,
@@ -367,6 +368,7 @@ mod tests {
                 settings: 1,
                 authorization: 1,
                 allowed: true,
+                auto_allowed: false,
                 protection_profile: sumibi_protocol::ProtectionProfile::Standard,
             },
         }));
@@ -374,6 +376,7 @@ mod tests {
             settings: 1,
             authorization: 2,
             allowed: false,
+            auto_allowed: false,
             protection_profile: sumibi_protocol::ProtectionProfile::Standard,
         }));
         let mut inbox = Inbox {
@@ -467,6 +470,7 @@ mod tests {
     fn invalid_requests_are_rejected_before_launch() {
         let mut request = Request {
             current_result: None,
+            auto_conversion: false,
             id: 1,
             revision: Revision {
                 input: 1,

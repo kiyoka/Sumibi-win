@@ -69,7 +69,9 @@ impl PolicyAuthority {
                 manual_consent: None,
                 auto_consent: None,
                 credential: None,
+                decisions_credential: None,
                 allowed: false,
+                auto_allowed: false,
                 protection_profile,
             }),
             changed: Condvar::new(),
@@ -130,7 +132,7 @@ impl PolicyAuthority {
         revision: Revision,
     ) -> Result<ResultPublicationGuard<'_>, ChangeError> {
         let state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
-        if !state.allowed
+        if !(state.allowed || state.auto_allowed)
             || revision.settings != state.settings
             || revision.authorization != state.authorization
         {
@@ -168,7 +170,7 @@ impl PolicyAuthority {
         credential: &Arc<Credential>,
     ) -> Result<SendStartGuard<'_>, ChangeError> {
         let state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
-        if !state.allowed
+        if !(state.allowed || state.auto_allowed)
             || revision.settings != state.settings
             || revision.authorization != state.authorization
             || state.destination != *destination
@@ -177,6 +179,28 @@ impl PolicyAuthority {
                 .credential
                 .as_ref()
                 .is_some_and(|current| Arc::ptr_eq(current, credential))
+        {
+            return Err(ChangeError::StalePolicy);
+        }
+        Ok(SendStartGuard { _state: state })
+    }
+
+    pub fn authorize_official_auto_send_start(
+        &self,
+        revision: Revision,
+        credential: &Arc<Credential>,
+    ) -> Result<SendStartGuard<'_>, ChangeError> {
+        let state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        let active_cred = state.decisions_credential.as_ref().or_else(|| {
+            (state.destination.host() == "api.openai.com")
+                .then(|| state.credential.as_ref())
+                .flatten()
+        });
+        if !state.auto_allowed
+            || revision.settings != state.settings
+            || revision.authorization != state.authorization
+            || state.auto_consent.is_none()
+            || !active_cred.is_some_and(|current| Arc::ptr_eq(current, credential))
         {
             return Err(ChangeError::StalePolicy);
         }
@@ -237,6 +261,7 @@ impl PolicyAuthority {
         state.manual_consent = None;
         state.auto_consent = None;
         state.allowed = false;
+        state.auto_allowed = false;
         let published = version(&state);
         drop(state);
         self.changed.notify_all();
@@ -261,6 +286,7 @@ impl PolicyAuthority {
             state.manual_consent = None;
             state.auto_consent = None;
             state.allowed = false;
+            state.auto_allowed = false;
         }
         state.model = Some(model.to_owned());
         state.settings = settings;
@@ -348,6 +374,7 @@ impl PolicyAuthority {
             state.manual_consent = None;
             state.auto_consent = None;
             state.allowed = false;
+            state.auto_allowed = false;
         }
         let published = version(&state);
         drop(state);
@@ -371,6 +398,7 @@ impl PolicyAuthority {
         state.manual_consent = None;
         state.auto_consent = None;
         state.allowed = false;
+        state.auto_allowed = false;
         let published = version(&state);
         drop(state);
         self.changed.notify_all();
@@ -398,6 +426,7 @@ impl PolicyAuthority {
         state.manual_consent = None;
         state.auto_consent = None;
         state.allowed = false;
+        state.auto_allowed = false;
         let outcome = match operation(&state.destination) {
             Ok(credential) => {
                 state.credential = credential.map(Arc::new);
@@ -483,6 +512,25 @@ impl PolicyAuthority {
         Ok(published)
     }
 
+    /// Set or clear the OpenAI credential used specifically for Decisions API calls.
+    pub fn set_decisions_credential(
+        &self,
+        credential: Option<Credential>,
+    ) -> Result<PolicyVersion, ChangeError> {
+        let mut state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        let authorization = state
+            .authorization
+            .checked_add(1)
+            .ok_or(ChangeError::Exhausted)?;
+        state.authorization = authorization;
+        state.decisions_credential = credential.map(std::sync::Arc::new);
+        state.auto_allowed = compute_auto_allowed(&state);
+        let published = version(&state);
+        drop(state);
+        self.changed.notify_all();
+        Ok(published)
+    }
+
     /// Grant independent consent for Decisions auto-conversion (ADR 0102).
     /// Kept strictly separate from manual conversion consent.
     pub fn grant_auto_consent(
@@ -500,6 +548,7 @@ impl PolicyAuthority {
             .ok_or(ChangeError::Exhausted)?;
         state.authorization = authorization;
         state.auto_consent = Some(destination.clone());
+        state.auto_allowed = compute_auto_allowed(&state);
         let published = version(&state);
         drop(state);
         self.changed.notify_all();
@@ -515,6 +564,7 @@ impl PolicyAuthority {
             .ok_or(ChangeError::Exhausted)?;
         state.authorization = authorization;
         state.auto_consent = None;
+        state.auto_allowed = false;
         let published = version(&state);
         drop(state);
         self.changed.notify_all();
@@ -528,6 +578,15 @@ impl PolicyAuthority {
         };
         state.auto_consent.as_ref() == Some(&state.destination)
     }
+}
+
+fn compute_auto_allowed(state: &PolicySnapshot) -> bool {
+    let has_decisions_key = state.decisions_credential.is_some()
+        || (state.destination.host() == "api.openai.com" && state.credential.is_some());
+    state.auto_consent.as_ref() == Some(&state.destination)
+        && state.model.is_some()
+        && state.credential.is_some()
+        && has_decisions_key
 }
 
 impl PolicySource for PolicyAuthority {
@@ -561,6 +620,7 @@ fn wire_policy(state: &PolicySnapshot) -> Policy {
         settings: state.settings,
         authorization: state.authorization,
         allowed: state.allowed,
+        auto_allowed: state.auto_allowed,
         protection_profile: state.protection_profile,
     }
 }
@@ -985,6 +1045,7 @@ mod tests {
         ));
         let old_reply = frame(Message::Result(ConversionResult {
             alternatives: None,
+            skipped: false,
             request: 1,
             revision: Revision {
                 input: 1,

@@ -193,6 +193,7 @@ mod tests {
                 permit,
                 Request {
                     current_result: None,
+                    auto_conversion: false,
                     id: 1,
                     revision: Revision {
                         input: 1,

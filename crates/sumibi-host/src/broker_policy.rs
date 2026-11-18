@@ -642,6 +642,7 @@ mod tests {
                     generation: 2,
                     message: Message::Convert(Convert {
                         current_result: None,
+                        auto_conversion: false,
                         request: 1,
                         revision,
                         timeout_ms: 1000,

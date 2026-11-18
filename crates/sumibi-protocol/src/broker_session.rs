@@ -43,6 +43,7 @@ struct Pending {
     request: u64,
     revision: Revision,
     deadline: Instant,
+    auto_conversion: bool,
 }
 
 pub struct BrokerSession {
@@ -144,7 +145,12 @@ impl BrokerSession {
                 if convert.request <= self.last_request {
                     return Err(BrokerError::Replay);
                 }
-                if !self.policy.allowed
+                let permitted = if convert.auto_conversion {
+                    self.policy.auto_allowed
+                } else {
+                    self.policy.allowed
+                };
+                if !permitted
                     || convert.revision.settings != self.policy.settings
                     || convert.revision.authorization != self.policy.authorization
                 {
@@ -158,6 +164,7 @@ impl BrokerSession {
                     request: convert.request,
                     revision: convert.revision,
                     deadline,
+                    auto_conversion: convert.auto_conversion,
                 });
                 Ok(Event::Convert(convert))
             }
@@ -229,6 +236,28 @@ impl BrokerSession {
         alternatives: Option<Vec<sumibi_core::candidate::CandidateItem>>,
         now: Instant,
     ) -> Result<Option<Envelope>, BrokerError> {
+        self.conversion_result_with_skipped(request, revision, text, alternatives, false, now)
+    }
+
+    pub fn skipped_result(
+        &mut self,
+        request: u64,
+        revision: Revision,
+        text: String,
+        now: Instant,
+    ) -> Result<Option<Envelope>, BrokerError> {
+        self.conversion_result_with_skipped(request, revision, text, None, true, now)
+    }
+
+    fn conversion_result_with_skipped(
+        &mut self,
+        request: u64,
+        revision: Revision,
+        text: String,
+        alternatives: Option<Vec<sumibi_core::candidate::CandidateItem>>,
+        skipped: bool,
+        now: Instant,
+    ) -> Result<Option<Envelope>, BrokerError> {
         let Some(pending) = self.take_matching_request(request, revision)? else {
             return Ok(None);
         };
@@ -243,7 +272,12 @@ impl BrokerSession {
             self.disconnect();
             return Err(BrokerError::InvalidReply);
         }
-        if !self.policy.allowed
+        let permitted = if pending.auto_conversion {
+            self.policy.auto_allowed
+        } else {
+            self.policy.allowed
+        };
+        if !permitted
             || revision.settings != self.policy.settings
             || revision.authorization != self.policy.authorization
         {
@@ -251,6 +285,7 @@ impl BrokerSession {
         }
         self.frame(Message::Result(ConversionResult {
             alternatives,
+            skipped,
             request,
             revision,
             text,
@@ -356,6 +391,7 @@ mod tests {
             settings: 2,
             authorization: 3,
             allowed: true,
+            auto_allowed: false,
             protection_profile: ProtectionProfile::Standard,
         }
     }
@@ -394,6 +430,7 @@ mod tests {
     fn convert(request: u64) -> Message {
         Message::Convert(Convert {
             current_result: None,
+            auto_conversion: false,
             request,
             revision: revision(),
             timeout_ms: 100,
@@ -669,5 +706,54 @@ mod tests {
             Some(BrokerError::InvalidReply)
         );
         assert_eq!(session.status(), Status::Closed);
+    }
+
+    #[test]
+    fn auto_conversion_uses_auto_allowed_and_supports_skipped_result() {
+        let now = Instant::now();
+        let auto_only_policy = Policy {
+            settings: 2,
+            authorization: 3,
+            allowed: false,
+            auto_allowed: true,
+            protection_profile: ProtectionProfile::Standard,
+        };
+        let mut session = BrokerSession::new(id(20), auto_only_policy).unwrap();
+        session
+            .receive(frame(Message::Hello(Hello { broker: id(20) }), 1), now)
+            .unwrap();
+
+        // Manual conversion must be denied when only auto_allowed is true.
+        assert_eq!(
+            session.receive(frame(convert(1), 1), now).err(),
+            Some(BrokerError::PolicyDenied)
+        );
+        assert_eq!(session.status(), Status::Closed);
+
+        let mut session = BrokerSession::new(id(20), auto_only_policy).unwrap();
+        session
+            .receive(frame(Message::Hello(Hello { broker: id(20) }), 1), now)
+            .unwrap();
+
+        let auto_req = Message::Convert(Convert {
+            current_result: None,
+            auto_conversion: true,
+            request: 2,
+            revision: revision(),
+            timeout_ms: 100,
+            text: "hello".into(),
+        });
+        assert!(matches!(
+            session.receive(frame(auto_req, 1), now),
+            Ok(Event::Convert(c)) if c.auto_conversion
+        ));
+        let skipped = session
+            .skipped_result(2, revision(), "hello".into(), now)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            skipped.message,
+            Message::Result(ConversionResult { skipped: true, .. })
+        ));
     }
 }

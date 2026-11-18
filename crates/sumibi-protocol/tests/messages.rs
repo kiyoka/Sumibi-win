@@ -22,6 +22,7 @@ fn policy() -> Policy {
         settings: 2,
         authorization: 3,
         allowed: true,
+        auto_allowed: false,
         protection_profile: ProtectionProfile::Standard,
     }
 }
@@ -51,6 +52,7 @@ fn shared_policy_transition_accepts_settings_only_and_requires_new_authority_for
                 settings: 3,
                 authorization: 4,
                 allowed: false,
+                auto_allowed: false,
                 protection_profile: ProtectionProfile::Standard,
             },
             true,
@@ -100,6 +102,7 @@ fn every_message_round_trips_through_the_frame_without_integer_precision_loss() 
         }),
         Message::Convert(Convert {
             current_result: None,
+            auto_conversion: false,
             request: u64::MAX,
             revision: revision(),
             timeout_ms: MAX_TIMEOUT_MS,
@@ -108,6 +111,7 @@ fn every_message_round_trips_through_the_frame_without_integer_precision_loss() 
         Message::Cancel(Cancel { request: u64::MAX }),
         Message::Result(ConversionResult {
             alternatives: None,
+            skipped: false,
             request: 1,
             revision: revision(),
             text: "日本語".into(),
@@ -221,6 +225,7 @@ fn utf16_and_encoded_size_caps_apply_in_both_directions() {
     ] {
         let message = envelope(Message::Result(ConversionResult {
             alternatives: None,
+            skipped: false,
             request: 1,
             revision: revision(),
             text,
@@ -238,6 +243,7 @@ fn utf16_and_encoded_size_caps_apply_in_both_directions() {
     for timeout_ms in [0, MAX_TIMEOUT_MS + 1] {
         let message = envelope(Message::Convert(Convert {
             current_result: None,
+            auto_conversion: false,
             request: 1,
             revision: revision(),
             timeout_ms,

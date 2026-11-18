@@ -40,6 +40,7 @@ impl std::error::Error for SessionError {}
 pub enum Outcome {
     Result(String),
     Alternatives(Vec<sumibi_core::candidate::CandidateItem>),
+    Skipped,
     Error(ErrorCode),
 }
 
@@ -131,6 +132,28 @@ impl ClientSession {
         timeout_ms: u32,
         now: Instant,
     ) -> Result<Vec<u8>, SessionError> {
+        self.begin_conversion_inner(input_revision, text, current_result, false, timeout_ms, now)
+    }
+
+    pub fn auto_convert(
+        &mut self,
+        input_revision: u64,
+        text: &str,
+        timeout_ms: u32,
+        now: Instant,
+    ) -> Result<Vec<u8>, SessionError> {
+        self.begin_conversion_inner(input_revision, text, None, true, timeout_ms, now)
+    }
+
+    fn begin_conversion_inner(
+        &mut self,
+        input_revision: u64,
+        text: &str,
+        current_result: Option<&str>,
+        auto_conversion: bool,
+        timeout_ms: u32,
+        now: Instant,
+    ) -> Result<Vec<u8>, SessionError> {
         if self.status != Status::Ready {
             return Err(SessionError::WrongState);
         }
@@ -138,7 +161,12 @@ impl ClientSession {
             return Err(SessionError::Busy);
         }
         let policy = self.policy.ok_or(SessionError::WrongState)?;
-        if !policy.allowed {
+        let permitted = if auto_conversion {
+            policy.auto_allowed
+        } else {
+            policy.allowed
+        };
+        if !permitted {
             return Err(SessionError::NotAllowed);
         }
         if !(1..=MAX_TIMEOUT_MS).contains(&timeout_ms) {
@@ -163,6 +191,7 @@ impl ClientSession {
         // reserve transport capacity before consuming a host key or target.
         let frame = self.encode(Message::Convert(Convert {
             current_result: current_result.map(str::to_owned),
+            auto_conversion,
             request,
             revision,
             timeout_ms,
@@ -301,14 +330,16 @@ impl ClientSession {
                 self.policy = Some(policy);
                 Ok(Event::PolicyChanged { policy, cancelled })
             }
-            Message::Result(result) => self.reply(
-                result.request,
-                result.revision,
-                result
-                    .alternatives
-                    .map_or_else(|| Outcome::Result(result.text), Outcome::Alternatives),
-                now,
-            ),
+            Message::Result(result) => {
+                let outcome = if result.skipped {
+                    Outcome::Skipped
+                } else {
+                    result
+                        .alternatives
+                        .map_or_else(|| Outcome::Result(result.text), Outcome::Alternatives)
+                };
+                self.reply(result.request, result.revision, outcome, now)
+            }
             Message::Error(error) => self.reply(
                 error.request,
                 error.revision,
@@ -372,6 +403,7 @@ mod tests {
             settings: 2,
             authorization: 3,
             allowed: true,
+            auto_allowed: false,
             protection_profile: ProtectionProfile::Standard,
         }
     }
@@ -379,6 +411,7 @@ mod tests {
     fn reply(request: u64) -> Message {
         Message::Result(ConversionResult {
             alternatives: None,
+            skipped: false,
             request,
             revision: Revision {
                 input: 1,
@@ -635,6 +668,7 @@ mod tests {
                 settings: 1,
                 authorization: 1,
                 allowed: false,
+                auto_allowed: false,
                 protection_profile: ProtectionProfile::Standard,
             },
         });
@@ -643,6 +677,7 @@ mod tests {
             settings: 1,
             authorization: 1,
             allowed: true,
+            auto_allowed: false,
             protection_profile: ProtectionProfile::Standard,
         });
         let bytes = frame(forged_grant, 3);

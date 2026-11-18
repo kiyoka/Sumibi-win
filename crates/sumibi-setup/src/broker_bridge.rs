@@ -411,6 +411,7 @@ impl ISpikeBrokerTransport_Impl for Bridge_Impl {
                     permit,
                     Request {
                         current_result: None,
+                        auto_conversion: false,
                         id: request,
                         revision: Revision {
                             input,

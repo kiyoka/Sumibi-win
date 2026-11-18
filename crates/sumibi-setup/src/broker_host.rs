@@ -115,6 +115,7 @@ pub(crate) fn exercise_broker(
                 executable.clone(),
                 Request {
                     current_result: None,
+                    auto_conversion: false,
                     id,
                     revision: sumibi_protocol::message::Revision {
                         input: 1,
@@ -359,6 +360,7 @@ pub(super) fn completed_jobs(
             executable.clone(),
             Request {
                 current_result: None,
+                auto_conversion: false,
                 id: index as u64 + 1,
                 revision: sumibi_protocol::message::Revision {
                     input: 1,
@@ -513,6 +515,7 @@ fn exercise_job_capacity(messages: &ITfMessagePump) -> std::result::Result<(), F
                 std::path::PathBuf::from("relative-host.exe"),
                 Request {
                     current_result: None,
+                    auto_conversion: false,
                     id: 100,
                     revision: sumibi_protocol::message::Revision {
                         input: 1,
@@ -535,6 +538,7 @@ fn exercise_job_capacity(messages: &ITfMessagePump) -> std::result::Result<(), F
                 std::env::current_exe()?.with_file_name("sumibi-host.exe"),
                 Request {
                     current_result: None,
+                    auto_conversion: false,
                     id: 101,
                     revision: sumibi_protocol::message::Revision {
                         input: 1,
