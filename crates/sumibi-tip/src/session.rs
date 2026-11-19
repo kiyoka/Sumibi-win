@@ -1353,6 +1353,8 @@ fn worker_loop(
 ) {
     let mut current_worker: Option<Worker> = None;
     let mut attempted = false;
+    let mut consecutive_failures: u32 = 0;
+    let mut protocol_mismatch = false;
 
     while !stop.is_cancelled().unwrap_or(true) {
         diagnostics.poll();
@@ -1366,7 +1368,15 @@ fn worker_loop(
             // Preparation failures also clear current_worker. Throttle every
             // retry, including failures before the first policy arrives.
             if attempted {
-                for _ in 0..10 {
+                let wait = if protocol_mismatch {
+                    Duration::from_secs(30)
+                } else {
+                    Duration::from_millis(500)
+                        .saturating_mul(1u32 << consecutive_failures.min(4))
+                        .min(Duration::from_secs(10))
+                };
+                let steps = (wait.as_millis() / 50).max(1) as usize;
+                for _ in 0..steps {
                     if stop.is_cancelled().unwrap_or(true) {
                         return;
                     }
@@ -1374,6 +1384,7 @@ fn worker_loop(
                 }
             }
             attempted = true;
+            protocol_mismatch = false;
 
             match current_bootstrap_pipe_name() {
                 Ok(pipe_name) => {
@@ -1437,6 +1448,7 @@ fn worker_loop(
                             .store(policy.auto_allowed, Ordering::Release);
                         state.set_protection_profile(policy.protection_profile);
                         state.connected.store(true, Ordering::Release);
+                        consecutive_failures = 0;
                         prep_ok = true;
                         break;
                     }
@@ -1445,6 +1457,9 @@ fn worker_loop(
                     }
                     Err(err) => {
                         debug_log(&format!("prepared_policy failed: {err:?}"));
+                        if matches!(err, sumibi_ipc::Error::InvalidMessage) {
+                            protocol_mismatch = true;
+                        }
                         break;
                     }
                 }
@@ -1455,6 +1470,7 @@ fn worker_loop(
                 state.allowed.store(false, Ordering::Release);
                 state.auto_allowed.store(false, Ordering::Release);
                 current_worker = None;
+                consecutive_failures = consecutive_failures.saturating_add(1);
                 continue;
             }
         }

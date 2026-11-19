@@ -346,21 +346,29 @@ fn run(
 ) -> Result<(), ControlError> {
     let (authority, credential_error, consent_path) = load()?;
     let stop = Stop::new().map_err(|_| ControlError::Broker)?;
-    let mut boot = BrokerBoot::start(&authority, 64, Instant::now() + Duration::from_secs(2))
-        .map_err(|_| ControlError::Broker)?;
+    let mut boot = Some(
+        BrokerBoot::start(&authority, 64, Instant::now() + Duration::from_secs(2))
+            .map_err(|_| ControlError::Broker)?,
+    );
+    let mut budget = None;
     if consent_path.is_some() {
         if let Some(budget_path) = crate::decisions::default_budget_path() {
             if let Some(parent) = budget_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            if let Ok(budget) = crate::decisions::BudgetManager::new(
+            if let Ok(manager) = crate::decisions::BudgetManager::new(
                 budget_path,
                 crate::decisions::MAX_DECISIONS_BUDGET,
             ) {
-                boot.set_budget(Arc::new(budget));
+                let manager = Arc::new(manager);
+                if let Some(boot) = boot.as_mut() {
+                    boot.set_budget(manager.clone());
+                }
+                budget = Some(manager);
             }
         }
     }
+    let mut rotating = false;
     let mut pending: Option<ConsentTask> = None;
     let mut update: Option<ConsentUpdate> = None;
     let mut failure = None;
@@ -382,7 +390,9 @@ fn run(
             }
             // Retire first so even a pending grant cannot admit a new request.
             // Each retry retains the boot and its unfinished native resources.
-            let retired = boot.retire_for_restart(Instant::now() + STEP);
+            let retired = boot
+                .as_mut()
+                .is_none_or(|boot| boot.retire_for_restart(Instant::now() + STEP));
             update = None;
             if let Some(task) = pending.as_mut() {
                 if let Some(result) = task.try_take() {
@@ -421,24 +431,91 @@ fn run(
                 return failure.map_or(Ok(()), Err);
             }
         } else {
+            if !rotating
+                && boot
+                    .as_ref()
+                    .is_some_and(|boot| boot.remaining_attachment_budget() == 0)
+            {
+                rotating = true;
+            }
+            if rotating {
+                if let Some(current_boot) = boot.take() {
+                    match current_boot.rotate(Instant::now() + Duration::from_millis(500)) {
+                        Ok(mut next_boot) => {
+                            if let Some(ref manager) = budget {
+                                next_boot.set_budget(manager.clone());
+                            }
+                            boot = Some(next_boot);
+                            rotating = false;
+                        }
+                        Err(crate::broker_boot::RotateError::Pending(old_boot))
+                        | Err(crate::broker_boot::RotateError::Expired(old_boot))
+                        | Err(crate::broker_boot::RotateError::InvalidDeadline(old_boot)) => {
+                            boot = Some(*old_boot);
+                        }
+                        Err(crate::broker_boot::RotateError::Start(_)) => {
+                            failure = Some(ControlError::Broker);
+                            closing.store(true, Ordering::Release);
+                            continue;
+                        }
+                    }
+                }
+            }
             while let Ok(request) = peer_requests.try_recv() {
+                if rotating {
+                    match request {
+                        PeerRequest::Shared { reply, .. } => {
+                            let _ = reply.send(Err(ControlError::Busy));
+                        }
+                        PeerRequest::Private { reply, .. } => {
+                            let _ = reply.send(Err(ControlError::Busy));
+                        }
+                    }
+                    continue;
+                }
+                let Some(active_boot) = boot.as_mut() else {
+                    match request {
+                        PeerRequest::Shared { reply, .. } => {
+                            let _ = reply.send(Err(ControlError::Broker));
+                        }
+                        PeerRequest::Private { reply, .. } => {
+                            let _ = reply.send(Err(ControlError::Broker));
+                        }
+                    }
+                    continue;
+                };
                 let deadline = Instant::now() + Duration::from_secs(10);
                 match request {
                     PeerRequest::Shared { peer, reply } => {
-                        let result = boot
-                            .begin_tracked_accept(peer, deadline)
-                            .map_err(|_| ControlError::Broker);
+                        let result = match active_boot.begin_tracked_accept(peer, deadline) {
+                            Ok(accept) => Ok(accept),
+                            Err(RuntimeError::Exhausted) => {
+                                rotating = true;
+                                Err(ControlError::Busy)
+                            }
+                            Err(RuntimeError::Transport(sumibi_ipc::Error::Capacity)) => {
+                                Err(ControlError::Busy)
+                            }
+                            Err(_) => Err(ControlError::Broker),
+                        };
                         let _ = reply.send(result);
                     }
                     PeerRequest::Private { peer, reply } => {
-                        let result = boot
-                            .begin_private_accept(peer, deadline)
-                            .map(|(id, name)| PrivateAccept {
+                        let result = match active_boot.begin_private_accept(peer, deadline) {
+                            Ok((id, name)) => Ok(PrivateAccept {
                                 id,
                                 name,
-                                broker: boot.name().clone(),
-                            })
-                            .map_err(|_| ControlError::Broker);
+                                broker: active_boot.name().clone(),
+                            }),
+                            Err(RuntimeError::Exhausted) => {
+                                rotating = true;
+                                Err(ControlError::Busy)
+                            }
+                            Err(RuntimeError::Transport(sumibi_ipc::Error::Capacity)) => {
+                                Err(ControlError::Busy)
+                            }
+                            Err(_) => Err(ControlError::Broker),
+                        };
                         let _ = reply.send(result);
                     }
                 }
@@ -488,37 +565,61 @@ fn run(
                     }
                 }
             }
-            if let Some(receipt) = update.as_ref() {
-                match boot.acknowledge_consent_update(receipt, &stop, Instant::now() + STEP) {
-                    Ok(_) => {
-                        update = None;
-                        active.store(false, Ordering::Release);
-                    }
-                    Err(RuntimeError::Transport(sumibi_ipc::Error::Timeout)) => {}
-                    Err(_) => {
-                        failure = Some(ControlError::Broker);
-                        closing.store(true, Ordering::Release);
-                        continue;
+            if !rotating {
+                if let (Some(receipt), Some(active_boot)) = (update.as_ref(), boot.as_mut()) {
+                    match active_boot.acknowledge_consent_update(
+                        receipt,
+                        &stop,
+                        Instant::now() + STEP,
+                    ) {
+                        Ok(_) => {
+                            update = None;
+                            active.store(false, Ordering::Release);
+                        }
+                        Err(RuntimeError::Transport(sumibi_ipc::Error::Timeout)) => {}
+                        Err(RuntimeError::Exhausted) => {
+                            rotating = true;
+                        }
+                        Err(_) => {
+                            failure = Some(ControlError::Broker);
+                            closing.store(true, Ordering::Release);
+                            continue;
+                        }
                     }
                 }
             }
             let busy = active.load(Ordering::Acquire);
             // Advance broker peer connections and conversion dispatch only when
             // not transitioning policy or waiting behind a send guard.
-            if pending.is_none() && update.is_none() && !busy {
-                let step_deadline = Instant::now() + Duration::from_millis(5);
-                let dispatch_result = match mode {
-                    DispatchMode::NativeChat => {
-                        boot.advance_native_chat(authority.clone(), &stop, step_deadline)
-                    }
-                    #[cfg(any(test, feature = "spike"))]
-                    DispatchMode::DiagnosticChat => {
-                        boot.advance_diagnostic_chat(authority.clone(), &stop, step_deadline)
-                    }
-                };
-                if let Err(error) = dispatch_result {
-                    if !matches!(error, RuntimeError::Transport(sumibi_ipc::Error::Timeout)) {
-                        // Non-timeout errors in broker dispatch: unadmitted or invalid state
+            if !rotating && pending.is_none() && update.is_none() && !busy {
+                if let Some(active_boot) = boot.as_mut() {
+                    let step_deadline = Instant::now() + Duration::from_millis(5);
+                    let dispatch_result = match mode {
+                        DispatchMode::NativeChat => {
+                            active_boot.advance_native_chat(authority.clone(), &stop, step_deadline)
+                        }
+                        #[cfg(any(test, feature = "spike"))]
+                        DispatchMode::DiagnosticChat => active_boot.advance_diagnostic_chat(
+                            authority.clone(),
+                            &stop,
+                            step_deadline,
+                        ),
+                    };
+                    match dispatch_result {
+                        Ok(step)
+                            if matches!(
+                                step.step,
+                                crate::broker_workers::OwnerStep::AdmissionRejected(
+                                    RuntimeError::Exhausted
+                                )
+                            ) =>
+                        {
+                            rotating = true;
+                        }
+                        Err(RuntimeError::Exhausted) => {
+                            rotating = true;
+                        }
+                        _ => {}
                     }
                 }
             }
