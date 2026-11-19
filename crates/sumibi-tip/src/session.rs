@@ -1352,6 +1352,7 @@ fn worker_loop(
     mut diagnostics: Writer,
 ) {
     let mut current_worker: Option<Worker> = None;
+    let mut pending_command: Option<WorkerCommand> = None;
     let mut attempted = false;
     let mut consecutive_failures: u32 = 0;
     let mut protocol_mismatch = false;
@@ -1366,8 +1367,9 @@ fn worker_loop(
             current_worker = None;
 
             // Preparation failures also clear current_worker. Throttle every
-            // retry, including failures before the first policy arrives.
-            if attempted {
+            // retry, including failures before the first policy arrives, unless
+            // we intentionally closed the worker to run a superseding command.
+            if attempted && pending_command.is_none() {
                 let wait = if protocol_mismatch {
                     Duration::from_secs(30)
                 } else {
@@ -1503,8 +1505,19 @@ fn worker_loop(
         }
 
         // 3. Check for outgoing conversion commands
-        match receiver.recv_timeout(Duration::from_millis(50)) {
-            Ok(WorkerCommand::Convert {
+        let mut next_command = pending_command.take();
+        if next_command.is_none() {
+            match receiver.recv_timeout(Duration::from_millis(50)) {
+                Ok(cmd) => next_command = Some(cmd),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        while let Ok(newer) = receiver.try_recv() {
+            next_command = Some(newer);
+        }
+        match next_command {
+            Some(WorkerCommand::Convert {
                 request_id,
                 revision,
                 text,
@@ -1540,10 +1553,23 @@ fn worker_loop(
                             continue;
                         }
 
-                        // Wait for result
+                        // Wait for result, cancelling immediately if a newer command arrives.
                         loop {
                             diagnostics.poll();
                             if stop.is_cancelled().unwrap_or(true) {
+                                break;
+                            }
+                            if let Ok(mut newer) = receiver.try_recv() {
+                                while let Ok(even_newer) = receiver.try_recv() {
+                                    newer = even_newer;
+                                }
+                                state.record(
+                                    Some(request_id),
+                                    "request_superseded",
+                                    format_args!("cancelled by newer command"),
+                                );
+                                let _ = worker.cancel(request_id);
+                                pending_command = Some(newer);
                                 break;
                             }
                             match worker.try_result() {
@@ -1674,8 +1700,7 @@ fn worker_loop(
                     }
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            None => {}
         }
     }
 
