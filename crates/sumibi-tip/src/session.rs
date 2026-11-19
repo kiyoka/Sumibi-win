@@ -1361,9 +1361,11 @@ fn worker_loop(
         diagnostics.poll();
         // 1. Ensure worker connection
         if current_worker.is_none() || current_worker.as_ref().is_some_and(|w| w.is_closed()) {
-            state.connected.store(false, Ordering::Release);
-            state.allowed.store(false, Ordering::Release);
-            state.auto_allowed.store(false, Ordering::Release);
+            if pending_command.is_none() {
+                state.connected.store(false, Ordering::Release);
+                state.allowed.store(false, Ordering::Release);
+                state.auto_allowed.store(false, Ordering::Release);
+            }
             current_worker = None;
 
             // Preparation failures also clear current_worker. Throttle every
