@@ -41,8 +41,21 @@ struct Record {
     manual_consent: Option<(String, String)>,
     #[serde(default, skip_serializing_if = "is_false")]
     auto_conversion: bool,
+    #[serde(
+        default = "default_decisions_confidence_threshold",
+        skip_serializing_if = "is_default_decisions_confidence_threshold"
+    )]
+    decisions_confidence_threshold: f64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     user_dictionary: String,
+}
+
+fn default_decisions_confidence_threshold() -> f64 {
+    crate::decisions::CONFIDENCE_THRESHOLD
+}
+
+fn is_default_decisions_confidence_threshold(value: &f64) -> bool {
+    (*value - crate::decisions::CONFIDENCE_THRESHOLD).abs() < f64::EPSILON
 }
 
 #[derive(Serialize, Deserialize)]
@@ -61,6 +74,7 @@ pub struct Settings {
     protection_profile: ProtectionProfile,
     manual_consent: Option<(String, String)>,
     auto_conversion: bool,
+    decisions_confidence_threshold: f64,
     user_dictionary: String,
 }
 
@@ -100,6 +114,7 @@ impl Settings {
             protection_profile: ProtectionProfile::Standard,
             manual_consent: None,
             auto_conversion: false,
+            decisions_confidence_threshold: crate::decisions::CONFIDENCE_THRESHOLD,
             user_dictionary: String::new(),
         })
     }
@@ -115,6 +130,29 @@ impl Settings {
 
     pub fn set_auto_conversion(&mut self, enabled: bool) {
         self.auto_conversion = enabled;
+    }
+
+    pub fn decisions_confidence_threshold(&self) -> f64 {
+        self.decisions_confidence_threshold
+    }
+
+    pub fn with_decisions_confidence_threshold(
+        mut self,
+        threshold: f64,
+    ) -> Result<Self, SettingsError> {
+        self.set_decisions_confidence_threshold(threshold)?;
+        Ok(self)
+    }
+
+    pub fn set_decisions_confidence_threshold(
+        &mut self,
+        threshold: f64,
+    ) -> Result<(), SettingsError> {
+        if !sumibi_core::decisions::valid_confidence_threshold(threshold) {
+            return Err(SettingsError::Invalid);
+        }
+        self.decisions_confidence_threshold = threshold;
+        Ok(())
     }
 
     pub fn with_protection_profile(mut self, profile: ProtectionProfile) -> Self {
@@ -181,7 +219,11 @@ impl Settings {
         let authority =
             PolicyAuthority::new_with_profile(self.destination.clone(), self.protection_profile);
         authority
-            .set_initial_conversion_settings(&self.model, self.user_dictionary.clone())
+            .set_initial_conversion_settings(
+                &self.model,
+                self.user_dictionary.clone(),
+                self.decisions_confidence_threshold,
+            )
             .map_err(SettingsError::Policy)?;
         Ok(authority)
     }
@@ -198,6 +240,7 @@ impl Settings {
             self.model.clone(),
             self.protection_profile,
             self.user_dictionary.clone(),
+            self.decisions_confidence_threshold,
             || self.save(path),
         )?;
         Ok(SettingsUpdate { authority, version })
@@ -224,6 +267,7 @@ impl Settings {
             self.model.clone(),
             self.protection_profile,
             self.user_dictionary.clone(),
+            self.decisions_confidence_threshold,
             || self.create(path),
         )
     }
@@ -241,6 +285,7 @@ impl Settings {
             self.model.clone(),
             self.protection_profile,
             self.user_dictionary.clone(),
+            self.decisions_confidence_threshold,
             || self.save_if_unchanged(path, expected),
         )?;
         Ok(SettingsUpdate { authority, version })
@@ -260,6 +305,7 @@ impl Settings {
             protection_profile: self.protection_profile,
             manual_consent: self.manual_consent.clone(),
             auto_conversion: self.auto_conversion,
+            decisions_confidence_threshold: self.decisions_confidence_threshold,
             user_dictionary: self.user_dictionary.clone(),
         }
     }
@@ -290,6 +336,7 @@ impl Settings {
         }
         settings.protection_profile = record.protection_profile;
         settings.auto_conversion = record.auto_conversion;
+        settings.set_decisions_confidence_threshold(record.decisions_confidence_threshold)?;
         settings.legacy_credentials = record.version == 1;
         if !settings.legacy_credentials {
             settings.manual_consent = record.manual_consent;
@@ -392,6 +439,9 @@ impl Settings {
         if current.destination != expected.destination
             || current.model != expected.model
             || current.user_dictionary != expected.user_dictionary
+            || (current.decisions_confidence_threshold - expected.decisions_confidence_threshold)
+                .abs()
+                >= f64::EPSILON
         {
             return Err(SettingsError::Conflict);
         }
@@ -826,5 +876,34 @@ mod tests {
         assert_eq!(Settings::load(&path).unwrap().model(), "third");
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
         assert!(Settings::load(Path::new("relative.json")).is_err());
+    }
+
+    #[test]
+    fn decisions_confidence_threshold_validates_roundtrips_and_propagates() {
+        let base = Settings::new(Scheme::Https, "example.test", 443, "/v1", "m").unwrap();
+        assert!((base.decisions_confidence_threshold() - 0.5).abs() < f64::EPSILON);
+
+        let custom = base
+            .clone()
+            .with_decisions_confidence_threshold(0.75)
+            .unwrap();
+        assert!((custom.decisions_confidence_threshold() - 0.75).abs() < f64::EPSILON);
+
+        let json = serde_json::to_vec(&custom.record()).unwrap();
+        let parsed = Settings::parse(&json).unwrap();
+        assert!((parsed.decisions_confidence_threshold() - 0.75).abs() < f64::EPSILON);
+
+        let authority = parsed.new_authority().unwrap();
+        assert!(
+            (authority.snapshot().unwrap().decisions_confidence_threshold - 0.75).abs()
+                < f64::EPSILON
+        );
+
+        for invalid in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+            assert!(base
+                .clone()
+                .with_decisions_confidence_threshold(invalid)
+                .is_err());
+        }
     }
 }
