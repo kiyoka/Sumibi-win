@@ -1352,21 +1352,35 @@ fn worker_loop(
     mut diagnostics: Writer,
 ) {
     let mut current_worker: Option<Worker> = None;
+    let mut pending_command: Option<WorkerCommand> = None;
     let mut attempted = false;
+    let mut consecutive_failures: u32 = 0;
+    let mut protocol_mismatch = false;
 
     while !stop.is_cancelled().unwrap_or(true) {
         diagnostics.poll();
         // 1. Ensure worker connection
         if current_worker.is_none() || current_worker.as_ref().is_some_and(|w| w.is_closed()) {
-            state.connected.store(false, Ordering::Release);
-            state.allowed.store(false, Ordering::Release);
-            state.auto_allowed.store(false, Ordering::Release);
+            if pending_command.is_none() {
+                state.connected.store(false, Ordering::Release);
+                state.allowed.store(false, Ordering::Release);
+                state.auto_allowed.store(false, Ordering::Release);
+            }
             current_worker = None;
 
             // Preparation failures also clear current_worker. Throttle every
-            // retry, including failures before the first policy arrives.
-            if attempted {
-                for _ in 0..10 {
+            // retry, including failures before the first policy arrives, unless
+            // we intentionally closed the worker to run a superseding command.
+            if attempted && pending_command.is_none() {
+                let wait = if protocol_mismatch {
+                    Duration::from_secs(30)
+                } else {
+                    Duration::from_millis(500)
+                        .saturating_mul(1u32 << consecutive_failures.min(4))
+                        .min(Duration::from_secs(10))
+                };
+                let steps = (wait.as_millis() / 50).max(1) as usize;
+                for _ in 0..steps {
                     if stop.is_cancelled().unwrap_or(true) {
                         return;
                     }
@@ -1374,6 +1388,7 @@ fn worker_loop(
                 }
             }
             attempted = true;
+            protocol_mismatch = false;
 
             match current_bootstrap_pipe_name() {
                 Ok(pipe_name) => {
@@ -1437,6 +1452,7 @@ fn worker_loop(
                             .store(policy.auto_allowed, Ordering::Release);
                         state.set_protection_profile(policy.protection_profile);
                         state.connected.store(true, Ordering::Release);
+                        consecutive_failures = 0;
                         prep_ok = true;
                         break;
                     }
@@ -1445,6 +1461,9 @@ fn worker_loop(
                     }
                     Err(err) => {
                         debug_log(&format!("prepared_policy failed: {err:?}"));
+                        if matches!(err, sumibi_ipc::Error::InvalidMessage) {
+                            protocol_mismatch = true;
+                        }
                         break;
                     }
                 }
@@ -1455,6 +1474,7 @@ fn worker_loop(
                 state.allowed.store(false, Ordering::Release);
                 state.auto_allowed.store(false, Ordering::Release);
                 current_worker = None;
+                consecutive_failures = consecutive_failures.saturating_add(1);
                 continue;
             }
         }
@@ -1487,8 +1507,19 @@ fn worker_loop(
         }
 
         // 3. Check for outgoing conversion commands
-        match receiver.recv_timeout(Duration::from_millis(50)) {
-            Ok(WorkerCommand::Convert {
+        let mut next_command = pending_command.take();
+        if next_command.is_none() {
+            match receiver.recv_timeout(Duration::from_millis(50)) {
+                Ok(cmd) => next_command = Some(cmd),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        while let Ok(newer) = receiver.try_recv() {
+            next_command = Some(newer);
+        }
+        match next_command {
+            Some(WorkerCommand::Convert {
                 request_id,
                 revision,
                 text,
@@ -1524,10 +1555,23 @@ fn worker_loop(
                             continue;
                         }
 
-                        // Wait for result
+                        // Wait for result, cancelling immediately if a newer command arrives.
                         loop {
                             diagnostics.poll();
                             if stop.is_cancelled().unwrap_or(true) {
+                                break;
+                            }
+                            if let Ok(mut newer) = receiver.try_recv() {
+                                while let Ok(even_newer) = receiver.try_recv() {
+                                    newer = even_newer;
+                                }
+                                state.record(
+                                    Some(request_id),
+                                    "request_superseded",
+                                    format_args!("cancelled by newer command"),
+                                );
+                                let _ = worker.cancel(request_id);
+                                pending_command = Some(newer);
                                 break;
                             }
                             match worker.try_result() {
@@ -1658,8 +1702,7 @@ fn worker_loop(
                     }
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            None => {}
         }
     }
 

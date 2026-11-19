@@ -191,11 +191,15 @@ impl PolicyAuthority {
         credential: &Arc<Credential>,
     ) -> Result<SendStartGuard<'_>, ChangeError> {
         let state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
-        let active_cred = state.decisions_credential.as_ref().or_else(|| {
-            (state.destination.host() == "api.openai.com")
-                .then(|| state.credential.as_ref())
-                .flatten()
-        });
+        let active_cred = if state.destination.host() == "generativelanguage.googleapis.com" {
+            state.credential.as_ref()
+        } else {
+            state.decisions_credential.as_ref().or_else(|| {
+                (state.destination.host() == "api.openai.com")
+                    .then(|| state.credential.as_ref())
+                    .flatten()
+            })
+        };
         if !state.auto_allowed
             || revision.settings != state.settings
             || revision.authorization != state.authorization
@@ -581,8 +585,12 @@ impl PolicyAuthority {
 }
 
 fn compute_auto_allowed(state: &PolicySnapshot) -> bool {
-    let has_decisions_key = state.decisions_credential.is_some()
-        || (state.destination.host() == "api.openai.com" && state.credential.is_some());
+    let has_decisions_key = if state.destination.host() == "generativelanguage.googleapis.com" {
+        state.credential.is_some()
+    } else {
+        state.decisions_credential.is_some()
+            || (state.destination.host() == "api.openai.com" && state.credential.is_some())
+    };
     state.auto_consent.as_ref() == Some(&state.destination)
         && state.model.is_some()
         && state.credential.is_some()

@@ -41,6 +41,8 @@ struct View {
     profile_standard: HWND,
     profile_strict: HWND,
     auto_conversion: HWND,
+    auto_conversion_hint: HWND,
+    budget_used: u64,
     user_dictionary: HWND,
     save: HWND,
     secret: HWND,
@@ -173,6 +175,33 @@ impl View {
                 set_text(control, label);
             }
         }
+        let (auto_label, auto_hint) = if host == "generativelanguage.googleapis.com" {
+            (
+                "自動変換を有効にする（Gemini Decisions / gemini-decision-1）".to_owned(),
+                format!(
+                    "利用状況: {} / {} 回（Gemini API キーを使用します。英語・記号は自動スキップ）",
+                    self.budget_used,
+                    sumibi_host::decisions::MAX_DECISIONS_BUDGET
+                ),
+            )
+        } else {
+            (
+                "自動変換を有効にする（OpenAI Decisions / gpt-6-luna）".to_owned(),
+                format!(
+                    "利用状況: {} / {} 回（OpenAI API キーが必要です。英語・記号は自動スキップ）",
+                    self.budget_used,
+                    sumibi_host::decisions::MAX_DECISIONS_BUDGET
+                ),
+            )
+        };
+        for (control, label) in [
+            (self.auto_conversion, auto_label.as_str()),
+            (self.auto_conversion_hint, auto_hint.as_str()),
+        ] {
+            if text(control).as_deref() != Ok(label) {
+                set_text(control, label);
+            }
+        }
     }
     fn scheme_and_port(&self, baseline: &Settings) -> (sumibi_host::manual::Scheme, u16) {
         let selection = unsafe { SendMessageW(self.provider, CB_GETCURSEL, None, None).0 };
@@ -234,6 +263,15 @@ impl View {
                 Some(instance.into()),
                 None,
             )?;
+            let budget_used = sumibi_host::decisions::default_budget_path()
+                .and_then(|budget_path| {
+                    sumibi_host::decisions::BudgetManager::new(
+                        budget_path,
+                        sumibi_host::decisions::MAX_DECISIONS_BUDGET,
+                    )
+                    .ok()
+                })
+                .map_or(0, |manager| manager.consumed());
             let actions = Rc::new(Actions::default());
             let mut view = Self {
                 _icons: crate::app_icon::set_window_icons(hwnd, instance.into()),
@@ -245,6 +283,8 @@ impl View {
                 profile_standard: HWND::default(),
                 profile_strict: HWND::default(),
                 auto_conversion: HWND::default(),
+                auto_conversion_hint: HWND::default(),
+                budget_used,
                 user_dictionary: HWND::default(),
                 save: HWND::default(),
                 secret: HWND::default(),
@@ -453,29 +493,8 @@ impl View {
                 ))),
                 None,
             );
-            let budget_used = sumibi_host::decisions::default_budget_path()
-                .and_then(|budget_path| {
-                    sumibi_host::decisions::BudgetManager::new(
-                        budget_path,
-                        sumibi_host::decisions::MAX_DECISIONS_BUDGET,
-                    )
-                    .ok()
-                })
-                .map_or(0, |manager| manager.consumed());
-            let budget_hint = format!(
-                "利用状況: {budget_used} / {} 回（OpenAI API キーが必要です。英語・記号は自動スキップ）",
-                sumibi_host::decisions::MAX_DECISIONS_BUDGET
-            );
-            child(
-                w!("STATIC"),
-                &budget_hint,
-                WINDOW_STYLE(0),
-                115,
-                287,
-                445,
-                24,
-                0,
-            )?;
+            view.auto_conversion_hint =
+                child(w!("STATIC"), "", WINDOW_STYLE(0), 115, 287, 445, 24, 0)?;
 
             view.save = child(
                 w!("BUTTON"),
@@ -744,10 +763,18 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
             let checked = unsafe { SendMessageW(view.auto_conversion, BM_GETCHECK, None, None).0 }
                 == BST_CHECKED as isize;
             if checked {
+                let is_gemini = text(view.host)
+                    .unwrap_or_default()
+                    .eq_ignore_ascii_case("generativelanguage.googleapis.com");
+                let prompt = if is_gemini {
+                    w!("自動変換（Gemini Decisions API）を有効にすると、入力中のテキストを Google（generativelanguage.googleapis.com / gemini-decision-1）へ自動送信して日本語かどうか判定します。\n\n利用には Gemini API キーが必要です（累積上限 10,000 回）。有効にしますか？")
+                } else {
+                    w!("自動変換（Decisions API）を有効にすると、入力中のテキストを OpenAI（api.openai.com / gpt-6-luna）へ自動送信して日本語かどうか判定します。\n\n利用には OpenAI API キーが必要です（累積上限 10,000 回）。有効にしますか？")
+                };
                 let confirmed = unsafe {
                     MessageBoxW(
                         Some(view.hwnd),
-                        w!("自動変換（Decisions API）を有効にすると、入力中のテキストを OpenAI（api.openai.com / gpt-6-luna）へ自動送信して日本語かどうか判定します。\n\n利用には OpenAI API キーが必要です（累積上限 10,000 回）。有効にしますか？"),
+                        prompt,
                         w!("自動変換の送信確認"),
                         MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2,
                     )
@@ -1154,6 +1181,24 @@ mod tests {
                 BST_CHECKED as isize
             );
         }
+        assert!(text(view_on.auto_conversion)
+            .unwrap()
+            .contains("OpenAI Decisions"));
         drop(view_on);
+
+        let gemini_settings = Settings::new(
+            Scheme::Https,
+            "generativelanguage.googleapis.com",
+            443,
+            "/v1beta/openai",
+            "gemini-3.6-flash",
+        )
+        .unwrap()
+        .with_auto_conversion(true);
+        let view_gemini = View::new(Some(&gemini_settings), false).expect("create gemini view");
+        assert!(text(view_gemini.auto_conversion)
+            .unwrap()
+            .contains("Gemini Decisions"));
+        drop(view_gemini);
     }
 }

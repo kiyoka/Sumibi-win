@@ -124,7 +124,32 @@ fn evaluate_decisions_with_exchange(
     serde_json::from_str::<Vec<DecisionResultItem>>(&json).map_err(|_| SendError::InvalidResponse)
 }
 
-/// Evaluate OpenAI Official `/v1/decisions` (`gpt-6-luna`) under separate consent and cost protection.
+enum OfficialDecisionsBatch {
+    OpenAi(crate::decisions::official::Batch),
+    Gemini(crate::decisions::gemini::Batch),
+}
+
+impl OfficialDecisionsBatch {
+    fn body(&self) -> &[u8] {
+        match self {
+            Self::OpenAi(batch) => batch.body(),
+            Self::Gemini(batch) => batch.body(),
+        }
+    }
+
+    fn scores(
+        &self,
+        bytes: &[u8],
+    ) -> Result<Vec<crate::decisions::official::Score>, crate::decisions::DecisionsError> {
+        match self {
+            Self::OpenAi(batch) => batch.scores(bytes),
+            Self::Gemini(batch) => batch.scores(bytes),
+        }
+    }
+}
+
+/// Evaluate OpenAI Official `/v1/decisions` (`gpt-6-luna`) or Google Gemini `/v1beta/decisions`
+/// (`gemini-decision-1`) depending on the configured conversion provider.
 pub fn evaluate_official_decisions_with_policy(
     revision: Revision,
     states: &[DecisionState],
@@ -143,22 +168,44 @@ pub fn evaluate_official_decisions_with_policy(
     {
         return Err(SendError::PolicyDenied);
     }
-    let batch =
-        crate::decisions::official::Batch::new(states).map_err(|_| SendError::InvalidRequest)?;
-    let destination = Destination::new(
-        Scheme::Https,
-        crate::decisions::official::HOST,
-        443,
-        crate::decisions::official::PATH,
-    )
-    .ok_or(SendError::InvalidRequest)?;
+    let is_gemini = snapshot.destination.host() == crate::decisions::gemini::HOST;
+    let (batch, destination, auth_header) = if is_gemini {
+        let batch = OfficialDecisionsBatch::Gemini(
+            crate::decisions::gemini::Batch::new(states).map_err(|_| SendError::InvalidRequest)?,
+        );
+        let destination = Destination::new(
+            Scheme::Https,
+            crate::decisions::gemini::HOST,
+            443,
+            crate::decisions::gemini::PATH,
+        )
+        .ok_or(SendError::InvalidRequest)?;
+        (batch, destination, sumibi_winhttp::AuthHeader::XGoogApiKey)
+    } else {
+        let batch = OfficialDecisionsBatch::OpenAi(
+            crate::decisions::official::Batch::new(states)
+                .map_err(|_| SendError::InvalidRequest)?,
+        );
+        let destination = Destination::new(
+            Scheme::Https,
+            crate::decisions::official::HOST,
+            443,
+            crate::decisions::official::PATH,
+        )
+        .ok_or(SendError::InvalidRequest)?;
+        (batch, destination, sumibi_winhttp::AuthHeader::Bearer)
+    };
 
     budget.reserve().map_err(|_| SendError::PolicyDenied)?;
 
     let scores = std::sync::Mutex::new(None);
+    let exchange = NativeAuthExchange {
+        admission,
+        auth_header,
+    };
     let transport = OfficialDecisionsTransport {
         batch: &batch,
-        exchange: &NativeExchange { admission },
+        exchange: &exchange,
         scores: &scores,
     };
 
@@ -179,7 +226,7 @@ pub fn evaluate_official_decisions_with_policy(
 }
 
 struct OfficialDecisionsTransport<'a> {
-    batch: &'a crate::decisions::official::Batch,
+    batch: &'a OfficialDecisionsBatch,
     exchange: &'a dyn Exchange,
     scores: &'a std::sync::Mutex<Option<Vec<crate::decisions::official::Score>>>,
 }
@@ -336,6 +383,33 @@ impl Exchange for NativeExchange<'_> {
     }
 }
 
+struct NativeAuthExchange<'a> {
+    admission: &'a dyn SendAdmission,
+    auth_header: sumibi_winhttp::AuthHeader,
+}
+impl Exchange for NativeAuthExchange<'_> {
+    fn exchange(
+        &self,
+        destination: &Destination,
+        credential: &str,
+        body: Vec<u8>,
+        deadline: Instant,
+        gate: &mut dyn SendGate,
+    ) -> Result<Vec<u8>, SendError> {
+        let cancelled = || self.admission.is_cancelled();
+        let request = send_body_with_auth(
+            destination,
+            credential,
+            self.auth_header,
+            body,
+            deadline,
+            gate,
+            &cancelled,
+        )?;
+        receive_body(request, gate, &cancelled)
+    }
+}
+
 fn convert_with_exchange(
     request: ManualRequest<'_>,
     authority: &PolicyAuthority,
@@ -424,6 +498,26 @@ pub fn send_body(
     gate: &mut dyn SendGate,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<PreparedRequest, SendError> {
+    send_body_with_auth(
+        destination,
+        credential,
+        sumibi_winhttp::AuthHeader::Bearer,
+        body,
+        deadline,
+        gate,
+        cancelled,
+    )
+}
+
+pub fn send_body_with_auth(
+    destination: &Destination,
+    credential: &str,
+    auth_header: sumibi_winhttp::AuthHeader,
+    body: Vec<u8>,
+    deadline: Instant,
+    gate: &mut dyn SendGate,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<PreparedRequest, SendError> {
     if gate.is_cancelled() || cancelled() {
         return Err(SendError::PolicyDenied);
     }
@@ -433,7 +527,7 @@ pub fn send_body(
     gate.write_authorized(&mut || {
         let body = body.take().ok_or(TransportError::InvalidRequest)?;
         request
-            .send(credential, body, deadline, cancelled)
+            .send_with_auth_header(credential, auth_header, body, deadline, cancelled)
             .map_err(classify)?;
         sent = true;
         Ok(())
