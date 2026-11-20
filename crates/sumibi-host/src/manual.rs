@@ -138,6 +138,7 @@ impl Credential {
 #[derive(Clone)]
 pub struct PolicySnapshot {
     pub(crate) user_dictionary: String,
+    pub(crate) decisions_confidence_threshold: f64,
     pub settings: u64,
     pub authorization: u64,
     pub model: Option<String>,
@@ -883,6 +884,7 @@ mod tests {
         let destination = destination();
         Source(RefCell::new(PolicySnapshot {
             user_dictionary: String::new(),
+            decisions_confidence_threshold: crate::decisions::CONFIDENCE_THRESHOLD,
             settings: 1,
             authorization: 1,
             model: None,

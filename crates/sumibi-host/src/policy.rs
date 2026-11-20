@@ -62,6 +62,7 @@ impl PolicyAuthority {
         Self {
             state: Mutex::new(PolicySnapshot {
                 user_dictionary: String::new(),
+                decisions_confidence_threshold: crate::decisions::CONFIDENCE_THRESHOLD,
                 settings: 1,
                 authorization: 1,
                 model: None,
@@ -325,24 +326,26 @@ impl PolicyAuthority {
         &self,
         model: &str,
         user_dictionary: String,
+        decisions_confidence_threshold: f64,
     ) -> Result<(), ChangeError> {
         self.set_model(model)?;
-        self.state
-            .lock()
-            .map_err(|_| ChangeError::Unavailable)?
-            .user_dictionary = user_dictionary;
+        let mut state = self.state.lock().map_err(|_| ChangeError::Unavailable)?;
+        state.user_dictionary = user_dictionary;
+        state.decisions_confidence_threshold = decisions_confidence_threshold;
         Ok(())
     }
 
     /// Persist and publish the validated destination and model under one
     /// authority lock. An I/O error leaves the in-memory policy unchanged.
     /// This blocking operation is for a settings worker, never a TSF callback.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn save_settings(
         &self,
         destination: Destination,
         model: String,
         protection_profile: sumibi_protocol::ProtectionProfile,
         user_dictionary: String,
+        decisions_confidence_threshold: f64,
         persist: impl FnOnce() -> Result<(), crate::settings::SettingsError>,
     ) -> Result<PolicyVersion, crate::settings::SettingsError> {
         use crate::settings::SettingsError;
@@ -371,6 +374,7 @@ impl PolicyAuthority {
         state.destination = destination;
         state.model = Some(model);
         state.user_dictionary = user_dictionary;
+        state.decisions_confidence_threshold = decisions_confidence_threshold;
         state.protection_profile = protection_profile;
         state.settings = settings;
         state.authorization = authorization;

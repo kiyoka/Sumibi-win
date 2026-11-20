@@ -20,6 +20,11 @@ pub const MAX_GRAPHEMES_PER_STATE: usize = 512;
 /// Confidence threshold for adopting an auto-conversion suggestion.
 pub const CONFIDENCE_THRESHOLD: f64 = 0.5;
 
+/// Returns whether `value` is a valid confidence threshold within `[0.0, 1.0]`.
+pub fn valid_confidence_threshold(value: f64) -> bool {
+    value.is_finite() && (0.0..=1.0).contains(&value)
+}
+
 /// Initial lifetime budget cap for decisions auto-conversion requests (10,000 requests).
 pub const MAX_DECISIONS_BUDGET: u64 = 10_000;
 
@@ -232,16 +237,26 @@ impl DecisionsBuffer {
         }
     }
 
-    /// Evaluate an individual result item against generation and confidence threshold (0.5).
+    /// Evaluate an individual result item against generation and default confidence threshold (0.5).
     pub fn evaluate_item(
         &self,
         generation: u64,
         item: &DecisionResultItem,
     ) -> Option<DecisionReplacement> {
-        if generation != self.current_generation {
+        self.evaluate_item_with_threshold(generation, item, CONFIDENCE_THRESHOLD)
+    }
+
+    /// Evaluate an individual result item against generation and an explicit confidence threshold.
+    pub fn evaluate_item_with_threshold(
+        &self,
+        generation: u64,
+        item: &DecisionResultItem,
+        threshold: f64,
+    ) -> Option<DecisionReplacement> {
+        if generation != self.current_generation || !valid_confidence_threshold(threshold) {
             return None;
         }
-        if item.should_convert && item.confidence >= CONFIDENCE_THRESHOLD {
+        if item.should_convert && item.confidence >= threshold {
             if let Some(ref text) = item.converted_text {
                 if !text.trim().is_empty() {
                     return Some(DecisionReplacement {
@@ -507,5 +522,35 @@ mod tests {
             converted_text: Some("テスト".to_string()),
         };
         assert_eq!(buffer.evaluate_item(gen, &item_no_convert), None);
+    }
+
+    #[test]
+    fn test_custom_confidence_threshold_and_validation() {
+        assert!(valid_confidence_threshold(0.0));
+        assert!(valid_confidence_threshold(0.5));
+        assert!(valid_confidence_threshold(1.0));
+        assert!(!valid_confidence_threshold(-0.01));
+        assert!(!valid_confidence_threshold(1.01));
+        assert!(!valid_confidence_threshold(f64::NAN));
+        assert!(!valid_confidence_threshold(f64::INFINITY));
+
+        let buffer = DecisionsBuffer::new();
+        let gen = buffer.current_generation();
+        let item = DecisionResultItem {
+            id: 1,
+            should_convert: true,
+            confidence: 0.72,
+            converted_text: Some("テスト".to_string()),
+        };
+
+        assert!(buffer
+            .evaluate_item_with_threshold(gen, &item, 0.7)
+            .is_some());
+        assert!(buffer
+            .evaluate_item_with_threshold(gen, &item, 0.75)
+            .is_none());
+        assert!(buffer
+            .evaluate_item_with_threshold(gen, &item, 1.5)
+            .is_none());
     }
 }

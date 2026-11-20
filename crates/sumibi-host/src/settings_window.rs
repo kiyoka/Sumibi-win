@@ -42,6 +42,7 @@ struct View {
     profile_strict: HWND,
     auto_conversion: HWND,
     auto_conversion_hint: HWND,
+    decisions_threshold: HWND,
     budget_used: u64,
     user_dictionary: HWND,
     save: HWND,
@@ -257,7 +258,7 @@ impl View {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 600,
-                if initial_setup { 775 } else { 790 },
+                if initial_setup { 811 } else { 826 },
                 None,
                 None,
                 Some(instance.into()),
@@ -284,6 +285,7 @@ impl View {
                 profile_strict: HWND::default(),
                 auto_conversion: HWND::default(),
                 auto_conversion_hint: HWND::default(),
+                decisions_threshold: HWND::default(),
                 budget_used,
                 user_dictionary: HWND::default(),
                 save: HWND::default(),
@@ -496,12 +498,56 @@ impl View {
             view.auto_conversion_hint =
                 child(w!("STATIC"), "", WINDOW_STYLE(0), 115, 287, 445, 24, 0)?;
 
+            child(
+                w!("STATIC"),
+                "判定閾値",
+                WINDOW_STYLE(0),
+                18,
+                319,
+                90,
+                24,
+                0,
+            )?;
+            let threshold_text = format!(
+                "{}",
+                settings.map_or(
+                    sumibi_host::decisions::CONFIDENCE_THRESHOLD,
+                    Settings::decisions_confidence_threshold,
+                )
+            );
+            view.decisions_threshold = child(
+                w!("EDIT"),
+                &threshold_text,
+                WS_BORDER | WS_TABSTOP | WINDOW_STYLE(0x80),
+                115,
+                315,
+                90,
+                26,
+                25,
+            )?;
+            SendMessageW(
+                view.decisions_threshold,
+                0x00c5,
+                Some(WPARAM(32)),
+                Some(LPARAM(0)),
+            );
+            child(
+                w!("STATIC"),
+                "0.0〜1.0（既定: 0.5。高いほど慎重に自動変換）",
+                WINDOW_STYLE(0),
+                215,
+                319,
+                345,
+                24,
+                0,
+            )?;
+
             view.save = child(
                 w!("BUTTON"),
                 "接続先・モデル・ユーザー辞書を保存",
                 WS_TABSTOP,
                 255,
-                325,
+                361,
                 305,
                 30,
                 1,
@@ -511,7 +557,7 @@ impl View {
                 "API キー",
                 WINDOW_STYLE(0),
                 18,
-                375,
+                411,
                 90,
                 24,
                 0,
@@ -521,7 +567,7 @@ impl View {
                 "",
                 WS_BORDER | WS_TABSTOP | WINDOW_STYLE(0xa0),
                 115,
-                370,
+                406,
                 445,
                 28,
                 13,
@@ -532,7 +578,7 @@ impl View {
                 "API キーをこのPCに保存",
                 WS_TABSTOP,
                 250,
-                410,
+                446,
                 310,
                 30,
                 3,
@@ -542,7 +588,7 @@ impl View {
                 "API キーを削除",
                 WS_TABSTOP,
                 115,
-                410,
+                446,
                 120,
                 30,
                 4,
@@ -552,7 +598,7 @@ impl View {
                 "保存した API キーは、この接続先での変換に使用します。",
                 WINDOW_STYLE(0),
                 18,
-                450,
+                486,
                 545,
                 24,
                 0,
@@ -562,7 +608,7 @@ impl View {
                 "キーの保存だけでは送信は許可されません。",
                 WINDOW_STYLE(0),
                 18,
-                490,
+                526,
                 545,
                 40,
                 0,
@@ -572,7 +618,7 @@ impl View {
                 "ユーザー辞書（1行に よみ = 変換後）。変換時に接続先へ送信します。",
                 WINDOW_STYLE(0),
                 18,
-                535,
+                571,
                 545,
                 24,
                 0,
@@ -584,7 +630,7 @@ impl View {
                     .replace('\n', "\r\n"),
                 WS_BORDER | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(0x0044),
                 18,
-                560,
+                596,
                 542,
                 90,
                 23,
@@ -597,7 +643,7 @@ impl View {
                     "送信の確認へ進む",
                     WS_TABSTOP,
                     345,
-                    673,
+                    709,
                     215,
                     32,
                     5,
@@ -610,7 +656,7 @@ impl View {
                     "デバッグモード（Ctrl + J の変換対象と判定をこの PC に記録）",
                     WS_TABSTOP | BS_AUTOCHECKBOX,
                     18,
-                    661,
+                    697,
                     545,
                     24,
                     6,
@@ -626,7 +672,7 @@ impl View {
                     "%LOCALAPPDATA%\\Sumibi\\conversion-logs に入力本文を平文で保存します。",
                     WINDOW_STYLE(0),
                     18,
-                    690,
+                    726,
                     545,
                     24,
                     0,
@@ -814,6 +860,15 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
                         })
                         .map_err(|_| "invalid settings")
                         .and_then(|settings| {
+                            let threshold = text(view.decisions_threshold)?
+                                .trim()
+                                .parse::<f64>()
+                                .map_err(|_| "invalid threshold")?;
+                            settings
+                                .with_decisions_confidence_threshold(threshold)
+                                .map_err(|_| "invalid threshold")
+                        })
+                        .and_then(|settings| {
                             settings
                                 .with_user_dictionary(&text(view.user_dictionary)?)
                                 .map_err(|_| "invalid dictionary")
@@ -844,6 +899,10 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
                     }
                     Err(_) => set_text(view.status, "保存処理を開始できませんでした。"),
                 },
+                Err("invalid threshold") => set_text(
+                    view.status,
+                    "判定閾値は 0.0〜1.0 の数値で入力してください。",
+                ),
                 Err("invalid dictionary") => set_text(
                     view.status,
                     "辞書は1行に「半角小文字のよみ = 変換後」を入力してください。\r\n読みの重複、100件または変換の文字数上限を確認してください。",
@@ -1200,5 +1259,27 @@ mod tests {
             .unwrap()
             .contains("Gemini Decisions"));
         drop(view_gemini);
+    }
+
+    #[test]
+    fn view_initializes_decisions_threshold_field() {
+        let default_settings = Settings::new(
+            sumibi_host::manual::Scheme::Https,
+            "example.test",
+            443,
+            "/v1",
+            "gpt-6-luna",
+        )
+        .unwrap();
+        let view_default = View::new(Some(&default_settings), false).expect("create default view");
+        assert_eq!(text(view_default.decisions_threshold).unwrap(), "0.5");
+        drop(view_default);
+
+        let custom_settings = default_settings
+            .with_decisions_confidence_threshold(0.8)
+            .unwrap();
+        let view_custom = View::new(Some(&custom_settings), false).expect("create custom view");
+        assert_eq!(text(view_custom.decisions_threshold).unwrap(), "0.8");
+        drop(view_custom);
     }
 }

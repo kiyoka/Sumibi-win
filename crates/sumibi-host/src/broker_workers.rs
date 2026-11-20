@@ -439,10 +439,15 @@ impl BrokerWorkLoop {
                                     ticket.deadline(),
                                 )
                                 .map_err(classify_send_error)?;
+                            let threshold = authority
+                                .snapshot()
+                                .map_or(crate::decisions::CONFIDENCE_THRESHOLD, |snapshot| {
+                                    snapshot.decisions_confidence_threshold
+                                });
                             let should_convert = scores
                                 .first()
                                 .and_then(|score| score.probability)
-                                .is_some_and(|p| p >= crate::decisions::CONFIDENCE_THRESHOLD);
+                                .is_some_and(|p| p >= threshold);
                             if !should_convert {
                                 return Ok(WorkerResult::Skipped(conversion.text));
                             }
