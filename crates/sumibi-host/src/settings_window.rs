@@ -50,6 +50,7 @@ struct View {
     user_dictionary: HWND,
     save: HWND,
     secret: HWND,
+    key_preview: HWND,
     key_save: HWND,
     key_delete: HWND,
     status: HWND,
@@ -253,6 +254,25 @@ impl View {
             }
         }
     }
+    fn update_key_preview(
+        &self,
+        masked_key: Option<&str>,
+        key_destination_saved: bool,
+        loading: bool,
+    ) {
+        let label = if !key_destination_saved {
+            "現在設定中のキー: （接続先を保存すると確認できます）".to_owned()
+        } else if loading {
+            "現在設定中のキー: 確認中…".to_owned()
+        } else if let Some(masked) = masked_key {
+            format!("現在設定中のキー: {masked}")
+        } else {
+            "現在設定中のキー: 未設定".to_owned()
+        };
+        if text(self.key_preview).as_deref() != Ok(label.as_str()) {
+            set_text(self.key_preview, &label);
+        }
+    }
     fn scheme_and_port(&self, baseline: &Settings) -> (sumibi_host::manual::Scheme, u16) {
         let selection = unsafe { SendMessageW(self.provider, CB_GETCURSEL, None, None).0 };
         if selection == 0 || selection == 1 {
@@ -307,7 +327,7 @@ impl View {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 624,
-                if initial_setup { 748 } else { 792 },
+                if initial_setup { 776 } else { 820 },
                 None,
                 None,
                 Some(instance.into()),
@@ -339,6 +359,7 @@ impl View {
                 user_dictionary: HWND::default(),
                 save: HWND::default(),
                 secret: HWND::default(),
+                key_preview: HWND::default(),
                 key_save: HWND::default(),
                 key_delete: HWND::default(),
                 status: HWND::default(),
@@ -644,7 +665,17 @@ impl View {
                 14,
                 520,
                 580,
-                132,
+                160,
+                0,
+            )?;
+            view.key_preview = child(
+                w!("STATIC"),
+                "現在設定中のキー: 未設定",
+                WINDOW_STYLE(0),
+                28,
+                546,
+                548,
+                22,
                 0,
             )?;
             child(
@@ -652,7 +683,7 @@ impl View {
                 "API キー",
                 WINDOW_STYLE(0),
                 28,
-                548,
+                576,
                 90,
                 24,
                 0,
@@ -662,7 +693,7 @@ impl View {
                 "",
                 WS_BORDER | WS_TABSTOP | WINDOW_STYLE(0xa0),
                 125,
-                544,
+                572,
                 452,
                 26,
                 13,
@@ -673,7 +704,7 @@ impl View {
                 "API キーを削除",
                 WS_TABSTOP,
                 125,
-                580,
+                608,
                 120,
                 28,
                 4,
@@ -683,7 +714,7 @@ impl View {
                 "API キーをこのPCに保存",
                 WS_TABSTOP,
                 255,
-                580,
+                608,
                 322,
                 28,
                 3,
@@ -693,7 +724,7 @@ impl View {
                 "保存した API キーは、この接続先での変換に使用します。",
                 WINDOW_STYLE(0),
                 28,
-                618,
+                646,
                 548,
                 24,
                 0,
@@ -706,7 +737,7 @@ impl View {
                     "送信の確認へ進む",
                     WS_TABSTOP,
                     376,
-                    664,
+                    692,
                     218,
                     32,
                     5,
@@ -719,7 +750,7 @@ impl View {
                     "診断・ログ（チェック変更で即時保存・反映）",
                     BS_GROUPBOX,
                     14,
-                    662,
+                    690,
                     580,
                     78,
                     0,
@@ -729,7 +760,7 @@ impl View {
                     "デバッグモードを有効にする（Ctrl + J の変換対象と判定をこの PC に記録）",
                     WS_TABSTOP | BS_AUTOCHECKBOX,
                     28,
-                    684,
+                    712,
                     548,
                     24,
                     6,
@@ -745,7 +776,7 @@ impl View {
                     "%LOCALAPPDATA%\\Sumibi\\conversion-logs に入力本文を平文で保存します。",
                     WINDOW_STYLE(0),
                     28,
-                    710,
+                    738,
                     548,
                     20,
                     0,
@@ -759,6 +790,7 @@ impl View {
                 );
             }
             view.update_editability(true, settings.is_some(), false);
+            view.update_key_preview(None, settings.is_some(), false);
             if SetTimer(Some(hwnd), 1, 50, None) == 0 {
                 return Err(windows::core::Error::from_thread());
             }
@@ -774,6 +806,7 @@ impl View {
 enum KeyOperation {
     Save,
     Delete,
+    Reload,
 }
 
 pub fn run(path: PathBuf) -> Result<(), &'static str> {
@@ -816,7 +849,13 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
     .map_err(|_| "settings window unavailable")?;
     let mut key_saved = false;
     let mut pending: Option<(SettingsSaveTask, Settings)> = None;
-    let mut key_pending: Option<(CredentialTask, KeyOperation)> = None;
+    let mut key_pending: Option<(CredentialTask, KeyOperation)> = if baseline.is_some() {
+        CredentialTask::reload(authority.clone())
+            .ok()
+            .map(|task| (task, KeyOperation::Reload))
+    } else {
+        None
+    };
     let mut settings_conflict = false;
     let mut message = MSG::default();
     loop {
@@ -1042,6 +1081,11 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
                         baseline = Some(replacement);
                         key_saved = false;
                         set_text(view.status, "保存しました。次回起動時に適用されます。");
+                        if key_pending.is_none() {
+                            if let Ok(task) = CredentialTask::reload(authority.clone()) {
+                                key_pending = Some((task, KeyOperation::Reload));
+                            }
+                        }
                     }
                     Err(_) if conflict => set_text(
                         view.status,
@@ -1078,6 +1122,15 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
                         key_saved = false;
                         set_text(view.status, "キーを削除しました。設定は残っています。")
                     }
+                    (KeyOperation::Reload, Ok(update)) if update.outcome().is_ok() => {
+                        use sumibi_host::manual::PolicySource;
+                        key_saved = authority
+                            .snapshot()
+                            .is_some_and(|snapshot| snapshot.credential.is_some());
+                    }
+                    (KeyOperation::Reload, _) => {
+                        key_saved = false;
+                    }
                     (KeyOperation::Save, Ok(_)) => set_text(
                         view.status,
                         "キーを保存できませんでした。もう一度入力してください。",
@@ -1091,6 +1144,17 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
             }
         }
         let idle = pending.is_none() && key_pending.is_none();
+        let masked_preview = {
+            use sumibi_host::manual::PolicySource;
+            authority
+                .snapshot()
+                .and_then(|snapshot| snapshot.credential.map(|c| c.masked_preview()))
+        };
+        view.update_key_preview(
+            masked_preview.as_deref(),
+            key_destination_saved,
+            key_pending.is_some(),
+        );
         let can_continue = initial_setup
             && idle
             && key_saved
@@ -1390,5 +1454,34 @@ mod tests {
             assert!(IsWindowEnabled(view_custom.decisions_threshold).as_bool());
         }
         drop(view_custom);
+    }
+
+    #[test]
+    fn view_updates_masked_api_key_preview_states() {
+        let settings = Settings::new(
+            sumibi_host::manual::Scheme::Https,
+            "generativelanguage.googleapis.com",
+            443,
+            "/v1beta/openai/chat/completions",
+            "gemini-3.6-flash",
+        )
+        .unwrap();
+        let view = View::new(Some(&settings), false).expect("create view");
+        assert_eq!(text(view.key_preview).unwrap(), "現在設定中のキー: 未設定");
+
+        view.update_key_preview(None, true, true);
+        assert_eq!(text(view.key_preview).unwrap(), "現在設定中のキー: 確認中…");
+
+        view.update_key_preview(Some("*****abcd"), true, false);
+        assert_eq!(
+            text(view.key_preview).unwrap(),
+            "現在設定中のキー: *****abcd"
+        );
+
+        view.update_key_preview(Some("*****abcd"), false, false);
+        assert_eq!(
+            text(view.key_preview).unwrap(),
+            "現在設定中のキー: （接続先を保存すると確認できます）"
+        );
     }
 }

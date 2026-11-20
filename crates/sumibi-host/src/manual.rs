@@ -130,6 +130,17 @@ impl Credential {
     fn expose(&self) -> &str {
         &self.0
     }
+
+    /// Return a masked preview showing only the last 4 ASCII characters
+    /// (e.g. `"*****abcd"`), or masking every character when length <= 4.
+    pub fn masked_preview(&self) -> String {
+        let len = self.0.len();
+        if len <= 4 {
+            "*".repeat(len.max(1))
+        } else {
+            format!("*****{}", &self.0[len - 4..])
+        }
+    }
 }
 
 /// Snapshot of the Host's settings and credential authority. On any policy
@@ -1193,5 +1204,24 @@ mod tests {
             convert(request(&destination), &source, &bad_response),
             Err(SendError::InvalidResponse)
         );
+    }
+
+    #[test]
+    fn credential_masked_preview_shows_only_last_four_chars() {
+        assert_eq!(
+            Credential::new("sk-1234567890abcdef".into())
+                .unwrap()
+                .masked_preview(),
+            "*****cdef"
+        );
+        assert_eq!(
+            Credential::new("12345".into()).unwrap().masked_preview(),
+            "*****2345"
+        );
+        assert_eq!(
+            Credential::new("abcd".into()).unwrap().masked_preview(),
+            "****"
+        );
+        assert_eq!(Credential::new("a".into()).unwrap().masked_preview(), "*");
     }
 }
