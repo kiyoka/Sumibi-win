@@ -21,7 +21,6 @@ const BST_CHECKED: usize = 1;
 const BM_GETCHECK: u32 = 0x00F0;
 const BM_SETCHECK: u32 = 0x00F1;
 const EM_SETREADONLY: u32 = 0x00CF;
-#[cfg(test)]
 const ES_READONLY: isize = 0x0800;
 
 #[derive(Default)]
@@ -214,18 +213,18 @@ impl View {
         let auto_checked = unsafe { SendMessageW(self.auto_conversion, BM_GETCHECK, None, None).0 }
             == BST_CHECKED as isize;
         unsafe {
-            let _ = SendMessageW(
-                self.host,
-                EM_SETREADONLY,
-                Some(WPARAM(usize::from(preset_selected))),
-                None,
-            );
-            let _ = SendMessageW(
-                self.path,
-                EM_SETREADONLY,
-                Some(WPARAM(usize::from(preset_selected))),
-                None,
-            );
+            for field in [self.host, self.path] {
+                let currently_readonly =
+                    (GetWindowLongW(field, GWL_STYLE) & ES_READONLY as i32) != 0;
+                if currently_readonly != preset_selected {
+                    let _ = SendMessageW(
+                        field,
+                        EM_SETREADONLY,
+                        Some(WPARAM(usize::from(preset_selected))),
+                        None,
+                    );
+                }
+            }
             for field in [
                 self.provider,
                 self.host,
