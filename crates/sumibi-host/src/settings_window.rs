@@ -16,9 +16,12 @@ use windows::Win32::{
 
 const BS_AUTORADIOBUTTON: WINDOW_STYLE = WINDOW_STYLE(0x00000009);
 const BS_AUTOCHECKBOX: WINDOW_STYLE = WINDOW_STYLE(0x00000003);
+const BS_GROUPBOX: WINDOW_STYLE = WINDOW_STYLE(0x00000007);
 const BST_CHECKED: usize = 1;
 const BM_GETCHECK: u32 = 0x00F0;
 const BM_SETCHECK: u32 = 0x00F1;
+const EM_SETREADONLY: u32 = 0x00CF;
+const ES_READONLY: isize = 0x0800;
 
 #[derive(Default)]
 struct Actions {
@@ -204,6 +207,52 @@ impl View {
             }
         }
     }
+    fn update_editability(&self, idle: bool, key_destination_saved: bool, conflict: bool) {
+        let selection = unsafe { SendMessageW(self.provider, CB_GETCURSEL, None, None).0 };
+        let preset_selected = selection == 0 || selection == 1;
+        let auto_checked = unsafe { SendMessageW(self.auto_conversion, BM_GETCHECK, None, None).0 }
+            == BST_CHECKED as isize;
+        unsafe {
+            let _ = SendMessageW(
+                self.host,
+                EM_SETREADONLY,
+                Some(WPARAM(usize::from(preset_selected))),
+                None,
+            );
+            let _ = SendMessageW(
+                self.path,
+                EM_SETREADONLY,
+                Some(WPARAM(usize::from(preset_selected))),
+                None,
+            );
+            for field in [
+                self.provider,
+                self.host,
+                self.path,
+                self.model,
+                self.profile_standard,
+                self.profile_strict,
+                self.auto_conversion,
+                self.user_dictionary,
+            ] {
+                let _ = EnableWindow(field, idle);
+            }
+            let _ = EnableWindow(self.decisions_threshold, idle && auto_checked);
+            if let Some(checkbox) = self.debug_checkbox {
+                let _ = EnableWindow(checkbox, idle);
+            }
+            let key_enabled = idle && key_destination_saved && !conflict;
+            let _ = EnableWindow(self.key_save, key_enabled);
+            let _ = EnableWindow(self.key_delete, key_enabled);
+            let _ = EnableWindow(self.secret, key_enabled);
+        }
+        if !key_destination_saved {
+            let hint = "接続先が未保存です。先に上の「設定を保存」を押すと入力できます。";
+            if text(self.key_hint).as_deref() != Ok(hint) {
+                set_text(self.key_hint, hint);
+            }
+        }
+    }
     fn scheme_and_port(&self, baseline: &Settings) -> (sumibi_host::manual::Scheme, u16) {
         let selection = unsafe { SendMessageW(self.provider, CB_GETCURSEL, None, None).0 };
         if selection == 0 || selection == 1 {
@@ -257,8 +306,8 @@ impl View {
                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                600,
-                if initial_setup { 811 } else { 826 },
+                624,
+                if initial_setup { 748 } else { 792 },
                 None,
                 None,
                 Some(instance.into()),
@@ -334,23 +383,33 @@ impl View {
             child(
                 w!("STATIC"),
                 if initial_setup {
-                    "プロバイダーを選び、接続先とモデル、API キーを保存してください。"
+                    "プロバイダーを選び、基本設定を保存したあと API キーを保存してください。"
                 } else {
-                    "保存した設定は次回起動時に使用します。"
+                    "各枠のボタンまたは即時反映の案内に従って設定を変更できます。"
                 },
                 WINDOW_STYLE(0),
                 18,
-                16,
-                550,
-                24,
+                12,
+                576,
+                20,
+                0,
+            )?;
+            child(
+                w!("BUTTON"),
+                "基本設定（「設定を保存」でまとめて保存・反映）",
+                BS_GROUPBOX,
+                14,
+                38,
+                580,
+                472,
                 0,
             )?;
             child(
                 w!("STATIC"),
                 "プロバイダー",
                 WINDOW_STYLE(0),
-                18,
-                59,
+                28,
+                62,
                 90,
                 24,
                 0,
@@ -359,9 +418,9 @@ impl View {
                 w!("COMBOBOX"),
                 "",
                 WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(3),
-                115,
-                55,
-                445,
+                125,
+                58,
+                452,
                 160,
                 30,
             )?;
@@ -397,16 +456,16 @@ impl View {
             .iter()
             .enumerate()
             {
-                let y = 105 + i as i32 * 40;
-                child(w!("STATIC"), label, WINDOW_STYLE(0), 18, y + 4, 90, 24, 0)?;
+                let y = 94 + i as i32 * 34;
+                child(w!("STATIC"), label, WINDOW_STYLE(0), 28, y + 4, 90, 24, 0)?;
                 let edit = child(
                     w!("EDIT"),
                     value,
                     WS_BORDER | WS_TABSTOP | WINDOW_STYLE(0x80),
-                    115,
+                    125,
                     y,
-                    445,
-                    28,
+                    452,
+                    26,
                     10 + i,
                 )?;
                 SendMessageW(edit, 0x00c5, Some(WPARAM(2048)), Some(LPARAM(0))); // EM_SETLIMITTEXT
@@ -420,8 +479,8 @@ impl View {
                 w!("STATIC"),
                 "保護設定",
                 WINDOW_STYLE(0),
-                18,
-                225 + 2,
+                28,
+                202,
                 90,
                 24,
                 0,
@@ -430,9 +489,9 @@ impl View {
                 w!("BUTTON"),
                 "標準 (Standard: Notepad等一般アプリ対応)",
                 BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,
-                115,
-                225,
-                270,
+                125,
+                200,
+                275,
                 24,
                 21,
             )?;
@@ -440,9 +499,9 @@ impl View {
                 w!("BUTTON"),
                 "厳格 (Strict: 高機密監査環境)",
                 BS_AUTORADIOBUTTON,
-                395,
-                225,
-                165,
+                408,
+                200,
+                170,
                 24,
                 22,
             )?;
@@ -471,8 +530,8 @@ impl View {
                 w!("STATIC"),
                 "自動変換",
                 WINDOW_STYLE(0),
-                18,
-                262,
+                28,
+                236,
                 90,
                 24,
                 0,
@@ -481,9 +540,9 @@ impl View {
                 w!("BUTTON"),
                 "自動変換を有効にする（OpenAI Decisions / gpt-6-luna）",
                 WS_TABSTOP | BS_AUTOCHECKBOX,
-                115,
-                260,
-                445,
+                125,
+                234,
+                452,
                 24,
                 24,
             )?;
@@ -496,14 +555,14 @@ impl View {
                 None,
             );
             view.auto_conversion_hint =
-                child(w!("STATIC"), "", WINDOW_STYLE(0), 115, 287, 445, 24, 0)?;
+                child(w!("STATIC"), "", WINDOW_STYLE(0), 125, 260, 452, 20, 0)?;
 
             child(
                 w!("STATIC"),
                 "判定閾値",
                 WINDOW_STYLE(0),
-                18,
-                319,
+                28,
+                288,
                 90,
                 24,
                 0,
@@ -519,8 +578,8 @@ impl View {
                 w!("EDIT"),
                 &threshold_text,
                 WS_BORDER | WS_TABSTOP | WINDOW_STYLE(0x80),
-                115,
-                315,
+                125,
+                284,
                 90,
                 26,
                 25,
@@ -535,92 +594,21 @@ impl View {
                 w!("STATIC"),
                 "0.0〜1.0（既定: 0.5。高いほど慎重に自動変換）",
                 WINDOW_STYLE(0),
-                215,
-                319,
-                345,
+                225,
+                288,
+                352,
                 24,
                 0,
             )?;
 
-            view.save = child(
-                w!("BUTTON"),
-                "接続先・モデル・ユーザー辞書を保存",
-                WS_TABSTOP,
-                255,
-                361,
-                305,
-                30,
-                1,
-            )?;
             child(
                 w!("STATIC"),
-                "API キー",
+                "ユーザー辞書（1行に よみ = 変換後。変換時に接続先へ送信します）",
                 WINDOW_STYLE(0),
-                18,
-                411,
-                90,
-                24,
-                0,
-            )?;
-            view.secret = child(
-                w!("EDIT"),
-                "",
-                WS_BORDER | WS_TABSTOP | WINDOW_STYLE(0xa0),
-                115,
-                406,
-                445,
                 28,
-                13,
-            )?; // ES_PASSWORD | ES_AUTOHSCROLL
-            SendMessageW(view.secret, 0x00c5, Some(WPARAM(2560)), Some(LPARAM(0)));
-            view.key_save = child(
-                w!("BUTTON"),
-                "API キーをこのPCに保存",
-                WS_TABSTOP,
-                250,
-                446,
-                310,
-                30,
-                3,
-            )?;
-            view.key_delete = child(
-                w!("BUTTON"),
-                "API キーを削除",
-                WS_TABSTOP,
-                115,
-                446,
-                120,
-                30,
-                4,
-            )?;
-            view.key_hint = child(
-                w!("STATIC"),
-                "保存した API キーは、この接続先での変換に使用します。",
-                WINDOW_STYLE(0),
-                18,
-                486,
-                545,
-                24,
-                0,
-            )?;
-            view.status = child(
-                w!("STATIC"),
-                "キーの保存だけでは送信は許可されません。",
-                WINDOW_STYLE(0),
-                18,
-                526,
-                545,
-                40,
-                0,
-            )?;
-            child(
-                w!("STATIC"),
-                "ユーザー辞書（1行に よみ = 変換後）。変換時に接続先へ送信します。",
-                WINDOW_STYLE(0),
-                18,
-                571,
-                545,
-                24,
+                320,
+                548,
+                20,
                 0,
             )?;
             view.user_dictionary = child(
@@ -629,35 +617,120 @@ impl View {
                     .map_or("", Settings::user_dictionary)
                     .replace('\n', "\r\n"),
                 WS_BORDER | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(0x0044),
-                18,
-                596,
-                542,
-                90,
+                28,
+                342,
+                548,
+                76,
                 23,
             )?;
             SendMessageW(view.user_dictionary, 0x00c5, Some(WPARAM(2048)), None);
+
+            view.save = child(w!("BUTTON"), "設定を保存", WS_TABSTOP, 376, 428, 200, 30, 1)?;
+            view.status = child(
+                w!("STATIC"),
+                "基本設定を変更した場合は「設定を保存」を押してください。",
+                WINDOW_STYLE(0),
+                28,
+                464,
+                548,
+                36,
+                0,
+            )?;
+
+            child(
+                w!("BUTTON"),
+                "API キー管理（この PC に安全に保存・即時反映）",
+                BS_GROUPBOX,
+                14,
+                520,
+                580,
+                132,
+                0,
+            )?;
+            child(
+                w!("STATIC"),
+                "API キー",
+                WINDOW_STYLE(0),
+                28,
+                548,
+                90,
+                24,
+                0,
+            )?;
+            view.secret = child(
+                w!("EDIT"),
+                "",
+                WS_BORDER | WS_TABSTOP | WINDOW_STYLE(0xa0),
+                125,
+                544,
+                452,
+                26,
+                13,
+            )?; // ES_PASSWORD | ES_AUTOHSCROLL
+            SendMessageW(view.secret, 0x00c5, Some(WPARAM(2560)), Some(LPARAM(0)));
+            view.key_delete = child(
+                w!("BUTTON"),
+                "API キーを削除",
+                WS_TABSTOP,
+                125,
+                580,
+                120,
+                28,
+                4,
+            )?;
+            view.key_save = child(
+                w!("BUTTON"),
+                "API キーをこのPCに保存",
+                WS_TABSTOP,
+                255,
+                580,
+                322,
+                28,
+                3,
+            )?;
+            view.key_hint = child(
+                w!("STATIC"),
+                "保存した API キーは、この接続先での変換に使用します。",
+                WINDOW_STYLE(0),
+                28,
+                618,
+                548,
+                24,
+                0,
+            )?;
+
             view.update_key_labels();
             if initial_setup {
                 let button = child(
                     w!("BUTTON"),
                     "送信の確認へ進む",
                     WS_TABSTOP,
-                    345,
-                    709,
-                    215,
+                    376,
+                    664,
+                    218,
                     32,
                     5,
                 )?;
                 let _ = EnableWindow(button, false);
                 view.continue_setup = Some(button);
             } else {
+                child(
+                    w!("BUTTON"),
+                    "診断・ログ（チェック変更で即時保存・反映）",
+                    BS_GROUPBOX,
+                    14,
+                    662,
+                    580,
+                    78,
+                    0,
+                )?;
                 let checkbox = child(
                     w!("BUTTON"),
-                    "デバッグモード（Ctrl + J の変換対象と判定をこの PC に記録）",
+                    "デバッグモードを有効にする（Ctrl + J の変換対象と判定をこの PC に記録）",
                     WS_TABSTOP | BS_AUTOCHECKBOX,
-                    18,
-                    697,
-                    545,
+                    28,
+                    684,
+                    548,
                     24,
                     6,
                 )?;
@@ -671,10 +744,10 @@ impl View {
                     w!("STATIC"),
                     "%LOCALAPPDATA%\\Sumibi\\conversion-logs に入力本文を平文で保存します。",
                     WINDOW_STYLE(0),
-                    18,
-                    726,
-                    545,
-                    24,
+                    28,
+                    710,
+                    548,
+                    20,
                     0,
                 )?;
                 view.debug_checkbox = Some(checkbox);
@@ -682,12 +755,10 @@ impl View {
             if settings.is_none() {
                 set_text(
                     view.status,
-                    "先に「接続先・モデル・ユーザー辞書を保存」を押すと、API キーを入力できます。",
+                    "先に「設定を保存」を押すと、API キーを入力・保存できます。",
                 );
-                let _ = EnableWindow(view.key_save, false);
-                let _ = EnableWindow(view.key_delete, false);
-                let _ = EnableWindow(view.secret, false);
             }
+            view.update_editability(true, settings.is_some(), false);
             if SetTimer(Some(hwnd), 1, 50, None) == 0 {
                 return Err(windows::core::Error::from_thread());
             }
@@ -795,7 +866,7 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
             set_text(view.secret, "");
             set_text(
                 view.status,
-                "先に「接続先・モデル・ユーザー辞書を保存」を押すと、API キーを入力できます。",
+                "先に「設定を保存」を押すと、API キーを入力・保存できます。",
             );
         }
         view.update_key_labels();
@@ -1029,27 +1100,11 @@ fn edit(path: PathBuf, initial_setup: bool) -> Result<bool, &'static str> {
         if view.actions.continue_setup.replace(false) && can_continue {
             return Ok(true);
         }
+        view.update_editability(idle, key_destination_saved, settings_conflict);
         unsafe {
             if let Some(button) = view.continue_setup {
                 let _ = EnableWindow(button, can_continue);
             }
-            let _ = EnableWindow(
-                view.key_save,
-                idle && key_destination_saved && !settings_conflict,
-            );
-            let _ = EnableWindow(
-                view.key_delete,
-                idle && key_destination_saved && !settings_conflict,
-            );
-            let _ = EnableWindow(
-                view.secret,
-                idle && key_destination_saved && !settings_conflict,
-            );
-            for field in [view.provider, view.host, view.path, view.model] {
-                let _ = EnableWindow(field, idle);
-            }
-            let _ = EnableWindow(view.profile_standard, idle);
-            let _ = EnableWindow(view.profile_strict, idle);
             let _ = EnableWindow(
                 view.save,
                 idle && !settings_conflict && !view.actions.close.get(),
@@ -1280,6 +1335,60 @@ mod tests {
             .unwrap();
         let view_custom = View::new(Some(&custom_settings), false).expect("create custom view");
         assert_eq!(text(view_custom.decisions_threshold).unwrap(), "0.8");
+        drop(view_custom);
+    }
+
+    #[test]
+    fn view_reflects_editability_for_presets_and_auto_conversion() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+
+        let preset_settings = Settings::new(
+            sumibi_host::manual::Scheme::Https,
+            "generativelanguage.googleapis.com",
+            443,
+            "/v1beta/openai/chat/completions",
+            "gemini-3.6-flash",
+        )
+        .unwrap();
+        let view_preset = View::new(Some(&preset_settings), false).expect("create preset view");
+        unsafe {
+            assert_ne!(
+                GetWindowLongW(view_preset.host, GWL_STYLE) & ES_READONLY as i32,
+                0
+            );
+            assert_ne!(
+                GetWindowLongW(view_preset.path, GWL_STYLE) & ES_READONLY as i32,
+                0
+            );
+            assert_eq!(
+                GetWindowLongW(view_preset.model, GWL_STYLE) & ES_READONLY as i32,
+                0
+            );
+            assert!(!IsWindowEnabled(view_preset.decisions_threshold).as_bool());
+        }
+        drop(view_preset);
+
+        let custom_auto = Settings::new(
+            sumibi_host::manual::Scheme::Https,
+            "custom.example.test",
+            443,
+            "/v1",
+            "gpt-6-luna",
+        )
+        .unwrap()
+        .with_auto_conversion(true);
+        let view_custom = View::new(Some(&custom_auto), false).expect("create custom auto view");
+        unsafe {
+            assert_eq!(
+                GetWindowLongW(view_custom.host, GWL_STYLE) & ES_READONLY as i32,
+                0
+            );
+            assert_eq!(
+                GetWindowLongW(view_custom.path, GWL_STYLE) & ES_READONLY as i32,
+                0
+            );
+            assert!(IsWindowEnabled(view_custom.decisions_threshold).as_bool());
+        }
         drop(view_custom);
     }
 }
