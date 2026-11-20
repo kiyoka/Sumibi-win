@@ -74,6 +74,10 @@ impl RunRecord {
         self.units.len()
     }
 
+    pub(crate) fn context(&self) -> usize {
+        self.context
+    }
+
     pub(crate) fn clear(&mut self) {
         self.units.iter_mut().for_each(|unit| *unit = 0);
         self.units.clear();
