@@ -21,6 +21,7 @@ const BST_CHECKED: usize = 1;
 const BM_GETCHECK: u32 = 0x00F0;
 const BM_SETCHECK: u32 = 0x00F1;
 const EM_SETREADONLY: u32 = 0x00CF;
+#[cfg(test)]
 const ES_READONLY: isize = 0x0800;
 
 #[derive(Default)]
