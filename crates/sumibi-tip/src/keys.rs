@@ -144,7 +144,11 @@ impl ITfKeyEventSink_Impl for KeySink_Impl {
         ));
         if self.owner == thread::current().id() {
             if let Some(session) = self.session.upgrade() {
-                session.clear_run();
+                session.clear_run_with_reason(if _foreground.as_bool() {
+                    "on_set_focus_fg"
+                } else {
+                    "on_set_focus_bg"
+                });
             }
         }
         #[cfg(feature = "spike")]
