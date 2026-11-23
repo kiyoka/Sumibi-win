@@ -9,7 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 use sumibi_core::candidate::CandidateItem;
@@ -654,13 +654,73 @@ fn command_modifier() -> bool {
         .any(|key| unsafe { GetKeyState(key.0 as i32) } < 0)
 }
 
+#[derive(Default)]
+struct CommandSlotState {
+    pending: Option<WorkerCommand>,
+    closed: bool,
+}
+
+/// Bounded 1-slot latest-wins command handoff so stale auto-conversion bursts
+/// never block or drop a subsequent manual Ctrl+J request.
+#[derive(Default)]
+struct CommandSlot {
+    inner: Mutex<CommandSlotState>,
+    wake: Condvar,
+}
+
+impl CommandSlot {
+    fn push(&self, command: WorkerCommand) -> bool {
+        let Ok(mut guard) = self.inner.lock() else {
+            return false;
+        };
+        if guard.closed {
+            return false;
+        }
+        guard.pending = Some(command);
+        self.wake.notify_one();
+        true
+    }
+
+    fn take(&self) -> Option<WorkerCommand> {
+        let Ok(mut guard) = self.inner.lock() else {
+            return None;
+        };
+        guard.pending.take()
+    }
+
+    fn wait_timeout(&self, timeout: Duration) -> std::result::Result<Option<WorkerCommand>, ()> {
+        let Ok(mut guard) = self.inner.lock() else {
+            return Err(());
+        };
+        if guard.pending.is_none() && !guard.closed {
+            let (updated, _) = self.wake.wait_timeout(guard, timeout).map_err(|_| ())?;
+            guard = updated;
+        }
+        if let Some(command) = guard.pending.take() {
+            return Ok(Some(command));
+        }
+        if guard.closed {
+            return Err(());
+        }
+        Ok(None)
+    }
+
+    fn close(&self) {
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.closed = true;
+            guard.pending = None;
+            self.wake.notify_all();
+        }
+    }
+}
+
 pub struct TipHostSession {
     owner: ThreadId,
     manager: ITfThreadMgr,
     client: u32,
     state: Arc<SharedSessionState>,
     stop: Stop,
-    command_sender: SyncSender<WorkerCommand>,
+    command_slot: Arc<CommandSlot>,
     sink: Rc<DrainSink>,
     worker_thread: RefCell<Option<JoinHandle<()>>>,
     preserved_registered: Cell<bool>,
@@ -692,7 +752,7 @@ impl TipHostSession {
         state.diagnostics = Some(recorder);
         let state = Arc::new(state);
 
-        let (cmd_tx, cmd_rx) = mpsc::sync_channel(4);
+        let command_slot = Arc::new(CommandSlot::default());
         let (evt_tx, evt_rx) = mpsc::sync_channel(4);
 
         let run = Rc::new(RefCell::new(crate::run_record::RunRecord::default()));
@@ -721,7 +781,7 @@ impl TipHostSession {
             let sink_weak = Rc::downgrade(&sink);
             let manager_cb = manager.clone();
             let state_cb = state.clone();
-            let cmd_tx_cb = cmd_tx.clone();
+            let command_slot_cb = command_slot.clone();
             let run_cb = run.clone();
             let ctx_cb = last_context.clone();
             let armed_cb = auto_timer_armed.clone();
@@ -802,7 +862,7 @@ impl TipHostSession {
                     additional: false,
                     auto_conversion: true,
                 }));
-                if cmd_tx_cb.try_send(command).is_err() {
+                if !command_slot_cb.push(command) {
                     sink.cancel_pending();
                 } else {
                     state_cb.record(
@@ -817,13 +877,14 @@ impl TipHostSession {
         let thread_state = state.clone();
         let thread_stop = stop.clone();
 
+        let worker_commands = command_slot.clone();
         let worker_thread = thread::Builder::new()
             .name("sumibi-tip-session".into())
             .spawn(move || {
                 worker_loop(
                     thread_state,
                     thread_stop,
-                    cmd_rx,
+                    worker_commands,
                     evt_tx,
                     drain_hwnd,
                     writer,
@@ -837,7 +898,7 @@ impl TipHostSession {
             client,
             state,
             stop,
-            command_sender: cmd_tx,
+            command_slot,
             sink,
             worker_thread: RefCell::new(Some(worker_thread)),
             preserved_registered: Cell::new(false),
@@ -1286,7 +1347,7 @@ impl TipHostSession {
             additional,
             auto_conversion: false,
         }));
-        if self.command_sender.try_send(command).is_err() {
+        if !self.command_slot.push(command) {
             self.state.record(
                 Some(request_id),
                 "dispatch_failed",
@@ -1316,6 +1377,7 @@ impl TipHostSession {
             window.destroy();
         }
         self.sink.cancel_pending();
+        self.command_slot.close();
         let _ = self.stop.cancel();
         if let Some(thread) = self.worker_thread.borrow_mut().take() {
             let _ = thread.join();
@@ -1346,7 +1408,7 @@ fn notify_drain(hwnd: Option<isize>, request_id: u64) {
 fn worker_loop(
     state: Arc<SharedSessionState>,
     stop: Stop,
-    receiver: Receiver<WorkerCommand>,
+    commands: Arc<CommandSlot>,
     event_sender: SyncSender<WorkerEvent>,
     drain_hwnd: Option<isize>,
     mut diagnostics: Writer,
@@ -1507,15 +1569,14 @@ fn worker_loop(
         }
 
         // 3. Check for outgoing conversion commands
-        let mut next_command = pending_command.take();
+        let mut next_command = pending_command.take().or_else(|| commands.take());
         if next_command.is_none() {
-            match receiver.recv_timeout(Duration::from_millis(50)) {
-                Ok(cmd) => next_command = Some(cmd),
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            match commands.wait_timeout(Duration::from_millis(50)) {
+                Ok(cmd) => next_command = cmd,
+                Err(()) => break,
             }
         }
-        while let Ok(newer) = receiver.try_recv() {
+        if let Some(newer) = commands.take() {
             next_command = Some(newer);
         }
         match next_command {
@@ -1561,10 +1622,7 @@ fn worker_loop(
                             if stop.is_cancelled().unwrap_or(true) {
                                 break;
                             }
-                            if let Ok(mut newer) = receiver.try_recv() {
-                                while let Ok(even_newer) = receiver.try_recv() {
-                                    newer = even_newer;
-                                }
+                            if let Some(newer) = commands.take() {
                                 state.record(
                                     Some(request_id),
                                     "request_superseded",
@@ -2107,5 +2165,53 @@ mod tests {
         assert!(!res2.as_bool());
 
         session.close().expect("close session");
+    }
+
+    #[test]
+    fn command_slot_overwrites_stale_command_and_never_drops_latest() {
+        let slot = CommandSlot::default();
+        for request_id in 1..=10_u64 {
+            assert!(slot.push(WorkerCommand::Convert {
+                current_result: None,
+                auto_conversion: request_id < 10,
+                request_id,
+                revision: Revision {
+                    input: request_id,
+                    settings: 0,
+                    authorization: 0,
+                },
+                text: format!("text-{request_id}"),
+                deadline: Instant::now() + Duration::from_secs(5),
+            }));
+        }
+
+        let Some(WorkerCommand::Convert {
+            auto_conversion,
+            request_id,
+            text,
+            ..
+        }) = slot.take()
+        else {
+            panic!("expected latest command");
+        };
+        assert!(!auto_conversion);
+        assert_eq!(request_id, 10);
+        assert_eq!(text, "text-10");
+        assert!(slot.take().is_none());
+
+        slot.close();
+        assert!(!slot.push(WorkerCommand::Convert {
+            current_result: None,
+            auto_conversion: false,
+            request_id: 11,
+            revision: Revision {
+                input: 11,
+                settings: 0,
+                authorization: 0,
+            },
+            text: "after-close".to_owned(),
+            deadline: Instant::now() + Duration::from_secs(5),
+        }));
+        assert!(slot.wait_timeout(Duration::from_millis(10)).is_err());
     }
 }
