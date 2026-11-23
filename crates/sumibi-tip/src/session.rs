@@ -85,7 +85,7 @@ impl SharedSessionState {
     }
 
     pub fn is_input_monitored(&self) -> bool {
-        self.is_ready() || self.is_auto_allowed()
+        self.allowed.load(Ordering::Acquire) || self.auto_allowed.load(Ordering::Acquire)
     }
 
     pub fn is_connected(&self) -> bool {
@@ -963,7 +963,20 @@ impl TipHostSession {
 
     /// Discard the passive romaji run (focus loss, deactivation, boundaries).
     pub fn clear_run(&self) {
+        self.clear_run_with_reason("clear_run");
+    }
+
+    /// Discard the passive romaji run and record a diagnostic reason if non-empty.
+    pub fn clear_run_with_reason(&self, reason: &str) {
         if self.owner == thread::current().id() {
+            let prev_len = self.run.borrow().len();
+            if prev_len > 0 {
+                self.state.record(
+                    None,
+                    "run_cleared",
+                    format_args!("reason={reason}, prev_len={prev_len}"),
+                );
+            }
             self.run.borrow_mut().clear();
             self.sink.selection.take();
             self.sink.last_conversion.take();
@@ -1026,6 +1039,14 @@ impl TipHostSession {
             self.kill_auto_timer();
             self.last_context.take();
             self.last_auto_text.take();
+            let prev_len = self.run.borrow().len();
+            if prev_len > 0 {
+                self.state.record(
+                    None,
+                    "run_cleared",
+                    format_args!("reason=no_context, prev_len={prev_len}"),
+                );
+            }
             self.run.borrow_mut().clear();
             return;
         };
@@ -1053,20 +1074,53 @@ impl TipHostSession {
             self.kill_auto_timer();
             self.last_context.take();
             self.last_auto_text.take();
+            let prev_len = self.run.borrow().len();
+            if prev_len > 0 {
+                self.state.record(
+                    None,
+                    "run_cleared",
+                    format_args!(
+                        "reason=not_gated, prev_len={prev_len}, is_ready={is_ready}, status_ok={status_ok}"
+                    ),
+                );
+            }
             self.run.borrow_mut().clear();
             return;
         }
         self.last_context.replace(Some(context.clone()));
-        let action = crate::run_record::classify(vk, translate_key(vk, flags), command_modifier());
+        let cmd_mod = command_modifier();
+        let action = crate::run_record::classify(vk, translate_key(vk, flags), cmd_mod);
         if !matches!(action, crate::run_record::KeyAction::Ignore) {
             self.sink.cancel_auto_pending();
             self.state.input.fetch_add(1, Ordering::AcqRel);
             self.last_auto_text.take();
         }
         let mut record = self.run.borrow_mut();
+        let prev_len = record.len();
+        let prev_context = record.context();
         record.apply(token, action);
         let len = record.len();
         drop(record);
+        if prev_len > 0 {
+            if action == crate::run_record::KeyAction::Clear {
+                self.state.record(
+                    None,
+                    "run_cleared",
+                    format_args!(
+                        "reason=key_clear, prev_len={prev_len}, vk=0x{vk:x}, cmd_mod={cmd_mod}"
+                    ),
+                );
+            } else if !matches!(action, crate::run_record::KeyAction::Ignore)
+                && prev_context != 0
+                && prev_context != token
+            {
+                self.state.record(
+                    None,
+                    "run_cleared",
+                    format_args!("reason=context_changed, prev_len={prev_len}, new_len={len}"),
+                );
+            }
+        }
         if len > 0 && self.state.is_auto_allowed() {
             if !matches!(action, crate::run_record::KeyAction::Ignore) {
                 self.arm_auto_timer();
@@ -1102,8 +1156,10 @@ impl TipHostSession {
         self.state
             .record(Some(request_id), "ctrl_j", format_args!("received"));
 
-        // 1. Consent and readiness gate: if not ready, ignore key immediately (never read text!)
-        if !self.state.is_ready() {
+        // 1. Consent gate: if not allowed, ignore key immediately (never read text!).
+        // If allowed is true while connected is transiently false (IPC reconnect),
+        // admit the command into CommandSlot so worker_loop executes it once connected.
+        if !self.state.allowed.load(Ordering::Acquire) {
             self.state.record(
                 Some(request_id),
                 "hotkey_ignored",
@@ -1113,9 +1169,7 @@ impl TipHostSession {
                     self.state.allowed.load(Ordering::Acquire)
                 ),
             );
-            debug_log(
-                "Preserved key ignored: host session is not ready (not connected or not allowed)",
-            );
+            debug_log("Preserved key ignored: host session is not allowed");
             return Ok(false.into());
         }
 
@@ -1425,8 +1479,6 @@ fn worker_loop(
         if current_worker.is_none() || current_worker.as_ref().is_some_and(|w| w.is_closed()) {
             if pending_command.is_none() {
                 state.connected.store(false, Ordering::Release);
-                state.allowed.store(false, Ordering::Release);
-                state.auto_allowed.store(false, Ordering::Release);
             }
             current_worker = None;
 
@@ -1533,8 +1585,10 @@ fn worker_loop(
 
             if !prep_ok {
                 state.connected.store(false, Ordering::Release);
-                state.allowed.store(false, Ordering::Release);
-                state.auto_allowed.store(false, Ordering::Release);
+                if protocol_mismatch {
+                    state.allowed.store(false, Ordering::Release);
+                    state.auto_allowed.store(false, Ordering::Release);
+                }
                 current_worker = None;
                 consecutive_failures = consecutive_failures.saturating_add(1);
                 continue;
@@ -1561,8 +1615,6 @@ fn worker_loop(
             Err(_) => {
                 // Connection broken or revoked
                 state.connected.store(false, Ordering::Release);
-                state.allowed.store(false, Ordering::Release);
-                state.auto_allowed.store(false, Ordering::Release);
                 current_worker = None;
                 continue;
             }
@@ -2213,5 +2265,29 @@ mod tests {
             deadline: Instant::now() + Duration::from_secs(5),
         }));
         assert!(slot.wait_timeout(Duration::from_millis(10)).is_err());
+    }
+
+    #[test]
+    fn input_monitoring_survives_transient_disconnect_when_policy_allowed() {
+        let state = SharedSessionState::new();
+        assert!(!state.is_input_monitored());
+        assert!(!state.is_ready());
+
+        state.allowed.store(true, Ordering::Release);
+        state.connected.store(true, Ordering::Release);
+        assert!(state.is_input_monitored());
+        assert!(state.is_ready());
+
+        // Transient IPC disconnect drops readiness for conversion, but keeps
+        // passive input monitoring active so RunRecord is not cleared mid-sentence.
+        state.connected.store(false, Ordering::Release);
+        assert!(!state.is_ready());
+        assert!(!state.is_auto_allowed());
+        assert!(state.is_input_monitored());
+
+        // Explicit policy revocation stops input monitoring immediately.
+        state.allowed.store(false, Ordering::Release);
+        state.auto_allowed.store(false, Ordering::Release);
+        assert!(!state.is_input_monitored());
     }
 }
