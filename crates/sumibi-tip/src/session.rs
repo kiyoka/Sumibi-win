@@ -1156,8 +1156,10 @@ impl TipHostSession {
         self.state
             .record(Some(request_id), "ctrl_j", format_args!("received"));
 
-        // 1. Consent and readiness gate: if not ready, ignore key immediately (never read text!)
-        if !self.state.is_ready() {
+        // 1. Consent gate: if not allowed, ignore key immediately (never read text!).
+        // If allowed is true while connected is transiently false (IPC reconnect),
+        // admit the command into CommandSlot so worker_loop executes it once connected.
+        if !self.state.allowed.load(Ordering::Acquire) {
             self.state.record(
                 Some(request_id),
                 "hotkey_ignored",
@@ -1167,9 +1169,7 @@ impl TipHostSession {
                     self.state.allowed.load(Ordering::Acquire)
                 ),
             );
-            debug_log(
-                "Preserved key ignored: host session is not ready (not connected or not allowed)",
-            );
+            debug_log("Preserved key ignored: host session is not allowed");
             return Ok(false.into());
         }
 
