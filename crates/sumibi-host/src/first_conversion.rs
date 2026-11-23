@@ -13,7 +13,7 @@ pub const CONVERSION_UNICODE_VERSION: (u64, u64, u64) = unicode_segmentation::UN
 pub const MAX_TOTAL_GRAPHEMES: usize = 1000;
 pub const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
-const SYSTEM_PROMPT_PREFIX: &str = "あなたはローマ字と英語を、通常は自然な日本語へ変換するIMEです。ユーザーによる追加の変換指示で出力言語が指定された場合は、その言語へ翻訳してください。\nMarkdown記法、URL、固有名詞は可能な限り維持してください。\n入力にない情報は追加しないでください。";
+const SYSTEM_PROMPT_PREFIX: &str = "あなたはローマ字と英語を、通常は自然な日本語へ変換するIMEです。入力に日本語・記号・ローマ字が混在している場合は、既存の日本語や記号を維持しつつローマ字や英語の部分を自然な日本語へ変換してください。ユーザーによる追加の変換指示で出力言語が指定された場合は、その言語へ翻訳してください。\nMarkdown記法、URL、固有名詞は可能な限り維持してください。\n入力にない情報は追加しないでください。";
 const SYSTEM_PROMPT_SUFFIX: &str = "ユーザーによる追加の変換指示はありません。\nユーザーによる追加の変換指示がある場合はそれを反映し、ない場合は文脈に最も自然な日本語変換を1件だけ作ってください。{\"candidates\":[\"候補1\"]}というJSONだけを返してください。\nJSON以外の説明やMarkdownのコードフェンスは返さないでください。";
 const ADDITIONAL_SYSTEM_PROMPT_SUFFIX: &str = "ユーザーによる追加の変換指示はありません。\nユーザーによる追加の変換指示がある場合はそれを反映し、ない場合は文脈に合う自然な日本語の変換候補を複数件（最大6件）作ってください。変換対象が単語一つなら、その単語全体のひらがなの読みも候補に含めてください。{\"candidates\":[\"候補1\",\"候補2\",...]}というJSONだけを返してください。\nJSON以外の説明やMarkdownのコードフェンスは返さないでください。";
 
@@ -199,8 +199,23 @@ pub fn request_body(model: &str, source: &str) -> Result<Vec<u8>, PayloadError> 
     request_body_with_input(model, &ConversionInput::new(source))
 }
 
-/// Extract one candidate only from a complete, non-refused response.
-pub fn response_candidate(bytes: &[u8]) -> Result<String, PayloadError> {
+fn strip_json_fence(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    let Some(rest) = trimmed.strip_prefix("```") else {
+        return trimmed;
+    };
+    let after_lang = rest
+        .strip_prefix("json")
+        .or_else(|| rest.strip_prefix("JSON"))
+        .unwrap_or(rest);
+    let body = after_lang
+        .strip_prefix("\r\n")
+        .or_else(|| after_lang.strip_prefix('\n'))
+        .unwrap_or(after_lang);
+    body.strip_suffix("```").unwrap_or(body).trim()
+}
+
+fn parse_candidates_response(bytes: &[u8]) -> Result<Candidates, PayloadError> {
     if bytes.is_empty() || bytes.len() > MAX_RESPONSE_BYTES {
         return Err(PayloadError::InvalidResponse);
     }
@@ -222,8 +237,12 @@ pub fn response_candidate(bytes: &[u8]) -> Result<String, PayloadError> {
         .content
         .as_deref()
         .ok_or(PayloadError::InvalidResponse)?;
-    let payload: Candidates =
-        serde_json::from_str(content).map_err(|_| PayloadError::InvalidResponse)?;
+    serde_json::from_str(strip_json_fence(content)).map_err(|_| PayloadError::InvalidResponse)
+}
+
+/// Extract one candidate only from a complete, non-refused response.
+pub fn response_candidate(bytes: &[u8]) -> Result<String, PayloadError> {
+    let payload = parse_candidates_response(bytes)?;
     if payload.candidates.len() != 1 {
         return Err(PayloadError::InvalidResponse);
     }
@@ -240,29 +259,7 @@ pub fn response_candidates(
     bytes: &[u8],
     current_result: Option<&str>,
 ) -> Result<Vec<String>, PayloadError> {
-    if bytes.is_empty() || bytes.len() > MAX_RESPONSE_BYTES {
-        return Err(PayloadError::InvalidResponse);
-    }
-    let response: ChatResponse =
-        serde_json::from_slice(bytes).map_err(|_| PayloadError::InvalidResponse)?;
-    let choices = &response.choices;
-    if choices.len() != 1 {
-        return Err(PayloadError::InvalidResponse);
-    }
-    let choice = &choices[0];
-    if choice.finish_reason.as_deref() != Some("stop") {
-        return Err(PayloadError::InvalidResponse);
-    }
-    let message = &choice.message;
-    if message.role != "assistant" || message.refusal.is_some() {
-        return Err(PayloadError::InvalidResponse);
-    }
-    let content = message
-        .content
-        .as_deref()
-        .ok_or(PayloadError::InvalidResponse)?;
-    let payload: Candidates =
-        serde_json::from_str(content).map_err(|_| PayloadError::InvalidResponse)?;
+    let payload = parse_candidates_response(bytes)?;
     if payload.candidates.is_empty() {
         return Err(PayloadError::InvalidResponse);
     }
@@ -514,5 +511,28 @@ mod tests {
         // 1 (current) + 10 (additional) = 11
         assert_eq!(clamped.len(), 11);
         assert_eq!(clamped[0], "initial");
+    }
+
+    #[test]
+    fn mixed_japanese_symbols_input_and_fenced_json_response() {
+        let mixed = "テスト：nihongo! (abc)";
+        let body = request_body("gemini-3.6-flash", mixed).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(parsed["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains(mixed));
+
+        let fenced = "```json\n{\"candidates\":[\"テスト：日本語! (abc)\"]}\n```";
+        assert_eq!(
+            response_candidate(&reply(fenced, "stop")).unwrap(),
+            "テスト：日本語! (abc)"
+        );
+
+        let fenced_multi = "```\n{\"candidates\":[\"候補1\", \"候補2\"]}\n```";
+        assert_eq!(
+            response_candidates(&reply(fenced_multi, "stop"), None).unwrap(),
+            vec!["候補1", "候補2"]
+        );
     }
 }
