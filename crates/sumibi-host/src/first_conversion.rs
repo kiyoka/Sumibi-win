@@ -137,6 +137,20 @@ struct Candidates {
     candidates: Vec<String>,
 }
 
+fn reasoning_effort_for_model(model: &str) -> Option<&'static str> {
+    let lower = model.trim().to_ascii_lowercase();
+    let lower = lower.strip_prefix("models/").unwrap_or(&lower);
+    if lower.starts_with("gemini-2.5-flash") {
+        Some("none")
+    } else if lower.starts_with("gemini-2.5-pro") {
+        Some("low")
+    } else if lower.starts_with("gemini-3") || lower.starts_with("gemini-4") {
+        Some("minimal")
+    } else {
+        None
+    }
+}
+
 /// Create Chat Completions request body with structured conversion inputs and conversion kind.
 pub fn request_body_with_input_and_kind(
     model: &str,
@@ -168,14 +182,18 @@ pub fn request_body_with_input_and_kind(
         input.source
     );
 
-    serde_json::to_vec(&json!({
+    let mut payload = json!({
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
-    }))
-    .map_err(|_| PayloadError::InvalidSource)
+    });
+    if let Some(effort) = reasoning_effort_for_model(model) {
+        payload["reasoning_effort"] = json!(effort);
+    }
+
+    serde_json::to_vec(&payload).map_err(|_| PayloadError::InvalidSource)
 }
 
 /// Create Chat Completions request body with structured conversion inputs (initial conversion).
@@ -534,5 +552,24 @@ mod tests {
             response_candidates(&reply(fenced_multi, "stop"), None).unwrap(),
             vec!["候補1", "候補2"]
         );
+    }
+
+    #[test]
+    fn gemini_models_include_minimal_thinking_reasoning_effort() {
+        let g36: serde_json::Value =
+            serde_json::from_slice(&request_body("gemini-3.6-flash", "nihongo").unwrap()).unwrap();
+        assert_eq!(g36["reasoning_effort"], "minimal");
+
+        let g25f: serde_json::Value =
+            serde_json::from_slice(&request_body("gemini-2.5-flash", "nihongo").unwrap()).unwrap();
+        assert_eq!(g25f["reasoning_effort"], "none");
+
+        let g25p: serde_json::Value =
+            serde_json::from_slice(&request_body("gemini-2.5-pro", "nihongo").unwrap()).unwrap();
+        assert_eq!(g25p["reasoning_effort"], "low");
+
+        let non_gemini: serde_json::Value =
+            serde_json::from_slice(&request_body("gpt-4o", "nihongo").unwrap()).unwrap();
+        assert!(non_gemini.get("reasoning_effort").is_none());
     }
 }
