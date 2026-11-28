@@ -637,7 +637,8 @@ impl View {
                 &settings
                     .map_or("", Settings::user_dictionary)
                     .replace('\n', "\r\n"),
-                WS_BORDER | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(0x0044),
+                // ES_MULTILINE (0x0004) | ES_AUTOVSCROLL (0x0040) | ES_WANTRETURN (0x1000)
+                WS_BORDER | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(0x1044),
                 28,
                 342,
                 548,
@@ -1483,5 +1484,21 @@ mod tests {
             text(view.key_preview).unwrap(),
             "現在設定中のキー: （接続先を保存すると確認できます）"
         );
+    }
+
+    #[test]
+    fn view_user_dictionary_accepts_multiline_return() {
+        let settings = Settings::new(
+            sumibi_host::manual::Scheme::Https,
+            "generativelanguage.googleapis.com",
+            443,
+            "/v1beta/openai/chat/completions",
+            "gemini-3.6-flash",
+        )
+        .unwrap();
+        let view = View::new(Some(&settings), false).expect("create view");
+        let style = unsafe { GetWindowLongW(view.user_dictionary, GWL_STYLE) };
+        // ES_MULTILINE (0x0004) | ES_AUTOVSCROLL (0x0040) | ES_WANTRETURN (0x1000)
+        assert_eq!(style & 0x1044, 0x1044);
     }
 }
